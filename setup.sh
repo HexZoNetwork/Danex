@@ -489,7 +489,7 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         }
 
         my $ports = $j->{network}{public_tcp_ports};
-        $ports = "80,443" if !defined($ports) || $ports eq "";
+        $ports = "80,443,8080,18443" if !defined($ports) || $ports eq "";
         my %seen = map { $_ => 1 } grep { $_ =~ /^\d+$/ } split(/,/, $ports);
         $seen{80} = 1;
         $seen{443} = 1;
@@ -1251,7 +1251,7 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
     HOST_RECENT_WINDOW="$(read_network_setting host_recent_window_sec 5)"
     HOST_BLACKHOLE_TTL="$(read_network_setting blackhole_ttl_sec 600)"
     HOST_IPV6_ENABLED="$(read_network_setting ipv6_enabled true)"
-    HOST_PUBLIC_TCP_PORTS="$(read_network_setting public_tcp_ports 80,443)"
+    HOST_PUBLIC_TCP_PORTS="$(read_network_setting public_tcp_ports 80,443,8080,18443)"
     HOST_EGRESS_GUARD_ENABLED="$(read_network_setting egress_guard_enabled true)"
     HOST_EGRESS_TCP_BLOCK_PORTS="$(read_network_setting egress_tcp_block_ports 25,465,587,2525,23,2323,4444,5555,6667,6697,11211)"
     HOST_EGRESS_UDP_BLOCK_PORTS="$(read_network_setting egress_udp_block_ports 19,123,161,1900,11211)"
