@@ -962,7 +962,18 @@ echo trim((string) $n->daemon_token_id), PHP_EOL;
 echo trim((string) $n->getDecryptedKey()), PHP_EOL;
 ') >"${_WINGS_TOKEN_TMP}" 2>/dev/null; then
                 WINGS_TOKEN_ID="$(sed -n '1p' "${_WINGS_TOKEN_TMP}" | tr -d '\r\n')"
-                WINGS_TOKEN_KEY="$(sed -n '2p' "${_WINGS_TOKEN_TMP}" | tr -d '\r\n')"
+                WINGS_TOKEN_KEY_RAW="$(sed -n '2p' "${_WINGS_TOKEN_TMP}" | tr -d '\r\n')"
+                WINGS_TOKEN_KEY="${WINGS_TOKEN_KEY_RAW}"
+                # Some panel builds return daemon key as "token_id.token".
+                # Normalize to separate token_id + token so Wings auth is valid.
+                if [[ "${WINGS_TOKEN_KEY_RAW}" == *.* ]]; then
+                    _left="${WINGS_TOKEN_KEY_RAW%%.*}"
+                    _right="${WINGS_TOKEN_KEY_RAW#*.}"
+                    if [[ -n "${_left}" && -n "${_right}" ]]; then
+                        WINGS_TOKEN_ID="${_left}"
+                        WINGS_TOKEN_KEY="${_right}"
+                    fi
+                fi
                 if [[ -n "${WINGS_TOKEN_ID}" && -n "${WINGS_TOKEN_KEY}" ]]; then
                     python3 - /etc/pterodactyl/config.yml "${WINGS_TOKEN_ID}" "${WINGS_TOKEN_KEY}" <<'PY'
 import sys
