@@ -945,6 +945,8 @@ PY
 
     if [[ -f /etc/pterodactyl/config.yml ]]; then
         echo "[setup] preparing wings reverse-proxy guard on :8080..."
+        CHALLENGE_PORT="$(read_network_setting waf_challenge_port 18444)"
+        [[ "${CHALLENGE_PORT}" =~ ^[0-9]+$ ]] || CHALLENGE_PORT="18444"
         WINGS_CERT_PATH="$(awk -F': ' '/^[[:space:]]{4}cert:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
         WINGS_KEY_PATH="$(awk -F': ' '/^[[:space:]]{4}key:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
         if [[ ! -f "${WINGS_CERT_PATH}" || ! -f "${WINGS_KEY_PATH}" ]]; then
@@ -1041,7 +1043,7 @@ server {
 
     location = /__pteroprotect/challenge/check_token {
         internal;
-        proxy_pass http://127.0.0.1:18444/check-token\$is_args\$args;
+        proxy_pass http://127.0.0.1:${CHALLENGE_PORT}/check-token\$is_args\$args;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
