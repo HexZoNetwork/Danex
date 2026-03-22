@@ -1,0 +1,58 @@
+<?php
+
+return [
+    'waf' => [
+        'enabled' => env('PTEROPROTECT_WAF_ENABLED', true),
+        'log_file' => env('PTEROPROTECT_WAF_LOG', '/dev/shm/pteroprotect/waf.log'),
+        'lockdown_flag' => env('PTEROPROTECT_WAF_LOCKDOWN_FLAG', '/dev/shm/pteroprotect/strict_lockdown.flag'),
+        'mode_flag' => env('PTEROPROTECT_WAF_MODE_FLAG', '/dev/shm/pteroprotect/mode.flag'),
+        'trusted_ips' => [],
+        'trust_private_ranges' => false,
+        'allow_header_bypass' => false,
+        'block_paths_in_emergency' => false,
+        'global_decay_seconds' => 15,
+        'web_per_ip_limit' => 120,
+        'web_global_limit' => 2400,
+        'api_per_ip_limit' => 180,
+        'api_global_limit' => 1800,
+        'auth_per_ip_limit' => 20,
+        'auth_global_limit' => 120,
+        'resource_per_ip_limit' => 90,
+        'resource_global_limit' => 900,
+        'lockdown_api_per_ip_limit' => 20,
+        'lockdown_api_global_limit' => 120,
+        'lockdown_resource_per_ip_limit' => 8,
+        'lockdown_resource_global_limit' => 40,
+        'block_empty_agent_on_api' => false,
+        'max_query_length' => 4096,
+        'max_content_length' => 1048576,
+        'suspicious_user_agents' => [
+            'masscan',
+            'sqlmap',
+            'nikto',
+            'nessus',
+            'zgrab',
+            'acunetix',
+        ],
+        'suspicious_path_patterns' => [
+            '/(?:\.\.|%2e%2e|\/\.git|\/\.env|\/wp-admin|\/wp-login\.php|\/xmlrpc\.php)/i',
+            '/(?:union(?:\+|%20|\s)+select|information_schema|sleep\(|benchmark\(|load_file\()/i',
+            '/(?:<script|%3Cscript|onerror=|javascript:)/i',
+        ],
+        'strict_lockdown_block_patterns' => [
+            '#^api/client/servers/[^/]+/resources$#i',
+            '#^api/client/servers/[^/]+/websocket$#i',
+            '#^api/client/servers/[^/]+/files#i',
+            '#^api/client/servers/[^/]+/network#i',
+        ],
+        'mode_multipliers' => [
+            'normal' => 1.0,
+            'aggressive' => 0.6,
+            'emergency' => 0.3,
+        ],
+        'emergency_block_patterns' => [
+            '#^api/client/servers/[^/]+/(resources|websocket|files|network|logs|backups)#i',
+            '#^api/application#i',
+        ],
+    ],
+];

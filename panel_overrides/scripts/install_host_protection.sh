@@ -1,0 +1,818 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CHAIN="PTEROPROTECT-HOST"
+ABUSE_CHAIN="PTEROPROTECT-HOST-ABUSE"
+BW_CHAIN="PTEROPROTECT-HOST-BW"
+RAW_CHAIN="PTEROPROTECT-HOST-RAW"
+SYNPROXY_CHAIN="PTEROPROTECT-HOST-SYNPROXY"
+CHAIN6="PTEROPROTECT-HOST-V6"
+ABUSE_CHAIN6="PTEROPROTECT-HOST-V6-ABUSE"
+BW_CHAIN6="PTEROPROTECT-HOST-V6-BW"
+RAW_CHAIN6="PTEROPROTECT-HOST-V6-RAW"
+SYNPROXY_CHAIN6="PTEROPROTECT-V6-SYNPROXY"
+DOCKER_CHAIN="PTEROPROTECT-DOCKER"
+IPSET4="pteroprotect_block_v4"
+IPSET6="pteroprotect_block_v6"
+BW_IPSET4_PROBATION="pteroprotect_bw_probation_v4"
+BW_IPSET4_BAD="pteroprotect_bw_bad_v4"
+BW_IPSET4_WORST="pteroprotect_bw_worst_v4"
+BW_IPSET4_TRUSTED="pteroprotect_bw_trusted_v4"
+BW_IPSET4_VTRUSTED="pteroprotect_bw_vtrusted_v4"
+BW_IPSET6_PROBATION="pteroprotect_bw_probation_v6"
+BW_IPSET6_BAD="pteroprotect_bw_bad_v6"
+BW_IPSET6_WORST="pteroprotect_bw_worst_v6"
+BW_IPSET6_TRUSTED="pteroprotect_bw_trusted_v6"
+BW_IPSET6_VTRUSTED="pteroprotect_bw_vtrusted_v6"
+BLACKHOLE_TTL="${PTEROPROTECT_BLACKHOLE_TTL:-600}"
+HOST_IPS="$(hostname -I 2>/dev/null || true)"
+IPV6_ENABLED="${PTEROPROTECT_IPV6_ENABLED:-1}"
+PUBLIC_TCP_PORTS="${PTEROPROTECT_PUBLIC_TCP_PORTS:-80,443}"
+EGRESS_GUARD_ENABLED="${PTEROPROTECT_EGRESS_GUARD_ENABLED:-1}"
+EGRESS_TCP_BLOCK_PORTS="${PTEROPROTECT_EGRESS_TCP_BLOCK_PORTS:-25,465,587,2525,23,2323,4444,5555,6667,6697,11211}"
+EGRESS_UDP_BLOCK_PORTS="${PTEROPROTECT_EGRESS_UDP_BLOCK_PORTS:-19,123,161,1900,11211}"
+NEW_CONN_RATE="${PTEROPROTECT_NEW_CONN_RATE:-12}"
+NEW_CONN_BURST="${PTEROPROTECT_NEW_CONN_BURST:-20}"
+CONNLIMIT_PER_IP="${PTEROPROTECT_CONNLIMIT_PER_IP:-30}"
+UDP_GUARD_ENABLED="${PTEROPROTECT_UDP_GUARD_ENABLED:-1}"
+UDP_PER_IP_RATE="${PTEROPROTECT_UDP_PER_IP_RATE:-150}"
+UDP_BURST="${PTEROPROTECT_UDP_BURST:-300}"
+RECENT_HITCOUNT="${PTEROPROTECT_RECENT_HITCOUNT:-60}"
+RECENT_WINDOW="${PTEROPROTECT_RECENT_WINDOW:-5}"
+IP_TRUST_BW_ENABLED="${PTEROPROTECT_IP_TRUST_BW_ENABLED:-1}"
+IP_TRUST_BW_PROBATION_KBPS="${PTEROPROTECT_IP_TRUST_BW_PROBATION_KBPS:-2500}"
+IP_TRUST_BW_BAD_KBPS="${PTEROPROTECT_IP_TRUST_BW_BAD_KBPS:-1000}"
+IP_TRUST_BW_WORST_KBPS="${PTEROPROTECT_IP_TRUST_BW_WORST_KBPS:-100}"
+IP_TRUST_BW_TRUSTED_KBPS="${PTEROPROTECT_IP_TRUST_BW_TRUSTED_KBPS:-40000}"
+IP_TRUST_BW_VTRUSTED_KBPS="${PTEROPROTECT_IP_TRUST_BW_VTRUSTED_KBPS:-500000}"
+IP_TRUST_BW_BURST_KB="${PTEROPROTECT_IP_TRUST_BW_BURST_KB:-512}"
+SYNPROXY_ENABLED="${PTEROPROTECT_SYNPROXY_ENABLED:-1}"
+SYNPROXY_MSS="${PTEROPROTECT_SYNPROXY_MSS:-1460}"
+SYNPROXY_WSCALE="${PTEROPROTECT_SYNPROXY_WSCALE:-7}"
+INFRA_HOSTS_RAW="${PTEROPROTECT_INFRA_HOSTS:-}"
+WINGS_CONFIG="${PTEROPROTECT_WINGS_CONFIG:-/etc/pterodactyl/config.yml}"
+GUARD_HOME="${DANN_GUARD_HOME:-/pteroprotect}"
+CONFIG_PATH="${GUARD_HOME}/config.json"
+UNBLOCK_PORTAL_PORT="${PTEROPROTECT_UNBLOCK_PORTAL_PORT:-}"
+WINGS_API_PORT="${PTEROPROTECT_WINGS_API_PORT:-}"
+
+have_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "${value}"
+}
+
+extract_host_from_value() {
+    local raw
+    raw="$(trim "$1")"
+    raw="${raw%\"}"
+    raw="${raw#\"}"
+    raw="${raw%\'}"
+    raw="${raw#\'}"
+    raw="${raw#https://}"
+    raw="${raw#http://}"
+    raw="${raw%%/*}"
+    raw="${raw%%:*}"
+    printf '%s' "${raw}"
+}
+
+sanitize_ports() {
+    local raw="$1"
+    local sanitized
+    sanitized="$(printf '%s' "${raw}" | tr -cd '0-9,')"
+    sanitized="${sanitized#,}"
+    sanitized="${sanitized%,}"
+    if [[ -z "${sanitized}" ]]; then
+        sanitized="80,443"
+    fi
+    printf '%s' "${sanitized}"
+}
+
+read_unblock_portal_port() {
+    local port="${UNBLOCK_PORTAL_PORT}"
+    if [[ -z "${port}" && -f "${CONFIG_PATH}" ]] && have_cmd python3; then
+        port="$(python3 - <<'PY' "${CONFIG_PATH}" 2>/dev/null || true
+import json,sys
+p=sys.argv[1]
+try:
+    with open(p,'r',encoding='utf-8') as f:
+        d=json.load(f)
+    v=(d.get('network') or {}).get('unblock_portal_port',18443)
+    print(v)
+except Exception:
+    pass
+PY
+)"
+    fi
+    if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
+        port="18443"
+    fi
+    printf '%s' "${port}"
+}
+
+read_wings_api_port() {
+    local port="${WINGS_API_PORT}"
+    if [[ -z "${port}" && -f "${WINGS_CONFIG}" ]]; then
+        port="$(awk -F': ' '/^[[:space:]]*port:[[:space:]]*[0-9]+/ {print $2; exit}' "${WINGS_CONFIG}" 2>/dev/null || true)"
+    fi
+    if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
+        port="8080"
+    fi
+    printf '%s' "${port}"
+}
+
+effective_burst_kb() {
+    local rate_kbps="$1"
+    local burst_kb="$2"
+    local min_burst_kb
+    if [[ ! "${rate_kbps}" =~ ^[0-9]+$ ]]; then
+        rate_kbps=1
+    fi
+    if [[ ! "${burst_kb}" =~ ^[0-9]+$ ]]; then
+        burst_kb=1
+    fi
+    min_burst_kb=$(( rate_kbps * 2 ))
+    if (( min_burst_kb < 1 )); then
+        min_burst_kb=1
+    fi
+    if (( burst_kb < min_burst_kb )); then
+        burst_kb="${min_burst_kb}"
+    fi
+    printf '%s' "${burst_kb}"
+}
+
+add_unique_word() {
+    local candidate="$1"
+    local current="$2"
+    if [[ -z "${candidate}" ]]; then
+        printf '%s' "${current}"
+        return
+    fi
+    case " ${current} " in
+        *" ${candidate} "*) printf '%s' "${current}" ;;
+        *) printf '%s %s' "${current}" "${candidate}" ;;
+    esac
+}
+
+resolve_host_v4() {
+    local host="$1"
+    getent ahostsv4 "${host}" 2>/dev/null | awk '{print $1}' | sort -u
+}
+
+resolve_host_v6() {
+    local host="$1"
+    getent ahostsv6 "${host}" 2>/dev/null | awk '{print $1}' | sort -u
+}
+
+resolve_dns_nameserver_v4() {
+    awk '/^nameserver[[:space:]]+/ {print $2}' /etc/resolv.conf 2>/dev/null | sed 's/%.*//' | grep -E '^[0-9.]+$' | sort -u
+}
+
+resolve_dns_nameserver_v6() {
+    awk '/^nameserver[[:space:]]+/ {print $2}' /etc/resolv.conf 2>/dev/null | sed 's/%.*//' | grep -E ':' | sort -u
+}
+
+resolve_active_ssh_client_v4() {
+    ss -tn state established 2>/dev/null | awk '
+        NR>1 {
+            local_addr=$4
+            remote=$5
+            if (local_addr ~ /:(22|2022)$/) {
+                sub(/:[0-9]+$/, "", remote)
+                if (remote ~ /^[0-9.]+$/) print remote
+            }
+        }' | sort -u
+}
+
+resolve_active_ssh_client_v6() {
+    ss -tn state established 2>/dev/null | awk '
+        NR>1 {
+            local_addr=$4
+            remote=$5
+            if (local_addr ~ /:(22|2022)$/ && remote ~ /^\[/) {
+                sub(/^\[/, "", remote)
+                sub(/\]:[0-9]+$/, "", remote)
+                if (remote ~ /:/) print remote
+            }
+        }' | sort -u
+}
+
+discover_infra_hosts() {
+    local hosts=""
+    local remote_host=""
+    local value=""
+
+    if [[ -f "${WINGS_CONFIG}" ]]; then
+        value="$(awk -F': ' '/^remote:/ {print $2; exit}' "${WINGS_CONFIG}" 2>/dev/null || true)"
+        remote_host="$(extract_host_from_value "${value}")"
+        hosts="$(add_unique_word "${remote_host}" "${hosts}")"
+    fi
+
+    for value in ${INFRA_HOSTS_RAW//,/ }; do
+        hosts="$(add_unique_word "$(extract_host_from_value "${value}")" "${hosts}")"
+    done
+
+    for value in ${hosts}; do
+        [[ "${value}" =~ ^[A-Za-z0-9._:-]+$ ]] || continue
+        printf '%s\n' "${value}"
+    done
+}
+
+add_host_v4_whitelist() {
+    local chain="$1"
+    local host_ip
+    for host_ip in ${HOST_IPS}; do
+        if [[ -n "${host_ip}" && "${host_ip}" != *:* ]]; then
+            iptables -A "${chain}" -s "${host_ip}/32" -j RETURN
+        fi
+    done
+}
+
+add_resolved_v4_whitelist() {
+    local chain="$1"
+    local host="$2"
+    local ip
+    while read -r ip; do
+        [[ -z "${ip}" ]] && continue
+        iptables -A "${chain}" -s "${ip}/32" -j RETURN
+    done < <(resolve_host_v4 "${host}")
+}
+
+add_resolved_v6_whitelist() {
+    local chain="$1"
+    local host="$2"
+    local ip
+    while read -r ip; do
+        [[ -z "${ip}" ]] && continue
+        ip6tables -A "${chain}" -s "${ip}/128" -j RETURN
+    done < <(resolve_host_v6 "${host}")
+}
+
+add_dns_v4_whitelist() {
+    local chain="$1"
+    local ip
+    while read -r ip; do
+        [[ -z "${ip}" ]] && continue
+        iptables -A "${chain}" -s "${ip}/32" -j RETURN
+    done < <(resolve_dns_nameserver_v4)
+}
+
+add_dns_v6_whitelist() {
+    local chain="$1"
+    local ip
+    while read -r ip; do
+        [[ -z "${ip}" ]] && continue
+        ip6tables -A "${chain}" -s "${ip}/128" -j RETURN
+    done < <(resolve_dns_nameserver_v6)
+}
+
+add_ssh_v4_whitelist() {
+    local chain="$1"
+    local ip
+    while read -r ip; do
+        [[ -z "${ip}" ]] && continue
+        iptables -A "${chain}" -s "${ip}/32" -j RETURN
+    done < <(resolve_active_ssh_client_v4)
+}
+
+add_ssh_v6_whitelist() {
+    local chain="$1"
+    local ip
+    while read -r ip; do
+        [[ -z "${ip}" ]] && continue
+        ip6tables -A "${chain}" -s "${ip}/128" -j RETURN
+    done < <(resolve_active_ssh_client_v6)
+}
+
+add_host_v6_whitelist() {
+    local chain="$1"
+    local host_ip
+    for host_ip in ${HOST_IPS}; do
+        if [[ -n "${host_ip}" && "${host_ip}" == *:* ]]; then
+            ip6tables -A "${chain}" -s "${host_ip}/128" -j RETURN
+        fi
+    done
+}
+
+prune_input_jump_rules_v4() {
+    while iptables -C INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN}" >/dev/null 2>&1 || break
+    done
+    while iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN}" >/dev/null 2>&1 || break
+    done
+    while iptables -C INPUT -p udp -j "${CHAIN}" >/dev/null 2>&1; do
+        iptables -D INPUT -p udp -j "${CHAIN}" >/dev/null 2>&1 || break
+    done
+}
+
+prune_bw_jump_rules_v4() {
+    while iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN}" >/dev/null 2>&1 || break
+    done
+}
+
+prune_synproxy_jump_rules_v4() {
+    while iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || break
+    done
+    while iptables -t raw -C PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}" >/dev/null 2>&1; do
+        iptables -t raw -D PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}" >/dev/null 2>&1 || break
+    done
+}
+
+prune_unblock_portal_accept_rule_v4() {
+    local port="$1"
+    while iptables -C INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1 || break
+    done
+}
+
+ensure_unblock_portal_accept_rule_v4() {
+    local port="$1"
+    prune_unblock_portal_accept_rule_v4 "${port}"
+    iptables -I INPUT 1 -p tcp --dport "${port}" -j ACCEPT
+}
+
+ensure_local_wings_access_rules_v4() {
+    local port="$1"
+    local host_ip
+    while iptables -C INPUT -p tcp --dport "${port}" -s 127.0.0.1/32 -j ACCEPT >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp --dport "${port}" -s 127.0.0.1/32 -j ACCEPT >/dev/null 2>&1 || break
+    done
+    iptables -I INPUT 1 -p tcp --dport "${port}" -s 127.0.0.1/32 -j ACCEPT
+
+    for host_ip in ${HOST_IPS}; do
+        [[ -n "${host_ip}" && "${host_ip}" != *:* ]] || continue
+        while iptables -C INPUT -p tcp --dport "${port}" -s "${host_ip}/32" -j ACCEPT >/dev/null 2>&1; do
+            iptables -D INPUT -p tcp --dport "${port}" -s "${host_ip}/32" -j ACCEPT >/dev/null 2>&1 || break
+        done
+        iptables -I INPUT 1 -p tcp --dport "${port}" -s "${host_ip}/32" -j ACCEPT
+    done
+}
+
+ensure_local_wings_access_rules_v6() {
+    local port="$1"
+    local host_ip
+    have_cmd ip6tables || return 0
+    while ip6tables -C INPUT -p tcp --dport "${port}" -s ::1/128 -j ACCEPT >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp --dport "${port}" -s ::1/128 -j ACCEPT >/dev/null 2>&1 || break
+    done
+    ip6tables -I INPUT 1 -p tcp --dport "${port}" -s ::1/128 -j ACCEPT
+
+    for host_ip in ${HOST_IPS}; do
+        [[ -n "${host_ip}" && "${host_ip}" == *:* ]] || continue
+        while ip6tables -C INPUT -p tcp --dport "${port}" -s "${host_ip}/128" -j ACCEPT >/dev/null 2>&1; do
+            ip6tables -D INPUT -p tcp --dport "${port}" -s "${host_ip}/128" -j ACCEPT >/dev/null 2>&1 || break
+        done
+        ip6tables -I INPUT 1 -p tcp --dport "${port}" -s "${host_ip}/128" -j ACCEPT
+    done
+}
+
+prune_input_jump_rules_v6() {
+    while ip6tables -C INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN6}" >/dev/null 2>&1 || break
+    done
+    while ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN6}" >/dev/null 2>&1 || break
+    done
+    while ip6tables -C INPUT -p udp -j "${CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -D INPUT -p udp -j "${CHAIN6}" >/dev/null 2>&1 || break
+    done
+}
+
+prune_bw_jump_rules_v6() {
+    while ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN6}" >/dev/null 2>&1 || break
+    done
+}
+
+prune_synproxy_jump_rules_v6() {
+    while ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || break
+    done
+    while ip6tables -t raw -C PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -t raw -D PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}" >/dev/null 2>&1 || break
+    done
+}
+
+supports_synproxy_v4() {
+    iptables -j SYNPROXY -h >/dev/null 2>&1
+}
+
+supports_synproxy_v6() {
+    ip6tables -j SYNPROXY -h >/dev/null 2>&1
+}
+
+cleanup_host_protection() {
+    prune_input_jump_rules_v4
+    prune_bw_jump_rules_v4
+    prune_synproxy_jump_rules_v4
+    while iptables -C INPUT -p icmp --icmp-type echo-request -j DROP >/dev/null 2>&1; do
+        iptables -D INPUT -p icmp --icmp-type echo-request -j DROP >/dev/null 2>&1 || break
+    done
+    while iptables -C DOCKER-USER -j "${DOCKER_CHAIN}" >/dev/null 2>&1; do
+        iptables -D DOCKER-USER -j "${DOCKER_CHAIN}" >/dev/null 2>&1 || break
+    done
+    iptables -F "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
+    iptables -X "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
+    iptables -F "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
+    iptables -X "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
+    iptables -F "${BW_CHAIN}" >/dev/null 2>&1 || true
+    iptables -X "${BW_CHAIN}" >/dev/null 2>&1 || true
+    iptables -F "${CHAIN}" >/dev/null 2>&1 || true
+    iptables -X "${CHAIN}" >/dev/null 2>&1 || true
+    iptables -F "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || true
+    iptables -X "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || true
+    iptables -t raw -F "${RAW_CHAIN}" >/dev/null 2>&1 || true
+    iptables -t raw -X "${RAW_CHAIN}" >/dev/null 2>&1 || true
+    if have_cmd ipset; then
+        ipset destroy "${IPSET4}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET4_PROBATION}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET4_BAD}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET4_WORST}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET4_TRUSTED}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET4_VTRUSTED}" >/dev/null 2>&1 || true
+    fi
+
+    if have_cmd ip6tables; then
+        prune_input_jump_rules_v6
+        prune_bw_jump_rules_v6
+        prune_synproxy_jump_rules_v6
+        while ip6tables -C INPUT -p ipv6-icmp --icmpv6-type echo-request -j DROP >/dev/null 2>&1; do
+            ip6tables -D INPUT -p ipv6-icmp --icmpv6-type echo-request -j DROP >/dev/null 2>&1 || break
+        done
+        ip6tables -F "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -X "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -F "${BW_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -X "${BW_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -F "${CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -X "${CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -F "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -X "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -t raw -F "${RAW_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -t raw -X "${RAW_CHAIN6}" >/dev/null 2>&1 || true
+    fi
+    if have_cmd ipset; then
+        ipset destroy "${IPSET6}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET6_PROBATION}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET6_BAD}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET6_WORST}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET6_TRUSTED}" >/dev/null 2>&1 || true
+        ipset destroy "${BW_IPSET6_VTRUSTED}" >/dev/null 2>&1 || true
+    fi
+}
+
+if [[ "${PTEROPROTECT_FIREWALL_DISABLE:-0}" == "1" ]]; then
+    cleanup_host_protection
+    exit 0
+fi
+
+iptables -N "${CHAIN}" >/dev/null 2>&1 || true
+iptables -N "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
+iptables -N "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
+iptables -F "${CHAIN}" >/dev/null 2>&1 || true
+iptables -F "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
+iptables -F "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
+
+while iptables -C INPUT -p icmp --icmp-type echo-request -j DROP >/dev/null 2>&1; do
+    iptables -D INPUT -p icmp --icmp-type echo-request -j DROP >/dev/null 2>&1 || break
+done
+iptables -I INPUT -p icmp --icmp-type echo-request -j DROP
+
+PUBLIC_TCP_PORTS="$(sanitize_ports "${PUBLIC_TCP_PORTS}")"
+EGRESS_TCP_BLOCK_PORTS="$(sanitize_ports "${EGRESS_TCP_BLOCK_PORTS}")"
+EGRESS_UDP_BLOCK_PORTS="$(sanitize_ports "${EGRESS_UDP_BLOCK_PORTS}")"
+UNBLOCK_PORTAL_PORT="$(read_unblock_portal_port)"
+WINGS_API_PORT="$(read_wings_api_port)"
+prune_input_jump_rules_v4
+prune_bw_jump_rules_v4
+prune_synproxy_jump_rules_v4
+ensure_unblock_portal_accept_rule_v4 "${UNBLOCK_PORTAL_PORT}"
+ensure_local_wings_access_rules_v4 "${WINGS_API_PORT}"
+
+if [[ "${IP_TRUST_BW_ENABLED}" == "1" ]] && have_cmd ipset; then
+    BW_BURST_PROBATION_KB="$(effective_burst_kb "${IP_TRUST_BW_PROBATION_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+    BW_BURST_BAD_KB="$(effective_burst_kb "${IP_TRUST_BW_BAD_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+    BW_BURST_WORST_KB="$(effective_burst_kb "${IP_TRUST_BW_WORST_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+    BW_BURST_TRUSTED_KB="$(effective_burst_kb "${IP_TRUST_BW_TRUSTED_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+    BW_BURST_VTRUSTED_KB="$(effective_burst_kb "${IP_TRUST_BW_VTRUSTED_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+
+    iptables -N "${BW_CHAIN}" >/dev/null 2>&1 || true
+    iptables -F "${BW_CHAIN}" >/dev/null 2>&1 || true
+    iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN}" >/dev/null 2>&1 || \
+        iptables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN}"
+
+    ipset create "${BW_IPSET4_PROBATION}" hash:ip family inet -exist >/dev/null 2>&1 || true
+    ipset create "${BW_IPSET4_BAD}" hash:ip family inet -exist >/dev/null 2>&1 || true
+    ipset create "${BW_IPSET4_WORST}" hash:ip family inet -exist >/dev/null 2>&1 || true
+    ipset create "${BW_IPSET4_TRUSTED}" hash:ip family inet -exist >/dev/null 2>&1 || true
+    ipset create "${BW_IPSET4_VTRUSTED}" hash:ip family inet -exist >/dev/null 2>&1 || true
+
+    iptables -A "${BW_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    iptables -A "${BW_CHAIN}" -s 127.0.0.1/32 -j RETURN
+    iptables -A "${BW_CHAIN}" -s 10.0.0.0/8 -j RETURN
+    iptables -A "${BW_CHAIN}" -s 172.16.0.0/12 -j RETURN
+    iptables -A "${BW_CHAIN}" -s 192.168.0.0/16 -j RETURN
+
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_VTRUSTED}" src -m hashlimit --hashlimit-name pteroprotect_bw_vtrusted_v4 \
+        --hashlimit-above "${IP_TRUST_BW_VTRUSTED_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_VTRUSTED_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_VTRUSTED}" src -j RETURN
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_TRUSTED}" src -m hashlimit --hashlimit-name pteroprotect_bw_trusted_v4 \
+        --hashlimit-above "${IP_TRUST_BW_TRUSTED_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_TRUSTED_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_TRUSTED}" src -j RETURN
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_PROBATION}" src -m hashlimit --hashlimit-name pteroprotect_bw_probation_v4 \
+        --hashlimit-above "${IP_TRUST_BW_PROBATION_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_PROBATION_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_PROBATION}" src -j RETURN
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_BAD}" src -m hashlimit --hashlimit-name pteroprotect_bw_bad_v4 \
+        --hashlimit-above "${IP_TRUST_BW_BAD_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_BAD_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_BAD}" src -j RETURN
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_WORST}" src -m hashlimit --hashlimit-name pteroprotect_bw_worst_v4 \
+        --hashlimit-above "${IP_TRUST_BW_WORST_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_WORST_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+    iptables -A "${BW_CHAIN}" -m set --match-set "${BW_IPSET4_WORST}" src -j RETURN
+    iptables -A "${BW_CHAIN}" -m hashlimit --hashlimit-name pteroprotect_bw_default_v4 \
+        --hashlimit-above "${IP_TRUST_BW_PROBATION_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_PROBATION_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+    iptables -A "${BW_CHAIN}" -j RETURN
+fi
+
+iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN}" >/dev/null 2>&1 || \
+    iptables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN}"
+if [[ "${UDP_GUARD_ENABLED}" == "1" ]]; then
+    iptables -C INPUT -p udp -j "${CHAIN}" >/dev/null 2>&1 || \
+        iptables -I INPUT -p udp -j "${CHAIN}"
+fi
+
+if [[ "${SYNPROXY_ENABLED}" == "1" ]] && supports_synproxy_v4; then
+    iptables -N "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || true
+    iptables -F "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || true
+    iptables -t raw -N "${RAW_CHAIN}" >/dev/null 2>&1 || true
+    iptables -t raw -F "${RAW_CHAIN}" >/dev/null 2>&1 || true
+
+    iptables -t raw -C PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}" >/dev/null 2>&1 || \
+        iptables -t raw -I PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}"
+
+    iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || \
+        iptables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}"
+
+    SYNPROXY_READY4=0
+    if iptables -A "${RAW_CHAIN}" -p tcp -m conntrack --ctstate NEW -j CT --notrack >/dev/null 2>&1; then
+        SYNPROXY_READY4=1
+    elif iptables -A "${RAW_CHAIN}" -p tcp -m conntrack --ctstate NEW -j NOTRACK >/dev/null 2>&1; then
+        SYNPROXY_READY4=1
+    fi
+
+    if [[ "${SYNPROXY_READY4}" == "1" ]]; then
+        iptables -A "${RAW_CHAIN}" -j RETURN
+        iptables -A "${SYNPROXY_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+        iptables -A "${SYNPROXY_CHAIN}" -p tcp -m conntrack --ctstate INVALID,UNTRACKED -m tcp --syn -j SYNPROXY \
+            --sack-perm --timestamp --wscale "${SYNPROXY_WSCALE}" --mss "${SYNPROXY_MSS}"
+        iptables -A "${SYNPROXY_CHAIN}" -m conntrack --ctstate INVALID -j DROP
+        iptables -A "${SYNPROXY_CHAIN}" -m conntrack --ctstate UNTRACKED -j DROP
+        iptables -A "${SYNPROXY_CHAIN}" -j RETURN
+    else
+        iptables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || true
+        iptables -t raw -D PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}" >/dev/null 2>&1 || true
+        iptables -F "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || true
+        iptables -t raw -F "${RAW_CHAIN}" >/dev/null 2>&1 || true
+    fi
+fi
+
+if have_cmd ipset; then
+    ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1 || true
+fi
+
+iptables -A "${CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+iptables -A "${CHAIN}" -s 127.0.0.1/32 -j RETURN
+iptables -A "${CHAIN}" -s 10.0.0.0/8 -j RETURN
+iptables -A "${CHAIN}" -s 172.16.0.0/12 -j RETURN
+iptables -A "${CHAIN}" -s 192.168.0.0/16 -j RETURN
+add_host_v4_whitelist "${CHAIN}"
+add_dns_v4_whitelist "${CHAIN}"
+add_ssh_v4_whitelist "${CHAIN}"
+while read -r infra_host; do
+    [[ -z "${infra_host}" ]] && continue
+    add_resolved_v4_whitelist "${CHAIN}" "${infra_host}"
+done < <(discover_infra_hosts)
+if have_cmd ipset; then
+    iptables -A "${CHAIN}" -m set --match-set "${IPSET4}" src -j DROP
+fi
+
+iptables -A "${CHAIN}" -m conntrack --ctstate INVALID -j DROP
+if [[ "${UDP_GUARD_ENABLED}" == "1" ]]; then
+    iptables -A "${CHAIN}" -p udp -m hashlimit --hashlimit-name pteroprotect_udp_new \
+        --hashlimit-above "${UDP_PER_IP_RATE}"/second --hashlimit-burst "${UDP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+fi
+iptables -A "${CHAIN}" -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
+iptables -A "${CHAIN}" -p tcp -m conntrack --ctstate NEW -j "${ABUSE_CHAIN}"
+
+# Repeated bursts from the same IP get dropped quickly.
+if have_cmd ipset; then
+    iptables -A "${ABUSE_CHAIN}" -m recent --name pteroprotect_burst --update --seconds "${RECENT_WINDOW}" --hitcount "${RECENT_HITCOUNT}" --rsource -j SET --add-set "${IPSET4}" src
+fi
+iptables -A "${ABUSE_CHAIN}" -m recent --name pteroprotect_burst --update --seconds "${RECENT_WINDOW}" --hitcount "${RECENT_HITCOUNT}" --rsource -j DROP
+
+# Drop obviously malformed TCP flag combinations before they consume more work.
+iptables -A "${ABUSE_CHAIN}" -p tcp --tcp-flags ALL NONE -j DROP
+iptables -A "${ABUSE_CHAIN}" -p tcp --tcp-flags ALL ALL -j DROP
+
+# Cap concurrent TCP sessions per source.
+if have_cmd ipset; then
+    iptables -A "${ABUSE_CHAIN}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 32 -j SET --add-set "${IPSET4}" src
+fi
+iptables -A "${ABUSE_CHAIN}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 32 -j DROP
+
+# Rate-limit fresh connections per source.
+if have_cmd ipset; then
+    iptables -A "${ABUSE_CHAIN}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new \
+        --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j SET --add-set "${IPSET4}" src
+fi
+iptables -A "${ABUSE_CHAIN}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new \
+    --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+
+iptables -A "${ABUSE_CHAIN}" -m recent --name pteroprotect_burst --set --rsource -j RETURN
+iptables -A "${ABUSE_CHAIN}" -j RETURN
+
+iptables -A "${CHAIN}" -j RETURN
+
+if iptables -S DOCKER-USER >/dev/null 2>&1; then
+    while iptables -C DOCKER-USER -j "${DOCKER_CHAIN}" >/dev/null 2>&1; do
+        iptables -D DOCKER-USER -j "${DOCKER_CHAIN}" >/dev/null 2>&1 || break
+    done
+    iptables -I DOCKER-USER 1 -j "${DOCKER_CHAIN}"
+    iptables -A "${DOCKER_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    iptables -A "${DOCKER_CHAIN}" -d 169.254.169.254/32 -j DROP
+    iptables -A "${DOCKER_CHAIN}" -d 169.254.170.2/32 -j DROP
+    iptables -A "${DOCKER_CHAIN}" -d 100.100.100.200/32 -j DROP
+    iptables -A "${DOCKER_CHAIN}" -d 169.254.0.0/16 -j DROP
+    if [[ "${EGRESS_GUARD_ENABLED}" == "1" ]]; then
+        if [[ -n "${EGRESS_TCP_BLOCK_PORTS}" ]]; then
+            iptables -A "${DOCKER_CHAIN}" -p tcp -m multiport --dports "${EGRESS_TCP_BLOCK_PORTS}" -j DROP
+        fi
+        if [[ -n "${EGRESS_UDP_BLOCK_PORTS}" ]]; then
+            iptables -A "${DOCKER_CHAIN}" -p udp -m multiport --dports "${EGRESS_UDP_BLOCK_PORTS}" -j DROP
+        fi
+    fi
+    iptables -A "${DOCKER_CHAIN}" -j RETURN
+fi
+
+if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
+    ensure_local_wings_access_rules_v6 "${WINGS_API_PORT}"
+    ip6tables -N "${CHAIN6}" >/dev/null 2>&1 || true
+    ip6tables -N "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
+    ip6tables -F "${CHAIN6}" >/dev/null 2>&1 || true
+    ip6tables -F "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
+
+    while ip6tables -C INPUT -p ipv6-icmp --icmpv6-type echo-request -j DROP >/dev/null 2>&1; do
+        ip6tables -D INPUT -p ipv6-icmp --icmpv6-type echo-request -j DROP >/dev/null 2>&1 || break
+    done
+    ip6tables -I INPUT -p ipv6-icmp --icmpv6-type echo-request -j DROP
+
+    prune_input_jump_rules_v6
+    prune_bw_jump_rules_v6
+    prune_synproxy_jump_rules_v6
+
+    if [[ "${IP_TRUST_BW_ENABLED}" == "1" ]] && have_cmd ipset; then
+        BW_BURST_PROBATION_KB="$(effective_burst_kb "${IP_TRUST_BW_PROBATION_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+        BW_BURST_BAD_KB="$(effective_burst_kb "${IP_TRUST_BW_BAD_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+        BW_BURST_WORST_KB="$(effective_burst_kb "${IP_TRUST_BW_WORST_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+        BW_BURST_TRUSTED_KB="$(effective_burst_kb "${IP_TRUST_BW_TRUSTED_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+        BW_BURST_VTRUSTED_KB="$(effective_burst_kb "${IP_TRUST_BW_VTRUSTED_KBPS}" "${IP_TRUST_BW_BURST_KB}")"
+
+        ip6tables -N "${BW_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -F "${BW_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN6}" >/dev/null 2>&1 || \
+            ip6tables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN6}"
+
+        ipset create "${BW_IPSET6_PROBATION}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
+        ipset create "${BW_IPSET6_BAD}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
+        ipset create "${BW_IPSET6_WORST}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
+        ipset create "${BW_IPSET6_TRUSTED}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
+        ipset create "${BW_IPSET6_VTRUSTED}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
+
+        ip6tables -A "${BW_CHAIN6}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+        ip6tables -A "${BW_CHAIN6}" -s ::1/128 -j RETURN
+        ip6tables -A "${BW_CHAIN6}" -s fe80::/10 -j RETURN
+        ip6tables -A "${BW_CHAIN6}" -s fc00::/7 -j RETURN
+
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_VTRUSTED}" src -m hashlimit --hashlimit-name pteroprotect_bw_vtrusted_v6 \
+            --hashlimit-above "${IP_TRUST_BW_VTRUSTED_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_VTRUSTED_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_VTRUSTED}" src -j RETURN
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_TRUSTED}" src -m hashlimit --hashlimit-name pteroprotect_bw_trusted_v6 \
+            --hashlimit-above "${IP_TRUST_BW_TRUSTED_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_TRUSTED_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_TRUSTED}" src -j RETURN
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_PROBATION}" src -m hashlimit --hashlimit-name pteroprotect_bw_probation_v6 \
+            --hashlimit-above "${IP_TRUST_BW_PROBATION_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_PROBATION_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_PROBATION}" src -j RETURN
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_BAD}" src -m hashlimit --hashlimit-name pteroprotect_bw_bad_v6 \
+            --hashlimit-above "${IP_TRUST_BW_BAD_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_BAD_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_BAD}" src -j RETURN
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_WORST}" src -m hashlimit --hashlimit-name pteroprotect_bw_worst_v6 \
+            --hashlimit-above "${IP_TRUST_BW_WORST_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_WORST_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+        ip6tables -A "${BW_CHAIN6}" -m set --match-set "${BW_IPSET6_WORST}" src -j RETURN
+        ip6tables -A "${BW_CHAIN6}" -m hashlimit --hashlimit-name pteroprotect_bw_default_v6 \
+            --hashlimit-above "${IP_TRUST_BW_PROBATION_KBPS}kb/sec" --hashlimit-burst "${BW_BURST_PROBATION_KB}kb" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+        ip6tables -A "${BW_CHAIN6}" -j RETURN
+    fi
+
+    ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN6}" >/dev/null 2>&1 || \
+        ip6tables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN6}"
+    if [[ "${UDP_GUARD_ENABLED}" == "1" ]]; then
+        ip6tables -C INPUT -p udp -j "${CHAIN6}" >/dev/null 2>&1 || \
+            ip6tables -I INPUT -p udp -j "${CHAIN6}"
+    fi
+
+    if [[ "${SYNPROXY_ENABLED}" == "1" ]] && supports_synproxy_v6; then
+        ip6tables -N "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -F "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -t raw -N "${RAW_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -t raw -F "${RAW_CHAIN6}" >/dev/null 2>&1 || true
+
+        ip6tables -t raw -C PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}" >/dev/null 2>&1 || \
+            ip6tables -t raw -I PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}"
+
+        ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || \
+            ip6tables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}"
+
+        SYNPROXY_READY6=0
+        if ip6tables -A "${RAW_CHAIN6}" -p tcp -m conntrack --ctstate NEW -j CT --notrack >/dev/null 2>&1; then
+            SYNPROXY_READY6=1
+        elif ip6tables -A "${RAW_CHAIN6}" -p tcp -m conntrack --ctstate NEW -j NOTRACK >/dev/null 2>&1; then
+            SYNPROXY_READY6=1
+        fi
+
+        if [[ "${SYNPROXY_READY6}" == "1" ]]; then
+            ip6tables -A "${RAW_CHAIN6}" -j RETURN
+            ip6tables -A "${SYNPROXY_CHAIN6}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+            ip6tables -A "${SYNPROXY_CHAIN6}" -p tcp -m conntrack --ctstate INVALID,UNTRACKED -m tcp --syn -j SYNPROXY \
+                --sack-perm --timestamp --wscale "${SYNPROXY_WSCALE}" --mss "${SYNPROXY_MSS}"
+            ip6tables -A "${SYNPROXY_CHAIN6}" -m conntrack --ctstate INVALID -j DROP
+            ip6tables -A "${SYNPROXY_CHAIN6}" -m conntrack --ctstate UNTRACKED -j DROP
+            ip6tables -A "${SYNPROXY_CHAIN6}" -j RETURN
+        else
+            ip6tables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || true
+            ip6tables -t raw -D PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}" >/dev/null 2>&1 || true
+            ip6tables -F "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || true
+            ip6tables -t raw -F "${RAW_CHAIN6}" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if have_cmd ipset; then
+        ipset create "${IPSET6}" hash:ip family inet6 timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1 || true
+    fi
+
+    ip6tables -A "${CHAIN6}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    ip6tables -A "${CHAIN6}" -s ::1/128 -j RETURN
+    ip6tables -A "${CHAIN6}" -s fe80::/10 -j RETURN
+    ip6tables -A "${CHAIN6}" -s fc00::/7 -j RETURN
+    add_host_v6_whitelist "${CHAIN6}"
+    add_dns_v6_whitelist "${CHAIN6}"
+    add_ssh_v6_whitelist "${CHAIN6}"
+    while read -r infra_host; do
+        [[ -z "${infra_host}" ]] && continue
+        add_resolved_v6_whitelist "${CHAIN6}" "${infra_host}"
+    done < <(discover_infra_hosts)
+    if have_cmd ipset; then
+        ip6tables -A "${CHAIN6}" -m set --match-set "${IPSET6}" src -j DROP
+    fi
+
+    ip6tables -A "${CHAIN6}" -m conntrack --ctstate INVALID -j DROP
+    if [[ "${UDP_GUARD_ENABLED}" == "1" ]]; then
+        ip6tables -A "${CHAIN6}" -p udp -m hashlimit --hashlimit-name pteroprotect_udp_new_v6 \
+            --hashlimit-above "${UDP_PER_IP_RATE}"/second --hashlimit-burst "${UDP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+    fi
+    ip6tables -A "${CHAIN6}" -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
+    ip6tables -A "${CHAIN6}" -p tcp -m conntrack --ctstate NEW -j "${ABUSE_CHAIN6}"
+
+    if have_cmd ipset; then
+        ip6tables -A "${ABUSE_CHAIN6}" -m recent --name pteroprotect_burst_v6 --update --seconds "${RECENT_WINDOW}" --hitcount "${RECENT_HITCOUNT}" --rsource -j SET --add-set "${IPSET6}" src
+    fi
+    ip6tables -A "${ABUSE_CHAIN6}" -m recent --name pteroprotect_burst_v6 --update --seconds "${RECENT_WINDOW}" --hitcount "${RECENT_HITCOUNT}" --rsource -j DROP
+
+    ip6tables -A "${ABUSE_CHAIN6}" -p tcp --tcp-flags ALL NONE -j DROP
+    ip6tables -A "${ABUSE_CHAIN6}" -p tcp --tcp-flags ALL ALL -j DROP
+
+    if have_cmd ipset; then
+        ip6tables -A "${ABUSE_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 128 -j SET --add-set "${IPSET6}" src
+    fi
+    ip6tables -A "${ABUSE_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 128 -j DROP
+
+    if have_cmd ipset; then
+        ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new_v6 \
+            --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j SET --add-set "${IPSET6}" src
+    fi
+    ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new_v6 \
+        --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+
+    ip6tables -A "${ABUSE_CHAIN6}" -m recent --name pteroprotect_burst_v6 --set --rsource -j RETURN
+    ip6tables -A "${ABUSE_CHAIN6}" -j RETURN
+    ip6tables -A "${CHAIN6}" -j RETURN
+fi
+
+# Keep unblock portal reachable even when source IP is currently blocked.
+# Token verification is enforced by the portal app itself.
+ensure_unblock_portal_accept_rule_v4 "${UNBLOCK_PORTAL_PORT}"

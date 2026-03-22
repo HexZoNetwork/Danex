@@ -1,0 +1,84 @@
+<?php
+
+namespace Pterodactyl\Http\Middleware\Security;
+
+use Closure;
+use Illuminate\Http\Request;
+use Pterodactyl\Models\Server;
+use Pterodactyl\Models\User;
+use Pterodactyl\Services\PteroProtect\AdminOwnershipService;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+
+class PteroProtectRestrictedAdmin
+{
+    public function __construct(private AdminOwnershipService $ownership)
+    {
+    }
+
+    public function handle(Request $request, Closure $next): mixed
+    {
+        $user = $request->user();
+        if (!$user || !$user->root_admin) {
+            throw new AccessDeniedHttpException('Admin session is required.');
+        }
+        if ((int) $user->id === 1) {
+            return $next($request);
+        }
+
+        $path = ltrim($request->path(), '/');
+        $allowed = $path === 'admin'
+            || str_starts_with($path, 'admin/api')
+            || str_starts_with($path, 'admin/users')
+            || str_starts_with($path, 'admin/servers');
+
+        if (!$allowed) {
+            throw new AccessDeniedHttpException('This admin area is disabled for delegated admin accounts.');
+        }
+
+        if (preg_match('#^admin/users(?:/|$)#i', $path) === 1) {
+            $request->merge(['root_admin' => false]);
+
+            if ($request->isMethod('get') && preg_match('#^admin/users(?:/accounts\.json)?$#i', $path) === 1) {
+                $request->attributes->set('pteroprotect_owned_user_ids', $this->ownership->ownedIdsFor('users', (int) $user->id));
+            }
+
+            $targetUser = $request->route('user');
+            if ($targetUser instanceof User) {
+                if ((int) $targetUser->id === 1) {
+                    throw new AccessDeniedHttpException('Primary admin account cannot be modified.');
+                }
+                if (!$this->ownership->isOwnedBy('users', (int) $targetUser->id, (int) $user->id)) {
+                    throw new AccessDeniedHttpException('You do not own this user resource.');
+                }
+            }
+        }
+
+        if (preg_match('#^admin/servers(?:/|$)#i', $path) === 1) {
+            if ($request->isMethod('get') && $path === 'admin/servers') {
+                $request->attributes->set('pteroprotect_owned_server_ids', $this->ownership->ownedIdsFor('servers', (int) $user->id));
+            }
+
+            if ($request->isMethod('post') && $path === 'admin/servers/new') {
+                $ownerId = (int) $request->input('owner_id', 0);
+                if ($ownerId === 1) {
+                    throw new AccessDeniedHttpException('Cannot create or modify resources owned by primary admin.');
+                }
+                if ($ownerId <= 0 || !$this->ownership->isOwnedBy('users', $ownerId, (int) $user->id)) {
+                    throw new AccessDeniedHttpException('Server owner must be a user created by this admin.');
+                }
+            }
+
+            $targetServer = $request->route('server');
+            if ($targetServer instanceof Server) {
+                if ((int) $targetServer->owner_id === 1) {
+                    throw new AccessDeniedHttpException('Primary admin resources cannot be modified.');
+                }
+                if (!$this->ownership->isOwnedBy('servers', (int) $targetServer->id, (int) $user->id)) {
+                    throw new AccessDeniedHttpException('You do not own this server resource.');
+                }
+            }
+        }
+
+        return $next($request);
+    }
+}
