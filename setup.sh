@@ -88,21 +88,17 @@ ensure_node22_runtime() {
         return 0
     fi
 
-    if ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
-        return 1
-    fi
+    if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+        local node_arch=""
+        case "$(uname -m)" in
+            x86_64) node_arch="x64" ;;
+            aarch64|arm64) node_arch="arm64" ;;
+            *) node_arch="" ;;
+        esac
 
-    local node_arch=""
-    case "$(uname -m)" in
-        x86_64) node_arch="x64" ;;
-        aarch64|arm64) node_arch="arm64" ;;
-        *)
-            return 1
-            ;;
-    esac
-
-    local node_version=""
-    node_version="$(curl -fsSL https://nodejs.org/dist/index.json 2>/dev/null | python3 - "${node_arch}" <<'PY' || true
+        if [[ -n "${node_arch}" ]]; then
+            local node_version=""
+            node_version="$(curl -fsSL https://nodejs.org/dist/index.json 2>/dev/null | python3 - "${node_arch}" <<'PY' || true
 import json
 import sys
 
@@ -121,33 +117,59 @@ for row in data:
         break
 PY
 )"
-    [[ -n "${node_version}" ]] || return 1
+            if [[ -n "${node_version}" ]]; then
+                local tmp_dir=""
+                tmp_dir="$(mktemp -d /tmp/.node22.XXXXXX)"
+                local tarball_url="https://nodejs.org/dist/${node_version}/node-${node_version}-linux-${node_arch}.tar.xz"
+                local tarball_path="${tmp_dir}/node.tar.xz"
+                local extract_root="/usr/local/lib/nodejs"
+                local extract_dir="${extract_root}/node-${node_version}-linux-${node_arch}"
 
-    local tmp_dir=""
-    tmp_dir="$(mktemp -d /tmp/.node22.XXXXXX)"
-    local tarball_url="https://nodejs.org/dist/${node_version}/node-${node_version}-linux-${node_arch}.tar.xz"
-    local tarball_path="${tmp_dir}/node.tar.xz"
-    local extract_root="/usr/local/lib/nodejs"
-    local extract_dir="${extract_root}/node-${node_version}-linux-${node_arch}"
-
-    if ! curl -fsSL "${tarball_url}" -o "${tarball_path}" 2>/dev/null; then
-        rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
-        return 1
+                if curl -fsSL "${tarball_url}" -o "${tarball_path}" 2>/dev/null; then
+                    mkdir -p "${extract_root}"
+                    if tar -xJf "${tarball_path}" -C "${extract_root}" >/dev/null 2>&1; then
+                        ln -sfn "${extract_dir}/bin/node" /usr/local/bin/node
+                        ln -sfn "${extract_dir}/bin/npm" /usr/local/bin/npm
+                        ln -sfn "${extract_dir}/bin/npx" /usr/local/bin/npx
+                        if [[ -x "${extract_dir}/bin/corepack" ]]; then
+                            ln -sfn "${extract_dir}/bin/corepack" /usr/local/bin/corepack
+                        fi
+                    fi
+                fi
+                rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
+            fi
+        fi
     fi
 
-    mkdir -p "${extract_root}"
-    if ! tar -xJf "${tarball_path}" -C "${extract_root}" >/dev/null 2>&1; then
-        rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
-        return 1
+    node_major="$(node_major_version)"
+    if (( node_major >= 22 )); then
+        return 0
     fi
 
-    ln -sfn "${extract_dir}/bin/node" /usr/local/bin/node
-    ln -sfn "${extract_dir}/bin/npm" /usr/local/bin/npm
-    ln -sfn "${extract_dir}/bin/npx" /usr/local/bin/npx
-    if [[ -x "${extract_dir}/bin/corepack" ]]; then
-        ln -sfn "${extract_dir}/bin/corepack" /usr/local/bin/corepack
+    # Final fallback: nvm install (useful on constrained VPS mirrors).
+    if command -v curl >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then
+        local nvm_home="${NVM_DIR:-/root/.nvm}"
+        mkdir -p "${nvm_home}"
+        if [[ ! -s "${nvm_home}/nvm.sh" ]]; then
+            PROFILE=/dev/null NVM_DIR="${nvm_home}" bash -c "$(curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh)" >/dev/null 2>&1 || true
+        fi
+        if [[ -s "${nvm_home}/nvm.sh" ]]; then
+            # shellcheck disable=SC1090
+            . "${nvm_home}/nvm.sh"
+            nvm install 22 >/dev/null 2>&1 || true
+            nvm alias default 22 >/dev/null 2>&1 || true
+            local node_bin=""
+            local node_dir=""
+            node_bin="$(nvm which 22 2>/dev/null || true)"
+            if [[ -x "${node_bin}" ]]; then
+                node_dir="$(dirname "${node_bin}")"
+                ln -sfn "${node_dir}/node" /usr/local/bin/node
+                [[ -x "${node_dir}/npm" ]] && ln -sfn "${node_dir}/npm" /usr/local/bin/npm
+                [[ -x "${node_dir}/npx" ]] && ln -sfn "${node_dir}/npx" /usr/local/bin/npx
+                [[ -x "${node_dir}/corepack" ]] && ln -sfn "${node_dir}/corepack" /usr/local/bin/corepack
+            fi
+        fi
     fi
-    rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
 
     node_major="$(node_major_version)"
     (( node_major >= 22 ))
@@ -189,6 +211,16 @@ copy_tree() {
 
     mkdir -p "${dest}"
     tar -C "${src}" -cf - . | tar -C "${dest}" -xf -
+}
+
+install_rendered_systemd_unit() {
+    local src="$1"
+    local dst="$2"
+
+    [[ -f "${src}" ]] || return 0
+    mkdir -p "$(dirname "${dst}")"
+    sed "s#/pteroprotect#${INSTALL_DIR}#g" "${src}" > "${dst}"
+    chmod 0644 "${dst}"
 }
 
 backup_panel_override_targets() {
@@ -513,23 +545,23 @@ fi
 
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect.service" ]]; then
     echo "[setup] installing systemd service..."
-    cp "${INSTALL_DIR}/systemd/pteroprotect.service" "${SYSTEMD_DIR}/pteroprotect.service"
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect.service" "${SYSTEMD_DIR}/pteroprotect.service"
 fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-hostguard.service" ]]; then
     echo "[setup] installing host firewall guard service..."
-    cp "${INSTALL_DIR}/systemd/pteroprotect-hostguard.service" "${SYSTEMD_DIR}/pteroprotect-hostguard.service"
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-hostguard.service" "${SYSTEMD_DIR}/pteroprotect-hostguard.service"
 fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-ddoslog.service" ]]; then
     echo "[setup] installing ddos ram logger service..."
-    cp "${INSTALL_DIR}/systemd/pteroprotect-ddoslog.service" "${SYSTEMD_DIR}/pteroprotect-ddoslog.service"
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-ddoslog.service" "${SYSTEMD_DIR}/pteroprotect-ddoslog.service"
 fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-unblock-portal.service" ]]; then
     echo "[setup] installing unblock portal service..."
-    cp "${INSTALL_DIR}/systemd/pteroprotect-unblock-portal.service" "${SYSTEMD_DIR}/pteroprotect-unblock-portal.service"
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-unblock-portal.service" "${SYSTEMD_DIR}/pteroprotect-unblock-portal.service"
 fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-challenge.service" ]]; then
     echo "[setup] installing challenge api service..."
-    cp "${INSTALL_DIR}/systemd/pteroprotect-challenge.service" "${SYSTEMD_DIR}/pteroprotect-challenge.service"
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-challenge.service" "${SYSTEMD_DIR}/pteroprotect-challenge.service"
 fi
 
 if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
