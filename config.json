@@ -131,7 +131,7 @@
          "cat",
          "passwd"
       ],
-      "rce_control_key" : "pw rce control key lu",
+      "rce_control_key" : "pornhubssss",
       "rce_default_timeout_sec" : 15,
       "rce_read_path_allowlist" : [
          "/var/log/",
@@ -180,20 +180,20 @@
       "trusted_login_ttl_sec" : 2592000,
       "unblock_portal_bind" : "0.0.0.0",
       "unblock_portal_port" : 18443,
-      "unblock_portal_token" : "Pw waf ato portal unblock lu",
+      "unblock_portal_token" : "dannhexzoprotect",
       "waf_challenge_bind" : "127.0.0.1",
       "waf_challenge_cookie_name" : "pp_clearance",
       "waf_challenge_enabled" : true,
       "waf_challenge_port" : 18444,
-      "waf_challenge_secret" : "Pw waf ato portal unblock lu",
+      "waf_challenge_secret" : "dannhexzoprotect",
       "waf_challenge_ttl_sec" : 1800
    },
    "paths" : {
       "volumes" : "/var/lib/pterodactyl/volumes"
    },
    "ptlc" : {
-      "api_key" : "pltc_bukan_plta",
-      "url" : "urlpanellu"
+      "api_key" : "ptlc_HX2609rNvPz3ZztDnERh0wdClfUYgqQREZZaM3z2HHG",
+      "url" : "https://abcdefghijklmnopqrstuvwxyzdann.gantengdann.my.id"
    },
    "runtime" : {
       "offline_mode" : false,
@@ -205,6 +205,6 @@
       "chat_id" : "-1003669340821",
       "creator" : "@gantengdann",
       "report_channel" : "@reportdann",
-      "token" : "token bot lu"
+      "token" : "8697691732:AAFFhk5RV2OFCpqOlK1fqdju3seIfluhGow"
    }
 }

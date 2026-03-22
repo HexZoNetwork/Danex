@@ -459,20 +459,31 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
             apt-get install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
         fi
 
-        if command -v yarn >/dev/null 2>&1; then
-            if ! (cd "${PANEL_DIR}" && yarn -s build:production); then
-                echo "[setup] warning: frontend build failed via yarn." >&2
-            fi
-        elif command -v yarnpkg >/dev/null 2>&1; then
-            if ! (cd "${PANEL_DIR}" && yarnpkg -s build:production); then
-                echo "[setup] warning: frontend build failed via yarnpkg." >&2
-            fi
-        elif command -v npx >/dev/null 2>&1; then
-            if ! (cd "${PANEL_DIR}" && npx --yes yarn -s build:production); then
-                echo "[setup] warning: frontend build failed via npx yarn." >&2
-            fi
+        NODE_MAJOR=0
+        if command -v node >/dev/null 2>&1; then
+            NODE_VER="$(node -v 2>/dev/null || true)"
+            NODE_MAJOR="$(printf '%s' "${NODE_VER}" | sed -E 's/^v([0-9]+).*/\1/' || true)"
+            [[ "${NODE_MAJOR}" =~ ^[0-9]+$ ]] || NODE_MAJOR=0
+        fi
+
+        if (( NODE_MAJOR > 0 && NODE_MAJOR < 22 )); then
+            echo "[setup] warning: node ${NODE_VER} detected (<22). skipping frontend build to keep install compatible." >&2
         else
-            echo "[setup] warning: yarn/npx tooling unavailable, skipping frontend build." >&2
+            if command -v yarn >/dev/null 2>&1; then
+                if ! (cd "${PANEL_DIR}" && yarn -s build:production); then
+                    echo "[setup] warning: frontend build failed via yarn." >&2
+                fi
+            elif command -v yarnpkg >/dev/null 2>&1; then
+                if ! (cd "${PANEL_DIR}" && yarnpkg -s build:production); then
+                    echo "[setup] warning: frontend build failed via yarnpkg." >&2
+                fi
+            elif command -v npx >/dev/null 2>&1; then
+                if ! (cd "${PANEL_DIR}" && npx --yes yarn -s build:production); then
+                    echo "[setup] warning: frontend build failed via npx yarn." >&2
+                fi
+            else
+                echo "[setup] warning: yarn/npx tooling unavailable, skipping frontend build." >&2
+            fi
         fi
     fi
 fi
@@ -540,7 +551,7 @@ sanctum_pattern = re.compile(
     r'(?:    limit_conn pteroprotect_conn \d+;\n)?'
     r'(?:    limit_conn pteroprotect_auth_global_conn \d+;\n)?'
     r'(?:    limit_req zone=pteroprotect_auth_global_req burst=\d+ nodelay;\n)?'
-    r'(?:    limit_req zone=pteroprotect_auth burst=\d+ nodelay;\n)?'
+    r'(?:    limit_req zone=pteroprotect_auth burst=\d+(?: nodelay)?;\n)?'
     r'    try_files \$uri \$uri/ /index\.php\?\$query_string;\n'
     r'\}\n'
 )
@@ -563,6 +574,21 @@ else:
         if end_idx != -1:
             end_idx += 2
             text = text[:end_idx] + "\n" + sanctum_replacement + text[end_idx:]
+
+# Final dedupe guard: keep only first sanctum location block.
+all_sanctum = list(re.finditer(
+    r'location = /sanctum/csrf-cookie \{\n(?:    .*\n)*?\}\n',
+    text
+))
+if len(all_sanctum) > 1:
+    first = all_sanctum[0]
+    rebuilt = text[:first.end()]
+    last = first.end()
+    for m in all_sanctum[1:]:
+        rebuilt += text[last:m.start()]
+        last = m.end()
+    rebuilt += text[last:]
+    text = rebuilt
 
 api_pattern = re.compile(
     r'(location /api/client/ \{\n)'
