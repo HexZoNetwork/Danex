@@ -1273,11 +1273,5 @@ echo "[setup] config: ${INSTALL_DIR}/config.json"
 echo "[setup] config template: ${INSTALL_DIR}/config.example.json"
 echo "[setup] log: ${INSTALL_DIR}/dann_guard.log"
 echo "[setup] service: ${SYSTEMD_DIR}/pteroprotect.service"
-if [[ -f "${INSTALL_DIR}/config.json" ]]; then
-    UNBLOCK_PORT="$(read_network_setting unblock_portal_port 18443)"
-    UNBLOCK_TOKEN="$(read_network_setting unblock_portal_token '')"
-    echo "[setup] unblock portal: http://<server-ip>:${UNBLOCK_PORT}"
-    echo "[setup] unblock token: ${UNBLOCK_TOKEN}"
-fi
 echo "[setup] ddos ram log: /dev/shm/pteroprotect/ddos_host.log"
 echo "[setup] run with: DANN_GUARD_HOME=${INSTALL_DIR} ${INSTALL_DIR}/dann_guard"

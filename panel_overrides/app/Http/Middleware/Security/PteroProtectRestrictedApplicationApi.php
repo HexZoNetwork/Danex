@@ -4,10 +4,12 @@ namespace Pterodactyl\Http\Middleware\Security;
 
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Models\User;
 use Pterodactyl\Services\PteroProtect\AdminOwnershipService;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\HttpFoundation\Response;
 
 class PteroProtectRestrictedApplicationApi
 {
@@ -35,7 +37,7 @@ class PteroProtectRestrictedApplicationApi
             );
 
             if ($isReadOnlyInfraRequest) {
-                return $next($request);
+                return $this->sanitizeInfraResponse($path, $next($request));
             }
 
             throw new AccessDeniedHttpException('This API scope is disabled for delegated admin accounts.');
@@ -142,5 +144,84 @@ class PteroProtectRestrictedApplicationApi
         $identifier = trim((string) $token->identifier);
 
         return $identifier === '' ? null : $identifier;
+    }
+
+    private function sanitizeInfraResponse(string $path, mixed $response): mixed
+    {
+        if (!$response instanceof JsonResponse) {
+            return $response;
+        }
+
+        $payload = $response->getData(true);
+        if (!is_array($payload) || !array_key_exists('data', $payload)) {
+            return $response;
+        }
+
+        $resource = $this->infraResourceName($path);
+        if ($resource === null) {
+            return $response;
+        }
+
+        $payload['data'] = $this->mapInfraDataToIdOnly($payload['data'], $resource);
+
+        return new JsonResponse(
+            $payload,
+            $response->getStatusCode(),
+            $response->headers->all(),
+            $response->hasEncodingOption(JSON_PRETTY_PRINT)
+        );
+    }
+
+    private function infraResourceName(string $path): ?string
+    {
+        if (preg_match('#^api/application/nodes(?:/|$)#i', $path) === 1) {
+            return 'nodes';
+        }
+        if (preg_match('#^api/application/locations(?:/|$)#i', $path) === 1) {
+            return 'locations';
+        }
+        if (preg_match('#^api/application/nests(?:/|$)#i', $path) === 1) {
+            return preg_match('#/eggs(?:/|$)#i', $path) === 1 ? 'eggs' : 'nests';
+        }
+
+        return null;
+    }
+
+    private function mapInfraDataToIdOnly(mixed $data, string $resource): mixed
+    {
+        if (is_array($data) && array_is_list($data)) {
+            return array_values(array_filter(array_map(
+                fn (mixed $item): ?array => $this->toIdOnlyItem($item, $resource),
+                $data
+            )));
+        }
+
+        return $this->toIdOnlyItem($data, $resource) ?? $data;
+    }
+
+    private function toIdOnlyItem(mixed $item, string $resource): ?array
+    {
+        if (!is_array($item)) {
+            return null;
+        }
+
+        $id = null;
+        if (array_key_exists('attributes', $item) && is_array($item['attributes'])) {
+            $id = $item['attributes']['id'] ?? null;
+        }
+        if ($id === null && array_key_exists('id', $item)) {
+            $id = $item['id'];
+        }
+
+        if (!is_numeric($id)) {
+            return null;
+        }
+
+        return [
+            'object' => $resource,
+            'attributes' => [
+                'id' => (int) $id,
+            ],
+        ];
     }
 }
