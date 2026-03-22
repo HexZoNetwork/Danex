@@ -1,0 +1,22 @@
+# Build artifacts
+obj/
+release/
+backups/
+*.o
+
+# Binaries
+dann_guard
+challenge_guard
+installer/danex
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Archives and logs
+*.tar.gz
+*.log
+
+# Local-only secrets/config variants
+.env
+config.local.json
