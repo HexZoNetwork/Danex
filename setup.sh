@@ -458,11 +458,35 @@ fi
 
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
     perl -MJSON::PP -e '
-        my ($f)=@ARGV;
+        my ($f, $env_file)=@ARGV;
         open my $fh, "<", $f or die;
         local $/; my $raw=<$fh>;
         my $j = eval { decode_json($raw) } || {};
+        $j->{database} = {} if ref($j->{database}) ne "HASH";
         $j->{network} = {} if ref($j->{network}) ne "HASH";
+
+        if (defined $env_file && -f $env_file) {
+            my %env = ();
+            if (open my $efh, "<", $env_file) {
+                while (my $line = <$efh>) {
+                    chomp $line;
+                    $line =~ s/\r$//;
+                    next if $line =~ /^\s*#/;
+                    next if $line !~ /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/;
+                    my ($k, $v) = ($1, $2);
+                    if ($v =~ /^"(.*)"$/ || $v =~ /^'\''(.*)'\''$/) {
+                        $v = $1;
+                    }
+                    $env{$k} = $v;
+                }
+                close $efh;
+            }
+
+            $j->{database}{host} = $env{DB_HOST} if defined $env{DB_HOST} && $env{DB_HOST} ne "";
+            $j->{database}{name} = $env{DB_DATABASE} if defined $env{DB_DATABASE} && $env{DB_DATABASE} ne "";
+            $j->{database}{user} = $env{DB_USERNAME} if defined $env{DB_USERNAME} && $env{DB_USERNAME} ne "";
+            $j->{database}{password} = $env{DB_PASSWORD} if defined $env{DB_PASSWORD};
+        }
 
         my $ports = $j->{network}{public_tcp_ports};
         $ports = "80,443" if !defined($ports) || $ports eq "";
@@ -486,7 +510,7 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
 
         open my $out, ">", $f or die;
         print $out JSON::PP->new->ascii->pretty->canonical->encode($j);
-    ' "${INSTALL_DIR}/config.json"
+    ' "${INSTALL_DIR}/config.json" "${PANEL_DIR}/.env"
 fi
 
 INFRA_HOSTS_CSV="$(collect_infra_hosts)"
@@ -574,6 +598,9 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
         lint_php_tree "${INSTALL_DIR}/panel_overrides" "${PANEL_DIR}"
         if ! (cd "${PANEL_DIR}" && php artisan migrate --force); then
             echo "[setup] warning: panel migration failed, overrides applied but DB schema may be outdated." >&2
+        fi
+        if ! (cd "${PANEL_DIR}" && php artisan storage:link >/dev/null 2>&1); then
+            echo "[setup] warning: artisan storage:link failed (symlink may already exist or permissions are insufficient)." >&2
         fi
         (cd "${PANEL_DIR}" && php artisan optimize:clear >/dev/null 2>&1 || true)
     fi
