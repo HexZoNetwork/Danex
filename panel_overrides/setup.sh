@@ -947,6 +947,56 @@ PY
         echo "[setup] preparing wings reverse-proxy guard on :8080..."
         CHALLENGE_PORT="$(read_network_setting waf_challenge_port 18444)"
         [[ "${CHALLENGE_PORT}" =~ ^[0-9]+$ ]] || CHALLENGE_PORT="18444"
+
+        if command -v php >/dev/null 2>&1 && [[ -f "${PANEL_DIR}/artisan" ]]; then
+            echo "[setup] syncing wings daemon token from panel node record..."
+            _WINGS_TOKEN_TMP="$(mktemp)"
+            if (cd "${PANEL_DIR}" && php -r '
+require "vendor/autoload.php";
+$app = require "bootstrap/app.php";
+$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+$kernel->bootstrap();
+$n = Pterodactyl\Models\Node::query()->first();
+if (!$n) exit(1);
+echo trim((string) $n->daemon_token_id), PHP_EOL;
+echo trim((string) $n->getDecryptedKey()), PHP_EOL;
+') >"${_WINGS_TOKEN_TMP}" 2>/dev/null; then
+                WINGS_TOKEN_ID="$(sed -n '1p' "${_WINGS_TOKEN_TMP}" | tr -d '\r\n')"
+                WINGS_TOKEN_KEY="$(sed -n '2p' "${_WINGS_TOKEN_TMP}" | tr -d '\r\n')"
+                if [[ -n "${WINGS_TOKEN_ID}" && -n "${WINGS_TOKEN_KEY}" ]]; then
+                    python3 - /etc/pterodactyl/config.yml "${WINGS_TOKEN_ID}" "${WINGS_TOKEN_KEY}" <<'PY'
+import sys
+from pathlib import Path
+
+cfg = Path(sys.argv[1])
+tid = sys.argv[2].strip()
+tkey = sys.argv[3].strip()
+if not cfg.exists():
+    raise SystemExit(0)
+
+lines = cfg.read_text().splitlines()
+has_tid = False
+has_tkey = False
+for i, line in enumerate(lines):
+    if line.startswith("token_id:"):
+        lines[i] = f"token_id: {tid}"
+        has_tid = True
+    elif line.startswith("token:"):
+        lines[i] = f"token: {tkey}"
+        has_tkey = True
+
+if not has_tid:
+    lines.append(f"token_id: {tid}")
+if not has_tkey:
+    lines.append(f"token: {tkey}")
+
+cfg.write_text("\n".join(lines) + "\n")
+PY
+                fi
+            fi
+            rm -f "${_WINGS_TOKEN_TMP}" >/dev/null 2>&1 || true
+        fi
+
         WINGS_CERT_PATH="$(awk -F': ' '/^[[:space:]]{4}cert:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
         WINGS_KEY_PATH="$(awk -F': ' '/^[[:space:]]{4}key:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
         if [[ ! -f "${WINGS_CERT_PATH}" || ! -f "${WINGS_KEY_PATH}" ]]; then
