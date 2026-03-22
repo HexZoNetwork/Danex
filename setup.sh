@@ -1010,6 +1010,29 @@ PY
 
         WINGS_CERT_PATH="$(awk -F': ' '/^[[:space:]]{4}cert:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
         WINGS_KEY_PATH="$(awk -F': ' '/^[[:space:]]{4}key:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
+        WINGS_NODE_FQDN=""
+        if command -v php >/dev/null 2>&1 && [[ -f "${PANEL_DIR}/artisan" ]]; then
+            WINGS_NODE_FQDN="$(
+                cd "${PANEL_DIR}" && php -r '
+require "vendor/autoload.php";
+$app = require "bootstrap/app.php";
+$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+$kernel->bootstrap();
+$n = Pterodactyl\Models\Node::query()->first();
+if ($n) echo trim((string) $n->fqdn);
+' 2>/dev/null || true
+            )"
+            WINGS_NODE_FQDN="$(printf '%s' "${WINGS_NODE_FQDN}" | tr -d '\r\n' | tr -d "\"'[:space:]")"
+        fi
+
+        if [[ -n "${WINGS_NODE_FQDN}" ]]; then
+            _node_cert="/etc/letsencrypt/live/${WINGS_NODE_FQDN}/fullchain.pem"
+            _node_key="/etc/letsencrypt/live/${WINGS_NODE_FQDN}/privkey.pem"
+            if [[ -f "${_node_cert}" && -f "${_node_key}" ]]; then
+                WINGS_CERT_PATH="${_node_cert}"
+                WINGS_KEY_PATH="${_node_key}"
+            fi
+        fi
         if [[ ! -f "${WINGS_CERT_PATH}" || ! -f "${WINGS_KEY_PATH}" ]]; then
             for cand in /etc/letsencrypt/live/*/fullchain.pem; do
                 [[ -f "${cand}" ]] || continue
