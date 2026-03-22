@@ -3,7 +3,7 @@ obj/
 release/
 backups/
 *.o
-
+.gitignore
 # Binaries
 dann_guard
 challenge_guard

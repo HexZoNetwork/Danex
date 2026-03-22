@@ -467,7 +467,22 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
         fi
 
         if (( NODE_MAJOR > 0 && NODE_MAJOR < 22 )); then
-            echo "[setup] warning: node ${NODE_VER} detected (<22). skipping frontend build to keep install compatible." >&2
+            echo "[setup] node ${NODE_VER} detected (<22), attempting auto-upgrade to Node 22..."
+            if command -v curl >/dev/null 2>&1; then
+                (curl -fsSL https://deb.nodesource.com/setup_22.x | bash -) >/dev/null 2>&1 || true
+                apt-get install -y nodejs >/dev/null 2>&1 || true
+            fi
+            if command -v node >/dev/null 2>&1; then
+                NODE_VER="$(node -v 2>/dev/null || true)"
+                NODE_MAJOR="$(printf '%s' "${NODE_VER}" | sed -E 's/^v([0-9]+).*/\1/' || true)"
+                [[ "${NODE_MAJOR}" =~ ^[0-9]+$ ]] || NODE_MAJOR=0
+            fi
+        fi
+
+        if (( NODE_MAJOR > 0 && NODE_MAJOR < 22 )); then
+            echo "[setup] warning: node ${NODE_VER} still <22 after auto-upgrade attempt; skipping frontend build." >&2
+        elif (( NODE_MAJOR == 0 )); then
+            echo "[setup] warning: node runtime unavailable; skipping frontend build." >&2
         else
             if command -v yarn >/dev/null 2>&1; then
                 if ! (cd "${PANEL_DIR}" && yarn -s build:production); then
