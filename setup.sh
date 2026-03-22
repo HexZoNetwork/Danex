@@ -599,6 +599,15 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
         elif (( NODE_MAJOR == 0 )); then
             echo "[setup] warning: node runtime unavailable; skipping frontend build." >&2
         else
+            echo "[setup] installing panel frontend dependencies..."
+            if command -v yarn >/dev/null 2>&1; then
+                (cd "${PANEL_DIR}" && yarn -s install --frozen-lockfile) >/dev/null 2>&1 || (cd "${PANEL_DIR}" && yarn -s install) >/dev/null 2>&1 || true
+            elif command -v yarnpkg >/dev/null 2>&1; then
+                (cd "${PANEL_DIR}" && yarnpkg -s install --frozen-lockfile) >/dev/null 2>&1 || (cd "${PANEL_DIR}" && yarnpkg -s install) >/dev/null 2>&1 || true
+            elif command -v npx >/dev/null 2>&1; then
+                (cd "${PANEL_DIR}" && npx --yes yarn -s install --frozen-lockfile) >/dev/null 2>&1 || (cd "${PANEL_DIR}" && npx --yes yarn -s install) >/dev/null 2>&1 || true
+            fi
+
             if command -v yarn >/dev/null 2>&1; then
                 if ! (cd "${PANEL_DIR}" && yarn -s build:production); then
                     echo "[setup] warning: frontend build failed via yarn." >&2
