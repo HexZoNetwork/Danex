@@ -1073,6 +1073,7 @@ server {
 
     location / {
         if (\$request_method = OPTIONS) { return 418; }
+        if (\$http_user_agent ~* "^GuzzleHttp/") { return 418; }
         if (\$http_upgrade ~* "websocket") { return 418; }
         if (\$http_authorization ~* "^Bearer\\s+.+") { return 418; }
         if (\$request_uri ~* "(\\?|&)token=") { return 418; }
