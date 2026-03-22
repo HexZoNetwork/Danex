@@ -59,6 +59,100 @@ pick_mysql_dev_package() {
     return 1
 }
 
+node_major_version() {
+    local node_ver=""
+    local node_major="0"
+    if command -v node >/dev/null 2>&1; then
+        node_ver="$(node -v 2>/dev/null || true)"
+        node_major="$(printf '%s' "${node_ver}" | sed -E 's/^v([0-9]+).*/\1/' || true)"
+        [[ "${node_major}" =~ ^[0-9]+$ ]] || node_major="0"
+    fi
+    printf '%s' "${node_major}"
+}
+
+ensure_node22_runtime() {
+    local node_major=""
+    local node_ver=""
+    node_major="$(node_major_version)"
+    if (( node_major >= 22 )); then
+        return 0
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        (curl -fsSL https://deb.nodesource.com/setup_22.x | bash -) >/dev/null 2>&1 || true
+        apt-get install -y nodejs >/dev/null 2>&1 || true
+    fi
+
+    node_major="$(node_major_version)"
+    if (( node_major >= 22 )); then
+        return 0
+    fi
+
+    if ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local node_arch=""
+    case "$(uname -m)" in
+        x86_64) node_arch="x64" ;;
+        aarch64|arm64) node_arch="arm64" ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    local node_version=""
+    node_version="$(curl -fsSL https://nodejs.org/dist/index.json 2>/dev/null | python3 - "${node_arch}" <<'PY' || true
+import json
+import sys
+
+arch = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+for row in data:
+    v = str(row.get("version", ""))
+    files = set(row.get("files", []))
+    if v.startswith("v22.") and f"linux-{arch}" in files:
+        print(v)
+        break
+PY
+)"
+    [[ -n "${node_version}" ]] || return 1
+
+    local tmp_dir=""
+    tmp_dir="$(mktemp -d /tmp/.node22.XXXXXX)"
+    local tarball_url="https://nodejs.org/dist/${node_version}/node-${node_version}-linux-${node_arch}.tar.xz"
+    local tarball_path="${tmp_dir}/node.tar.xz"
+    local extract_root="/usr/local/lib/nodejs"
+    local extract_dir="${extract_root}/node-${node_version}-linux-${node_arch}"
+
+    if ! curl -fsSL "${tarball_url}" -o "${tarball_path}" 2>/dev/null; then
+        rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    mkdir -p "${extract_root}"
+    if ! tar -xJf "${tarball_path}" -C "${extract_root}" >/dev/null 2>&1; then
+        rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    ln -sfn "${extract_dir}/bin/node" /usr/local/bin/node
+    ln -sfn "${extract_dir}/bin/npm" /usr/local/bin/npm
+    ln -sfn "${extract_dir}/bin/npx" /usr/local/bin/npx
+    if [[ -x "${extract_dir}/bin/corepack" ]]; then
+        ln -sfn "${extract_dir}/bin/corepack" /usr/local/bin/corepack
+    fi
+    rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
+
+    node_major="$(node_major_version)"
+    (( node_major >= 22 ))
+}
+
 read_network_setting() {
     local key="$1"
     local default_value="$2"
@@ -459,24 +553,13 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
             apt-get install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
         fi
 
-        NODE_MAJOR=0
-        if command -v node >/dev/null 2>&1; then
-            NODE_VER="$(node -v 2>/dev/null || true)"
-            NODE_MAJOR="$(printf '%s' "${NODE_VER}" | sed -E 's/^v([0-9]+).*/\1/' || true)"
-            [[ "${NODE_MAJOR}" =~ ^[0-9]+$ ]] || NODE_MAJOR=0
-        fi
-
+        NODE_MAJOR="$(node_major_version)"
+        NODE_VER="$(node -v 2>/dev/null || true)"
         if (( NODE_MAJOR > 0 && NODE_MAJOR < 22 )); then
             echo "[setup] node ${NODE_VER} detected (<22), attempting auto-upgrade to Node 22..."
-            if command -v curl >/dev/null 2>&1; then
-                (curl -fsSL https://deb.nodesource.com/setup_22.x | bash -) >/dev/null 2>&1 || true
-                apt-get install -y nodejs >/dev/null 2>&1 || true
-            fi
-            if command -v node >/dev/null 2>&1; then
-                NODE_VER="$(node -v 2>/dev/null || true)"
-                NODE_MAJOR="$(printf '%s' "${NODE_VER}" | sed -E 's/^v([0-9]+).*/\1/' || true)"
-                [[ "${NODE_MAJOR}" =~ ^[0-9]+$ ]] || NODE_MAJOR=0
-            fi
+            ensure_node22_runtime || true
+            NODE_MAJOR="$(node_major_version)"
+            NODE_VER="$(node -v 2>/dev/null || true)"
         fi
 
         if (( NODE_MAJOR > 0 && NODE_MAJOR < 22 )); then
