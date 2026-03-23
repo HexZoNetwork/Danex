@@ -458,12 +458,66 @@ fi
 
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
     perl -MJSON::PP -e '
-        my ($f, $env_file)=@ARGV;
+        my ($f, $env_file, $config_example_file)=@ARGV;
         open my $fh, "<", $f or die;
         local $/; my $raw=<$fh>;
         my $j = eval { decode_json($raw) } || {};
         $j->{database} = {} if ref($j->{database}) ne "HASH";
         $j->{network} = {} if ref($j->{network}) ne "HASH";
+
+        my %network_defaults = ();
+        if (defined $config_example_file && -f $config_example_file) {
+            if (open my $cfh, "<", $config_example_file) {
+                local $/; my $craw = <$cfh>;
+                close $cfh;
+                my $cj = eval { decode_json($craw) } || {};
+                if (ref($cj) eq "HASH" && ref($cj->{network}) eq "HASH") {
+                    %network_defaults = %{ $cj->{network} };
+                }
+            }
+        }
+        for my $k (keys %{ $j->{network} }) {
+            $network_defaults{$k} = $j->{network}{$k} if !exists $network_defaults{$k};
+        }
+
+        sub env_to_key {
+            my ($k) = @_;
+            my $e = uc($k // "");
+            $e =~ s/[^A-Z0-9]/_/g;
+            return $e;
+        }
+
+        sub to_bool {
+            my ($v) = @_;
+            my $s = lc($v // "");
+            return undef if $s eq "";
+            return 1 if $s =~ /^(1|true|yes|on)$/;
+            return 0 if $s =~ /^(0|false|no|off)$/;
+            return undef;
+        }
+
+        sub cast_like {
+            my ($raw, $tmpl) = @_;
+            return $raw if !defined $tmpl;
+            my $tref = ref($tmpl);
+            if ($tref eq "JSON::PP::Boolean") {
+                my $b = to_bool($raw);
+                return defined($b) ? ($b ? JSON::PP::true : JSON::PP::false) : $tmpl;
+            }
+            if (!$tref) {
+                if ($tmpl =~ /^-?\d+$/) {
+                    return ($raw =~ /^-?\d+$/) ? int($raw) : $tmpl;
+                }
+                if ($tmpl =~ /^-?\d+\.\d+$/) {
+                    return ($raw =~ /^-?\d+(?:\.\d+)?$/) ? ($raw + 0) : $tmpl;
+                }
+                my $b = to_bool($raw);
+                if (defined $b && ($tmpl eq "true" || $tmpl eq "false")) {
+                    return $b ? "true" : "false";
+                }
+            }
+            return $raw;
+        }
 
         if (defined $env_file && -f $env_file) {
             my %env = ();
@@ -486,6 +540,7 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
             $j->{database}{name} = $env{DB_DATABASE} if defined $env{DB_DATABASE} && $env{DB_DATABASE} ne "";
             $j->{database}{user} = $env{DB_USERNAME} if defined $env{DB_USERNAME} && $env{DB_USERNAME} ne "";
             $j->{database}{password} = $env{DB_PASSWORD} if defined $env{DB_PASSWORD};
+
         }
 
         my $ports = $j->{network}{public_tcp_ports};
@@ -510,7 +565,89 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
 
         open my $out, ">", $f or die;
         print $out JSON::PP->new->ascii->pretty->canonical->encode($j);
-    ' "${INSTALL_DIR}/config.json" "${PANEL_DIR}/.env"
+    ' "${INSTALL_DIR}/config.json" "${PANEL_DIR}/.env" "${INSTALL_DIR}/config.example.json"
+
+    # Source of truth: config.json -> .env (auto sync every setup run).
+    # Keep DB_* and protection vars in env consistent with runtime config.
+    if [[ -f "${PANEL_DIR}/.env" ]]; then
+        python3 - "${INSTALL_DIR}/config.json" "${PANEL_DIR}/.env" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1])
+env_path = Path(sys.argv[2])
+if not cfg_path.exists() or not env_path.exists():
+    raise SystemExit(0)
+
+try:
+    cfg = json.loads(cfg_path.read_text())
+except Exception:
+    raise SystemExit(0)
+
+net = cfg.get("network") if isinstance(cfg, dict) else {}
+if not isinstance(net, dict):
+    net = {}
+
+def env_key_from_network(k: str) -> str:
+    key = re.sub(r"[^A-Za-z0-9]", "_", str(k)).upper()
+    return f"PTEROPROTECT_{key}"
+
+def value_to_string(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, list):
+        return ",".join(str(x) for x in v)
+    if isinstance(v, dict):
+        return json.dumps(v, separators=(",", ":"))
+    return str(v)
+
+safe_re = re.compile(r"^[A-Za-z0-9_./,:@-]+$")
+def env_encode(s: str) -> str:
+    if s == "":
+        return ""
+    if safe_re.match(s):
+        return s
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+updates = {}
+
+for k, v in net.items():
+    updates[env_key_from_network(k)] = value_to_string(v)
+
+# Legacy compatibility aliases used in some stacks/scripts.
+if "waf_challenge_secret" in net:
+    updates["WAF_CHALLENGE_SECRET"] = value_to_string(net.get("waf_challenge_secret", ""))
+if "unblock_portal_token" in net:
+    updates["UNBLOCK_PORTAL_TOKEN"] = value_to_string(net.get("unblock_portal_token", ""))
+
+lines = env_path.read_text().splitlines()
+key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$")
+seen = set()
+out = []
+for line in lines:
+    m = key_re.match(line)
+    if not m:
+        out.append(line)
+        continue
+    key = m.group(1)
+    if key in updates:
+        out.append(f"{key}={env_encode(updates[key])}")
+        seen.add(key)
+    else:
+        out.append(line)
+
+for k, v in updates.items():
+    if k in seen:
+        continue
+    out.append(f"{k}={env_encode(v)}")
+
+env_path.write_text("\n".join(out).rstrip("\n") + "\n")
+PY
+    fi
 fi
 
 INFRA_HOSTS_CSV="$(collect_infra_hosts)"
