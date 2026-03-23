@@ -1475,7 +1475,6 @@ static void handle_client(int fd, std::string remote_ip) {
             auto it = g_nonce_map.find(nonce);
             if (it != g_nonce_map.end()) {
                 rec = it->second;
-                g_nonce_map.erase(it);
                 found = true;
             }
         }
@@ -1556,6 +1555,11 @@ static void handle_client(int fd, std::string remote_ip) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"answer_wrong\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);
             return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_nonce_mu);
+            auto it = g_nonce_map.find(nonce);
+            if (it != g_nonce_map.end()) g_nonce_map.erase(it);
         }
 
         std::string sid = random_nonce();
