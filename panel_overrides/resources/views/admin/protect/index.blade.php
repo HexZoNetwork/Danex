@@ -137,7 +137,7 @@
                     </div>
                     <button type="submit" class="btn btn-primary">Save Allowed Wings Hosts</button>
                 </form>
-                <p class="text-muted" style="margin-top: 10px;">Disimpan ke <code>network.trusted_hosts</code> di config.json. Untuk apply penuh ke host rules, jalankan <code>setup.sh</code> ulang.</p>
+                <p class="text-muted" style="margin-top: 10px;">Disimpan ke <code>network.trusted_hosts</code> di config.json dan langsung auto-apply ke host rules. Jika auto-apply gagal, baru jalankan <code>setup.sh</code>.</p>
             </div>
         </div>
     </div>

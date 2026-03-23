@@ -434,7 +434,23 @@ class ProtectController extends Controller
         $data['network']['trusted_hosts'] = $hosts;
         File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
 
-        $this->alert->success('Allowed Wings hosts updated. Jalankan setup.sh ulang untuk apply full host rules.')->flash();
+        $applyFailures = [];
+        foreach ([['systemctl', 'restart', 'pteroprotect-hostguard'], ['systemctl', 'reload', 'nginx']] as $cmd) {
+            $result = $this->run($cmd, 12);
+            if (($result['exit'] ?? 1) !== 0) {
+                $applyFailures[] = implode(' ', $cmd) . ': ' . trim((string) ($result['output'] ?? 'failed'));
+            }
+        }
+
+        if ($applyFailures !== []) {
+            $this->alert->danger(
+                'Allowed Wings hosts updated, tapi auto-apply gagal. ' .
+                'Coba run setup.sh manual. Detail: ' . implode(' | ', $applyFailures)
+            )->flash();
+        } else {
+            $this->alert->success('Allowed Wings hosts updated and auto-applied to host rules.')->flash();
+        }
+
         return redirect()->route('admin.protect');
     }
 
