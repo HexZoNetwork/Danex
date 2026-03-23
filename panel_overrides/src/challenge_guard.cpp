@@ -647,30 +647,42 @@ static int transform_grid_node(int id, int rot, bool flip) {
 
 static std::vector<int> generate_pattern_nodes(std::mt19937& gen) {
     static const std::vector<std::vector<int>> templates = {
-        {0, 4, 8, 2, 4, 6},
-        {0, 3, 6, 4, 2, 5, 8},
-        {0, 1, 2, 4, 6, 7, 8},
-        {6, 3, 0, 4, 8, 5, 2},
-        {0, 3, 4, 5, 8}
+        {0, 1, 2, 5, 8},
+        {6, 7, 8, 5, 2},
+        {0, 3, 6, 7, 8},
+        {2, 1, 4, 7, 6},
+        {0, 4, 5, 2}
     };
     std::uniform_int_distribution<int> tdis(0, static_cast<int>(templates.size() - 1));
     std::uniform_int_distribution<int> rdis(0, 3);
     std::uniform_int_distribution<int> fdis(0, 1);
+    std::uniform_int_distribution<int> len_dis(4, 5);
     std::vector<int> out;
     const auto& base = templates[static_cast<std::size_t>(tdis(gen))];
     int rot = rdis(gen);
     bool flip = fdis(gen) == 1;
+
+    auto can_append = [&](int cand) -> bool {
+        if (!out.empty() && out.back() == cand) return false;
+        if (out.size() >= 2 && out[out.size() - 2] == cand) return false; // block A-B-A bounce.
+        return true;
+    };
+
     for (int n : base) {
         int v = transform_grid_node(n, rot, flip);
-        if (out.empty() || out.back() != v) out.push_back(v);
+        if (can_append(v)) out.push_back(v);
     }
-    std::uniform_int_distribution<int> extra_dis(2, 5);
+
+    const int target_len = std::min<int>(len_dis(gen), static_cast<int>(base.size()));
+    if (static_cast<int>(out.size()) > target_len) out.resize(static_cast<std::size_t>(target_len));
+
     std::uniform_int_distribution<int> node_dis(0, 8);
-    int extra = extra_dis(gen);
-    for (int i = 0; i < extra; ++i) {
+    for (int i = 0; static_cast<int>(out.size()) < target_len && i < 32; ++i) {
         int cand = node_dis(gen);
-        if (out.empty() || out.back() != cand) out.push_back(cand);
+        if (can_append(cand)) out.push_back(cand);
     }
+
+    if (out.size() < 4) out = {0, 1, 2, 5};
     return out;
 }
 
