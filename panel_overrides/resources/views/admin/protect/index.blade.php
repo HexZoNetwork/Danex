@@ -44,6 +44,7 @@
             <div class="box-body">
                 <form method="POST" action="{{ route('admin.protect.mode') }}">
                     @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
                         <label>Mode</label>
                         <select name="mode" class="form-control">
@@ -70,6 +71,7 @@
             <div class="box-body">
                 <form method="POST" action="{{ route('admin.protect.config') }}">
                     @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
                         <label>Protection State</label>
                         <select name="enabled" class="form-control">
@@ -95,6 +97,7 @@
                 <p class="text-muted">Raw shell tidak diaktifkan. Command endpoint tetap butuh RCE key + id=1 + protect verify.</p>
                 <form method="POST" action="{{ route('admin.protect.rce_key') }}" class="form-inline">
                     @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
                         <label>New RCE Key</label>
                         <input type="password" name="new_key" class="form-control" placeholder="min 8 chars" required />
@@ -115,6 +118,26 @@
                 <p class="text-muted">RCE status: <strong>{{ $rceUnlocked ? 'unlocked' : 'locked' }}</strong></p>
                 <p class="text-muted">Allowlist command aktif: <code>{{ implode(', ', $rceAllowedCommands ?? []) }}</code></p>
                 <a href="{{ route('admin.protect.rce') }}" class="btn btn-warning">Open RCE Console</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <div class="box box-primary">
+            <div class="box-header with-border"><h3 class="box-title">Allowed Wings Hosts</h3></div>
+            <div class="box-body">
+                <form method="POST" action="{{ route('admin.protect.allowed_wings') }}">
+                    @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
+                    <div class="form-group">
+                        <label>Host/FQDN/IP (satu per baris atau pisah koma)</label>
+                        <textarea class="form-control" name="allowed_wings_hosts" rows="6" placeholder="node-1.example.com&#10;node-2.example.com">{{ old('allowed_wings_hosts', $allowedWingsHostsText ?? '') }}</textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Save Allowed Wings Hosts</button>
+                </form>
+                <p class="text-muted" style="margin-top: 10px;">Disimpan ke <code>network.trusted_hosts</code> di config.json. Untuk apply penuh ke host rules, jalankan <code>setup.sh</code> ulang.</p>
             </div>
         </div>
     </div>
@@ -144,6 +167,7 @@
 
                 <form method="POST" action="{{ route('admin.protect.service') }}" class="form-inline" style="margin-top:10px;">
                     @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
                         <label>Service</label>
                         <select class="form-control" name="service">
@@ -173,6 +197,7 @@
             <div class="box-body">
                 <form method="POST" action="{{ route('admin.protect.reboot') }}">
                     @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
                         <label>Type REBOOT to confirm</label>
                         <input type="text" class="form-control" name="confirm" placeholder="REBOOT" />

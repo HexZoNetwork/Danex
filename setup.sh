@@ -422,6 +422,10 @@ ensure_local_loopback_mappings() {
 }
 
 export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export APT_LISTCHANGES_FRONTEND=none
+
+echo "[setup] non-interactive mode enabled (DEBIAN_FRONTEND=${DEBIAN_FRONTEND})..."
 
 echo "[setup] refreshing apt cache..."
 apt-get update
@@ -746,7 +750,7 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
         echo "[setup] building panel frontend assets..."
         if ! command -v npx >/dev/null 2>&1 && ! command -v yarn >/dev/null 2>&1 && ! command -v yarnpkg >/dev/null 2>&1; then
             echo "[setup] installing node build tooling for panel assets..."
-            apt-get install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
+            apt-get install -y --no-install-recommends nodejs npm || true
         fi
 
         NODE_MAJOR="$(node_major_version)"
@@ -765,11 +769,11 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
         else
             echo "[setup] installing panel frontend dependencies..."
             if command -v yarn >/dev/null 2>&1; then
-                (cd "${PANEL_DIR}" && yarn -s install --frozen-lockfile) >/dev/null 2>&1 || (cd "${PANEL_DIR}" && yarn -s install) >/dev/null 2>&1 || true
+                (cd "${PANEL_DIR}" && yarn -s install --frozen-lockfile) || (cd "${PANEL_DIR}" && yarn -s install) || true
             elif command -v yarnpkg >/dev/null 2>&1; then
-                (cd "${PANEL_DIR}" && yarnpkg -s install --frozen-lockfile) >/dev/null 2>&1 || (cd "${PANEL_DIR}" && yarnpkg -s install) >/dev/null 2>&1 || true
+                (cd "${PANEL_DIR}" && yarnpkg -s install --frozen-lockfile) || (cd "${PANEL_DIR}" && yarnpkg -s install) || true
             elif command -v npx >/dev/null 2>&1; then
-                (cd "${PANEL_DIR}" && npx --yes yarn -s install --frozen-lockfile) >/dev/null 2>&1 || (cd "${PANEL_DIR}" && npx --yes yarn -s install) >/dev/null 2>&1 || true
+                (cd "${PANEL_DIR}" && npx --yes yarn -s install --frozen-lockfile) || (cd "${PANEL_DIR}" && npx --yes yarn -s install) || true
             fi
 
             if command -v yarn >/dev/null 2>&1; then
@@ -799,17 +803,32 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     HTTP_AUTH_REQ_RATE_PER_MIN="$(read_network_setting http_auth_req_rate_per_min 20)"
     HTTP_AUTH_REQ_BURST="$(read_network_setting http_auth_req_burst 20)"
     AUTH_CONN_LIMIT=20
-    WEBSOCKET_CONN_LIMIT=30
+    WEBSOCKET_CONN_LIMIT="$(read_network_setting websocket_conn_limit "")"
+    WEBSOCKET_GLOBAL_CONN_LIMIT="$(read_network_setting websocket_global_conn_limit "")"
     if [[ "${HTTP_CONN_LIMIT}" =~ ^[0-9]+$ ]]; then
         if (( HTTP_CONN_LIMIT < AUTH_CONN_LIMIT )); then
             AUTH_CONN_LIMIT="${HTTP_CONN_LIMIT}"
         fi
-        WEBSOCKET_CONN_LIMIT=$(( HTTP_CONN_LIMIT / 2 ))
-        if (( WEBSOCKET_CONN_LIMIT < 16 )); then
-            WEBSOCKET_CONN_LIMIT=16
-        elif (( WEBSOCKET_CONN_LIMIT > 60 )); then
-            WEBSOCKET_CONN_LIMIT=60
+    fi
+    if [[ ! "${WEBSOCKET_CONN_LIMIT}" =~ ^[0-9]+$ ]]; then
+        if [[ "${HTTP_CONN_LIMIT}" =~ ^[0-9]+$ ]]; then
+            WEBSOCKET_CONN_LIMIT="${HTTP_CONN_LIMIT}"
+        else
+            WEBSOCKET_CONN_LIMIT=100
         fi
+    fi
+    if (( WEBSOCKET_CONN_LIMIT < 80 )); then
+        WEBSOCKET_CONN_LIMIT=80
+    elif (( WEBSOCKET_CONN_LIMIT > 400 )); then
+        WEBSOCKET_CONN_LIMIT=400
+    fi
+    if [[ ! "${WEBSOCKET_GLOBAL_CONN_LIMIT}" =~ ^[0-9]+$ ]]; then
+        WEBSOCKET_GLOBAL_CONN_LIMIT=$(( WEBSOCKET_CONN_LIMIT * 20 ))
+    fi
+    if (( WEBSOCKET_GLOBAL_CONN_LIMIT < 400 )); then
+        WEBSOCKET_GLOBAL_CONN_LIMIT=400
+    elif (( WEBSOCKET_GLOBAL_CONN_LIMIT > 5000 )); then
+        WEBSOCKET_GLOBAL_CONN_LIMIT=5000
     fi
     mkdir -p "${NGINX_DIR}/conf.d" "${NGINX_DIR}/snippets"
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_http_zones.conf" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
@@ -971,7 +990,7 @@ PY
     fi
 
     if [[ -f "${NGINX_DIR}/sites-available/pterodactyl.conf" ]] && ! grep -q "^    location ~ \\^/api/client/servers/.+/websocket\\$" "${NGINX_DIR}/sites-available/pterodactyl.conf"; then
-        python3 - "${NGINX_DIR}/sites-available/pterodactyl.conf" "${WEBSOCKET_CONN_LIMIT}" <<'PY'
+        python3 - "${NGINX_DIR}/sites-available/pterodactyl.conf" "${WEBSOCKET_CONN_LIMIT}" "${WEBSOCKET_GLOBAL_CONN_LIMIT}" <<'PY'
 import pathlib
 import sys
 
@@ -982,7 +1001,7 @@ insert = (
     "    charset utf-8;\n\n"
     "    location ~ ^/api/client/servers/.+/websocket$ {\n"
     f"        limit_conn pteroprotect_conn {sys.argv[2]};\n"
-    "        limit_conn pteroprotect_ws_global_conn 120;\n"
+    f"        limit_conn pteroprotect_ws_global_conn {sys.argv[3]};\n"
     "        try_files $uri $uri/ /index.php?$query_string;\n"
     "    }\n"
 )
@@ -994,13 +1013,14 @@ PY
     fi
 
     if [[ -f "${NGINX_DIR}/sites-available/pterodactyl.conf" ]]; then
-        python3 - "${NGINX_DIR}/sites-available/pterodactyl.conf" "${WEBSOCKET_CONN_LIMIT}" <<'PY'
+        python3 - "${NGINX_DIR}/sites-available/pterodactyl.conf" "${WEBSOCKET_CONN_LIMIT}" "${WEBSOCKET_GLOBAL_CONN_LIMIT}" <<'PY'
 import pathlib
 import re
 import sys
 
 path = pathlib.Path(sys.argv[1])
 conn_limit = sys.argv[2]
+global_conn_limit = sys.argv[3]
 text = path.read_text()
 pattern = re.compile(
     r'    location ~ \^/api/client/servers/\.\+/websocket\$ \{\n'
@@ -1012,7 +1032,7 @@ pattern = re.compile(
 replacement = (
     "    location ~ ^/api/client/servers/.+/websocket$ {\n"
     f"        limit_conn pteroprotect_conn {conn_limit};\n"
-    "        limit_conn pteroprotect_ws_global_conn 120;\n"
+    f"        limit_conn pteroprotect_ws_global_conn {global_conn_limit};\n"
     "        try_files $uri $uri/ /index.php?$query_string;\n"
     "    }\n"
 )
@@ -1080,26 +1100,63 @@ path.write_text(text)
 PY
     fi
 
+    WINGS_GUARD_PREPARED=0
+    WINGS_CONFIG_BACKUP=""
+    WINGS_GUARD_CONF_BACKUP=""
+    WINGS_GUARD_LINK_PRESENT=0
     if [[ -f /etc/pterodactyl/config.yml ]]; then
         echo "[setup] preparing wings reverse-proxy guard on :8080..."
         CHALLENGE_PORT="$(read_network_setting waf_challenge_port 18444)"
         [[ "${CHALLENGE_PORT}" =~ ^[0-9]+$ ]] || CHALLENGE_PORT="18444"
 
+        WINGS_NODE_FQDN=""
         if command -v php >/dev/null 2>&1 && [[ -f "${PANEL_DIR}/artisan" ]]; then
-            echo "[setup] syncing wings daemon token from panel node record..."
+            echo "[setup] syncing wings daemon token from matching panel node..."
             _WINGS_TOKEN_TMP="$(mktemp)"
             if (cd "${PANEL_DIR}" && php -r '
 require "vendor/autoload.php";
 $app = require "bootstrap/app.php";
 $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
 $kernel->bootstrap();
-$n = Pterodactyl\Models\Node::query()->first();
+$remoteHost = "";
+if (is_file("/etc/pterodactyl/config.yml")) {
+    $lines = @file("/etc/pterodactyl/config.yml");
+    if (is_array($lines)) {
+        foreach ($lines as $line) {
+            if (preg_match("/^\s*remote:\s*(.+)\s*$/", $line, $m)) {
+                $remoteRaw = trim($m[1], " \"'\''\t\r\n");
+                $parts = @parse_url($remoteRaw);
+                if (is_array($parts) && !empty($parts["host"])) {
+                    $remoteHost = strtolower((string) $parts["host"]);
+                }
+                break;
+            }
+        }
+    }
+}
+$nodes = Pterodactyl\Models\Node::query()->get();
+if (!$nodes || $nodes->isEmpty()) exit(1);
+$n = null;
+if ($remoteHost !== "") {
+    foreach ($nodes as $candidate) {
+        $fqdn = strtolower(trim((string) $candidate->fqdn));
+        if ($fqdn !== "" && $fqdn === $remoteHost) {
+            $n = $candidate;
+            break;
+        }
+    }
+}
+if (!$n) {
+    $n = $nodes->first();
+}
 if (!$n) exit(1);
 echo trim((string) $n->daemon_token_id), PHP_EOL;
 echo trim((string) $n->getDecryptedKey()), PHP_EOL;
+echo trim((string) $n->fqdn), PHP_EOL;
 ') >"${_WINGS_TOKEN_TMP}" 2>/dev/null; then
                 WINGS_TOKEN_ID="$(sed -n '1p' "${_WINGS_TOKEN_TMP}" | tr -d '\r\n')"
                 WINGS_TOKEN_KEY_RAW="$(sed -n '2p' "${_WINGS_TOKEN_TMP}" | tr -d '\r\n')"
+                WINGS_NODE_FQDN="$(sed -n '3p' "${_WINGS_TOKEN_TMP}" | tr -d '\r\n' | tr -d "\"'[:space:]")"
                 WINGS_TOKEN_KEY="${WINGS_TOKEN_KEY_RAW}"
                 # Some panel builds return daemon key as "token_id.token".
                 # Normalize to separate token_id + token so Wings auth is valid.
@@ -1147,21 +1204,6 @@ PY
 
         WINGS_CERT_PATH="$(awk -F': ' '/^[[:space:]]{4}cert:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
         WINGS_KEY_PATH="$(awk -F': ' '/^[[:space:]]{4}key:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
-        WINGS_NODE_FQDN=""
-        if command -v php >/dev/null 2>&1 && [[ -f "${PANEL_DIR}/artisan" ]]; then
-            WINGS_NODE_FQDN="$(
-                cd "${PANEL_DIR}" && php -r '
-require "vendor/autoload.php";
-$app = require "bootstrap/app.php";
-$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
-$kernel->bootstrap();
-$n = Pterodactyl\Models\Node::query()->first();
-if ($n) echo trim((string) $n->fqdn);
-' 2>/dev/null || true
-            )"
-            WINGS_NODE_FQDN="$(printf '%s' "${WINGS_NODE_FQDN}" | tr -d '\r\n' | tr -d "\"'[:space:]")"
-        fi
-
         if [[ -n "${WINGS_NODE_FQDN}" ]]; then
             _node_cert="/etc/letsencrypt/live/${WINGS_NODE_FQDN}/fullchain.pem"
             _node_key="/etc/letsencrypt/live/${WINGS_NODE_FQDN}/privkey.pem"
@@ -1182,7 +1224,16 @@ if ($n) echo trim((string) $n->fqdn);
         fi
 
         if [[ -n "${WINGS_CERT_PATH}" && -n "${WINGS_KEY_PATH}" && -f "${WINGS_CERT_PATH}" && -f "${WINGS_KEY_PATH}" ]]; then
-            echo "[setup] enabling nginx wings-guard with TLS (${WINGS_CERT_PATH})..."
+            echo "[setup] staging nginx wings-guard with TLS (${WINGS_CERT_PATH})..."
+            WINGS_CONFIG_BACKUP="$(mktemp)"
+            cp /etc/pterodactyl/config.yml "${WINGS_CONFIG_BACKUP}"
+            if [[ -f "${NGINX_DIR}/sites-available/wings-guard.conf" ]]; then
+                WINGS_GUARD_CONF_BACKUP="$(mktemp)"
+                cp "${NGINX_DIR}/sites-available/wings-guard.conf" "${WINGS_GUARD_CONF_BACKUP}"
+            fi
+            if [[ -L "${NGINX_DIR}/sites-enabled/wings-guard.conf" || -e "${NGINX_DIR}/sites-enabled/wings-guard.conf" ]]; then
+                WINGS_GUARD_LINK_PRESENT=1
+            fi
 
             python3 - /etc/pterodactyl/config.yml <<'PY'
 import re
@@ -1317,7 +1368,7 @@ server {
 }
 EOF
             ln -sfn "${NGINX_DIR}/sites-available/wings-guard.conf" "${NGINX_DIR}/sites-enabled/wings-guard.conf"
-            systemctl restart wings >/dev/null 2>&1 || true
+            WINGS_GUARD_PREPARED=1
         else
             echo "[setup] warning: TLS cert/key for wings-guard not found, keep existing Wings binding (no forced localhost switch)." >&2
         fi
@@ -1325,11 +1376,82 @@ EOF
 
     if command -v nginx >/dev/null 2>&1; then
         if nginx -t; then
-            systemctl reload nginx >/dev/null 2>&1 || true
+            if [[ "${WINGS_GUARD_PREPARED}" == "1" ]]; then
+                if ! command -v systemctl >/dev/null 2>&1; then
+                    echo "[setup] error: systemctl is required to switch Wings to localhost mode safely." >&2
+                    exit 1
+                fi
+                if ! systemctl restart wings; then
+                    echo "[setup] error: wings restart failed after staging guard, rolling back config..." >&2
+                    [[ -n "${WINGS_CONFIG_BACKUP}" && -f "${WINGS_CONFIG_BACKUP}" ]] && cp "${WINGS_CONFIG_BACKUP}" /etc/pterodactyl/config.yml
+                    if [[ -n "${WINGS_GUARD_CONF_BACKUP}" && -f "${WINGS_GUARD_CONF_BACKUP}" ]]; then
+                        cp "${WINGS_GUARD_CONF_BACKUP}" "${NGINX_DIR}/sites-available/wings-guard.conf"
+                    else
+                        rm -f "${NGINX_DIR}/sites-available/wings-guard.conf"
+                    fi
+                    if [[ "${WINGS_GUARD_LINK_PRESENT}" == "1" ]]; then
+                        ln -sfn "${NGINX_DIR}/sites-available/wings-guard.conf" "${NGINX_DIR}/sites-enabled/wings-guard.conf"
+                    else
+                        rm -f "${NGINX_DIR}/sites-enabled/wings-guard.conf"
+                    fi
+                    systemctl restart wings >/dev/null 2>&1 || true
+                    exit 1
+                fi
+            fi
+            if ! systemctl reload nginx; then
+                if [[ "${WINGS_GUARD_PREPARED}" == "1" ]]; then
+                    echo "[setup] error: nginx reload failed after Wings switch; rolling back..." >&2
+                    [[ -n "${WINGS_CONFIG_BACKUP}" && -f "${WINGS_CONFIG_BACKUP}" ]] && cp "${WINGS_CONFIG_BACKUP}" /etc/pterodactyl/config.yml
+                    if [[ -n "${WINGS_GUARD_CONF_BACKUP}" && -f "${WINGS_GUARD_CONF_BACKUP}" ]]; then
+                        cp "${WINGS_GUARD_CONF_BACKUP}" "${NGINX_DIR}/sites-available/wings-guard.conf"
+                    else
+                        rm -f "${NGINX_DIR}/sites-available/wings-guard.conf"
+                    fi
+                    if [[ "${WINGS_GUARD_LINK_PRESENT}" == "1" ]]; then
+                        ln -sfn "${NGINX_DIR}/sites-available/wings-guard.conf" "${NGINX_DIR}/sites-enabled/wings-guard.conf"
+                    else
+                        rm -f "${NGINX_DIR}/sites-enabled/wings-guard.conf"
+                    fi
+                    nginx -t >/dev/null 2>&1 || true
+                    systemctl reload nginx >/dev/null 2>&1 || true
+                    systemctl restart wings >/dev/null 2>&1 || true
+                fi
+                exit 1
+            fi
         else
-            echo "[setup] warning: nginx config test failed; skipping reload so other services can still be enabled" >&2
+            if [[ "${WINGS_GUARD_PREPARED}" == "1" ]]; then
+                echo "[setup] error: nginx config test failed; rolling back staged wings-guard changes..." >&2
+                [[ -n "${WINGS_CONFIG_BACKUP}" && -f "${WINGS_CONFIG_BACKUP}" ]] && cp "${WINGS_CONFIG_BACKUP}" /etc/pterodactyl/config.yml
+                if [[ -n "${WINGS_GUARD_CONF_BACKUP}" && -f "${WINGS_GUARD_CONF_BACKUP}" ]]; then
+                    cp "${WINGS_GUARD_CONF_BACKUP}" "${NGINX_DIR}/sites-available/wings-guard.conf"
+                else
+                    rm -f "${NGINX_DIR}/sites-available/wings-guard.conf"
+                fi
+                if [[ "${WINGS_GUARD_LINK_PRESENT}" == "1" ]]; then
+                    ln -sfn "${NGINX_DIR}/sites-available/wings-guard.conf" "${NGINX_DIR}/sites-enabled/wings-guard.conf"
+                else
+                    rm -f "${NGINX_DIR}/sites-enabled/wings-guard.conf"
+                fi
+            fi
+            echo "[setup] error: nginx config test failed; installer stopped to prevent broken deploy." >&2
+            exit 1
         fi
+    elif [[ "${WINGS_GUARD_PREPARED}" == "1" ]]; then
+        echo "[setup] error: nginx binary not found while wings-guard is staged; rolling back..." >&2
+        [[ -n "${WINGS_CONFIG_BACKUP}" && -f "${WINGS_CONFIG_BACKUP}" ]] && cp "${WINGS_CONFIG_BACKUP}" /etc/pterodactyl/config.yml
+        if [[ -n "${WINGS_GUARD_CONF_BACKUP}" && -f "${WINGS_GUARD_CONF_BACKUP}" ]]; then
+            cp "${WINGS_GUARD_CONF_BACKUP}" "${NGINX_DIR}/sites-available/wings-guard.conf"
+        else
+            rm -f "${NGINX_DIR}/sites-available/wings-guard.conf"
+        fi
+        if [[ "${WINGS_GUARD_LINK_PRESENT}" == "1" ]]; then
+            ln -sfn "${NGINX_DIR}/sites-available/wings-guard.conf" "${NGINX_DIR}/sites-enabled/wings-guard.conf"
+        else
+            rm -f "${NGINX_DIR}/sites-enabled/wings-guard.conf"
+        fi
+        exit 1
     fi
+    rm -f "${WINGS_CONFIG_BACKUP}" "${WINGS_GUARD_CONF_BACKUP}" >/dev/null 2>&1 || true
 fi
 
 if [[ -d "${INSTALL_DIR}/host_overrides/sysctl" ]]; then
@@ -1459,8 +1581,17 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
     if [[ -f "${SYSTEMD_DIR}/dann_guard.service" ]]; then
         systemctl disable --now dann_guard >/dev/null 2>&1 || true
     fi
-    systemctl enable pteroprotect >/dev/null 2>&1 || true
-    systemctl restart pteroprotect >/dev/null 2>&1 || systemctl start pteroprotect >/dev/null 2>&1 || true
+    systemctl enable pteroprotect
+    if ! systemctl restart pteroprotect; then
+        if ! systemctl start pteroprotect; then
+            echo "[setup] error: failed to start pteroprotect service." >&2
+            exit 1
+        fi
+    fi
+    if ! systemctl is-active --quiet pteroprotect; then
+        echo "[setup] error: pteroprotect service is not active after setup." >&2
+        exit 1
+    fi
     if [[ -f "${SYSTEMD_DIR}/pteroprotect-hostguard.service" ]]; then
         if [[ "${HOST_FIREWALL_ENABLED}" == "1" ]]; then
             systemctl enable pteroprotect-hostguard >/dev/null 2>&1 || true

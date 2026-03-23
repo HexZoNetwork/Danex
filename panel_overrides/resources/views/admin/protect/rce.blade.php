@@ -37,11 +37,13 @@
                     <p class="text-muted">RCE session aktif sampai unix time: <code>{{ $rceUnlockedUntil }}</code></p>
                     <form method="POST" action="{{ route('admin.protect.rce.lock') }}">
                         @csrf
+                        <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                         <button type="submit" class="btn btn-danger">Lock RCE Session</button>
                     </form>
                 @else
                     <form method="POST" action="{{ route('admin.protect.rce.unlock') }}" class="form-inline">
                         @csrf
+                        <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                         <div class="form-group">
                             <label>RCE Key</label>
                             <input type="password" name="rce_key" class="form-control" placeholder="Masukkan RCE key" required />
@@ -108,6 +110,7 @@
                 @endif
                 <form method="POST" action="{{ route('admin.protect.command') }}">
                     @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="pp-console">
                         <div class="pp-console-line">
                             <span class="pp-console-prompt">root$</span>

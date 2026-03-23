@@ -58,6 +58,8 @@ class ProtectController extends Controller
             'modeStatus' => trim($modeStatus['output']),
             'serviceStates' => $serviceStates,
             'configPath' => (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH),
+            'allowedWingsHostsText' => implode("\n", $this->trustedHostsAllowlist()),
+            'postProtectToken' => $this->expectedToken(),
             'verifiedUntil' => (int) $request->session()->get(self::VERIFY_SESSION_KEY, 0),
             'rceKeyConfigured' => $this->rceKey() !== '',
             'rceKeyFingerprint' => $this->rceKeyFingerprint(),
@@ -79,6 +81,7 @@ class ProtectController extends Controller
             'rceKeyFingerprint' => $this->rceKeyFingerprint(),
             'rceUnlocked' => $this->isRceUnlocked($request),
             'rceUnlockedUntil' => (int) $request->session()->get(self::RCE_SESSION_KEY, 0),
+            'postProtectToken' => $this->expectedToken(),
             'rceAllowedCommands' => $this->rceCommandAllowlist(),
             'consoleLastCommand' => (string) $request->session()->get('pteroprotect_console_last_command', ''),
             'consoleLastOutput' => (string) $request->session()->get('pteroprotect_console_last_output', ''),
@@ -100,6 +103,7 @@ class ProtectController extends Controller
             'quarantineGroups' => $groups,
             'quarantineVolumesPath' => $quarantineInfo['volumesPath'],
             'quarantineDirName' => $quarantineInfo['dirName'],
+            'postProtectToken' => $this->expectedToken(),
         ]);
     }
 
@@ -163,6 +167,7 @@ class ProtectController extends Controller
             'fileContent' => $content,
             'fileSize' => $size,
             'serverName' => $serverName,
+            'postProtectToken' => $this->expectedToken(),
         ]);
     }
 
@@ -403,6 +408,36 @@ class ProtectController extends Controller
         return redirect()->route('admin.protect');
     }
 
+    public function updateAllowedWings(Request $request): RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $configPath = (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
+        if (!File::exists($configPath) || !File::isWritable($configPath) || !File::isReadable($configPath)) {
+            $this->alert->danger('Cannot write config.json from panel user. Grant write permission or use root CLI.')->flash();
+            return redirect()->route('admin.protect');
+        }
+
+        $raw = File::get($configPath);
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            $this->alert->danger('config.json is invalid.')->flash();
+            return redirect()->route('admin.protect');
+        }
+
+        $input = (string) $request->input('allowed_wings_hosts', '');
+        $hosts = $this->parseAllowedWingsHosts($input);
+        $data['network'] = is_array($data['network'] ?? null) ? $data['network'] : [];
+        $data['network']['trusted_hosts'] = $hosts;
+        File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+
+        $this->alert->success('Allowed Wings hosts updated. Jalankan setup.sh ulang untuk apply full host rules.')->flash();
+        return redirect()->route('admin.protect');
+    }
+
     public function reboot(Request $request): RedirectResponse
     {
         $guard = $this->requireVerified($request);
@@ -517,6 +552,17 @@ class ProtectController extends Controller
         if (!$this->isVerified($request)) {
             $this->alert->danger('Protect access expired. Verify token again.')->flash();
             return redirect()->route('admin.protect');
+        }
+        if ($request->isMethod('post')) {
+            $expected = $this->expectedToken();
+            $provided = $this->normalizeSecret((string) (
+                $request->input('protect_token', '')
+                ?: $request->header('X-PteroProtect-Token', '')
+            ));
+            if ($expected === '' || $provided === '' || !hash_equals($expected, $provided)) {
+                $this->alert->danger('Protect token wajib dan harus valid untuk semua POST action.')->flash();
+                return redirect()->route('admin.protect');
+            }
         }
 
         return null;
@@ -1047,6 +1093,55 @@ class ProtectController extends Controller
         }
 
         return [];
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function trustedHostsAllowlist(): array
+    {
+        $raw = $this->networkConfig()['trusted_hosts'] ?? [];
+        if (is_string($raw)) {
+            $raw = preg_split('/[\s,]+/', $raw) ?: [];
+        }
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $hosts = [];
+        foreach ($raw as $item) {
+            $host = strtolower(trim((string) $item));
+            if ($host === '') {
+                continue;
+            }
+            if (preg_match('/^[a-z0-9._:-]+$/', $host) !== 1) {
+                continue;
+            }
+            $hosts[] = $host;
+        }
+
+        return array_values(array_unique($hosts));
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function parseAllowedWingsHosts(string $input): array
+    {
+        $parts = preg_split('/[\s,]+/', trim($input)) ?: [];
+        $hosts = [];
+        foreach ($parts as $part) {
+            $host = strtolower(trim((string) $part));
+            if ($host === '') {
+                continue;
+            }
+            if (preg_match('/^[a-z0-9._:-]+$/', $host) !== 1) {
+                continue;
+            }
+            $hosts[] = $host;
+        }
+
+        return array_values(array_unique($hosts));
     }
 
     /**

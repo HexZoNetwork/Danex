@@ -231,6 +231,7 @@
                                                             <button type="button" class="btn btn-xs btn-warning js-rename-btn" data-path="{{ $file['encoded_path'] }}" data-name="{{ $file['name'] }}">Rename</button>
                                                             <form method="POST" action="{{ route('admin.protect.quarantine.delete') }}" style="display:inline-block;" onsubmit="return confirm('Remove file ini?');">
                                                                 @csrf
+                                                                <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                                                                 <input type="hidden" name="path" value="{{ $file['encoded_path'] }}" />
                                                                 <button type="submit" class="btn btn-xs btn-danger">Remove</button>
                                                             </form>
@@ -252,6 +253,7 @@
 </div>
 <form method="POST" action="{{ route('admin.protect.quarantine.rename') }}" id="qf-rename-form" style="display:none;">
     @csrf
+    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
     <input type="hidden" name="path" id="qf-rename-path" />
     <input type="hidden" name="new_name" id="qf-rename-name" />
 </form>

@@ -39,6 +39,7 @@
 
                 <form method="POST" action="{{ route('admin.protect.quarantine.update') }}">
                     @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <input type="hidden" name="path" value="{{ base64_encode($filePath) }}" />
                     <div class="form-group">
                         <label>Editor</label>
