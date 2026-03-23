@@ -337,6 +337,25 @@ static std::string first_xff_ip(const std::string& xff) {
     return trim(xff.substr(0, pos));
 }
 
+static std::string resolve_client_ip(const HttpRequest& req) {
+    auto it_cf = req.headers.find("cf-connecting-ip");
+    if (it_cf != req.headers.end()) {
+        std::string v = trim(it_cf->second);
+        if (!v.empty()) return first_xff_ip(v);
+    }
+    auto it_real = req.headers.find("x-real-ip");
+    if (it_real != req.headers.end()) {
+        std::string v = trim(it_real->second);
+        if (!v.empty()) return first_xff_ip(v);
+    }
+    auto it_xff = req.headers.find("x-forwarded-for");
+    if (it_xff != req.headers.end()) {
+        std::string v = trim(it_xff->second);
+        if (!v.empty()) return first_xff_ip(v);
+    }
+    return req.remote_ip;
+}
+
 static bool is_ipv4_literal(const std::string& ip) {
     sockaddr_in sa{};
     return inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) == 1;
@@ -1048,8 +1067,7 @@ static void handle_client(int fd, std::string remote_ip) {
     }
 
     Settings s = load_settings();
-    std::string xff = req.headers.count("x-forwarded-for") ? req.headers["x-forwarded-for"] : "";
-    std::string ip = !xff.empty() ? first_xff_ip(xff) : req.remote_ip;
+    std::string ip = resolve_client_ip(req);
     std::string ua = req.headers.count("user-agent") ? req.headers["user-agent"] : "";
     std::string ua_fp = sha256_hex_24(ua);
 
@@ -1308,6 +1326,9 @@ static void handle_client(int fd, std::string remote_ip) {
             ".title{font-weight:800;letter-spacing:.25px}.sub{margin-left:auto;font-size:12px;color:var(--muted);font-weight:600}"
             ".body{padding:18px}.tabs{display:flex;gap:8px;margin:0 0 14px}.tab{flex:1;text-align:center;padding:9px 10px;border:1px solid rgba(103,153,204,.32);border-radius:11px;color:var(--muted);font-size:12px}"
             ".tab.on{color:#d7ebff;background:linear-gradient(180deg,rgba(22,53,88,.92),rgba(14,40,68,.92));border-color:#4f82ba}.pane{display:none}.pane.on{display:block}.big{padding:16px;border:1px solid rgba(103,153,204,.28);border-radius:13px;background:linear-gradient(180deg,#0a1a2d,#0a1728)}"
+            ".phase-ind{display:inline-block;margin:0 0 8px;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.9px;border:1px solid #2f5b8b;color:#cce6ff;background:#132742}"
+            ".phase-ind.p1{border-color:#1f7b4a;background:#113324;color:#bfffe0;box-shadow:0 0 14px rgba(34,180,95,.22)}"
+            ".phase-ind.p2{border-color:#7a2db3;background:#2a1440;color:#f2d9ff;box-shadow:0 0 14px rgba(196,103,255,.24)}"
             ".connbox{position:relative;min-height:56vh;max-height:74vh;padding:16px}.human-wrap{position:absolute;left:16px;top:16px;display:block}"
             ".timer{font-size:32px;font-weight:900;letter-spacing:.7px;color:#d2eaff;text-shadow:0 0 14px rgba(83,171,255,.35)}.q{margin:0 0 10px;color:var(--muted);font-size:14px;line-height:1.5}"
             ".qa{margin:0 0 12px;padding:12px;border:1px solid rgba(103,153,204,.3);border-radius:10px;background:#0a1a2d;color:#cae6ff;font-weight:700}"
@@ -1326,11 +1347,11 @@ static void handle_client(int fd, std::string remote_ip) {
             "<div class=\"head\"><span class=\"dot\"></span><span class=\"title\">PteroProtect Verification</span><span class=\"sub\">30m clearance</span></div>"
             "<div class=\"body\"><div class=\"tabs\"><div class=\"tab on\" id=\"tab_conn\">Connection</div><div class=\"tab\" id=\"tab_chal\">Challenge</div></div>"
             "<div class=\"pane on\" id=\"pane_conn\"><div class=\"big connbox\" id=\"connbox\"><p class=\"q\">Checking connection integrity...</p><div class=\"timer\" id=\"ctimer\">--</div><p class=\"q\">Klik tombol untuk buka challenge manual. Session tetap dikunci ke IP + User-Agent.</p><div class=\"human-wrap\" id=\"human_wrap\"><button id=\"human_btn\" type=\"button\">I am human, pass me</button></div></div></div>"
-            "<div class=\"pane\" id=\"pane_chal\"><p class=\"q\" id=\"phaseq\">Tahap 1: selesaikan math dulu.</p><p class=\"q\" id=\"phint\"></p>"
+            "<div class=\"pane\" id=\"pane_chal\"><div class=\"phase-ind p1\" id=\"phase_ind\">PHASE 1</div><p class=\"q\" id=\"phaseq\">Tahap 1: selesaikan math dulu.</p><p class=\"q\" id=\"phint\"></p>"
             "<p class=\"qa\" id=\"q\">Memuat challenge...</p><div class=\"pat\" id=\"patbox\"><canvas id=\"pc\" width=\"280\" height=\"280\"></canvas></div><div class=\"row\" id=\"ainput_wrap\"><input id=\"a\" placeholder=\"Masukkan jawaban\"/></div><div class=\"row\"><button id=\"b\">Continue</button><button id=\"rb\" type=\"button\" class=\"secondary\">Restart (3)</button></div>"
             "<div class=\"hint\">Tip: gunakan perangkat normal (mouse/touch/scroll) agar lolos validasi anti-bot.</div></div><div class=\"status\" id=\"s\"></div><div class=\"err\" id=\"e\"></div></div></div>"
-            "<script>let nonce=\"\",ak=\"\",hk=\"\",bk=\"\",ck=\"\",pk=\"\",powSalt=\"\",powHash=\"\";let powBits=18,powCounter=-1;let phase=1;let pseq=[];let clicked=[];let pTrace=[];let pStart=0;let pDir=0;let pActive=false;let ppx=null,ppy=null,pvdx=0,pvdy=0;let started=Date.now();let unlockAt=0;let waitTimer=null;let humanMoveTimer=null;let humanReady=false;let enteredChallenge=false;let clickVerified=false;let pm=0,pd=0,pdc=0,tm=0,sc=0,kc=0,px=null,py=null,pvx=0,pvy=0;let restartsLeft=3;"
-            "const elQ=document.getElementById('q'),elA=document.getElementById('a'),elB=document.getElementById('b'),elRB=document.getElementById('rb'),elS=document.getElementById('s'),elE=document.getElementById('e'),elCT=document.getElementById('ctimer'),elHB=document.getElementById('human_btn'),elCW=document.getElementById('connbox'),elHW=document.getElementById('human_wrap'),elPC=document.getElementById('pane_conn'),elPH=document.getElementById('pane_chal'),elTC=document.getElementById('tab_conn'),elTH=document.getElementById('tab_chal'),elPQ=document.getElementById('phaseq'),elPHint=document.getElementById('phint'),elPat=document.getElementById('patbox'),elInputWrap=document.getElementById('ainput_wrap'),pc=document.getElementById('pc'),ctx=pc.getContext('2d');"
+            "<script>let nonce=\"\",ak=\"\",hk=\"\",bk=\"\",ck=\"\",pk=\"\",powSalt=\"\",powHash=\"\";let powBits=18,powCounter=-1;let phase=1;let pseq=[];let clicked=[];let pTrace=[];let pStart=0;let pDir=0;let pActive=false;let ppx=null,ppy=null,pvdx=0,pvdy=0;let started=Date.now();let unlockAt=0;let waitTimer=null;let humanMoveTimer=null;let humanReady=false;let enteredChallenge=false;let clickVerified=false;let pm=0,pd=0,pdc=0,tm=0,sc=0,kc=0,px=null,py=null,pvx=0,pvy=0;let lastBX=-1,lastBY=-1;let restartsLeft=3;"
+            "const elQ=document.getElementById('q'),elA=document.getElementById('a'),elB=document.getElementById('b'),elRB=document.getElementById('rb'),elS=document.getElementById('s'),elE=document.getElementById('e'),elCT=document.getElementById('ctimer'),elHB=document.getElementById('human_btn'),elCW=document.getElementById('connbox'),elHW=document.getElementById('human_wrap'),elPC=document.getElementById('pane_conn'),elPH=document.getElementById('pane_chal'),elTC=document.getElementById('tab_conn'),elTH=document.getElementById('tab_chal'),elPI=document.getElementById('phase_ind'),elPQ=document.getElementById('phaseq'),elPHint=document.getElementById('phint'),elPat=document.getElementById('patbox'),elInputWrap=document.getElementById('ainput_wrap'),pc=document.getElementById('pc'),ctx=pc.getContext('2d');"
             "function normAns(v){let s=String(v||'').trim();if(!s)return s;const sign=(s[0]==='+'||s[0]==='-')?s[0]:'';if(sign)s=s.slice(1);s=s.replace(/[\\s,._']/g,'');return sign+s;}"
             "async function sha256Hex(text){const enc=new TextEncoder();const buf=await crypto.subtle.digest('SHA-256',enc.encode(text));const arr=new Uint8Array(buf);let out='';for(const b of arr){out+=b.toString(16).padStart(2,'0');}return out;}"
             "function hasLeadingZeroBits(hex,bits){if(bits<=0)return true;const n=Math.floor(bits/4),r=bits%4;for(let i=0;i<n;i++){if(hex[i]!=='0')return false;}if(r===0)return true;const v=parseInt(hex[n]||'f',16);if(Number.isNaN(v))return false;return v<(1<<(4-r));}"
@@ -1342,7 +1363,9 @@ static void handle_client(int fd, std::string remote_ip) {
             "window.addEventListener('keydown',()=>{kc++;});"
             "function behavior(){return{duration_ms:Date.now()-started,pointer_moves:pm,pointer_distance:Math.round(pd),pointer_dir_changes:pdc,touch_moves:tm,scroll_count:sc,key_count:kc};}"
             "const nodes=[[20,20],[50,20],[80,20],[20,50],[50,50],[80,50],[20,80],[50,80],[80,80]];"
-            "function drawPattern(){const w=pc.width,h=pc.height;ctx.clearRect(0,0,w,h);ctx.fillStyle='#061221';ctx.fillRect(0,0,w,h);if(Array.isArray(clicked)&&clicked.length>1){ctx.strokeStyle='#66b6ff';ctx.lineWidth=3;ctx.beginPath();for(let i=0;i<clicked.length;i++){const n=nodes[clicked[i]-1];if(!n)continue;const x=n[0]/100*w,y=n[1]/100*h;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.stroke();}for(let i=0;i<nodes.length;i++){const n=nodes[i],x=n[0]/100*w,y=n[1]/100*h;ctx.beginPath();ctx.arc(x,y,11,0,Math.PI*2);ctx.fillStyle='#0f2740';ctx.fill();ctx.strokeStyle='#4da0ff';ctx.stroke();ctx.fillStyle='#bfe1ff';ctx.font='12px sans-serif';ctx.fillText(String(i+1),x-4,y+4);}}"
+            "function randRGB(){const r=80+Math.floor(Math.random()*176),g=80+Math.floor(Math.random()*176),b=80+Math.floor(Math.random()*176);return'rgb('+r+','+g+','+b+')';}"
+            "function segCross(a,b,c,d){const ccw=(p1,p2,p3)=>((p3[1]-p1[1])*(p2[0]-p1[0])>(p2[1]-p1[1])*(p3[0]-p1[0]));return(ccw(a,c,d)!==ccw(b,c,d))&&(ccw(a,b,c)!==ccw(a,b,d));}"
+            "function drawPattern(){const w=pc.width,h=pc.height;ctx.clearRect(0,0,w,h);ctx.fillStyle='#061221';ctx.fillRect(0,0,w,h);let overlaps=0;if(Array.isArray(clicked)&&clicked.length>1){const segs=[];ctx.lineWidth=3;for(let i=1;i<clicked.length;i++){const a=nodes[clicked[i-1]-1],b=nodes[clicked[i]-1];if(!a||!b)continue;const ax=a[0]/100*w,ay=a[1]/100*h,bx=b[0]/100*w,by=b[1]/100*h;let hit=false;for(let j=0;j<segs.length;j++){const s=segs[j];if(segCross([ax,ay],[bx,by],s[0],s[1])){hit=true;break;}}ctx.strokeStyle=hit?randRGB():'#66b6ff';if(hit)overlaps++;ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.stroke();segs.push([[ax,ay],[bx,by]]);}}for(let i=0;i<nodes.length;i++){const n=nodes[i],x=n[0]/100*w,y=n[1]/100*h;ctx.beginPath();ctx.arc(x,y,11,0,Math.PI*2);ctx.fillStyle='#0f2740';ctx.fill();ctx.strokeStyle='#4da0ff';ctx.stroke();ctx.fillStyle='#bfe1ff';ctx.font='12px sans-serif';ctx.fillText(String(i+1),x-4,y+4);}if(overlaps>0){elPHint.textContent='Overlap terdeteksi: '+String(overlaps)+' (RGB random aktif)';}}"
             "function nearestNode(ev){const r=pc.getBoundingClientRect();const x=((ev.clientX-r.left)/r.width)*100;const y=((ev.clientY-r.top)/r.height)*100;let best=-1,bd=1e9;for(let i=0;i<nodes.length;i++){const dx=x-nodes[i][0],dy=y-nodes[i][1],d=dx*dx+dy*dy;if(d<bd){bd=d;best=i;}}if(best<0||bd>18*18)return -1;return best+1;}"
             "function addClickNode(n){if(n<1||n>9)return;if(!pStart)pStart=Date.now();if(clicked.length&&clicked[clicked.length-1]===n)return;clicked.push(n);const pt=nodes[n-1];const t=Date.now()-pStart;if(ppx!==null&&ppy!==null){const dx=pt[0]-ppx,dy=pt[1]-ppy;if((pvdx!==0||pvdy!==0)&&((dx*pvdx+dy*pvdy)<-1))pDir++;pvdx=dx;pvdy=dy;}ppx=pt[0];ppy=pt[1];pTrace.push([pt[0],pt[1],t]);if(pTrace.length>220)pTrace.shift();drawPattern();}"
             "pc.addEventListener('pointerdown',e=>{if(phase!==2)return;const n=nearestNode(e);if(n>0)addClickNode(n);});"
@@ -1351,15 +1374,15 @@ static void handle_client(int fd, std::string remote_ip) {
             "return{webdriver:!!n.webdriver,ua_len:String(n.userAgent||'').length,lang_len:String(n.language||'').length,tz_len:String(tz||'').length,max_touch_points:Number(n.maxTouchPoints||0),hardware_concurrency:Number(n.hardwareConcurrency||0),screen_w:Number(s.width||0),screen_h:Number(s.height||0),color_depth:Number(s.colorDepth||0)};}"
             "function showConn(){elPC.classList.add('on');elPH.classList.remove('on');elTC.classList.add('on');elTH.classList.remove('on');}"
             "function showChal(){elPC.classList.remove('on');elPH.classList.add('on');elTC.classList.remove('on');elTH.classList.add('on');}"
-            "function setPhaseMath(){phase=1;elQ.style.display='';elInputWrap.style.display='';elPat.style.display='none';elA.value='';}"
-            "function setPhasePattern(){phase=2;elQ.style.display='none';elInputWrap.style.display='none';elPat.style.display='block';}"
-            "function randBtn(){if(!elHB||!elCW||!elHW)return;const pad=14;const topMin=14;const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);const x=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const y=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
+            "function setPhaseMath(){phase=1;elQ.style.display='';elInputWrap.style.display='';elPat.style.display='none';elA.value='';if(elPI){elPI.textContent='PHASE 1';elPI.className='phase-ind p1';}}"
+            "function setPhasePattern(){phase=2;elQ.style.display='none';elInputWrap.style.display='none';elPat.style.display='block';if(elPI){elPI.textContent='PHASE 2';elPI.className='phase-ind p2';}}"
+            "function randBtn(){if(!elHB||!elCW||!elHW)return;const pad=14;const topMin=14;const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=18){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
             "function fmtMs(ms){const t=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(t/60);const s=t%60;return String(m)+'m '+String(s).padStart(2,'0')+'s';}"
             "function updateWait(){const ms=unlockAt-Date.now();if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elCT.textContent='OK';elS.textContent='Connection check passed.';elB.disabled=false;return;}const label=fmtMs(ms);elCT.textContent=label;if(!enteredChallenge){showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}else{elB.disabled=false;elS.textContent='Challenge opened. No cooldown for submit.';}}"
-            "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;const r=await fetch('/__pteroprotect/challenge/new',{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error('challenge unavailable');"
+            "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},320);const r=await fetch('/__pteroprotect/challenge/new',{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error('challenge unavailable');"
             "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';powSalt=String(j.pow_salt||'');powBits=Math.max(8,Math.min(24,Number(j.pow_bits||18)));powCounter=-1;powHash='';clickVerified=false;setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 1: selesaikan math dulu.';elPHint.textContent='';drawPattern();elQ.textContent=j.question;restartsLeft=3;elRB.disabled=false;elRB.textContent='Restart ('+String(restartsLeft)+')';"
             "elS.textContent='Running browser PoW...';const pow=await solvePow(nonce,powSalt,powBits);powCounter=pow.counter;powHash=pow.hash;elS.textContent='PoW passed in '+String(pow.ms)+'ms.';"
-            "const raw=Number(j.connection_delay_ms||0);const d=Math.min(21600000,Math.max(0,raw));started=Date.now();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';unlockAt=Date.now()+d;requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},700);updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,250);}"
+            "const raw=Number(j.connection_delay_ms||0);const d=Math.min(21600000,Math.max(0,raw));started=Date.now();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';unlockAt=Date.now()+d;updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,250);}"
             "elHB.onclick=async()=>{try{if(!nonce||!hk){throw new Error('challenge unavailable');}const c={nonce:nonce,click:hk};const cr=await fetch('/__pteroprotect/challenge/click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});const cj=await cr.json();if(!cj.ok){throw new Error(cj.error||'click_invalid');}clickVerified=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();updateWait();}catch(err){elE.textContent=String(err.message||err);}};"
             "window.addEventListener('resize',()=>{if(!humanReady)randBtn();});"
             "elA.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();elB.click();}});"
@@ -1377,8 +1400,8 @@ static void handle_client(int fd, std::string remote_ip) {
 
     if (req.path == "/sw.js" && (req.method == "GET" || req.method == "HEAD")) {
         std::string js =
-            "const CACHE='pp-challenge-v8';"
-            "const PRECACHE=['/__pteroprotect/challenge/page'];"
+            "const CACHE='pp-challenge-v9';"
+            "const PRECACHE=['/__pteroprotect/challenge'];"
             "self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(PRECACHE)).then(()=>self.skipWaiting()));});"
             "self.addEventListener('activate',e=>{e.waitUntil(self.clients.claim());});"
             "self.addEventListener('fetch',e=>{"
@@ -1386,7 +1409,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "if(u.pathname.startsWith('/__pteroprotect/challenge/new')||u.pathname.startsWith('/__pteroprotect/challenge/click')||u.pathname.startsWith('/__pteroprotect/challenge/verify-math')||u.pathname.startsWith('/__pteroprotect/challenge/solve')||u.pathname.startsWith('/__pteroprotect/challenge/check')){"
             "e.respondWith(fetch(e.request));return;}"
             "if(u.pathname.startsWith('/__pteroprotect/challenge/')){"
-            "e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request).then(n=>{const cp=n.clone();caches.open(CACHE).then(c=>c.put(e.request,cp)).catch(()=>{});return n;}).catch(()=>caches.match('/__pteroprotect/challenge/page'))));"
+            "e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request).then(n=>{const cp=n.clone();caches.open(CACHE).then(c=>c.put(e.request,cp)).catch(()=>{});return n;}).catch(()=>caches.match('/__pteroprotect/challenge'))));"
             "}"
             "});";
         std::vector<std::pair<std::string, std::string>> headers = {

@@ -604,6 +604,9 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
 
         $j->{network}{unblock_portal_bind} = "0.0.0.0" if !defined($j->{network}{unblock_portal_bind}) || $j->{network}{unblock_portal_bind} eq "";
         $j->{network}{unblock_portal_port} = 18443 if !defined($j->{network}{unblock_portal_port}) || $j->{network}{unblock_portal_port} !~ /^\d+$/;
+        $j->{network}{waf_pow_bits} = 18 if !defined($j->{network}{waf_pow_bits}) || $j->{network}{waf_pow_bits} !~ /^\d+$/;
+        $j->{network}{waf_pow_bits} = 8 if $j->{network}{waf_pow_bits} < 8;
+        $j->{network}{waf_pow_bits} = 24 if $j->{network}{waf_pow_bits} > 24;
         if (!defined($j->{network}{unblock_portal_token}) || $j->{network}{unblock_portal_token} eq "" || $j->{network}{unblock_portal_token} eq "CHANGE_ME_STRONG_TOKEN") {
             $j->{network}{unblock_portal_token} = "dannhexzoprotect";
         }
