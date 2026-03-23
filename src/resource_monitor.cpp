@@ -35,10 +35,11 @@ static const int ACTION_COOLDOWN_SEC  = 300;  // 5-min cooldown per server
 static const int SERVER_CACHE_TTL_SEC = 300;  // refresh server list every 5 min
 static const int STARTUP_GRACE_SECONDS = 90;
 static const int RESOURCE_SUSPEND_STRIKES = 3;
-static const double UNLIMITED_CPU_WARN_ABS = 180.0;
-static const double UNLIMITED_CPU_HARD_ABS = 320.0;
+static const double UNLIMITED_CPU_WARN_ABS = 150.0;
+static const double UNLIMITED_CPU_HARD_ABS = 150.0;
 static const long long UNLIMITED_RAM_WARN_BYTES = 4LL * 1024 * 1024 * 1024;
 static const long long UNLIMITED_RAM_HARD_BYTES = 8LL * 1024 * 1024 * 1024;
+static const long long BANDWIDTH_LIMIT_BYTES = 5LL * 1024 * 1024 * 1024; // 5GB in and 5GB out per server
 static const int MAX_RESTART_BEFORE_SUSPEND = 5;
 static const int IPTABLES_BLOCK_CONN_THRESHOLD = 120;
 static const int NET_WARNING_CONN_THRESHOLD = 250;
@@ -121,6 +122,28 @@ std::string exec_read_all(const std::string& cmd) {
     while (fgets(buf, sizeof(buf), p)) out += buf;
     pclose(p);
     return out;
+}
+
+long long get_host_total_ram_bytes() {
+    static long long cached = -1;
+    if (cached >= 0) return cached;
+
+    std::ifstream f("/proc/meminfo");
+    if (!f.is_open()) {
+        cached = 0;
+        return cached;
+    }
+    std::string key;
+    long long kb = 0;
+    std::string unit;
+    while (f >> key >> kb >> unit) {
+        if (key == "MemTotal:") {
+            cached = kb * 1024LL;
+            return cached;
+        }
+    }
+    cached = 0;
+    return cached;
 }
 
 std::string get_guard_home_for_monitor() {
@@ -593,6 +616,8 @@ bool read_local_resources(const std::string& identifier, const std::string& uuid
     size_t slash = mem_text.find('/');
     if (slash != std::string::npos) mem_text = mem_text.substr(0, slash);
     snap.mem_bytes = parse_size_to_bytes(mem_text);
+    snap.net_rx_bytes = 0;
+    snap.net_tx_bytes = 0;
     return true;
 }
 
@@ -1126,6 +1151,8 @@ bool ResourceMonitor::get_resources(const std::string& identifier, const std::st
             auto& res       = attr["resources"];
             snap.cpu_absolute = res.value("cpu_absolute",  0.0);
             snap.mem_bytes    = res.value("memory_bytes",  0LL);
+            snap.net_rx_bytes = res.value("network_rx_bytes", 0LL);
+            snap.net_tx_bytes = res.value("network_tx_bytes", 0LL);
         }
 
         // Some panel responses report "offline" even while the local Docker container is alive.
@@ -1267,8 +1294,16 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         ? (cpu_pct_raw_used / CPU_ENFORCEMENT_BUFFER_MULTIPLIER)
         : cpu_pct_raw_used;
 
-    double ram_pct_used = (srv.mem_limit_bytes > 0)
-        ? (snap.mem_bytes / static_cast<double>(srv.mem_limit_bytes) * 100.0)
+    const long long host_total_ram_bytes = get_host_total_ram_bytes();
+    const long long dynamic_unlimited_ram_cap = host_total_ram_bytes > 0
+        ? std::max(256LL * 1024LL * 1024LL, (host_total_ram_bytes * 30LL) / 100LL)
+        : UNLIMITED_RAM_WARN_BYTES;
+    const long long effective_mem_limit_bytes = (srv.mem_limit_bytes > 0)
+        ? srv.mem_limit_bytes
+        : dynamic_unlimited_ram_cap;
+
+    double ram_pct_used = (effective_mem_limit_bytes > 0)
+        ? (snap.mem_bytes / static_cast<double>(effective_mem_limit_bytes) * 100.0)
         : 0.0;
 
     bool cpu_hot     = (srv.cpu_limit > 0)
@@ -1282,13 +1317,17 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         : (snap.cpu_absolute >= UNLIMITED_CPU_HARD_ABS);
     bool ram_hot     = (srv.mem_limit_bytes > 0)
         ? (ram_pct_used >= HOT_THRESHOLD)
-        : (snap.mem_bytes >= (UNLIMITED_RAM_WARN_BYTES * 8 / 10));
+        : (snap.mem_bytes >= (effective_mem_limit_bytes * 8 / 10));
     bool ram_high    = (srv.mem_limit_bytes > 0)
         ? (ram_pct_used >= ram_threshold_pct)
-        : (snap.mem_bytes >= UNLIMITED_RAM_WARN_BYTES);
+        : (snap.mem_bytes >= effective_mem_limit_bytes);
     bool ram_extreme = (srv.mem_limit_bytes > 0)
         ? (ram_pct_used >= HARD_THRESHOLD)
-        : (snap.mem_bytes >= UNLIMITED_RAM_HARD_BYTES);
+        : (snap.mem_bytes >= effective_mem_limit_bytes);
+
+    bool bw_in_over  = (snap.net_rx_bytes > 0 && snap.net_rx_bytes >= BANDWIDTH_LIMIT_BYTES);
+    bool bw_out_over = (snap.net_tx_bytes > 0 && snap.net_tx_bytes >= BANDWIDTH_LIMIT_BYTES);
+    bool bw_trigger  = bw_in_over || bw_out_over;
 
     ServerInfo db_info = db.get_server_info(srv.uuid);
     if (db_info.id <= 0) {
@@ -1478,7 +1517,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     bool process_trigger = cooldown_ok && proc_abuse.suspicious;
     bool activity_trigger = (cooldown_ok || activity_urgent) && activity_abuse.suspicious;
 
-    if (!cpu_trigger && !ram_trigger && !net_trigger && !trust_trigger && !process_trigger && !activity_trigger) {
+    if (!cpu_trigger && !ram_trigger && !net_trigger && !bw_trigger && !trust_trigger && !process_trigger && !activity_trigger) {
         if (activity_abuse.last_id > last_activity_id) save_state();
         return;
     }
@@ -1500,6 +1539,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     else if (cpu_trigger && ram_trigger) abuse_type = "CPU + RAM ABUSE";
     else if (cpu_trigger) abuse_type = "CPU ABUSE";
     else if (ram_trigger) abuse_type = "RAM ABUSE";
+    else if (bw_trigger) abuse_type = "BANDWIDTH ABUSE";
     else abuse_type = "TRUST SCORE ABUSE";
 
     bool restart_ok = false;
@@ -1507,7 +1547,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     bool container_stopped = false;
     bool api_net_only = api_profile.enabled && net_trigger && !self_ddos && !cpu_trigger && !ram_trigger && !process_trigger;
     bool resource_suspend_ready = resource_only_trigger && resource_strike_count >= RESOURCE_SUSPEND_STRIKES;
-    bool force_suspend = process_trigger || activity_trigger || self_ddos || resource_suspend_ready || score_now <= 25.0;
+    bool force_suspend = process_trigger || activity_trigger || self_ddos || bw_trigger || resource_suspend_ready || score_now <= 25.0;
     bool should_suspend = force_suspend || total_restarts >= (MAX_RESTART_BEFORE_SUSPEND - 1);
     if (api_net_only && score_now > 20.0) should_suspend = false;
     if (should_suspend) {
@@ -1548,13 +1588,17 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     if (cpu_trigger && ram_trigger) det << " | ";
     if (ram_trigger) {
         long long ram_mb       = snap.mem_bytes       / (1024LL * 1024);
-        long long ram_limit_mb = srv.mem_limit_bytes  / (1024LL * 1024);
+        long long ram_limit_mb = effective_mem_limit_bytes / (1024LL * 1024);
         det << "RAM " << ram_mb << "/";
-        if (srv.mem_limit_bytes > 0) {
-            det << ram_limit_mb << " MB (" << (int)ram_pct_used << "%)";
-        } else {
-            det << "unlimited MB";
-        }
+        det << ram_limit_mb << " MB (" << (int)ram_pct_used << "%)";
+        if (srv.mem_limit_bytes <= 0) det << " [policy 30% host RAM]";
+    }
+    if (bw_trigger) {
+        if (!det.str().empty()) det << " | ";
+        const long long rx_mb = snap.net_rx_bytes / (1024LL * 1024);
+        const long long tx_mb = snap.net_tx_bytes / (1024LL * 1024);
+        const long long lim_mb = BANDWIDTH_LIMIT_BYTES / (1024LL * 1024);
+        det << "BW in=" << rx_mb << "MB/" << lim_mb << "MB out=" << tx_mb << "MB/" << lim_mb << "MB";
     }
     if ((cpu_trigger || ram_trigger) && net_trigger) det << " | ";
     if (net_trigger || net_warning || self_ddos) {
@@ -1595,8 +1639,8 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         process_trigger ? "process_abuse" :
         (activity_trigger ? "activity_abuse" :
         (net_trigger ? (self_ddos ? "self_ddos" : "network_abuse") :
-        (cpu_trigger ? "cpu_abuse" : (ram_trigger ? "ram_abuse" : "behavior_abuse"))));
-    int severity = (process_trigger || activity_trigger || cpu_extreme || ram_extreme || net_extreme || self_ddos || score_now <= 25.0) ? 8 : 6;
+        (cpu_trigger ? "cpu_abuse" : (ram_trigger ? "ram_abuse" : (bw_trigger ? "bandwidth_abuse" : "behavior_abuse")))));
+    int severity = (process_trigger || activity_trigger || cpu_extreme || ram_extreme || net_extreme || self_ddos || bw_trigger || score_now <= 25.0) ? 8 : 6;
 
     // ── Log to database ───────────────────────────────────────────────────────
     db.log_user_violation(
@@ -1619,7 +1663,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     bot.send_html_message(build_alert(
         abuse_type, db_info,
         cpu_pct_raw_used, snap.cpu_absolute, srv.cpu_limit,
-        ram_pct_used, snap.mem_bytes, srv.mem_limit_bytes,
+        ram_pct_used, snap.mem_bytes, effective_mem_limit_bytes,
         action_text
     ));
 }

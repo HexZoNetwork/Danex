@@ -126,6 +126,28 @@ read_wings_api_port() {
     printf '%s' "${port}"
 }
 
+read_network_int_from_config() {
+    local key="$1"
+    local fallback="$2"
+    local value="${fallback}"
+    if [[ -f "${CONFIG_PATH}" ]] && have_cmd python3; then
+        value="$(python3 - <<'PY' "${CONFIG_PATH}" "${key}" "${fallback}" 2>/dev/null || true
+import json,sys
+path,key,fallback=sys.argv[1],sys.argv[2],sys.argv[3]
+try:
+    with open(path,'r',encoding='utf-8') as f:
+        d=json.load(f)
+    v=(d.get('network') or {}).get(key, fallback)
+    print(v)
+except Exception:
+    print(fallback)
+PY
+)"
+    fi
+    [[ "${value}" =~ ^[0-9]+$ ]] || value="${fallback}"
+    printf '%s' "${value}"
+}
+
 effective_burst_kb() {
     local rate_kbps="$1"
     local burst_kb="$2"
@@ -490,6 +512,23 @@ EGRESS_TCP_BLOCK_PORTS="$(sanitize_ports "${EGRESS_TCP_BLOCK_PORTS}")"
 EGRESS_UDP_BLOCK_PORTS="$(sanitize_ports "${EGRESS_UDP_BLOCK_PORTS}")"
 UNBLOCK_PORTAL_PORT="$(read_unblock_portal_port)"
 WINGS_API_PORT="$(read_wings_api_port)"
+
+# Pull host-abuse TCP limits from config.json by default so runtime matches panel settings.
+if [[ -z "${PTEROPROTECT_NEW_CONN_RATE:-}" ]]; then
+    NEW_CONN_RATE="$(read_network_int_from_config "host_new_conn_per_ip" "${NEW_CONN_RATE}")"
+fi
+if [[ -z "${PTEROPROTECT_NEW_CONN_BURST:-}" ]]; then
+    NEW_CONN_BURST="$(read_network_int_from_config "host_new_conn_burst" "${NEW_CONN_BURST}")"
+fi
+if [[ -z "${PTEROPROTECT_CONNLIMIT_PER_IP:-}" ]]; then
+    CONNLIMIT_PER_IP="$(read_network_int_from_config "host_connlimit_per_ip" "${CONNLIMIT_PER_IP}")"
+fi
+
+# Mobile/CGNAT friendly floors to avoid false timeout drops.
+if (( NEW_CONN_RATE < 20 )); then NEW_CONN_RATE=20; fi
+if (( NEW_CONN_BURST < 40 )); then NEW_CONN_BURST=40; fi
+if (( CONNLIMIT_PER_IP < 80 )); then CONNLIMIT_PER_IP=80; fi
+
 prune_input_jump_rules_v4
 prune_bw_jump_rules_v4
 prune_synproxy_jump_rules_v4

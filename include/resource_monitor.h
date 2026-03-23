@@ -24,6 +24,8 @@ struct ResourceSnapshot {
     bool        is_suspended;
     double      cpu_absolute;  // actual CPU % consumed
     long long   mem_bytes;     // actual RAM bytes consumed
+    long long   net_rx_bytes;  // inbound bytes (from Wings/API when available)
+    long long   net_tx_bytes;  // outbound bytes (from Wings/API when available)
 };
 
 class ResourceMonitor {

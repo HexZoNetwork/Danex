@@ -1388,6 +1388,8 @@ server {
     listen 8080 ssl;
     listen [::]:8080 ssl;
     server_name _;
+    client_max_body_size 256m;
+    client_body_timeout 600s;
 
     ssl_certificate ${WINGS_CERT_PATH};
     ssl_certificate_key ${WINGS_KEY_PATH};
