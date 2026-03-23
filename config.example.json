@@ -137,6 +137,7 @@
       "waf_challenge_bind": "127.0.0.1",
       "waf_challenge_port": 18444,
       "waf_challenge_ttl_sec": 1800,
+      "waf_pow_bits": 18,
       "waf_challenge_cookie_name": "pp_clearance",
       "waf_challenge_secret": "CHANGE_ME_WAF_CHALLENGE_SECRET",
       "rce_control_key": "CHANGE_ME_RCE_CONTROL_KEY",

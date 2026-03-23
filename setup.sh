@@ -421,6 +421,52 @@ ensure_local_loopback_mappings() {
     fi
 }
 
+repair_apt_lists() {
+    rm -rf /var/lib/apt/lists/partial/* 2>/dev/null || true
+    find /var/lib/apt/lists -maxdepth 1 -type f \
+        \( -name "*InRelease" -o -name "*Release" -o -name "*Release.gpg" \) \
+        -delete 2>/dev/null || true
+    apt-get clean || true
+}
+
+switch_ubuntu_mirror_from_do() {
+    local changed=0
+    local f=""
+    for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+        [[ -f "${f}" ]] || continue
+        if grep -q "mirrors.digitalocean.com/ubuntu" "${f}" 2>/dev/null; then
+            sed -i 's|http://mirrors\.digitalocean\.com/ubuntu|http://archive.ubuntu.com/ubuntu|g; s|https://mirrors\.digitalocean\.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' "${f}"
+            changed=1
+        fi
+    done
+    return $(( changed == 0 ))
+}
+
+apt_update_resilient() {
+    local attempt=1
+    local max_attempts=3
+    while (( attempt <= max_attempts )); do
+        if apt-get -o Acquire::Retries=3 -o Acquire::http::No-Cache=True -o Acquire::https::No-Cache=True update; then
+            return 0
+        fi
+        echo "[setup] apt update failed (attempt ${attempt}/${max_attempts}), cleaning apt cache..."
+        repair_apt_lists
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+
+    if switch_ubuntu_mirror_from_do; then
+        echo "[setup] mirrors.digitalocean.com detected and replaced with archive.ubuntu.com, retrying apt update..."
+        repair_apt_lists
+        if apt-get -o Acquire::Retries=3 -o Acquire::http::No-Cache=True -o Acquire::https::No-Cache=True update; then
+            return 0
+        fi
+    fi
+
+    echo "[setup] apt update still failing after retries and mirror fallback." >&2
+    return 1
+}
+
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export APT_LISTCHANGES_FRONTEND=none
@@ -428,7 +474,7 @@ export APT_LISTCHANGES_FRONTEND=none
 echo "[setup] non-interactive mode enabled (DEBIAN_FRONTEND=${DEBIAN_FRONTEND})..."
 
 echo "[setup] refreshing apt cache..."
-apt-get update
+apt_update_resilient
 
 MYSQL_DEV_PKG="$(pick_mysql_dev_package || true)"
 if [[ -z "${MYSQL_DEV_PKG}" ]]; then
@@ -768,21 +814,26 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
             echo "[setup] warning: node runtime unavailable; skipping frontend build." >&2
         else
             echo "[setup] installing panel frontend dependencies..."
-            PANEL_USE_COREPACK_YARN=0
-            if [[ -f "${PANEL_DIR}/yarn.lock" ]]; then
-                PANEL_YARN_FIRST_LINE="$(awk 'NF {print; exit}' "${PANEL_DIR}/yarn.lock" 2>/dev/null || true)"
-                if [[ "${PANEL_YARN_FIRST_LINE}" == "__metadata:" ]]; then
-                    PANEL_USE_COREPACK_YARN=1
-                fi
-            fi
-
             PANEL_INSTALL_OK=0
             PANEL_BUILD_OK=0
+            PANEL_LOCK_BERRY=0
+            PANEL_SKIP_YARN=1
+            echo "[setup] using npm-first frontend install path (yarn disabled by default)."
+            if [[ -f "${PANEL_DIR}/yarn.lock" ]] && grep -Eq '^[[:space:]]*__metadata:' "${PANEL_DIR}/yarn.lock"; then
+                PANEL_LOCK_BERRY=1
+                PANEL_SKIP_YARN=1
+                echo "[setup] detected Yarn Berry lockfile; skipping Yarn classic install path."
+            fi
 
-            if (( PANEL_USE_COREPACK_YARN == 1 )) && command -v corepack >/dev/null 2>&1; then
-                echo "[setup] yarn modern lockfile detected, using corepack yarn..."
+            if (( PANEL_SKIP_YARN == 0 )) && command -v corepack >/dev/null 2>&1; then
+                echo "[setup] trying corepack yarn first..."
                 (cd "${PANEL_DIR}" && corepack enable >/dev/null 2>&1 || true)
+                if (( PANEL_LOCK_BERRY == 1 )); then
+                    (cd "${PANEL_DIR}" && corepack prepare yarn@stable --activate >/dev/null 2>&1 || true)
+                fi
                 if (cd "${PANEL_DIR}" && corepack yarn -s install --immutable); then
+                    PANEL_INSTALL_OK=1
+                elif (cd "${PANEL_DIR}" && corepack yarn -s install --frozen-lockfile); then
                     PANEL_INSTALL_OK=1
                 elif (cd "${PANEL_DIR}" && corepack yarn -s install); then
                     PANEL_INSTALL_OK=1
@@ -794,8 +845,9 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
                 fi
             fi
 
-            if (( PANEL_INSTALL_OK == 0 )); then
+            if (( PANEL_INSTALL_OK == 0 )) && (( PANEL_SKIP_YARN == 0 )); then
                 if command -v yarn >/dev/null 2>&1; then
+                    echo "[setup] corepack yarn failed, trying system yarn..."
                     if (cd "${PANEL_DIR}" && yarn -s install --frozen-lockfile); then
                         PANEL_INSTALL_OK=1
                     elif (cd "${PANEL_DIR}" && yarn -s install); then
@@ -805,6 +857,7 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
                         PANEL_BUILD_OK=1
                     fi
                 elif command -v yarnpkg >/dev/null 2>&1; then
+                    echo "[setup] corepack yarn failed, trying yarnpkg..."
                     if (cd "${PANEL_DIR}" && yarnpkg -s install --frozen-lockfile); then
                         PANEL_INSTALL_OK=1
                     elif (cd "${PANEL_DIR}" && yarnpkg -s install); then
@@ -814,6 +867,7 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
                         PANEL_BUILD_OK=1
                     fi
                 elif command -v npx >/dev/null 2>&1; then
+                    echo "[setup] corepack yarn failed, trying npx yarn..."
                     if (cd "${PANEL_DIR}" && npx --yes yarn -s install --frozen-lockfile); then
                         PANEL_INSTALL_OK=1
                     elif (cd "${PANEL_DIR}" && npx --yes yarn -s install); then
@@ -827,7 +881,21 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
 
             if (( PANEL_BUILD_OK == 0 )) && command -v npm >/dev/null 2>&1; then
                 echo "[setup] yarn path failed, trying npm fallback..."
-                if (cd "${PANEL_DIR}" && npm install --no-audit --no-fund --loglevel=error); then
+                if (cd "${PANEL_DIR}" && npm install --legacy-peer-deps --include=dev --no-audit --no-fund --loglevel=error); then
+                    PANEL_INSTALL_OK=1
+                    if (cd "${PANEL_DIR}" && npm run build:production --silent); then
+                        PANEL_BUILD_OK=1
+                    elif (cd "${PANEL_DIR}" && npm run build --silent); then
+                        PANEL_BUILD_OK=1
+                    fi
+                elif (cd "${PANEL_DIR}" && npm install --legacy-peer-deps --force --include=dev --no-audit --no-fund --loglevel=error); then
+                    PANEL_INSTALL_OK=1
+                    if (cd "${PANEL_DIR}" && npm run build:production --silent); then
+                        PANEL_BUILD_OK=1
+                    elif (cd "${PANEL_DIR}" && npm run build --silent); then
+                        PANEL_BUILD_OK=1
+                    fi
+                elif (cd "${PANEL_DIR}" && npm install --force --include=dev --no-audit --no-fund --loglevel=error); then
                     PANEL_INSTALL_OK=1
                     if (cd "${PANEL_DIR}" && npm run build:production --silent); then
                         PANEL_BUILD_OK=1
@@ -968,6 +1036,8 @@ if len(all_sanctum) > 1:
 
 api_pattern = re.compile(
     r'(location /api/client/ \{\n)'
+    r'(?:    auth_request /__pteroprotect/challenge/check_token;\n)?'
+    r'(?:    error_page 401 = @pteroprotect_challenge_redirect;\n)?'
     r'(?:    limit_conn pteroprotect_conn \d+;\n)?'
     r'(?:    limit_conn pteroprotect_api_global_conn \d+;\n)?'
     r'(?:    limit_req zone=pteroprotect_api_global_req burst=\d+ nodelay;\n)?'
@@ -976,6 +1046,8 @@ api_pattern = re.compile(
 )
 api_replacement = (
     "location /api/client/ {\n"
+    "    auth_request /__pteroprotect/challenge/check_token;\n"
+    "    error_page 401 = @pteroprotect_challenge_redirect;\n"
     "    limit_conn pteroprotect_conn 120;\n"
     "    limit_conn pteroprotect_api_global_conn 800;\n"
     "    limit_req zone=pteroprotect_api_global_req burst=240 nodelay;\n"
@@ -986,6 +1058,8 @@ text = api_pattern.sub(api_replacement, text, count=1)
 
 api_generic_pattern = re.compile(
     r'(location /api/ \{\n)'
+    r'(?:    auth_request /__pteroprotect/challenge/check_token;\n)?'
+    r'(?:    error_page 401 = @pteroprotect_challenge_redirect;\n)?'
     r'(?:    limit_conn pteroprotect_conn \d+;\n)?'
     r'(?:    limit_conn pteroprotect_api_global_conn \d+;\n)?'
     r'(?:    limit_req zone=pteroprotect_api_global_req burst=\d+ nodelay;\n)?'
@@ -994,6 +1068,8 @@ api_generic_pattern = re.compile(
 )
 api_generic_replacement = (
     "location /api/ {\n"
+    "    auth_request /__pteroprotect/challenge/check_token;\n"
+    "    error_page 401 = @pteroprotect_challenge_redirect;\n"
     "    limit_conn pteroprotect_conn 120;\n"
     "    limit_conn pteroprotect_api_global_conn 800;\n"
     "    limit_req zone=pteroprotect_api_global_req burst=240 nodelay;\n"
