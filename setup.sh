@@ -968,7 +968,7 @@ path = pathlib.Path(sys.argv[1])
 auth_conn_limit = sys.argv[2]
 auth_burst = sys.argv[3]
 text = path.read_text()
-for block in ("location = /auth/login", "location ^~ /auth/"):
+for block in ("location = /auth/login",):
     pattern = re.compile(
         rf'({re.escape(block)} \{{\n)'
         r'(?:    auth_request /__pteroprotect/challenge/check;\n)?'
@@ -1006,8 +1006,6 @@ sanctum_pattern = re.compile(
 )
 sanctum_replacement = (
     "location = /sanctum/csrf-cookie {\n"
-    "    auth_request /__pteroprotect/challenge/check;\n"
-    "    error_page 401 = @pteroprotect_challenge_redirect;\n"
     f"    limit_conn pteroprotect_conn {auth_conn_limit};\n"
     "    limit_conn pteroprotect_auth_global_conn 100;\n"
     "    limit_req zone=pteroprotect_auth_global_req burst=30 nodelay;\n"
@@ -1053,8 +1051,6 @@ api_pattern = re.compile(
 )
 api_replacement = (
     "location /api/client/ {\n"
-    "    auth_request /__pteroprotect/challenge/check_token;\n"
-    "    error_page 401 = @pteroprotect_challenge_redirect;\n"
     "    limit_conn pteroprotect_conn 120;\n"
     "    limit_conn pteroprotect_api_global_conn 800;\n"
     "    limit_req zone=pteroprotect_api_global_req burst=240 nodelay;\n"
@@ -1075,8 +1071,6 @@ api_generic_pattern = re.compile(
 )
 api_generic_replacement = (
     "location /api/ {\n"
-    "    auth_request /__pteroprotect/challenge/check_token;\n"
-    "    error_page 401 = @pteroprotect_challenge_redirect;\n"
     "    limit_conn pteroprotect_conn 120;\n"
     "    limit_conn pteroprotect_api_global_conn 800;\n"
     "    limit_req zone=pteroprotect_api_global_req burst=240 nodelay;\n"
