@@ -1122,58 +1122,6 @@ PY
         perl -0pi -e 's/server_name\s+([^;]+);\n/server_name $1;\n\n    include \/etc\/nginx\/snippets\/pteroprotect_server.conf;\n/' "${NGINX_DIR}/sites-available/pterodactyl.conf"
     fi
 
-    if [[ -f "${NGINX_DIR}/sites-available/pterodactyl.conf" ]] && ! grep -q "^    location ~ \\^/api/client/servers/.+/websocket\\$" "${NGINX_DIR}/sites-available/pterodactyl.conf"; then
-        python3 - "${NGINX_DIR}/sites-available/pterodactyl.conf" "${WEBSOCKET_CONN_LIMIT}" "${WEBSOCKET_GLOBAL_CONN_LIMIT}" <<'PY'
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-text = path.read_text()
-needle = "    charset utf-8;\n"
-insert = (
-    "    charset utf-8;\n\n"
-    "    location ~ ^/api/client/servers/.+/websocket$ {\n"
-    f"        limit_conn pteroprotect_conn {sys.argv[2]};\n"
-    f"        limit_conn pteroprotect_ws_global_conn {sys.argv[3]};\n"
-    "        try_files $uri $uri/ /index.php?$query_string;\n"
-    "    }\n"
-)
-
-if needle in text and "location ~ ^/api/client/servers/.+/websocket$ {" not in text:
-    text = text.replace(needle, insert, 1)
-    path.write_text(text)
-PY
-    fi
-
-    if [[ -f "${NGINX_DIR}/sites-available/pterodactyl.conf" ]]; then
-        python3 - "${NGINX_DIR}/sites-available/pterodactyl.conf" "${WEBSOCKET_CONN_LIMIT}" "${WEBSOCKET_GLOBAL_CONN_LIMIT}" <<'PY'
-import pathlib
-import re
-import sys
-
-path = pathlib.Path(sys.argv[1])
-conn_limit = sys.argv[2]
-global_conn_limit = sys.argv[3]
-text = path.read_text()
-pattern = re.compile(
-    r'    location ~ \^/api/client/servers/\.\+/websocket\$ \{\n'
-    r'(?:        limit_conn pteroprotect_conn \d+;\n)?'
-    r'(?:        limit_conn pteroprotect_ws_global_conn \d+;\n)?'
-    r'        try_files \$uri \$uri/ /index\.php\?\$query_string;\n'
-    r'    \}\n'
-)
-replacement = (
-    "    location ~ ^/api/client/servers/.+/websocket$ {\n"
-    f"        limit_conn pteroprotect_conn {conn_limit};\n"
-    f"        limit_conn pteroprotect_ws_global_conn {global_conn_limit};\n"
-    "        try_files $uri $uri/ /index.php?$query_string;\n"
-    "    }\n"
-)
-text = pattern.sub(replacement, text, count=1)
-path.write_text(text)
-PY
-    fi
-
     if [[ -f "${NGINX_DIR}/sites-available/pterodactyl.conf" ]]; then
         perl -0pi -e 's/access_log\s+off;/access_log \/var\/log\/nginx\/pteroprotect.access.log combined;/g;' "${NGINX_DIR}/sites-available/pterodactyl.conf"
         perl -0pi -e "s/limit_conn pteroprotect_conn \\d+;/limit_conn pteroprotect_conn ${HTTP_CONN_LIMIT};/g; s/limit_req zone=pteroprotect_req burst=\\d+ nodelay;/limit_req zone=pteroprotect_req burst=${HTTP_REQ_BURST} nodelay;/g;" "${NGINX_DIR}/sites-available/pterodactyl.conf"
