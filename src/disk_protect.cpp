@@ -800,7 +800,44 @@ std::vector<FileInfo> reclaim_largest_entries(const std::string& root_path,
         if (label.find(root_path + "/") == 0) label = label.substr(root_path.size() + 1);
         if (label.empty() || label == ".dann_quarantine") continue;
 
-        if (!remove_path_force(entry_path)) continue;
+        if (!remove_path_force(entry_path)) {
+            logger.warn("⚠️ Failed to remove large path directly: " + entry_path + " (trying file-level reclaim)");
+
+            std::string fcmd =
+                "find " + shell_escape_single(entry_path) +
+                " -xdev -type f -printf '%s %p\\n' 2>/dev/null | sort -nr | head -n 30";
+            FILE* fp = popen(fcmd.c_str(), "r");
+            if (!fp) continue;
+
+            char fbuf[4096];
+            int reclaimed_files = 0;
+            while (fgets(fbuf, sizeof(fbuf), fp)) {
+                std::stringstream fs(fbuf);
+                long long fbytes = 0;
+                std::string fpath;
+                if (!(fs >> fbytes >> fpath)) continue;
+                if (fbytes <= 0 || fpath.empty()) continue;
+                if (unlink(fpath.c_str()) != 0) continue;
+
+                FileInfo fi;
+                fi.name = fpath;
+                if (fi.name.find(root_path + "/") == 0) fi.name = fi.name.substr(root_path.size() + 1);
+                fi.path = fpath;
+                fi.size = fbytes;
+                fi.suspicion_reason = "Disk over limit file-level reclaim";
+                reclaimed.push_back(fi);
+                reclaimed_mb += fbytes / (1024.0 * 1024.0);
+                reclaimed_files++;
+
+                if ((int)reclaimed.size() >= max_entries * 6) break;
+                if (reclaim_target_mb > 0.0 && reclaimed_mb >= reclaim_target_mb) break;
+            }
+            pclose(fp);
+            if (reclaimed_files == 0) continue;
+            if ((int)reclaimed.size() >= max_entries * 6) break;
+            if (reclaim_target_mb > 0.0 && reclaimed_mb >= reclaim_target_mb) break;
+            continue;
+        }
 
         FileInfo item;
         item.name = label;
@@ -1301,7 +1338,7 @@ void DiskProtector::check_server(const std::string& uuid) {
             if (over_limit_mb > reclaim_target_mb) reclaim_target_mb = over_limit_mb;
         }
         if (spike_disk > 0.0) {
-            double spike_mb = spike_disk * 512.0;
+            double spike_mb = spike_disk * 1024.0;
             if (spike_mb > reclaim_target_mb) reclaim_target_mb = spike_mb;
         }
 
