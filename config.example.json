@@ -133,6 +133,7 @@
       "unblock_portal_port": 18443,
       "unblock_portal_token": "dannhexzoprotect",
       "waf_challenge_enabled": true,
+      "waf_challenge_strict_mode": true,
       "waf_challenge_bind": "127.0.0.1",
       "waf_challenge_port": 18444,
       "waf_challenge_ttl_sec": 1800,

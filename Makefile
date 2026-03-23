@@ -1,7 +1,7 @@
 CXX = g++
 CXXFLAGS = -std=c++11 -Wall -Iinclude
 LDFLAGS = -lmysqlclient -lcurl -lpthread -lcrypto
-CHALLENGE_LDFLAGS = -lpthread -lcrypto
+CHALLENGE_LDFLAGS = -lpthread -lcrypto -lssl
 PREFIX ?= /pteroprotect
 PANEL_DIR ?= /var/www/pterodactyl
 SYSTEMD_DIR ?= /etc/systemd/system

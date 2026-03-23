@@ -4,7 +4,9 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
+#include <openssl/ssl.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -32,6 +34,7 @@ using json = nlohmann::json;
 
 struct Settings {
     bool enabled = true;
+    bool strict_mode = true;
     std::string bind = "127.0.0.1";
     int port = 18444;
     int ttl = 1800;
@@ -44,10 +47,12 @@ struct NonceRec {
     std::string ip;
     std::string ua;
     std::string answer_key;
+    std::string click_key;
     std::string behavior_key;
     std::string connection_key;
     std::string pattern_key;
     std::string pattern_seq;
+    bool click_verified = false;
     bool math_verified = false;
     int math_fail_count = 0;
     int min_connection_ms = 5000;
@@ -214,6 +219,7 @@ static Settings load_settings() {
             f >> j;
             json net = j.value("network", json::object());
             s.enabled = parse_bool(net.value("waf_challenge_enabled", json(true)), true);
+            s.strict_mode = parse_bool(net.value("waf_challenge_strict_mode", json(true)), true);
             s.bind = json_get_string(net, "waf_challenge_bind", "127.0.0.1");
             s.port = std::max(1, std::min(65535, json_get_int(net, "waf_challenge_port", 18444)));
             s.ttl = std::max(60, std::min(86400, json_get_int(net, "waf_challenge_ttl_sec", 1800)));
@@ -283,6 +289,132 @@ static std::string first_xff_ip(const std::string& xff) {
     std::size_t pos = xff.find(',');
     if (pos == std::string::npos) return trim(xff);
     return trim(xff.substr(0, pos));
+}
+
+static bool is_ipv4_literal(const std::string& ip) {
+    sockaddr_in sa{};
+    return inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) == 1;
+}
+
+static int connect_ipv4_with_timeout(const std::string& ip, int port, int timeout_ms) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    sockaddr_in dst{};
+    dst.sin_family = AF_INET;
+    dst.sin_port = htons(static_cast<uint16_t>(port));
+    if (inet_pton(AF_INET, ip.c_str(), &dst.sin_addr) != 1) {
+        close(fd);
+        return -1;
+    }
+
+    int rc = connect(fd, reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
+    if (rc != 0 && errno != EINPROGRESS) {
+        close(fd);
+        return -1;
+    }
+
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(fd, &wfds);
+    timeval tv{};
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    rc = select(fd + 1, nullptr, &wfds, nullptr, &tv);
+    if (rc <= 0) {
+        close(fd);
+        return -1;
+    }
+
+    int soerr = 0;
+    socklen_t soerr_len = sizeof(soerr);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &soerr_len) != 0 || soerr != 0) {
+        close(fd);
+        return -1;
+    }
+
+    if (flags >= 0) (void)fcntl(fd, F_SETFL, flags);
+    timeval io_tv{};
+    io_tv.tv_sec = timeout_ms / 1000;
+    io_tv.tv_usec = (timeout_ms % 1000) * 1000;
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &io_tv, sizeof(io_tv));
+    (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &io_tv, sizeof(io_tv));
+    return fd;
+}
+
+static bool response_indicates_server_or_html(const std::string& response) {
+    std::string low = to_lower(response);
+    const bool server_banner =
+        (low.find("\nserver: nginx") != std::string::npos) ||
+        (low.find("\nserver: apache") != std::string::npos) ||
+        (low.find("\nserver: openresty") != std::string::npos);
+    const bool html_like =
+        (low.find("content-type: text/html") != std::string::npos) ||
+        (low.find("<!doctype html") != std::string::npos) ||
+        (low.find("<html") != std::string::npos) ||
+        (low.find("<head") != std::string::npos) ||
+        (low.find("<body") != std::string::npos);
+    return server_banner || html_like;
+}
+
+static bool probe_http_plain(const std::string& ip, int port) {
+    int fd = connect_ipv4_with_timeout(ip, port, 450);
+    if (fd < 0) return false;
+
+    std::string req = "GET / HTTP/1.0\r\nHost: " + ip + "\r\nConnection: close\r\n\r\n";
+    (void)send(fd, req.data(), req.size(), 0);
+    char buf[4096];
+    ssize_t n = recv(fd, buf, sizeof(buf), 0);
+    close(fd);
+    if (n <= 0) return false;
+    return response_indicates_server_or_html(std::string(buf, buf + n));
+}
+
+static bool probe_http_tls(const std::string& ip, int port) {
+    int fd = connect_ipv4_with_timeout(ip, port, 650);
+    if (fd < 0) return false;
+
+    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) {
+        close(fd);
+        return false;
+    }
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
+    SSL* ssl = SSL_new(ctx);
+    if (!ssl) {
+        SSL_CTX_free(ctx);
+        close(fd);
+        return false;
+    }
+    (void)SSL_set_tlsext_host_name(ssl, ip.c_str());
+    SSL_set_fd(ssl, fd);
+    if (SSL_connect(ssl) <= 0) {
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        close(fd);
+        return false;
+    }
+
+    std::string req = "GET / HTTP/1.0\r\nHost: " + ip + "\r\nConnection: close\r\n\r\n";
+    (void)SSL_write(ssl, req.data(), static_cast<int>(req.size()));
+    char buf[4096];
+    int n = SSL_read(ssl, buf, sizeof(buf));
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    close(fd);
+    if (n <= 0) return false;
+    return response_indicates_server_or_html(std::string(buf, buf + n));
+}
+
+static bool probe_client_http_server_banner(const std::string& ip) {
+    if (!is_ipv4_literal(ip)) return false;
+    if (probe_http_plain(ip, 80)) return true;
+    if (probe_http_tls(ip, 443)) return true;
+    return false;
 }
 
 static std::string read_cookie(const std::string& cookie_hdr, const std::string& name) {
@@ -574,13 +706,78 @@ static bool pattern_pass(const json& pattern, const NonceRec& rec) {
 }
 
 static std::string pattern_hint_text(const std::vector<int>& nodes) {
+    auto number_word = [](int n) -> std::string {
+        switch (n) {
+            case 1: return "satu";
+            case 2: return "dua";
+            case 3: return "tiga";
+            case 4: return "empat";
+            case 5: return "lima";
+            case 6: return "enam";
+            case 7: return "tujuh";
+            case 8: return "delapan";
+            case 9: return "sembilan";
+            default: return "";
+        }
+    };
+
+    auto obfuscate_word = [](const std::string& in) -> std::string {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<int> p(0, 99);
+        std::vector<std::string> out;
+        out.reserve(in.size());
+        bool changed = false;
+
+        for (char ch : in) {
+            char c = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            std::string repl(1, c);
+            std::vector<std::string> candidates;
+            switch (c) {
+                case 'a': candidates = {"4", "@"}; break;
+                case 'e': candidates = {"3"}; break;
+                case 'i': candidates = {"1", "!"}; break;
+                case 'o': candidates = {"0"}; break;
+                case 's': candidates = {"5", "$"}; break;
+                case 't': candidates = {"7"}; break;
+                case 'b': candidates = {"8"}; break;
+                case 'g': candidates = {"9"}; break;
+                case 'l': candidates = {"1"}; break;
+                case 'z': candidates = {"2"}; break;
+                default: break;
+            }
+            if (!candidates.empty() && p(gen) < 55) {
+                repl = candidates[static_cast<std::size_t>(p(gen) % static_cast<int>(candidates.size()))];
+                changed = true;
+            }
+            out.push_back(repl);
+        }
+
+        if (!changed) {
+            for (std::size_t i = 0; i < out.size(); ++i) {
+                if (out[i] == "a") { out[i] = "4"; changed = true; break; }
+                if (out[i] == "i") { out[i] = "1"; changed = true; break; }
+                if (out[i] == "e") { out[i] = "3"; changed = true; break; }
+            }
+        }
+
+        std::string joined;
+        for (const auto& s : out) joined += s;
+        return joined;
+    };
+
     std::ostringstream oss;
-    oss << "Ikuti urutan angka: ";
+    oss << "Ikuti urutan kata: ";
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         int n = nodes[i];
         if (n < 0 || n > 8) continue;
         if (i > 0) oss << " -> ";
-        oss << (n + 1);
+        std::string w = number_word(n + 1);
+        if (w.empty()) {
+            oss << (n + 1);
+        } else {
+            oss << obfuscate_word(w);
+        }
     }
     return oss.str();
 }
@@ -641,12 +838,15 @@ static bool is_loopback_ip(const std::string& ip) {
     return t == "127.0.0.1" || t == "::1" || t == "::ffff:127.0.0.1";
 }
 
-static bool has_valid_auth_token_header(const HttpRequest& req) {
-    // Allow panel->wings internal daemon polling from localhost even if token
-    // format does not match strict API token patterns.
+static std::string session_scope_key(const std::string& ip, const std::string& ua_fp) {
+    return ip + "|" + ua_fp;
+}
+
+static bool has_valid_auth_token_header(const HttpRequest& req, const std::string& client_ip) {
+    // Allow panel->wings internal daemon polling only when real client IP is localhost.
     auto ua_it = req.headers.find("user-agent");
     std::string ua = (ua_it != req.headers.end()) ? to_lower(ua_it->second) : "";
-    if (is_loopback_ip(req.remote_ip) && ua.find("guzzlehttp/") != std::string::npos) {
+    if (is_loopback_ip(client_ip) && ua.find("guzzlehttp/") != std::string::npos) {
         return true;
     }
 
@@ -701,9 +901,10 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
         if (p.value("ua", std::string()) != ua_fp) return false;
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
-            auto it = g_ip_session_map.find(ip);
+            auto it = g_ip_session_map.find(session_scope_key(ip, ua_fp));
             if (it == g_ip_session_map.end()) return false;
             if (it->second.sid != sid) return false;
+            if (it->second.ua != ua_fp) return false;
             if (it->second.exp < std::time(nullptr)) return false;
         }
         return true;
@@ -857,10 +1058,15 @@ static void handle_client(int fd, std::string remote_ip) {
         }
         std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
         std::string tok = read_cookie(cookie, s.cookie_name);
-        std::map<std::string, std::string> q = parse_query(req.query);
-        std::string wing_q_token = q.count("token") ? trim(q["token"]) : "";
-        const bool wing_query_ok = generic_bearer_token_format_ok(wing_q_token);
-        if ((!tok.empty() && verify_token(s, tok, ip, ua_fp)) || has_valid_auth_token_header(req) || wing_query_ok) {
+        const bool cookie_ok = (!tok.empty() && verify_token(s, tok, ip, ua_fp));
+        const bool internal_loopback_bypass = is_loopback_ip(ip) && has_valid_auth_token_header(req, ip);
+        bool legacy_token_bypass = false;
+        if (!s.strict_mode) {
+            std::map<std::string, std::string> q = parse_query(req.query);
+            std::string wing_q_token = q.count("token") ? trim(q["token"]) : "";
+            legacy_token_bypass = has_valid_auth_token_header(req, ip) || generic_bearer_token_format_ok(wing_q_token);
+        }
+        if (cookie_ok || internal_loopback_bypass || legacy_token_bypass) {
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
             send_response(fd, 401, "Unauthorized", "", {}, head_only);
@@ -887,7 +1093,6 @@ static void handle_client(int fd, std::string remote_ip) {
         std::uniform_int_distribution<int> num_b(12000, 98000);
         std::uniform_int_distribution<int> num_c(1200, 9500);
         std::uniform_int_distribution<int> opdis(0, 1);
-        std::uniform_int_distribution<int> delay_ms_dis(5000, 11000);
         int a = num_a(gen), b = num_b(gen), c = num_c(gen);
         bool plus = opdis(gen) == 0;
         long long ans = plus ? (static_cast<long long>(a) + static_cast<long long>(b) - c)
@@ -901,11 +1106,13 @@ static void handle_client(int fd, std::string remote_ip) {
             rec.ip = ip;
             rec.ua = ua_fp;
             rec.answer_key = "ans_" + random_token(6);
+            rec.click_key = "clk_" + random_token(6);
             rec.behavior_key = "beh_" + random_token(6);
             rec.connection_key = "conn_" + random_token(6);
             rec.pattern_key = "pat_" + random_token(6);
             rec.pattern_seq = join_ints_dash(pattern_nodes);
-            rec.min_connection_ms = delay_ms_dis(gen);
+            const bool client_server_like = probe_client_http_server_banner(ip);
+            rec.min_connection_ms = client_server_like ? (6 * 60 * 60 * 1000) : 0;
             rec.issued_at = std::time(nullptr);
             // Keep nonce valid longer to reduce false invalidation on mobile/slow interaction.
             rec.exp = std::time(nullptr) + 3600;
@@ -917,6 +1124,7 @@ static void handle_client(int fd, std::string remote_ip) {
         out["nonce"] = nonce;
         out["question"] = "(" + std::to_string(a) + (plus ? " + " : " - ") + std::to_string(b) + ") " + (plus ? "- " : "+ ") + std::to_string(c) + " = ?";
         out["answer_key"] = rec.answer_key;
+        out["click_key"] = rec.click_key;
         out["behavior_key"] = rec.behavior_key;
         out["connection_key"] = rec.connection_key;
         out["pattern_key"] = rec.pattern_key;
@@ -958,7 +1166,7 @@ static void handle_client(int fd, std::string remote_ip) {
                 found = true;
             }
         }
-        if (!found || rec.exp < std::time(nullptr) || rec.ua != ua_fp) {
+        if (!found || rec.exp < std::time(nullptr) || rec.ip != ip || rec.ua != ua_fp) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"nonce_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);
             return;
@@ -1002,6 +1210,53 @@ static void handle_client(int fd, std::string remote_ip) {
         return;
     }
 
+    if (req.path == "/click" && req.method == "POST") {
+        if (!s.enabled) {
+            send_response(fd, 200, "OK", "{\"ok\":true}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            close(fd);
+            return;
+        }
+        json in = json::object();
+        std::string nonce;
+        std::string click_value;
+        try {
+            in = json::parse(req.body);
+            nonce = trim(in.value("nonce", std::string()));
+            click_value = trim(in.value("click", std::string()));
+        } catch (...) {
+            send_response(fd, 400, "Bad Request", "{\"ok\":false,\"error\":\"invalid_json\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            close(fd);
+            return;
+        }
+        if (nonce.empty() || click_value.empty()) {
+            send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"click_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            close(fd);
+            return;
+        }
+        bool ok = false;
+        {
+            std::lock_guard<std::mutex> lock(g_nonce_mu);
+            auto it = g_nonce_map.find(nonce);
+            if (it != g_nonce_map.end() &&
+                it->second.exp >= std::time(nullptr) &&
+                it->second.ip == ip &&
+                it->second.ua == ua_fp &&
+                !it->second.click_key.empty() &&
+                click_value == it->second.click_key) {
+                it->second.click_verified = true;
+                ok = true;
+            }
+        }
+        if (!ok) {
+            send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"click_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            close(fd);
+            return;
+        }
+        send_response(fd, 200, "OK", "{\"ok\":true}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+        close(fd);
+        return;
+    }
+
     if (req.path == "/page" && (req.method == "GET" || req.method == "HEAD")) {
         std::map<std::string, std::string> q = parse_query(req.query);
         std::string rd = q.count("rd") ? q["rd"] : "/";
@@ -1015,14 +1270,14 @@ static void handle_client(int fd, std::string remote_ip) {
             "font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;"
             "color:var(--text);background:radial-gradient(1000px 480px at 10% 0%,#173861 0%,transparent 60%),"
             "radial-gradient(1000px 520px at 100% 100%,#0b4f63 0%,transparent 58%),var(--bg)}"
-            ".card{width:min(460px,96vw);background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.01));"
+            ".card{width:min(760px,98vw);background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.01));"
             "border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.4)}"
             ".head{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}"
             ".dot{width:10px;height:10px;border-radius:999px;background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 0 18px rgba(72,170,255,.8)}"
             ".title{font-weight:700;letter-spacing:.2px}.sub{margin-left:auto;font-size:12px;color:var(--muted)}"
             ".body{padding:16px}.tabs{display:flex;gap:8px;margin:0 0 12px}.tab{flex:1;text-align:center;padding:8px 10px;border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:12px}"
             ".tab.on{color:#cfe7ff;background:#0c223d;border-color:#3a6aa0}.pane{display:none}.pane.on{display:block}.big{padding:14px;border:1px solid var(--line);border-radius:12px;background:#0a1a2d}"
-            ".connbox{position:relative;min-height:190px;padding-bottom:84px}.human-wrap{position:absolute;left:14px;top:98px}"
+            ".connbox{position:relative;min-height:52vh;max-height:72vh;padding:14px}.human-wrap{position:absolute;left:14px;top:14px}"
             ".timer{font-size:28px;font-weight:800;letter-spacing:.4px;color:#bfe1ff}.q{margin:0 0 10px;color:var(--muted);font-size:14px;line-height:1.45}"
             ".qa{margin:0 0 12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#0a1a2d;color:#bfe1ff;font-weight:600}"
             ".pat{margin:0 0 12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:#07172a;display:none}"
@@ -1031,6 +1286,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "input,button{border-radius:10px;border:1px solid #2b527f;background:#0c1f34;color:var(--text);padding:12px 13px;font-size:14px;outline:none}"
             "input:focus{border-color:#4f93df;box-shadow:0 0 0 2px rgba(79,147,223,.18)}"
             "button{cursor:pointer;background:linear-gradient(135deg,#1f70e6,#2f9cff);border-color:#3ca3ff;font-weight:700;min-width:112px}"
+            "#human_btn{width:min(100%,420px);min-height:48px}"
             "button.secondary{background:#142b45;border-color:#2f5b8b;color:#bfe1ff}"
             "button:hover{filter:brightness(1.06)}button:disabled{opacity:.65;cursor:not-allowed}"
             ".hint{margin-top:10px;color:var(--muted);font-size:12px}.status{margin-top:9px;color:#9fd2ff;min-height:18px;font-size:13px}.err{margin-top:6px;color:var(--err);min-height:18px;font-size:13px}"
@@ -1042,7 +1298,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "<div class=\"pane\" id=\"pane_chal\"><p class=\"q\" id=\"phaseq\">Tahap 1: selesaikan math dulu.</p><p class=\"q\" id=\"phint\"></p>"
             "<p class=\"qa\" id=\"q\">Memuat challenge...</p><div class=\"pat\" id=\"patbox\"><canvas id=\"pc\" width=\"280\" height=\"280\"></canvas></div><div class=\"row\" id=\"ainput_wrap\"><input id=\"a\" placeholder=\"Masukkan jawaban\"/></div><div class=\"row\"><button id=\"b\">Continue</button><button id=\"rb\" type=\"button\" class=\"secondary\">Restart (3)</button></div>"
             "<div class=\"hint\">Tip: gunakan perangkat normal (mouse/touch/scroll) agar lolos validasi anti-bot.</div></div><div class=\"status\" id=\"s\"></div><div class=\"err\" id=\"e\"></div></div></div>"
-            "<script>let nonce=\"\",ak=\"\",bk=\"\",ck=\"\",pk=\"\";let phase=1;let pseq=[];let clicked=[];let pTrace=[];let pStart=0;let pDir=0;let pActive=false;let ppx=null,ppy=null,pvdx=0,pvdy=0;let started=Date.now();let unlockAt=0;let waitTimer=null;let humanMoveTimer=null;let humanReady=false;let enteredChallenge=false;let pm=0,pd=0,pdc=0,tm=0,sc=0,kc=0,px=null,py=null,pvx=0,pvy=0;let restartsLeft=3;"
+            "<script>let nonce=\"\",ak=\"\",hk=\"\",bk=\"\",ck=\"\",pk=\"\";let phase=1;let pseq=[];let clicked=[];let pTrace=[];let pStart=0;let pDir=0;let pActive=false;let ppx=null,ppy=null,pvdx=0,pvdy=0;let started=Date.now();let unlockAt=0;let waitTimer=null;let humanMoveTimer=null;let humanReady=false;let enteredChallenge=false;let clickVerified=false;let pm=0,pd=0,pdc=0,tm=0,sc=0,kc=0,px=null,py=null,pvx=0,pvy=0;let restartsLeft=3;"
             "const elQ=document.getElementById('q'),elA=document.getElementById('a'),elB=document.getElementById('b'),elRB=document.getElementById('rb'),elS=document.getElementById('s'),elE=document.getElementById('e'),elCT=document.getElementById('ctimer'),elHB=document.getElementById('human_btn'),elCW=document.getElementById('connbox'),elHW=document.getElementById('human_wrap'),elPC=document.getElementById('pane_conn'),elPH=document.getElementById('pane_chal'),elTC=document.getElementById('tab_conn'),elTH=document.getElementById('tab_chal'),elPQ=document.getElementById('phaseq'),elPHint=document.getElementById('phint'),elPat=document.getElementById('patbox'),elInputWrap=document.getElementById('ainput_wrap'),pc=document.getElementById('pc'),ctx=pc.getContext('2d');"
             "function normAns(v){let s=String(v||'').trim();if(!s)return s;const sign=(s[0]==='+'||s[0]==='-')?s[0]:'';if(sign)s=s.slice(1);s=s.replace(/[\\s,._']/g,'');return sign+s;}"
             "function trackPointer(x,y){if(px!==null&&py!==null){const dx=x-px,dy=y-py;pd+=Math.hypot(dx,dy);pm++;if((pvx!==0||pvy!==0)&&((dx*pvx+dy*pvy)<-4))pdc++;pvx=dx;pvy=dy;}px=x;py=y;}"
@@ -1063,17 +1319,17 @@ static void handle_client(int fd, std::string remote_ip) {
             "function showChal(){elPC.classList.remove('on');elPH.classList.add('on');elTC.classList.remove('on');elTH.classList.add('on');}"
             "function setPhaseMath(){phase=1;elQ.style.display='';elInputWrap.style.display='';elPat.style.display='none';elA.value='';}"
             "function setPhasePattern(){phase=2;elQ.style.display='none';elInputWrap.style.display='none';elPat.style.display='block';}"
-            "function randBtn(){if(!elHB||!elCW||!elHW)return;const pad=12;const topMin=96;const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);const x=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const y=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
+            "function randBtn(){if(!elHB||!elCW||!elHW)return;const pad=14;const topMin=14;const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);const x=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const y=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
             "function fmtMs(ms){const t=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(t/60);const s=t%60;return String(m)+'m '+String(s).padStart(2,'0')+'s';}"
             "function updateWait(){const ms=unlockAt-Date.now();if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}elCT.textContent='OK';elS.textContent='Connection check passed.';elB.disabled=false;return;}const label=fmtMs(ms);elCT.textContent=label;if(!enteredChallenge){showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}else{elB.disabled=false;elS.textContent='Challenge opened. No cooldown for submit.';}}"
             "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;const r=await fetch('/__pteroprotect/challenge/new',{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error('challenge unavailable');"
-            "nonce=j.nonce;ak=j.answer_key||'answer';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 1: selesaikan math dulu.';elPHint.textContent='';drawPattern();elQ.textContent=j.question;restartsLeft=3;elRB.disabled=false;elRB.textContent='Restart ('+String(restartsLeft)+')';"
-            "const raw=Number(j.connection_delay_ms||0);const d=Math.min(32400000,Math.max(360000,raw));started=Date.now();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';unlockAt=Date.now()+d;requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},1800);updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,250);}"
-            "elHB.onclick=()=>{humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();updateWait();};"
+            "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';clickVerified=false;setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 1: selesaikan math dulu.';elPHint.textContent='';drawPattern();elQ.textContent=j.question;restartsLeft=3;elRB.disabled=false;elRB.textContent='Restart ('+String(restartsLeft)+')';"
+            "const raw=Number(j.connection_delay_ms||0);const d=Math.min(21600000,Math.max(0,raw));started=Date.now();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';unlockAt=Date.now()+d;requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},1800);updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,250);}"
+            "elHB.onclick=async()=>{try{if(!nonce||!hk){throw new Error('challenge unavailable');}const c={nonce:nonce,click:hk};const cr=await fetch('/__pteroprotect/challenge/click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});const cj=await cr.json();if(!cj.ok){throw new Error(cj.error||'click_invalid');}clickVerified=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();updateWait();}catch(err){elE.textContent=String(err.message||err);}};"
             "window.addEventListener('resize',()=>{if(!humanReady)randBtn();});"
             "elA.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();elB.click();}});"
             "elRB.onclick=async()=>{if(restartsLeft<=0){elRB.disabled=true;return;}restartsLeft-=1;elRB.textContent='Restart ('+String(restartsLeft)+')';if(restartsLeft<=0)elRB.disabled=true;elE.textContent='';if(phase===1){elS.textContent='Math di-reset.';elA.value='';elA.focus();elB.disabled=false;return;}if(phase===2){elS.textContent='Pattern di-reset.';clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;drawPattern();elB.disabled=false;return;}elS.textContent='Challenge di-reset.';elB.disabled=false;};"
-            "elB.onclick=async()=>{try{if(Date.now()<unlockAt&&!enteredChallenge){updateWait();return;}elE.textContent='';elB.disabled=true;"
+            "elB.onclick=async()=>{try{if(Date.now()<unlockAt&&!enteredChallenge){updateWait();return;}if(!clickVerified){throw new Error('click_required');}elE.textContent='';elB.disabled=true;"
             "if(phase===1){const m={nonce:nonce};m[ak]=normAns(elA.value||'');const mr=await fetch('/__pteroprotect/challenge/verify-math',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)});const mj=await mr.json();if(!mj.ok)throw new Error(mj.error||'math_failed');setPhasePattern();pseq=Array.isArray(mj.pattern_points)?mj.pattern_points:[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 2: klik angka sesuai urutan.';elPHint.textContent=String(mj.pattern_hint||'');drawPattern();elB.disabled=false;return;}"
             "const p={nonce:nonce,rd:'" + rd + "'};p[ak]=normAns(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
             "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');location.href=j.redirect||'" + rd + "';}"
@@ -1092,7 +1348,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "self.addEventListener('activate',e=>{e.waitUntil(self.clients.claim());});"
             "self.addEventListener('fetch',e=>{"
             "const u=new URL(e.request.url);"
-            "if(u.pathname.startsWith('/__pteroprotect/challenge/new')||u.pathname.startsWith('/__pteroprotect/challenge/verify-math')||u.pathname.startsWith('/__pteroprotect/challenge/solve')||u.pathname.startsWith('/__pteroprotect/challenge/check')){"
+            "if(u.pathname.startsWith('/__pteroprotect/challenge/new')||u.pathname.startsWith('/__pteroprotect/challenge/click')||u.pathname.startsWith('/__pteroprotect/challenge/verify-math')||u.pathname.startsWith('/__pteroprotect/challenge/solve')||u.pathname.startsWith('/__pteroprotect/challenge/check')){"
             "e.respondWith(fetch(e.request));return;}"
             "if(u.pathname.startsWith('/__pteroprotect/challenge/')){"
             "e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request).then(n=>{const cp=n.clone();caches.open(CACHE).then(c=>c.put(e.request,cp)).catch(()=>{});return n;}).catch(()=>caches.match('/__pteroprotect/challenge/page'))));"
@@ -1150,8 +1406,13 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        if (rec.ua != ua_fp) {
+        if (rec.ip != ip || rec.ua != ua_fp) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"fingerprint_mismatch\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            close(fd);
+            return;
+        }
+        if (!rec.click_verified) {
+            send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"click_required\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);
             return;
         }
@@ -1207,7 +1468,7 @@ static void handle_client(int fd, std::string remote_ip) {
             sr.sid = sid;
             sr.ua = ua_fp;
             sr.exp = std::time(nullptr) + s.ttl;
-            g_ip_session_map[ip] = sr;
+            g_ip_session_map[session_scope_key(ip, ua_fp)] = sr;
         }
         std::string tok = issue_token(s, ip, ua_fp, sid);
         std::vector<std::pair<std::string, std::string>> headers = {

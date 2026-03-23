@@ -768,28 +768,77 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
             echo "[setup] warning: node runtime unavailable; skipping frontend build." >&2
         else
             echo "[setup] installing panel frontend dependencies..."
-            if command -v yarn >/dev/null 2>&1; then
-                (cd "${PANEL_DIR}" && yarn -s install --frozen-lockfile) || (cd "${PANEL_DIR}" && yarn -s install) || true
-            elif command -v yarnpkg >/dev/null 2>&1; then
-                (cd "${PANEL_DIR}" && yarnpkg -s install --frozen-lockfile) || (cd "${PANEL_DIR}" && yarnpkg -s install) || true
-            elif command -v npx >/dev/null 2>&1; then
-                (cd "${PANEL_DIR}" && npx --yes yarn -s install --frozen-lockfile) || (cd "${PANEL_DIR}" && npx --yes yarn -s install) || true
+            PANEL_USE_COREPACK_YARN=0
+            if [[ -f "${PANEL_DIR}/yarn.lock" ]]; then
+                PANEL_YARN_FIRST_LINE="$(awk 'NF {print; exit}' "${PANEL_DIR}/yarn.lock" 2>/dev/null || true)"
+                if [[ "${PANEL_YARN_FIRST_LINE}" == "__metadata:" ]]; then
+                    PANEL_USE_COREPACK_YARN=1
+                fi
             fi
 
-            if command -v yarn >/dev/null 2>&1; then
-                if ! (cd "${PANEL_DIR}" && yarn -s build:production); then
-                    echo "[setup] warning: frontend build failed via yarn." >&2
+            PANEL_INSTALL_OK=0
+            PANEL_BUILD_OK=0
+
+            if (( PANEL_USE_COREPACK_YARN == 1 )) && command -v corepack >/dev/null 2>&1; then
+                echo "[setup] yarn modern lockfile detected, using corepack yarn..."
+                (cd "${PANEL_DIR}" && corepack enable >/dev/null 2>&1 || true)
+                if (cd "${PANEL_DIR}" && corepack yarn -s install --immutable); then
+                    PANEL_INSTALL_OK=1
+                elif (cd "${PANEL_DIR}" && corepack yarn -s install); then
+                    PANEL_INSTALL_OK=1
                 fi
-            elif command -v yarnpkg >/dev/null 2>&1; then
-                if ! (cd "${PANEL_DIR}" && yarnpkg -s build:production); then
-                    echo "[setup] warning: frontend build failed via yarnpkg." >&2
+                if (( PANEL_INSTALL_OK == 1 )); then
+                    if (cd "${PANEL_DIR}" && corepack yarn -s build:production); then
+                        PANEL_BUILD_OK=1
+                    fi
                 fi
-            elif command -v npx >/dev/null 2>&1; then
-                if ! (cd "${PANEL_DIR}" && npx --yes yarn -s build:production); then
-                    echo "[setup] warning: frontend build failed via npx yarn." >&2
+            fi
+
+            if (( PANEL_INSTALL_OK == 0 )); then
+                if command -v yarn >/dev/null 2>&1; then
+                    if (cd "${PANEL_DIR}" && yarn -s install --frozen-lockfile); then
+                        PANEL_INSTALL_OK=1
+                    elif (cd "${PANEL_DIR}" && yarn -s install); then
+                        PANEL_INSTALL_OK=1
+                    fi
+                    if (( PANEL_INSTALL_OK == 1 )) && (cd "${PANEL_DIR}" && yarn -s build:production); then
+                        PANEL_BUILD_OK=1
+                    fi
+                elif command -v yarnpkg >/dev/null 2>&1; then
+                    if (cd "${PANEL_DIR}" && yarnpkg -s install --frozen-lockfile); then
+                        PANEL_INSTALL_OK=1
+                    elif (cd "${PANEL_DIR}" && yarnpkg -s install); then
+                        PANEL_INSTALL_OK=1
+                    fi
+                    if (( PANEL_INSTALL_OK == 1 )) && (cd "${PANEL_DIR}" && yarnpkg -s build:production); then
+                        PANEL_BUILD_OK=1
+                    fi
+                elif command -v npx >/dev/null 2>&1; then
+                    if (cd "${PANEL_DIR}" && npx --yes yarn -s install --frozen-lockfile); then
+                        PANEL_INSTALL_OK=1
+                    elif (cd "${PANEL_DIR}" && npx --yes yarn -s install); then
+                        PANEL_INSTALL_OK=1
+                    fi
+                    if (( PANEL_INSTALL_OK == 1 )) && (cd "${PANEL_DIR}" && npx --yes yarn -s build:production); then
+                        PANEL_BUILD_OK=1
+                    fi
                 fi
-            else
-                echo "[setup] warning: yarn/npx tooling unavailable, skipping frontend build." >&2
+            fi
+
+            if (( PANEL_BUILD_OK == 0 )) && command -v npm >/dev/null 2>&1; then
+                echo "[setup] yarn path failed, trying npm fallback..."
+                if (cd "${PANEL_DIR}" && npm install --no-audit --no-fund --loglevel=error); then
+                    PANEL_INSTALL_OK=1
+                    if (cd "${PANEL_DIR}" && npm run build:production --silent); then
+                        PANEL_BUILD_OK=1
+                    elif (cd "${PANEL_DIR}" && npm run build --silent); then
+                        PANEL_BUILD_OK=1
+                    fi
+                fi
+            fi
+
+            if (( PANEL_BUILD_OK == 0 )); then
+                echo "[setup] warning: frontend build failed after yarn/corepack/npm attempts." >&2
             fi
         fi
     fi
@@ -802,6 +851,7 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     HTTP_REQ_BURST="$(read_network_setting http_req_burst 60)"
     HTTP_AUTH_REQ_RATE_PER_MIN="$(read_network_setting http_auth_req_rate_per_min 20)"
     HTTP_AUTH_REQ_BURST="$(read_network_setting http_auth_req_burst 20)"
+    CDN_STATIC_CACHE_TTL="$(read_network_setting cdn_static_cache_ttl 7d)"
     AUTH_CONN_LIMIT=20
     WEBSOCKET_CONN_LIMIT="$(read_network_setting websocket_conn_limit "")"
     WEBSOCKET_GLOBAL_CONN_LIMIT="$(read_network_setting websocket_global_conn_limit "")"
@@ -833,6 +883,10 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     mkdir -p "${NGINX_DIR}/conf.d" "${NGINX_DIR}/snippets"
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_http_zones.conf" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
     cp "${INSTALL_DIR}/host_overrides/nginx/snippets/pteroprotect_server.conf" "${NGINX_DIR}/snippets/pteroprotect_server.conf"
+    if [[ ! "${CDN_STATIC_CACHE_TTL}" =~ ^[0-9]+[smhdw]$ ]]; then
+        CDN_STATIC_CACHE_TTL="7d"
+    fi
+    perl -0pi -e "s/__PP_STATIC_TTL__/${CDN_STATIC_CACHE_TTL}/g;" "${NGINX_DIR}/snippets/pteroprotect_server.conf"
     perl -0pi -e "s/(zone=pteroprotect_req:20m rate=)\\d+(r\\/s;)/\${1}${HTTP_REQ_RATE}\${2}/g; s/(zone=pteroprotect_auth:10m rate=)\\d+(r\\/m;)/\${1}${HTTP_AUTH_REQ_RATE_PER_MIN}\${2}/g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
     python3 - "${NGINX_DIR}/snippets/pteroprotect_server.conf" "${AUTH_CONN_LIMIT}" "${HTTP_AUTH_REQ_BURST}" <<'PY'
 import pathlib
@@ -1107,6 +1161,7 @@ PY
     if [[ -f /etc/pterodactyl/config.yml ]]; then
         echo "[setup] preparing wings reverse-proxy guard on :8080..."
         CHALLENGE_PORT="$(read_network_setting waf_challenge_port 18444)"
+        WINGS_REPLICAS_RAW="$(read_network_setting wings_guard_replicas "")"
         [[ "${CHALLENGE_PORT}" =~ ^[0-9]+$ ]] || CHALLENGE_PORT="18444"
 
         WINGS_NODE_FQDN=""
@@ -1225,6 +1280,18 @@ PY
 
         if [[ -n "${WINGS_CERT_PATH}" && -n "${WINGS_KEY_PATH}" && -f "${WINGS_CERT_PATH}" && -f "${WINGS_KEY_PATH}" ]]; then
             echo "[setup] staging nginx wings-guard with TLS (${WINGS_CERT_PATH})..."
+            WINGS_UPSTREAM_SERVERS_BLOCK="    server 127.0.0.1:18080 max_fails=3 fail_timeout=3s;"
+            if [[ -n "${WINGS_REPLICAS_RAW}" ]]; then
+                for _replica in ${WINGS_REPLICAS_RAW//,/ }; do
+                    _replica="$(printf '%s' "${_replica}" | tr -d '[:space:]')"
+                    [[ -n "${_replica}" ]] || continue
+                    if [[ "${_replica}" =~ ^[A-Za-z0-9._-]+:[0-9]+$ ]]; then
+                        if [[ "${_replica}" != "127.0.0.1:18080" ]]; then
+                            WINGS_UPSTREAM_SERVERS_BLOCK+=$'\n'"    server ${_replica} max_fails=3 fail_timeout=3s;"
+                        fi
+                    fi
+                done
+            fi
             WINGS_CONFIG_BACKUP="$(mktemp)"
             cp /etc/pterodactyl/config.yml "${WINGS_CONFIG_BACKUP}"
             if [[ -f "${NGINX_DIR}/sites-available/wings-guard.conf" ]]; then
@@ -1286,6 +1353,12 @@ p.write_text('\n'.join(out) + '\n')
 PY
 
             cat > "${NGINX_DIR}/sites-available/wings-guard.conf" <<EOF
+upstream pteroprotect_wings_pool {
+    least_conn;
+${WINGS_UPSTREAM_SERVERS_BLOCK}
+    keepalive 128;
+}
+
 server {
     listen 8080 ssl;
     listen [::]:8080 ssl;
@@ -1301,7 +1374,7 @@ server {
     }
 
     location @wings_upstream {
-        proxy_pass http://127.0.0.1:18080;
+        proxy_pass http://pteroprotect_wings_pool;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -1309,6 +1382,9 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_next_upstream_tries 2;
+        proxy_connect_timeout 2s;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
@@ -1331,7 +1407,7 @@ server {
     }
 
     location ~* ^/api/servers/[0-9a-f-]+/ws$ {
-        proxy_pass http://127.0.0.1:18080;
+        proxy_pass http://pteroprotect_wings_pool;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -1339,6 +1415,9 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_next_upstream_tries 2;
+        proxy_connect_timeout 2s;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
@@ -1354,7 +1433,7 @@ server {
         error_page 401 403 = @drop_cto;
         error_page 418 = @wings_upstream;
 
-        proxy_pass http://127.0.0.1:18080;
+        proxy_pass http://pteroprotect_wings_pool;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -1362,6 +1441,9 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_next_upstream_tries 2;
+        proxy_connect_timeout 2s;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
