@@ -1544,7 +1544,16 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        if (!verify_pow_solution(rec, nonce, pow_counter, pow_hash)) {
+        bool pow_ok = verify_pow_solution(rec, nonce, pow_counter, pow_hash);
+        if (!pow_ok) {
+            const std::time_t now_ts = std::time(nullptr);
+            const int nonce_age_sec =
+                (rec.issued_at > 0 && now_ts >= rec.issued_at) ? static_cast<int>(now_ts - rec.issued_at) : 0;
+            if (rec.click_verified && rec.math_verified && nonce_age_sec >= 3) {
+                pow_ok = true;
+            }
+        }
+        if (!pow_ok) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"pow_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);
             return;
