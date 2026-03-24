@@ -15,6 +15,36 @@
 
 @section('content')
 <style>
+    .content-header > h1 > small {
+        display: block;
+        margin-top: 4px;
+        color: #9fb0c4;
+        font-size: 12px;
+    }
+    .pp-tabs {
+        border-bottom: 1px solid #4a5b6e;
+    }
+    .pp-tabs > li > a {
+        background: #2f3f50;
+        border: 1px solid #4a5b6e;
+        color: #d7e3f2;
+        margin-right: 6px;
+        border-radius: 4px 4px 0 0;
+    }
+    .pp-tabs > li > a:hover,
+    .pp-tabs > li > a:focus {
+        background: #36485b;
+        color: #ffffff;
+        border-color: #4a5b6e;
+    }
+    .pp-tabs > li.active > a,
+    .pp-tabs > li.active > a:hover,
+    .pp-tabs > li.active > a:focus {
+        background: #3a4e64;
+        color: #ffffff;
+        border-color: #4a5b6e;
+        border-bottom-color: #3a4e64;
+    }
     .qf-summary {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -22,20 +52,20 @@
         margin-bottom: 12px;
     }
     .qf-card {
-        background: #ffffff;
-        border: 1px solid #d2d6de;
+        background: #334253;
+        border: 1px solid #4a5b6e;
         border-radius: 6px;
         padding: 10px 12px;
     }
     .qf-card .label {
         display: block;
-        color: #7a8696;
+        color: #9fb0c4;
         font-size: 11px;
         margin-bottom: 6px;
         letter-spacing: .2px;
     }
     .qf-card .value {
-        color: #2b394f;
+        color: #e5edf7;
         font-size: 12px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -45,35 +75,35 @@
     .qf-shell,
     .qf-shell .box-header,
     .qf-shell .box-body {
-        background: #ffffff !important;
-        border-color: #d2d6de !important;
-        color: #2b394f !important;
+        background: #2f3f50 !important;
+        border-color: #4a5b6e !important;
+        color: #e5edf7 !important;
     }
     .qf-shell .box-title {
-        color: #2b394f !important;
+        color: #e5edf7 !important;
     }
     .qf-group .panel-heading {
-        background: #f4f5f7;
+        background: #36485b;
     }
     .qf-group.panel,
     .qf-group .panel-body,
     .qf-group .panel-collapse,
     .qf-group .panel-default {
-        background: #ffffff !important;
-        border-color: #d2d6de !important;
+        background: #2f3f50 !important;
+        border-color: #4a5b6e !important;
     }
     .qf-group .panel-heading {
-        border-color: #d2d6de !important;
+        border-color: #4a5b6e !important;
     }
     .qf-group .panel-title > a {
-        color: #2b394f !important;
+        color: #e5edf7 !important;
     }
     .qf-title {
         font-weight: 600;
-        color: #2b394f;
+        color: #e5edf7;
     }
     .qf-meta {
-        color: #7a8696;
+        color: #9fb0c4;
         font-size: 12px;
         margin-top: 4px;
     }
@@ -84,58 +114,60 @@
         margin-bottom: 0;
         table-layout: fixed;
         width: 100%;
-        background: #ffffff;
-        color: #2b394f;
+        background: #2f3f50;
+        color: #e5edf7;
     }
     .qf-table th,
     .qf-table td {
         vertical-align: middle !important;
-        border-color: #d2d6de !important;
-        background: #ffffff !important;
+        border-color: #4a5b6e !important;
+        background: #2f3f50 !important;
     }
     .qf-table th {
-        background: #f4f5f7;
-        color: #2b394f;
+        background: #3a4e64;
+        color: #e5edf7;
     }
     .qf-table.table-striped > tbody > tr:nth-of-type(odd) > td,
     .qf-table.table-striped > tbody > tr:nth-of-type(odd) > th {
-        background: #ffffff !important;
+        background: #334253 !important;
     }
     .qf-table.table-striped > tbody > tr:nth-of-type(even) > td,
     .qf-table.table-striped > tbody > tr:nth-of-type(even) > th {
-        background: #fafbfc !important;
+        background: #2f3f50 !important;
     }
     .qf-file {
         font-family: Menlo, Monaco, Consolas, monospace;
         font-size: 12px;
-        color: #2b394f;
-        display: inline-block;
-        max-width: 260px;
+        color: #e5edf7;
+        display: block;
+        width: 100%;
+        max-width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         vertical-align: bottom;
     }
     .qf-path {
-        max-width: 420px;
-        display: inline-block;
+        max-width: 100%;
+        display: block;
+        width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         vertical-align: bottom;
         font-family: Menlo, Monaco, Consolas, monospace;
         font-size: 11px;
-        color: #7a8696;
+        color: #9fb0c4;
     }
     .qf-actions .btn {
         margin-right: 4px;
     }
     .qf-empty {
         padding: 16px;
-        border: 1px dashed #d2d6de;
+        border: 1px dashed #4a5b6e;
         border-radius: 6px;
-        color: #7a8696;
-        background: #f9fafc;
+        color: #b8c7d9;
+        background: #293746;
     }
     @media (max-width: 991px) {
         .qf-summary {
@@ -148,7 +180,7 @@
 </style>
 <div class="row">
     <div class="col-md-12">
-        <ul class="nav nav-tabs">
+        <ul class="nav nav-tabs pp-tabs">
             <li><a href="{{ route('admin.protect') }}">Protection Control</a></li>
             <li><a href="{{ route('admin.protect.rce') }}">RCE Console</a></li>
             <li class="active"><a href="{{ route('admin.protect.quarantine') }}">Quarantine Files</a></li>

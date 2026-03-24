@@ -11,7 +11,7 @@ return new class extends Migration {
             Schema::create('chat_call_sessions', function (Blueprint $table) {
                 $table->bigIncrements('id');
                 $table->unsignedBigInteger('conversation_id');
-                $table->unsignedBigInteger('started_by');
+                $table->unsignedInteger('started_by');
                 $table->timestamp('ended_at')->nullable();
                 $table->timestamps();
 
@@ -25,7 +25,7 @@ return new class extends Migration {
             Schema::create('chat_call_participants', function (Blueprint $table) {
                 $table->bigIncrements('id');
                 $table->unsignedBigInteger('call_session_id');
-                $table->unsignedBigInteger('user_id');
+                $table->unsignedInteger('user_id');
                 $table->boolean('mic_muted')->default(false);
                 $table->unsignedTinyInteger('speaking_level')->default(0);
                 $table->timestamp('joined_at')->nullable();
@@ -44,8 +44,8 @@ return new class extends Migration {
                 $table->bigIncrements('id');
                 $table->unsignedBigInteger('call_session_id');
                 $table->unsignedBigInteger('conversation_id');
-                $table->unsignedBigInteger('from_user_id')->nullable();
-                $table->unsignedBigInteger('to_user_id')->nullable();
+                $table->unsignedInteger('from_user_id')->nullable();
+                $table->unsignedInteger('to_user_id')->nullable();
                 $table->string('type', 24);
                 $table->json('payload')->nullable();
                 $table->timestamp('created_at')->nullable();

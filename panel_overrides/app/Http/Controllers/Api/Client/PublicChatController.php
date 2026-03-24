@@ -23,6 +23,7 @@ class PublicChatController extends ClientApiController
     private static ?bool $hasParticipantRoleColumn = null;
     private static ?bool $hasReactionTable = null;
     private static ?bool $hasMuteTable = null;
+    private static ?bool $hasCallTables = null;
 
     public function conversations(Request $request): JsonResponse
     {
@@ -750,6 +751,250 @@ class PublicChatController extends ClientApiController
         ], 201);
     }
 
+    public function callState(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['data' => ['active' => false, 'call' => null, 'signals' => [], 'last_signal_id' => 0]]);
+        }
+
+        $user = $request->user();
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'since_id' => 'sometimes|integer|min:0',
+        ]);
+
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $sinceId = (int) ($validated['since_id'] ?? 0);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['data' => ['active' => false, 'call' => null, 'signals' => [], 'last_signal_id' => $sinceId]]);
+        }
+
+        $signals = DB::table('chat_call_signals')
+            ->where('call_session_id', (int) $session->id)
+            ->where('id', '>', $sinceId)
+            ->where(function ($query) use ($user) {
+                $query->whereNull('to_user_id')->orWhere('to_user_id', (int) $user->id);
+            })
+            ->orderBy('id')
+            ->limit(400)
+            ->get(['id', 'type', 'from_user_id', 'to_user_id', 'payload', 'created_at']);
+
+        $lastSignalId = $sinceId;
+        foreach ($signals as $signal) {
+            $lastSignalId = max($lastSignalId, (int) $signal->id);
+        }
+
+        return new JsonResponse([
+            'data' => [
+                'active' => true,
+                'call' => $this->callPayload((int) $session->id),
+                'signals' => $signals->map(fn ($signal) => [
+                    'id' => (int) $signal->id,
+                    'type' => (string) $signal->type,
+                    'from_user_id' => $signal->from_user_id !== null ? (int) $signal->from_user_id : null,
+                    'to_user_id' => $signal->to_user_id !== null ? (int) $signal->to_user_id : null,
+                    'payload' => $this->decodeJsonPayload($signal->payload),
+                    'created_at' => $signal->created_at ? (string) $signal->created_at : null,
+                ])->values(),
+                'last_signal_id' => $lastSignalId,
+            ],
+        ]);
+    }
+
+    public function startCall(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['error' => 'Call feature not ready. Run chat migration.'], 409);
+        }
+
+        $user = $request->user();
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            $sessionId = DB::table('chat_call_sessions')->insertGetId([
+                'conversation_id' => (int) $conversation->id,
+                'started_by' => (int) $user->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $session = DB::table('chat_call_sessions')->where('id', $sessionId)->first();
+        }
+
+        $this->upsertCallParticipant((int) $session->id, (int) $user->id);
+        $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'join', ['user_id' => (int) $user->id]);
+
+        return new JsonResponse(['data' => $this->callPayload((int) $session->id)], 201);
+    }
+
+    public function joinCall(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['error' => 'Call feature not ready. Run chat migration.'], 409);
+        }
+
+        $user = $request->user();
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['error' => 'No active call in this conversation.'], 409);
+        }
+
+        $this->upsertCallParticipant((int) $session->id, (int) $user->id);
+        $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'join', ['user_id' => (int) $user->id]);
+
+        return new JsonResponse(['data' => $this->callPayload((int) $session->id)]);
+    }
+
+    public function leaveCall(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $user = $request->user();
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        DB::table('chat_call_participants')
+            ->where('call_session_id', (int) $session->id)
+            ->where('user_id', (int) $user->id)
+            ->update([
+                'left_at' => now(),
+                'updated_at' => now(),
+                'speaking_level' => 0,
+            ]);
+        $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'leave', ['user_id' => (int) $user->id]);
+        $this->endSessionIfNoParticipants((int) $session->id, (int) $conversation->id, (int) $user->id);
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function endCall(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $user = $request->user();
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        DB::table('chat_call_sessions')
+            ->where('id', (int) $session->id)
+            ->update([
+                'ended_at' => now(),
+                'updated_at' => now(),
+            ]);
+        DB::table('chat_call_participants')
+            ->where('call_session_id', (int) $session->id)
+            ->whereNull('left_at')
+            ->update([
+                'left_at' => now(),
+                'updated_at' => now(),
+                'speaking_level' => 0,
+            ]);
+        $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'end', ['user_id' => (int) $user->id]);
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function callSignal(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['error' => 'Call feature not ready. Run chat migration.'], 409);
+        }
+
+        $user = $request->user();
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'type' => 'required|string|in:offer,answer,ice,ring,ring_response',
+            'to_user_id' => 'sometimes|nullable|integer|min:1',
+            'payload' => 'required',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['error' => 'No active call in this conversation.'], 409);
+        }
+
+        $this->upsertCallParticipant((int) $session->id, (int) $user->id);
+        $toUserId = isset($validated['to_user_id']) ? (int) $validated['to_user_id'] : null;
+        if ($toUserId !== null && !$this->isConversationMember($conversation, $toUserId)) {
+            return new JsonResponse(['error' => 'Signal target is not in this conversation.'], 422);
+        }
+
+        $payload = $this->safeSignalPayload($validated['payload']);
+        if ($payload === null) {
+            return new JsonResponse(['error' => 'Invalid signal payload.'], 422);
+        }
+
+        $signalId = $this->insertCallSignal(
+            (int) $session->id,
+            (int) $conversation->id,
+            (int) $user->id,
+            $toUserId,
+            (string) $validated['type'],
+            $payload
+        );
+
+        return new JsonResponse(['ok' => true, 'data' => ['signal_id' => $signalId]]);
+    }
+
+    public function callMic(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $user = $request->user();
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'muted' => 'sometimes|boolean',
+            'speaking_level' => 'sometimes|integer|min:0|max:100',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $this->upsertCallParticipant((int) $session->id, (int) $user->id);
+        $update = ['updated_at' => now()];
+        if (array_key_exists('muted', $validated)) {
+            $update['mic_muted'] = (bool) $validated['muted'];
+        }
+        if (array_key_exists('speaking_level', $validated)) {
+            $update['speaking_level'] = max(0, min(100, (int) $validated['speaking_level']));
+        }
+
+        DB::table('chat_call_participants')
+            ->where('call_session_id', (int) $session->id)
+            ->where('user_id', (int) $user->id)
+            ->update($update);
+
+        return new JsonResponse(['ok' => true]);
+    }
+
     private function globalConversation(): ChatConversation
     {
         return ChatConversation::query()->firstOrCreate(
@@ -1003,6 +1248,172 @@ class PublicChatController extends ClientApiController
         return ['byMessage' => $byMessage, 'mine' => $mine];
     }
 
+    private function hasCallTables(): bool
+    {
+        if (self::$hasCallTables === null) {
+            self::$hasCallTables = Schema::hasTable('chat_call_sessions')
+                && Schema::hasTable('chat_call_participants')
+                && Schema::hasTable('chat_call_signals');
+        }
+
+        return self::$hasCallTables;
+    }
+
+    private function activeCallSession(int $conversationId): ?object
+    {
+        if (!$this->hasCallTables()) {
+            return null;
+        }
+
+        return DB::table('chat_call_sessions')
+            ->where('conversation_id', $conversationId)
+            ->whereNull('ended_at')
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    private function callPayload(int $sessionId): ?array
+    {
+        $session = DB::table('chat_call_sessions')->where('id', $sessionId)->first();
+        if (!$session) {
+            return null;
+        }
+
+        $participants = DB::table('chat_call_participants as p')
+            ->join('users as u', 'u.id', '=', 'p.user_id')
+            ->where('p.call_session_id', (int) $sessionId)
+            ->whereNull('p.left_at')
+            ->orderBy('p.id')
+            ->get([
+                'u.id',
+                'u.username',
+                'u.name_first',
+                'u.name_last',
+                'u.email',
+                'u.avatar_url',
+                'p.mic_muted',
+                'p.speaking_level',
+                'p.joined_at',
+            ]);
+
+        return [
+            'id' => (int) $session->id,
+            'conversation_id' => (int) $session->conversation_id,
+            'started_by' => (int) $session->started_by,
+            'started_at' => $session->created_at ? (string) $session->created_at : null,
+            'participants' => $participants->map(function ($row) {
+                $display = trim((string) (($row->name_first ?? '') . ' ' . ($row->name_last ?? '')));
+
+                return [
+                    'id' => (int) $row->id,
+                    'username' => (string) $row->username,
+                    'display_name' => $display !== '' ? $display : (string) $row->username,
+                    'avatar_url' => $this->avatarFromRaw((string) ($row->avatar_url ?? ''), (string) ($row->email ?? '')),
+                    'mic_muted' => (bool) $row->mic_muted,
+                    'speaking_level' => max(0, min(100, (int) $row->speaking_level)),
+                    'joined_at' => $row->joined_at ? (string) $row->joined_at : null,
+                ];
+            })->values(),
+        ];
+    }
+
+    private function upsertCallParticipant(int $sessionId, int $userId): void
+    {
+        DB::table('chat_call_participants')->upsert([
+            'call_session_id' => $sessionId,
+            'user_id' => $userId,
+            'joined_at' => now(),
+            'left_at' => null,
+            'updated_at' => now(),
+        ], ['call_session_id', 'user_id'], ['joined_at', 'left_at', 'updated_at']);
+    }
+
+    private function insertCallSignal(
+        int $sessionId,
+        int $conversationId,
+        ?int $fromUserId,
+        ?int $toUserId,
+        string $type,
+        ?array $payload
+    ): int {
+        return (int) DB::table('chat_call_signals')->insertGetId([
+            'call_session_id' => $sessionId,
+            'conversation_id' => $conversationId,
+            'from_user_id' => $fromUserId,
+            'to_user_id' => $toUserId,
+            'type' => mb_substr(trim($type), 0, 24),
+            'payload' => $payload !== null ? json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+            'created_at' => now(),
+        ]);
+    }
+
+    private function decodeJsonPayload(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+        if (!is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        $decoded = json_decode($value, true);
+
+        return json_last_error() === JSON_ERROR_NONE ? $decoded : null;
+    }
+
+    private function safeSignalPayload(mixed $payload): ?array
+    {
+        if (is_string($payload)) {
+            $decoded = json_decode($payload, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                return null;
+            }
+            $payload = $decoded;
+        }
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($encoded === false || strlen($encoded) > 65535) {
+            return null;
+        }
+
+        return $payload;
+    }
+
+    private function endSessionIfNoParticipants(int $sessionId, int $conversationId, int $actorUserId): void
+    {
+        $remaining = DB::table('chat_call_participants')
+            ->where('call_session_id', $sessionId)
+            ->whereNull('left_at')
+            ->count();
+        if ($remaining > 0) {
+            return;
+        }
+
+        DB::table('chat_call_sessions')
+            ->where('id', $sessionId)
+            ->whereNull('ended_at')
+            ->update([
+                'ended_at' => now(),
+                'updated_at' => now(),
+            ]);
+        $this->insertCallSignal($sessionId, $conversationId, $actorUserId, null, 'end', ['user_id' => $actorUserId]);
+    }
+
+    private function isConversationMember(ChatConversation $conversation, int $userId): bool
+    {
+        if ($conversation->type === 'global') {
+            return User::query()->whereKey($userId)->exists();
+        }
+
+        return DB::table('chat_conversation_participants')
+            ->where('conversation_id', (int) $conversation->id)
+            ->where('user_id', $userId)
+            ->exists();
+    }
+
     private function hasReactionTable(): bool
     {
         if (self::$hasReactionTable === null) {
@@ -1201,12 +1612,17 @@ class PublicChatController extends ClientApiController
             return null;
         }
 
-        $custom = trim((string) ($user->avatar_url ?? ''));
+        return $this->avatarFromRaw((string) ($user->avatar_url ?? ''), (string) $user->email);
+    }
+
+    private function avatarFromRaw(string $custom, string $email): string
+    {
+        $custom = trim($custom);
         if ($custom !== '' && preg_match('#^https?://#i', $custom) === 1) {
             return mb_substr($custom, 0, 2048);
         }
 
-        return 'https://gravatar.com/avatar/' . md5(Str::lower((string) $user->email));
+        return 'https://gravatar.com/avatar/' . md5(Str::lower($email));
     }
 
     private function birthdayForUser(?User $user): ?string

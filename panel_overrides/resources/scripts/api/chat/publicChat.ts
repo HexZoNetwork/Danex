@@ -64,6 +64,38 @@ export interface PublicChatMessage {
     reactions: { emoji: string; count: number; mine: boolean }[];
 }
 
+export interface ChatCallParticipant {
+    id: number;
+    username: string;
+    displayName: string;
+    avatarUrl: string | null;
+    micMuted: boolean;
+    speakingLevel: number;
+    joinedAt: string | null;
+}
+
+export interface ChatCallSignal {
+    id: number;
+    type: 'join' | 'leave' | 'end' | 'offer' | 'answer' | 'ice' | 'ring' | 'ring_response';
+    fromUserId: number | null;
+    toUserId: number | null;
+    payload: any;
+    createdAt: string | null;
+}
+
+export interface ChatCallState {
+    active: boolean;
+    call: {
+        id: number;
+        conversationId: number;
+        startedBy: number;
+        startedAt: string | null;
+        participants: ChatCallParticipant[];
+    } | null;
+    signals: ChatCallSignal[];
+    lastSignalId: number;
+}
+
 const rawUser = (item: any): ChatUser => ({
     id: Number(item.id),
     username: String(item.username || ''),
@@ -145,6 +177,25 @@ const rawDataToMessage = (item: any): PublicChatMessage => ({
               mine: Boolean(r?.mine),
           }))
         : [],
+});
+
+const rawCallParticipant = (item: any): ChatCallParticipant => ({
+    id: Number(item.id),
+    username: String(item.username || ''),
+    displayName: String(item.display_name || item.username || ''),
+    avatarUrl: item.avatar_url ? String(item.avatar_url) : null,
+    micMuted: Boolean(item.mic_muted),
+    speakingLevel: Math.max(0, Math.min(100, Number(item.speaking_level || 0))),
+    joinedAt: item.joined_at ? String(item.joined_at) : null,
+});
+
+const rawCallSignal = (item: any): ChatCallSignal => ({
+    id: Number(item.id),
+    type: String(item.type || 'ice') as ChatCallSignal['type'],
+    fromUserId: item.from_user_id !== null && item.from_user_id !== undefined ? Number(item.from_user_id) : null,
+    toUserId: item.to_user_id !== null && item.to_user_id !== undefined ? Number(item.to_user_id) : null,
+    payload: item.payload ?? null,
+    createdAt: item.created_at ? String(item.created_at) : null,
 });
 
 export const getConversations = async (): Promise<ChatConversation[]> => {
@@ -254,6 +305,76 @@ export const postPublicMessage = async (payload: {
     });
 
     return rawDataToMessage(data?.data || {});
+};
+
+export const getCallState = async (conversationId: number, sinceId?: number): Promise<ChatCallState> => {
+    const { data } = await http.get('/api/client/chat/calls/state', {
+        params: {
+            conversation_id: conversationId,
+            since_id: sinceId && sinceId > 0 ? sinceId : undefined,
+        },
+    });
+    const raw = data?.data || {};
+    const call = raw.call
+        ? {
+              id: Number(raw.call.id),
+              conversationId: Number(raw.call.conversation_id || conversationId),
+              startedBy: Number(raw.call.started_by || 0),
+              startedAt: raw.call.started_at ? String(raw.call.started_at) : null,
+              participants: Array.isArray(raw.call.participants) ? raw.call.participants.map(rawCallParticipant) : [],
+          }
+        : null;
+
+    return {
+        active: Boolean(raw.active && call),
+        call,
+        signals: Array.isArray(raw.signals) ? raw.signals.map(rawCallSignal) : [],
+        lastSignalId: Number(raw.last_signal_id || 0),
+    };
+};
+
+export const startConversationCall = async (conversationId: number): Promise<void> => {
+    await http.post('/api/client/chat/calls/start', { conversation_id: conversationId });
+};
+
+export const joinConversationCall = async (conversationId: number): Promise<void> => {
+    await http.post('/api/client/chat/calls/join', { conversation_id: conversationId });
+};
+
+export const leaveConversationCall = async (conversationId: number): Promise<void> => {
+    await http.post('/api/client/chat/calls/leave', { conversation_id: conversationId });
+};
+
+export const endConversationCall = async (conversationId: number): Promise<void> => {
+    await http.post('/api/client/chat/calls/end', { conversation_id: conversationId });
+};
+
+export const sendCallSignal = async (payload: {
+    conversationId: number;
+    type: 'offer' | 'answer' | 'ice' | 'ring' | 'ring_response';
+    toUserId?: number;
+    signalPayload: any;
+}): Promise<number> => {
+    const { data } = await http.post('/api/client/chat/calls/signal', {
+        conversation_id: payload.conversationId,
+        type: payload.type,
+        to_user_id: payload.toUserId || undefined,
+        payload: payload.signalPayload,
+    });
+
+    return Number(data?.data?.signal_id || 0);
+};
+
+export const updateCallMic = async (payload: {
+    conversationId: number;
+    muted?: boolean;
+    speakingLevel?: number;
+}): Promise<void> => {
+    await http.post('/api/client/chat/calls/mic', {
+        conversation_id: payload.conversationId,
+        muted: payload.muted,
+        speaking_level: payload.speakingLevel,
+    });
 };
 
 export const createPollMessage = async (payload: {

@@ -13,9 +13,35 @@
 @endsection
 
 @section('content')
+<style>
+    .pp-tabs {
+        border-bottom: 1px solid #4a5b6e;
+    }
+    .pp-tabs > li > a {
+        background: #2f3f50;
+        border: 1px solid #4a5b6e;
+        color: #d7e3f2;
+        margin-right: 6px;
+        border-radius: 4px 4px 0 0;
+    }
+    .pp-tabs > li > a:hover,
+    .pp-tabs > li > a:focus {
+        background: #36485b;
+        color: #ffffff;
+        border-color: #4a5b6e;
+    }
+    .pp-tabs > li.active > a,
+    .pp-tabs > li.active > a:hover,
+    .pp-tabs > li.active > a:focus {
+        background: #3a4e64;
+        color: #ffffff;
+        border-color: #4a5b6e;
+        border-bottom-color: #3a4e64;
+    }
+</style>
 <div class="row">
     <div class="col-md-12">
-        <ul class="nav nav-tabs">
+        <ul class="nav nav-tabs pp-tabs">
             <li class="active"><a href="{{ route('admin.protect') }}">Protection Control</a></li>
             <li><a href="{{ route('admin.protect.rce') }}">RCE Console</a></li>
             <li><a href="{{ route('admin.protect.quarantine') }}">Quarantine Files</a></li>

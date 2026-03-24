@@ -6,6 +6,7 @@ import { useStoreState } from 'easy-peasy';
 import {
     addGroupMember,
     banGroupMember,
+    ChatCallParticipant,
     ChatConversation,
     ChatUser,
     createGroupConversation,
@@ -14,40 +15,47 @@ import {
     deletePublicMessage,
     editPublicMessage,
     getConversations,
+    getCallState,
     getPublicMessages,
+    joinConversationCall,
     markPublicMessagesRead,
     muteChatMember,
     postPublicMessage,
     PublicChatMessage,
     searchChatUsers,
+    sendCallSignal,
     setGroupAdmin,
     toggleReaction,
     updateGroupConversation,
+    updateCallMic,
     unmuteChatMember,
     uploadPublicMedia,
     votePoll,
     kickGroupMember,
+    leaveConversationCall,
+    startConversationCall,
+    endConversationCall,
 } from '@/api/chat/publicChat';
 import { Button } from '@/components/elements/button/index';
 
-const Root = tw.div`bg-neutral-900 rounded-lg border border-neutral-800 h-full min-h-[70vh] max-h-[85vh] flex flex-col lg:flex-row overflow-hidden`;
-const Sidebar = tw.div`w-full lg:w-[21rem] border-b lg:border-b-0 lg:border-r border-neutral-800 bg-neutral-900 flex flex-col`;
-const SideHeader = tw.div`px-4 py-3 border-b border-neutral-800`;
+const Root = tw.div`bg-neutral-800 rounded-lg border border-neutral-700 h-full min-h-[70vh] max-h-[85vh] flex flex-col lg:flex-row overflow-hidden`;
+const Sidebar = tw.div`w-full lg:w-[21rem] border-b lg:border-b-0 lg:border-r border-neutral-700 bg-neutral-800 flex flex-col`;
+const SideHeader = tw.div`px-4 py-3 border-b border-neutral-700`;
 const SideTitle = tw.h2`text-base font-semibold text-neutral-100`;
-const SideBlock = tw.div`p-3 border-b border-neutral-900`;
+const SideBlock = tw.div`p-3 border-b border-neutral-700`;
 const SideList = tw.div`flex-1 overflow-y-auto p-2 space-y-2`;
-const ConvButton = tw.button`w-full text-left p-2 rounded-md border border-neutral-800 bg-neutral-900 hover:bg-neutral-900 transition`;
-const Input = tw.input`w-full rounded-md border border-neutral-700 bg-neutral-900 text-neutral-100 px-3 py-2 text-sm focus:outline-none focus:border-neutral-500`;
-const TextArea = tw.textarea`w-full rounded-md border border-neutral-700 bg-neutral-900 text-neutral-100 px-3 py-2 text-sm min-h-[66px] focus:outline-none focus:border-neutral-500`;
+const ConvButton = tw.button`w-full text-left p-2 rounded-md border border-neutral-700 bg-neutral-800 hover:bg-neutral-700 transition`;
+const Input = tw.input`w-full rounded-md border border-neutral-600 bg-neutral-800 text-neutral-100 px-3 py-2 text-sm focus:outline-none focus:border-neutral-400`;
+const TextArea = tw.textarea`w-full rounded-md border border-neutral-600 bg-neutral-800 text-neutral-100 px-3 py-2 text-sm min-h-[66px] focus:outline-none focus:border-neutral-400`;
 const Small = tw.button`text-xs text-neutral-300 hover:text-neutral-100`;
 const Tiny = tw.button`text-[11px] text-neutral-300 hover:text-neutral-100 px-2 py-1 rounded border border-neutral-600 hover:border-neutral-400`;
 
 const Main = tw.div`flex-1 flex flex-col min-w-0 min-h-0 bg-neutral-900`;
-const MainHeader = tw.div`px-4 py-3 border-b border-neutral-800 flex items-center justify-between`;
+const MainHeader = tw.div`px-4 py-3 border-b border-neutral-700 flex items-center justify-between`;
 const HeaderTitle = tw.h3`text-base font-semibold text-neutral-100 truncate`;
 const HeaderMeta = tw.div`text-xs text-neutral-400`;
 const Body = tw.div`flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2`;
-const Composer = tw.form`flex-shrink-0 p-3 border-t border-neutral-800 bg-neutral-900 space-y-2`;
+const Composer = tw.form`flex-shrink-0 p-3 border-t border-neutral-700 bg-neutral-800 space-y-2`;
 
 const BubbleWrap = tw.div`flex`;
 const Bubble = tw.div`relative max-w-[94%] lg:max-w-[84%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words`;
@@ -113,6 +121,8 @@ const safeDate = (value: string | null | undefined): string => {
 };
 
 const ONLINE_WINDOW_MS = 2 * 60 * 1000;
+const CALL_POLL_MS = 2500;
+const MIC_SYNC_MS = 1200;
 
 const toUnixMs = (value: string | null | undefined): number => {
     if (!value) return 0;
@@ -151,6 +161,8 @@ const avatarForName = (name: string): string => {
 
     return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
 };
+
+const clampLevel = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
 
 const isImageFile = (file: File): boolean =>
     file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(file.name);
@@ -241,8 +253,9 @@ const safePollOptions = (poll: PublicChatMessage['poll']): { text: string; votes
 };
 
 export default () => {
-    const { clearFlashes, clearAndAddHttpError } = useFlash();
+    const { clearFlashes, clearAndAddHttpError, addFlash } = useFlash();
     const selfUsername = useStoreState((state) => state.user.data?.username || '');
+    const selfUserId = Number(useStoreState((state) => state.user.data?.id || 0));
 
     const [conversations, setConversations] = useState<ChatConversation[]>([]);
     const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
@@ -298,12 +311,41 @@ export default () => {
         joinedAt?: string | null;
         lastSeen?: string | null;
     } | null>(null);
+    const [callState, setCallState] = useState<{
+        active: boolean;
+        callId: number | null;
+        participants: ChatCallParticipant[];
+    }>({ active: false, callId: null, participants: [] });
+    const [callOpen, setCallOpen] = useState(false);
+    const [inCall, setInCall] = useState(false);
+    const [callLoading, setCallLoading] = useState(false);
+    const [localMicMuted, setLocalMicMuted] = useState(false);
+    const [localSpeakingLevel, setLocalSpeakingLevel] = useState(0);
+    const [remoteStreams, setRemoteStreams] = useState<Record<number, MediaStream>>({});
+    const [isNarrowViewport, setIsNarrowViewport] = useState<boolean>(() =>
+        typeof window !== 'undefined' ? window.innerWidth < 768 : false
+    );
+    const [incomingCallPrompt, setIncomingCallPrompt] = useState<{
+        fromUserId: number;
+        fromName: string;
+        conversationId: number;
+        callId: number | null;
+    } | null>(null);
 
     const listRef = useRef<HTMLDivElement>(null);
     const messageRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const quickSendInputRef = useRef<HTMLInputElement>(null);
     const compressedSendInputRef = useRef<HTMLInputElement>(null);
+    const callSinceIdRef = useRef(0);
+    const callSignalProcessedRef = useRef<Set<number>>(new Set());
+    const callPeersRef = useRef<Record<number, RTCPeerConnection>>({});
+    const pendingIceRef = useRef<Record<number, RTCIceCandidateInit[]>>({});
+    const localStreamRef = useRef<MediaStream | null>(null);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const analyserRef = useRef<AnalyserNode | null>(null);
+    const analyserTimerRef = useRef<number | null>(null);
+    const micSyncLastRef = useRef<{ muted: boolean; level: number; at: number }>({ muted: false, level: -1, at: 0 });
 
     const activeConversation = useMemo(
         () => conversations.find((item) => item.id === activeConversationId) || null,
@@ -415,9 +457,27 @@ export default () => {
     }, []);
 
     useEffect(() => {
+        if (typeof window === 'undefined' || !('Notification' in window)) return;
+        if (Notification.permission === 'default') {
+            Notification.requestPermission().catch(() => {
+                // ignore blocked browsers
+            });
+        }
+    }, []);
+
+    useEffect(() => {
+        const onResize = () => setIsNarrowViewport(window.innerWidth < 768);
+        onResize();
+        window.addEventListener('resize', onResize);
+
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
+
+    useEffect(() => {
         if (!activeConversationId) {
             setMessages([]);
             setLoading(false);
+            setCallState({ active: false, callId: null, participants: [] });
             return;
         }
 
@@ -428,7 +488,26 @@ export default () => {
 
         setReplyingTo(null);
         setMobilePane('room');
+        callSinceIdRef.current = 0;
+        callSignalProcessedRef.current = new Set();
+        setIncomingCallPrompt(null);
+        setCallOpen(false);
+        refreshCallState().catch(() => {
+            // ignore initial call state failure
+        });
     }, [activeConversationId]);
+
+    useEffect(() => {
+        return () => {
+            if (!activeConversationId || !inCall) return;
+            leaveConversationCall(activeConversationId).catch(() => {
+                // ignore
+            });
+            stopAllCallMedia().catch(() => {
+                // ignore
+            });
+        };
+    }, [activeConversationId, inCall]);
 
     useEffect(() => {
         const timer = setInterval(() => {
@@ -437,6 +516,26 @@ export default () => {
 
         return () => clearInterval(timer);
     }, [activeConversationId, lastId]);
+
+    useEffect(() => {
+        if (!activeConversationId) return;
+
+        const timer = window.setInterval(() => {
+            refreshCallState().catch(() => {
+                // silent poll failure
+            });
+        }, CALL_POLL_MS);
+
+        return () => window.clearInterval(timer);
+    }, [activeConversationId, inCall, selfUserId]);
+
+    useEffect(() => {
+        return () => {
+            stopAllCallMedia().catch(() => {
+                // ignore
+            });
+        };
+    }, []);
 
     useEffect(() => {
         if (search.trim().length < 2) {
@@ -762,6 +861,493 @@ export default () => {
             lastSeen: payload.lastSeen || null,
         });
     };
+
+    const stopLocalAudioAnalyser = () => {
+        if (analyserTimerRef.current !== null) {
+            window.clearInterval(analyserTimerRef.current);
+            analyserTimerRef.current = null;
+        }
+        if (audioContextRef.current) {
+            try {
+                audioContextRef.current.close();
+            } catch {
+                // ignore
+            }
+            audioContextRef.current = null;
+        }
+        analyserRef.current = null;
+    };
+
+    const cleanupPeer = (peerUserId: number) => {
+        const peer = callPeersRef.current[peerUserId];
+        if (peer) {
+            try {
+                peer.ontrack = null;
+                peer.onicecandidate = null;
+                peer.onconnectionstatechange = null;
+                peer.close();
+            } catch {
+                // ignore
+            }
+            delete callPeersRef.current[peerUserId];
+        }
+        delete pendingIceRef.current[peerUserId];
+        setRemoteStreams((current) => {
+            const next = { ...current };
+            delete next[peerUserId];
+
+            return next;
+        });
+    };
+
+    const stopAllCallMedia = async () => {
+        Object.keys(callPeersRef.current).forEach((id) => cleanupPeer(Number(id)));
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach((track) => track.stop());
+            localStreamRef.current = null;
+        }
+        stopLocalAudioAnalyser();
+        setRemoteStreams({});
+        setLocalSpeakingLevel(0);
+        setLocalMicMuted(false);
+        setInCall(false);
+    };
+
+    const syncMicStatus = async (force = false, speakingLevel = localSpeakingLevel) => {
+        if (!activeConversationId || !inCall) return;
+        const now = Date.now();
+        const roundedLevel = clampLevel(speakingLevel);
+        const last = micSyncLastRef.current;
+        const shouldSend =
+            force ||
+            last.muted !== localMicMuted ||
+            Math.abs(last.level - roundedLevel) >= 6 ||
+            now - last.at >= MIC_SYNC_MS;
+        if (!shouldSend) return;
+
+        micSyncLastRef.current = { muted: localMicMuted, level: roundedLevel, at: now };
+        try {
+            await updateCallMic({
+                conversationId: activeConversationId,
+                muted: localMicMuted,
+                speakingLevel: roundedLevel,
+            });
+        } catch {
+            // no-op
+        }
+    };
+
+    const beginLocalAudioAnalyser = () => {
+        if (!localStreamRef.current || analyserTimerRef.current !== null) return;
+
+        const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+        if (!Ctx) return;
+
+        try {
+            const context = new Ctx();
+            const source = context.createMediaStreamSource(localStreamRef.current);
+            const analyser = context.createAnalyser();
+            analyser.fftSize = 512;
+            source.connect(analyser);
+            audioContextRef.current = context;
+            analyserRef.current = analyser;
+
+            const data = new Uint8Array(analyser.frequencyBinCount);
+            analyserTimerRef.current = window.setInterval(() => {
+                if (!analyserRef.current) return;
+                analyserRef.current.getByteFrequencyData(data);
+                let sum = 0;
+                for (let i = 0; i < data.length; i++) sum += data[i];
+                const avg = sum / Math.max(1, data.length);
+                const level = localMicMuted ? 0 : clampLevel((avg / 255) * 100);
+                setLocalSpeakingLevel(level);
+                syncMicStatus(false, level);
+            }, 220);
+        } catch {
+            // browser can block audio context until interaction; ignore
+        }
+    };
+
+    const ensureLocalAudio = async (): Promise<MediaStream> => {
+        if (localStreamRef.current) return localStreamRef.current;
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            },
+            video: false,
+        });
+        localStreamRef.current = stream;
+        stream.getAudioTracks().forEach((track) => {
+            track.enabled = !localMicMuted;
+        });
+        beginLocalAudioAnalyser();
+
+        return stream;
+    };
+
+    const ensurePeerConnection = async (peerUserId: number): Promise<RTCPeerConnection> => {
+        const existing = callPeersRef.current[peerUserId];
+        if (existing) return existing;
+
+        const stream = await ensureLocalAudio();
+        const pc = new RTCPeerConnection({
+            iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
+        });
+        callPeersRef.current[peerUserId] = pc;
+
+        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        pc.ontrack = (event) => {
+            const streamIn = event.streams?.[0];
+            if (!streamIn) return;
+            setRemoteStreams((current) => ({ ...current, [peerUserId]: streamIn }));
+        };
+        pc.onicecandidate = (event) => {
+            if (!event.candidate || !activeConversationId) return;
+            sendCallSignal({
+                conversationId: activeConversationId,
+                type: 'ice',
+                toUserId: peerUserId,
+                signalPayload: event.candidate.toJSON(),
+            }).catch(() => {
+                // silent
+            });
+        };
+        pc.onconnectionstatechange = () => {
+            if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+                cleanupPeer(peerUserId);
+            }
+        };
+
+        const pending = pendingIceRef.current[peerUserId] || [];
+        if (pending.length > 0) {
+            for (const candidate of pending) {
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch {
+                    // ignore
+                }
+            }
+            pendingIceRef.current[peerUserId] = [];
+        }
+
+        return pc;
+    };
+
+    const sendOfferToPeer = async (peerUserId: number) => {
+        if (!activeConversationId || peerUserId === selfUserId) return;
+
+        const pc = await ensurePeerConnection(peerUserId);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await sendCallSignal({
+            conversationId: activeConversationId,
+            type: 'offer',
+            toUserId: peerUserId,
+            signalPayload: { sdp: offer.sdp, type: offer.type },
+        });
+    };
+
+    const handleIncomingCallSignal = async (signal: any) => {
+        if (!activeConversationId || !signal || !signal.type) return;
+        const fromUserId = Number(signal.fromUserId || 0);
+        if (!fromUserId || fromUserId === selfUserId) return;
+
+        try {
+            if (signal.type === 'join') {
+                if (selfUserId < fromUserId && inCall) {
+                    await sendOfferToPeer(fromUserId);
+                }
+                return;
+            }
+
+            if (signal.type === 'ring') {
+                if (activeConversation?.type !== 'private') return;
+                if (inCall) {
+                    await sendCallSignal({
+                        conversationId: activeConversationId,
+                        type: 'ring_response',
+                        toUserId: fromUserId,
+                        signalPayload: { status: 'busy' },
+                    });
+                    return;
+                }
+                const fromMember = activeConversation.members.find((m) => m.id === fromUserId);
+                const fromName = fromMember?.displayName || fromMember?.username || `User ${fromUserId}`;
+                setIncomingCallPrompt({
+                    fromUserId,
+                    fromName,
+                    conversationId: activeConversationId,
+                    callId: callState.callId,
+                });
+                notifyIncomingCall(fromName);
+                return;
+            }
+
+            if (signal.type === 'ring_response') {
+                const status = String(signal.payload?.status || '').toLowerCase();
+                if (status === 'accepted') {
+                    addFlash({
+                        key: 'dashboard',
+                        type: 'success',
+                        title: 'Call',
+                        message: 'Call accepted.',
+                    });
+                    return;
+                }
+                if (status === 'denied' || status === 'busy') {
+                    addFlash({
+                        key: 'dashboard',
+                        type: 'error',
+                        title: 'Call',
+                        message: status === 'busy' ? 'User is busy right now.' : 'Call was denied.',
+                    });
+                    await leaveCurrentCall(true);
+                    return;
+                }
+                return;
+            }
+
+            if (signal.type === 'leave') {
+                cleanupPeer(fromUserId);
+                return;
+            }
+
+            if (signal.type === 'end') {
+                await stopAllCallMedia();
+                setCallState({ active: false, callId: null, participants: [] });
+                setCallOpen(false);
+                callSinceIdRef.current = 0;
+                callSignalProcessedRef.current = new Set();
+                return;
+            }
+
+            if (signal.type === 'offer') {
+                const pc = await ensurePeerConnection(fromUserId);
+                const remote = signal.payload || {};
+                if (!remote?.sdp) return;
+                await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: String(remote.sdp) }));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                await sendCallSignal({
+                    conversationId: activeConversationId,
+                    type: 'answer',
+                    toUserId: fromUserId,
+                    signalPayload: { sdp: answer.sdp, type: answer.type },
+                });
+                return;
+            }
+
+            if (signal.type === 'answer') {
+                const pc = await ensurePeerConnection(fromUserId);
+                const remote = signal.payload || {};
+                if (!remote?.sdp) return;
+                await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: String(remote.sdp) }));
+                return;
+            }
+
+            if (signal.type === 'ice') {
+                const candidate = signal.payload || null;
+                if (!candidate) return;
+                const peer = callPeersRef.current[fromUserId];
+                if (!peer || !peer.remoteDescription) {
+                    pendingIceRef.current[fromUserId] = [...(pendingIceRef.current[fromUserId] || []), candidate];
+                    return;
+                }
+                await peer.addIceCandidate(new RTCIceCandidate(candidate));
+            }
+        } catch {
+            // keep signaling loop resilient
+        }
+    };
+
+    const refreshCallState = async () => {
+        if (!activeConversationId) return;
+
+        const state = await getCallState(activeConversationId, callSinceIdRef.current || undefined);
+        setCallState({
+            active: Boolean(state.active && state.call),
+            callId: state.call?.id || null,
+            participants: state.call?.participants || [],
+        });
+        callSinceIdRef.current = Math.max(callSinceIdRef.current, state.lastSignalId || 0);
+
+        if (!state.active || !state.call) {
+            if (inCall) {
+                await stopAllCallMedia();
+            }
+            return;
+        }
+
+        if (inCall) {
+            for (const member of state.call.participants) {
+                if (member.id !== selfUserId && selfUserId < member.id && !callPeersRef.current[member.id]) {
+                    sendOfferToPeer(member.id).catch(() => {
+                        // silent
+                    });
+                }
+            }
+        }
+
+        for (const signal of state.signals || []) {
+            const sid = Number(signal.id || 0);
+            if (!sid || callSignalProcessedRef.current.has(sid)) continue;
+            callSignalProcessedRef.current.add(sid);
+            await handleIncomingCallSignal(signal);
+        }
+    };
+
+    const activeDmPeer = (): ChatUser | null => {
+        if (!activeConversation || activeConversation.type !== 'private') return null;
+
+        return activeConversation.members.find((m) => m.id !== selfUserId) || null;
+    };
+
+    const notifyIncomingCall = (fromName: string) => {
+        if (typeof window === 'undefined' || !('Notification' in window)) return;
+        if (Notification.permission !== 'granted') return;
+        try {
+            const n = new Notification('Incoming Direct Call', {
+                body: `${fromName} is calling you`,
+                tag: `dm-call-${Date.now()}`,
+                renotify: true,
+            });
+            window.setTimeout(() => n.close(), 6000);
+        } catch {
+            // ignore
+        }
+    };
+
+    const startOrJoinCall = async () => {
+        if (!activeConversationId) return;
+        setCallLoading(true);
+        try {
+            await ensureLocalAudio();
+            const current = await getCallState(activeConversationId, callSinceIdRef.current || undefined);
+            if (current.active && current.call) {
+                await joinConversationCall(activeConversationId);
+            } else {
+                await startConversationCall(activeConversationId);
+            }
+            setInCall(true);
+            setCallOpen(true);
+            await syncMicStatus(true, 0);
+            await refreshCallState();
+        } catch (error) {
+            clearAndAddHttpError({ key: 'dashboard', error });
+        } finally {
+            setCallLoading(false);
+        }
+    };
+
+    const startDirectCallInvite = async () => {
+        if (!activeConversationId) return;
+        const peer = activeDmPeer();
+        if (!peer) return;
+
+        setCallLoading(true);
+        try {
+            await ensureLocalAudio();
+            const current = await getCallState(activeConversationId, callSinceIdRef.current || undefined);
+            if (current.active && current.call) {
+                await joinConversationCall(activeConversationId);
+            } else {
+                await startConversationCall(activeConversationId);
+            }
+            await sendCallSignal({
+                conversationId: activeConversationId,
+                type: 'ring',
+                toUserId: peer.id,
+                signalPayload: {
+                    from_user_id: selfUserId,
+                    from_name: selfUsername,
+                },
+            });
+            setInCall(true);
+            setCallOpen(true);
+            await syncMicStatus(true, 0);
+            await refreshCallState();
+        } catch (error) {
+            clearAndAddHttpError({ key: 'dashboard', error });
+        } finally {
+            setCallLoading(false);
+        }
+    };
+
+    const respondIncomingCall = async (decision: 'accept' | 'denied' | 'busy' | 'ignore') => {
+        const prompt = incomingCallPrompt;
+        setIncomingCallPrompt(null);
+        if (!prompt || !activeConversationId || prompt.conversationId !== activeConversationId) return;
+
+        if (decision === 'ignore') {
+            return;
+        }
+
+        if (decision === 'accept') {
+            try {
+                await ensureLocalAudio();
+                await joinConversationCall(prompt.conversationId);
+                await sendCallSignal({
+                    conversationId: prompt.conversationId,
+                    type: 'ring_response',
+                    toUserId: prompt.fromUserId,
+                    signalPayload: { status: 'accepted' },
+                });
+                setInCall(true);
+                setCallOpen(true);
+                await syncMicStatus(true, 0);
+                await refreshCallState();
+            } catch (error) {
+                clearAndAddHttpError({ key: 'dashboard', error });
+            }
+            return;
+        }
+
+        try {
+            await sendCallSignal({
+                conversationId: prompt.conversationId,
+                type: 'ring_response',
+                toUserId: prompt.fromUserId,
+                signalPayload: { status: decision },
+            });
+        } catch {
+            // ignore
+        }
+    };
+
+    const leaveCurrentCall = async (endForAll = false) => {
+        if (!activeConversationId) return;
+        try {
+            if (endForAll) {
+                await endConversationCall(activeConversationId);
+            } else {
+                await leaveConversationCall(activeConversationId);
+            }
+        } catch {
+            // ignore network error, still cleanup local resources
+        } finally {
+            await stopAllCallMedia();
+            setCallOpen(false);
+            await refreshCallState().catch(() => {
+                // ignore
+            });
+        }
+    };
+
+    const toggleLocalMic = async () => {
+        const next = !localMicMuted;
+        setLocalMicMuted(next);
+        if (localStreamRef.current) {
+            localStreamRef.current.getAudioTracks().forEach((track) => {
+                track.enabled = !next;
+            });
+        }
+        if (next) setLocalSpeakingLevel(0);
+        await syncMicStatus(true, next ? 0 : localSpeakingLevel);
+    };
+
     const popupTargetMuted = useMemo(() => {
         if (!profilePopup || !activeConversation) return false;
         const member = activeConversation.members.find((m) => (profilePopup.id ? m.id === profilePopup.id : m.username === profilePopup.username));
@@ -779,20 +1365,27 @@ export default () => {
     };
 
     const handlePopupCall = async () => {
-        if (!activeConversationId || !profilePopup?.username) return;
-        try {
-            const label = activeConversation?.type === 'group' ? 'group call' : 'call';
-            const created = await postPublicMessage({
-                conversationId: activeConversationId,
-                message: `📞 ${selfUsername} started a ${label} with @${profilePopup.username}`,
-                mediaType: 'text',
-            });
-            setMessages((current) => [...current, created]);
-            setProfilePopup(null);
-            requestAnimationFrame(scrollToBottom);
-        } catch (error) {
-            clearAndAddHttpError({ key: 'dashboard', error });
+        if (!activeConversationId) return;
+        if (inCall) {
+            setCallOpen(true);
+        } else if (activeConversation?.type === 'private') {
+            await startDirectCallInvite();
+        } else {
+            await startOrJoinCall();
         }
+        setProfilePopup(null);
+    };
+    const handleHeaderCall = async () => {
+        if (!activeConversationId) return;
+        if (inCall) {
+            setCallOpen((value) => !value);
+            return;
+        }
+        if (activeConversation?.type === 'private' && !callState.active) {
+            await startDirectCallInvite();
+            return;
+        }
+        await startOrJoinCall();
     };
 
     const handlePopupMuteToggle = async () => {
@@ -844,6 +1437,23 @@ export default () => {
 
         return resolvePresence(profilePopup.username, profilePopup.lastSeen || null);
     }, [profilePopup, userLastSeenMap]);
+    const callParticipants = useMemo(() => callState.participants || [], [callState.participants]);
+    const callMaxVisible = isNarrowViewport ? 3 : 5;
+    const visibleCallParticipants = useMemo(() => {
+        const sorted = [...callParticipants].sort((a, b) => {
+            const aLevel = a.id === selfUserId ? localSpeakingLevel : clampLevel(a.speakingLevel || 0);
+            const bLevel = b.id === selfUserId ? localSpeakingLevel : clampLevel(b.speakingLevel || 0);
+            if (bLevel !== aLevel) return bLevel - aLevel;
+
+            return toUnixMs(a.joinedAt || null) - toUnixMs(b.joinedAt || null);
+        });
+
+        return sorted.slice(0, callMaxVisible);
+    }, [callParticipants, callMaxVisible, selfUserId, localSpeakingLevel]);
+    const callSelfParticipant = useMemo(
+        () => callParticipants.find((participant) => participant.id === selfUserId) || null,
+        [callParticipants, selfUserId]
+    );
 
     return (
         <Root>
@@ -1028,9 +1638,14 @@ export default () => {
                         </div>
                     </div>
                     <div css={tw`flex items-center gap-2`}>
-                        <Button type={'button'} size={'xsmall'} css={tw`lg:hidden`} onClick={() => setMobilePane('chats')}>
+                        {activeConversation && (
+                            <Tiny type={'button'} onClick={handleHeaderCall} disabled={callLoading}>
+                                Call
+                            </Tiny>
+                        )}
+                        <Tiny type={'button'} css={tw`lg:hidden`} onClick={() => setMobilePane('chats')}>
                             Back
-                        </Button>
+                        </Tiny>
                         <div css={tw`text-xs text-neutral-400`}>{messages.length} msgs</div>
                     </div>
                 </MainHeader>
@@ -1184,7 +1799,9 @@ export default () => {
                                 >
                                     <Bubble
                                         css={[
-                                            item.isOwn ? tw`bg-neutral-700 text-neutral-100` : tw`bg-neutral-900 text-neutral-100`,
+                                            item.isOwn
+                                                ? tw`bg-neutral-700 border border-neutral-600 text-neutral-100`
+                                                : tw`bg-neutral-800 border border-neutral-700 text-neutral-100`,
                                             mentionsMe ? tw`ring-1 ring-yellow-300` : undefined,
                                             highlightedMessageId === item.id ? tw`ring-2 ring-cyan-300` : undefined,
                                         ]}
@@ -1228,7 +1845,7 @@ export default () => {
                                         </button>
 
                                         {item.reply && (
-                                                <div css={tw`mb-2 rounded-md border-l-2 border-neutral-600 bg-neutral-900/70 px-2 py-1`}>
+                                                <div css={tw`mb-2 rounded-md border-l-2 border-neutral-600 bg-neutral-800/70 px-2 py-1`}>
                                                 <button type={'button'} css={tw`text-[11px] text-neutral-200`} onClick={() => scrollToMessage(item.reply!.id)}>
                                                     Reply to @{item.reply.username}: {item.reply.body || '[empty]'}
                                                 </button>
@@ -1580,6 +2197,109 @@ export default () => {
                     </div>
                 </div>
             )}
+            {incomingCallPrompt && (
+                <div css={tw`fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4`} onClick={() => respondIncomingCall('ignore')}>
+                    <div css={tw`w-full max-w-sm rounded-lg border border-neutral-700 bg-neutral-900 p-4`} onClick={(e) => e.stopPropagation()}>
+                        <p css={tw`text-sm font-semibold text-neutral-100`}>Incoming Direct Call</p>
+                        <p css={tw`text-xs text-neutral-300 mt-1 truncate`}>{incomingCallPrompt.fromName}</p>
+                        <div css={tw`mt-4 grid grid-cols-2 gap-2`}>
+                            <Button type={'button'} size={'xsmall'} onClick={() => respondIncomingCall('accept')}>
+                                Accept
+                            </Button>
+                            <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => respondIncomingCall('denied')}>
+                                Denied
+                            </Button>
+                            <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => respondIncomingCall('busy')}>
+                                I'm Busy
+                            </Button>
+                            <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => respondIncomingCall('ignore')}>
+                                Close
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {callOpen && callState.active && (
+                <div css={tw`fixed z-50 bottom-4 right-4 w-[92vw] sm:w-[24rem] rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl overflow-hidden`}>
+                    <div css={tw`px-3 py-2 border-b border-neutral-800 flex items-center justify-between`}>
+                        <div>
+                            <p css={tw`text-neutral-100 font-semibold text-xs`}>Voice Call</p>
+                            <p css={tw`text-neutral-400 text-[11px] truncate`}>{activeConversation?.name || 'Conversation'}</p>
+                        </div>
+                        <button type={'button'} css={tw`text-neutral-300 hover:text-neutral-100 text-xs`} onClick={() => setCallOpen(false)}>
+                            Hide
+                        </button>
+                    </div>
+                    <div css={tw`px-3 py-3`}>
+                        <div css={tw`flex items-start justify-between`}>
+                            <div css={tw`grid grid-cols-3 sm:grid-cols-5 gap-2`}>
+                                {visibleCallParticipants.map((participant) => {
+                                    const isSelf = participant.id === selfUserId;
+                                    const level = isSelf ? localSpeakingLevel : clampLevel(participant.speakingLevel || 0);
+                                    const spread = level >= 55 ? 7 : level >= 20 ? 4 : 2;
+                                    const alpha = level >= 55 ? 0.75 : level >= 20 ? 0.5 : 0.22;
+                                    const ringStyle = participant.micMuted
+                                        ? { boxShadow: '0 0 0 2px rgba(248,113,113,0.55)' }
+                                        : {
+                                              boxShadow:
+                                                  level > 0
+                                                      ? `0 0 0 ${spread}px rgba(34,197,94,${alpha})`
+                                                      : '0 0 0 2px rgba(34,197,94,0.22)',
+                                          };
+
+                                    return (
+                                        <div key={`call-user-${participant.id}`} css={tw`flex flex-col items-center text-center w-14`}>
+                                            <div css={tw`w-11 h-11 rounded-full overflow-hidden border border-neutral-700`} style={ringStyle}>
+                                                {participant.avatarUrl ? (
+                                                    <AvatarImage src={participant.avatarUrl} alt={participant.displayName} />
+                                                ) : (
+                                                    <AvatarFallback>{avatarForName(participant.displayName || participant.username)}</AvatarFallback>
+                                                )}
+                                            </div>
+                                            <p css={tw`mt-1 text-[10px] text-neutral-100 truncate w-full`}>
+                                                {participant.displayName}
+                                            </p>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            {callParticipants.length > callMaxVisible && (
+                                <div css={tw`text-[10px] text-neutral-400 ml-2 mt-1`}>+{callParticipants.length - callMaxVisible}</div>
+                            )}
+                        </div>
+                        <div css={tw`mt-3 flex items-center justify-between gap-2`}>
+                            <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={toggleLocalMic}>
+                                {localMicMuted ? 'Open Mic' : 'Silent'}
+                            </Button>
+                            <div css={tw`flex items-center gap-2`}>
+                                <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => leaveCurrentCall(false)}>
+                                    Leave
+                                </Button>
+                                {callState.callId && callSelfParticipant && (
+                                    <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => leaveCurrentCall(true)}>
+                                        End
+                                    </Button>
+                                )}
+                            </div>
+                        </div>
+                        <div css={tw`hidden`}>
+                            {Object.entries(remoteStreams).map(([id, stream]) => (
+                                <audio
+                                    key={`remote-audio-${id}`}
+                                    autoPlay
+                                    playsInline
+                                    ref={(el) => {
+                                        if (!el || !stream) return;
+                                        if (el.srcObject !== stream) {
+                                            el.srcObject = stream;
+                                        }
+                                    }}
+                                />
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
             {profilePopup && (
                 <div
                     css={tw`fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4`}
@@ -1620,7 +2340,7 @@ export default () => {
                                     {popupTargetMuted ? 'Unmute' : 'Mute'}
                                 </button>
                                 <button type={'button'} css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200`} onClick={handlePopupCall}>
-                                    Call
+                                    {callState.active ? (inCall ? 'Show Call' : 'Join Call') : 'Call'}
                                 </button>
                                 <button type={'button'} css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200`} onClick={() => setProfilePopup(null)}>
                                     More

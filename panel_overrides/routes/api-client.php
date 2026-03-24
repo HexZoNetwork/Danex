@@ -19,7 +19,7 @@ use Pterodactyl\Http\Middleware\Api\Client\Server\AuthenticateServerAccess;
 */
 Route::get('/', [Client\ClientController::class, 'index'])->name('api:client.index');
 Route::get('/permissions', [Client\ClientController::class, 'permissions']);
-Route::prefix('/chat')->group(function () {
+Route::prefix('/chat')->withoutMiddleware('throttle:api')->group(function () {
     Route::get('/conversations', [Client\PublicChatController::class, 'conversations']);
     Route::get('/users', [Client\PublicChatController::class, 'searchUsers'])->middleware('throttle:60,1');
     Route::post('/conversations/private', [Client\PublicChatController::class, 'createPrivate'])->middleware('throttle:30,1');
@@ -33,12 +33,19 @@ Route::prefix('/chat')->group(function () {
     Route::post('/conversations/{conversation}/members/{member}/admin', [Client\PublicChatController::class, 'setGroupAdmin'])->middleware('throttle:30,1');
     Route::get('/messages', [Client\PublicChatController::class, 'index']);
     Route::post('/messages', [Client\PublicChatController::class, 'store'])->middleware('throttle:40,1');
+    Route::get('/calls/state', [Client\PublicChatController::class, 'callState']);
+    Route::post('/calls/start', [Client\PublicChatController::class, 'startCall'])->middleware('throttle:30,1');
+    Route::post('/calls/join', [Client\PublicChatController::class, 'joinCall']);
+    Route::post('/calls/leave', [Client\PublicChatController::class, 'leaveCall']);
+    Route::post('/calls/end', [Client\PublicChatController::class, 'endCall'])->middleware('throttle:40,1');
+    Route::post('/calls/signal', [Client\PublicChatController::class, 'callSignal']);
+    Route::post('/calls/mic', [Client\PublicChatController::class, 'callMic']);
     Route::post('/polls', [Client\PublicChatController::class, 'storePoll'])->middleware('throttle:20,1');
     Route::post('/polls/{message}/vote', [Client\PublicChatController::class, 'votePoll'])->middleware('throttle:60,1');
     Route::post('/messages/{message}/reactions', [Client\PublicChatController::class, 'react'])->middleware('throttle:80,1');
     Route::patch('/messages/{message}', [Client\PublicChatController::class, 'update'])->middleware('throttle:40,1');
     Route::delete('/messages/{message}', [Client\PublicChatController::class, 'destroy'])->middleware('throttle:40,1');
-    Route::post('/read', [Client\PublicChatController::class, 'markRead'])->middleware('throttle:80,1');
+    Route::post('/read', [Client\PublicChatController::class, 'markRead']);
     Route::post('/upload', [Client\PublicChatController::class, 'upload'])->middleware('throttle:20,1');
 });
 
