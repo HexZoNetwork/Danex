@@ -2320,12 +2320,9 @@ export default () => {
                 >
                     <div css={tw`w-full max-w-md rounded-lg border border-neutral-600 bg-neutral-800 overflow-hidden`} onClick={(e) => e.stopPropagation()}>
                         <div css={tw`px-4 py-3 border-b border-neutral-700 bg-neutral-700`}>
-                            <div css={tw`flex items-center justify-between`}>
+                            <div css={tw`flex items-center justify-start`}>
                                 <button type={'button'} css={tw`text-neutral-300 hover:text-neutral-100 text-xs`} onClick={() => setProfilePopup(null)}>
                                     Back
-                                </button>
-                                <button type={'button'} css={tw`text-neutral-300 hover:text-neutral-100 text-xs`} onClick={() => setProfilePopup(null)}>
-                                    Close
                                 </button>
                             </div>
                             <div css={tw`pt-4`}>
