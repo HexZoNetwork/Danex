@@ -591,16 +591,22 @@ class PublicChatController extends ClientApiController
         $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
 
         $ids = array_values(array_unique(array_map('intval', $validated['message_ids'] ?? [])));
-        if ($ids === []) {
-            $ids = PublicChatMessage::query()
-                ->where('conversation_id', (int) $conversation->id)
+        $recordsQuery = PublicChatMessage::query()
+            ->where('conversation_id', (int) $conversation->id);
+
+        if ($ids !== []) {
+            $records = (clone $recordsQuery)
+                ->whereIn('id', $ids)
+                ->get(['id', 'user_id']);
+        } else {
+            $records = (clone $recordsQuery)
                 ->orderByDesc('id')
                 ->limit(self::MAX_LIMIT)
-                ->pluck('id')
-                ->all();
+                ->get(['id', 'user_id']);
         }
 
-        $userIds = PublicChatMessage::query()->whereIn('id', $ids)->pluck('user_id')->all();
+        $ids = $records->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $userIds = $records->pluck('user_id')->map(fn ($id) => (int) $id)->all();
         $this->markMessagesRead($ids, (int) $user->id, $userIds);
 
         return new JsonResponse(['ok' => true]);

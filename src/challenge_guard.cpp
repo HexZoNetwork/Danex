@@ -425,23 +425,33 @@ static std::string first_xff_ip(const std::string& xff) {
     return trim(xff.substr(0, pos));
 }
 
+static bool is_ip_literal(const std::string& ip) {
+    sockaddr_in sa4{};
+    if (inet_pton(AF_INET, ip.c_str(), &sa4.sin_addr) == 1) return true;
+    sockaddr_in6 sa6{};
+    return inet_pton(AF_INET6, ip.c_str(), &sa6.sin6_addr) == 1;
+}
+
+static bool is_loopback_proxy_ip(const std::string& ip) {
+    std::string t = trim(ip);
+    return t == "127.0.0.1" || t == "::1" || t == "::ffff:127.0.0.1";
+}
+
 static std::string resolve_client_ip(const HttpRequest& req) {
-    auto it_cf = req.headers.find("cf-connecting-ip");
-    if (it_cf != req.headers.end()) {
-        std::string v = trim(it_cf->second);
-        if (!v.empty()) return first_xff_ip(v);
+    std::string peer = trim(req.remote_ip);
+    if (is_loopback_proxy_ip(peer)) {
+        auto it_real = req.headers.find("x-real-ip");
+        if (it_real != req.headers.end()) {
+            std::string v = first_xff_ip(it_real->second);
+            if (!v.empty() && is_ip_literal(v)) return v;
+        }
+        auto it_xff = req.headers.find("x-forwarded-for");
+        if (it_xff != req.headers.end()) {
+            std::string v = first_xff_ip(it_xff->second);
+            if (!v.empty() && is_ip_literal(v)) return v;
+        }
     }
-    auto it_real = req.headers.find("x-real-ip");
-    if (it_real != req.headers.end()) {
-        std::string v = trim(it_real->second);
-        if (!v.empty()) return first_xff_ip(v);
-    }
-    auto it_xff = req.headers.find("x-forwarded-for");
-    if (it_xff != req.headers.end()) {
-        std::string v = trim(it_xff->second);
-        if (!v.empty()) return first_xff_ip(v);
-    }
-    return req.remote_ip;
+    return is_ip_literal(peer) ? peer : "127.0.0.1";
 }
 
 static bool is_ipv4_literal(const std::string& ip) {
@@ -957,24 +967,6 @@ static std::string pattern_hint_text(const std::vector<int>& nodes) {
     return oss.str();
 }
 
-static bool ptero_api_token_format_ok(const std::string& token) {
-    std::string t = trim(token);
-    if (t.size() < 24 || t.size() > 256) return false;
-    std::string low = to_lower(t);
-    const bool has_ptero_prefix =
-        (low.rfind("ptla_", 0) == 0) ||
-        (low.rfind("plta_", 0) == 0) ||
-        (low.rfind("ptlc_", 0) == 0);
-    if (!has_ptero_prefix) return false;
-    for (char c : t) {
-        const bool ok =
-            std::isalnum(static_cast<unsigned char>(c)) ||
-            c == '_' || c == '-';
-        if (!ok) return false;
-    }
-    return true;
-}
-
 static bool daemon_bearer_token_format_ok(const std::string& token) {
     std::string t = trim(token);
     if (t.size() < 24 || t.size() > 400) return false;
@@ -1011,6 +1003,11 @@ static std::string session_scope_key(const std::string& ip, const std::string& u
 }
 
 static bool has_valid_auth_token_header(const HttpRequest& req, const std::string& client_ip) {
+    auto internal_it = req.headers.find("x-pteroprotect-internal");
+    if (internal_it == req.headers.end() || trim(internal_it->second) != "1") {
+        return false;
+    }
+
     // Allow panel->wings internal daemon polling only when real client IP is localhost.
     auto ua_it = req.headers.find("user-agent");
     std::string ua = (ua_it != req.headers.end()) ? to_lower(ua_it->second) : "";
@@ -1025,13 +1022,8 @@ static bool has_valid_auth_token_header(const HttpRequest& req, const std::strin
         const std::string pre = "bearer ";
         if (low.size() > pre.size() && low.compare(0, pre.size(), pre) == 0) {
             std::string tok = trim(v.substr(pre.size()));
-            if (ptero_api_token_format_ok(tok)) return true;
             if (daemon_bearer_token_format_ok(tok)) return true;
         }
-    }
-    auto it2 = req.headers.find("x-api-key");
-    if (it2 != req.headers.end()) {
-        if (ptero_api_token_format_ok(trim(it2->second))) return true;
     }
     return false;
 }
@@ -1640,14 +1632,6 @@ static void handle_client(int fd, std::string remote_ip) {
             return;
         }
         bool pow_ok = verify_pow_solution(rec, nonce, pow_counter, pow_hash);
-        if (!pow_ok) {
-            const std::time_t now_ts = std::time(nullptr);
-            const int nonce_age_sec =
-                (rec.issued_at > 0 && now_ts >= rec.issued_at) ? static_cast<int>(now_ts - rec.issued_at) : 0;
-            if (rec.click_verified && rec.math_verified && nonce_age_sec >= 3) {
-                pow_ok = true;
-            }
-        }
         if (!pow_ok) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"pow_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);

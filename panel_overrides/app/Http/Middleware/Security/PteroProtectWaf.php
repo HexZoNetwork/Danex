@@ -149,14 +149,6 @@ class PteroProtectWaf
 
         $path = ltrim($request->path(), '/');
         $authHeader = trim((string) $request->header('Authorization', ''));
-        $hasBearer = $authHeader !== '' && preg_match('/^Bearer\s+\S+$/i', $authHeader) === 1;
-        if (
-            $hasBearer
-            && strtoupper((string) $request->method()) === 'POST'
-            && preg_match('#^api/application/(users|servers)(?:/|$)#i', $path) === 1
-        ) {
-            return true;
-        }
 
         if ($lockdown || $mode === 'emergency') {
             return false;

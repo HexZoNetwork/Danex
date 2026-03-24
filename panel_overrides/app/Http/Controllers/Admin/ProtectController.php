@@ -1232,7 +1232,11 @@ class ProtectController extends Controller
                 }
 
                 $runtime = is_array($data['runtime'] ?? null) ? $data['runtime'] : [];
-                $volumesPath = trim((string) ($runtime['volumes'] ?? ''));
+                $paths = is_array($data['paths'] ?? null) ? $data['paths'] : [];
+                $volumesPath = trim((string) (
+                    ($runtime['volumes'] ?? '')
+                    ?: ($paths['volumes'] ?? '')
+                ));
                 $dirName = trim((string) ($runtime['quarantine_dir_name'] ?? ''));
 
                 if ($volumesPath !== '' && $dirName !== '') {

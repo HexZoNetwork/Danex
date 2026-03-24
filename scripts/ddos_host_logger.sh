@@ -129,6 +129,13 @@ sanitize_shell_single_quoted() {
     printf '%s' "${value}"
 }
 
+mysql_escape_literal() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\'/\'\'}"
+    printf '%s' "${value}"
+}
+
 read_panel_env() {
     local key="$1"
     local value
@@ -387,7 +394,9 @@ resolve_host_ips() {
 
 resolve_server_uuid_by_identifier() {
     local identifier="$1"
-    mysql_exec "SELECT uuid FROM servers WHERE uuidShort = '${identifier}' OR uuid = '${identifier}' LIMIT 1;" | head -n 1
+    local safe_identifier
+    safe_identifier="$(mysql_escape_literal "${identifier}")"
+    mysql_exec "SELECT uuid FROM servers WHERE uuidShort = '${safe_identifier}' OR uuid = '${safe_identifier}' LIMIT 1;" | head -n 1
 }
 
 resolve_container_ips_by_server_identifier() {
@@ -1272,9 +1281,11 @@ quarantine_server_identifier() {
     local identifier="$1"
     local request_count="$2"
     local row server_id owner_id server_uuid server_name server_status owner_hits
+    local safe_identifier
 
     [[ "${SELF_DDOS_QUARANTINE_ENABLED}" == "1" ]] || return 0
-    row="$(mysql_exec "SELECT id, owner_id, uuid, name, COALESCE(status,'') FROM servers WHERE uuidShort = '${identifier}' OR uuid = '${identifier}' LIMIT 1;" | head -n 1)"
+    safe_identifier="$(mysql_escape_literal "${identifier}")"
+    row="$(mysql_exec "SELECT id, owner_id, uuid, name, COALESCE(status,'') FROM servers WHERE uuidShort = '${safe_identifier}' OR uuid = '${safe_identifier}' LIMIT 1;" | head -n 1)"
     [[ -n "${row}" ]] || return 0
 
     IFS=$'\t' read -r server_id owner_id server_uuid server_name server_status <<< "${row}"

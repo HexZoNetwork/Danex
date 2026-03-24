@@ -100,6 +100,39 @@ struct ApiTrafficProfile {
 
 std::string resolve_local_container_ref(const std::string& identifier, const std::string& uuid = "");
 
+std::string shell_quote_single(const std::string& value) {
+    std::string escaped = "'";
+    for (char c : value) {
+        if (c == '\'') escaped += "'\\''";
+        else escaped += c;
+    }
+    escaped += "'";
+    return escaped;
+}
+
+bool is_safe_docker_ref_token(const std::string& value) {
+    if (value.empty() || value.size() > 128) return false;
+    static const std::regex safe_re(R"(^[A-Za-z0-9][A-Za-z0-9_.:-]*$)");
+    return std::regex_match(value, safe_re);
+}
+
+bool is_safe_hostname_token(const std::string& value) {
+    if (value.empty() || value.size() > 255) return false;
+    static const std::regex safe_re(R"(^[A-Za-z0-9][A-Za-z0-9._-]*$)");
+    return std::regex_match(value, safe_re);
+}
+
+bool is_safe_numeric_token(const std::string& value) {
+    if (value.empty() || value.size() > 16) return false;
+    return std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+}
+
+bool is_safe_ip_literal_token(const std::string& value) {
+    if (value.empty() || value.size() > 64) return false;
+    static const std::regex safe_re(R"(^[0-9A-Fa-f:.]+$)");
+    return std::regex_match(value, safe_re);
+}
+
 std::string trim_copy(const std::string& s) {
     size_t a = s.find_first_not_of(" \n\r\t");
     if (a == std::string::npos) return "";
@@ -390,8 +423,8 @@ std::string extract_host_from_url(const std::string& url) {
 
 std::set<std::string> resolve_host_ips(const std::string& host) {
     std::set<std::string> ips;
-    if (host.empty()) return ips;
-    std::string cmd = "getent ahosts " + host + " 2>/dev/null";
+    if (!is_safe_hostname_token(host)) return ips;
+    std::string cmd = "getent ahosts " + shell_quote_single(host) + " 2>/dev/null";
     std::stringstream ss(exec_read_all(cmd));
     std::string line;
     while (std::getline(ss, line)) {
@@ -448,10 +481,10 @@ long long parse_size_to_bytes(std::string text) {
 
 long long get_container_uptime_seconds(const std::string& identifier, const std::string& uuid = "") {
     std::string ref = resolve_local_container_ref(identifier, uuid);
-    if (ref.empty()) return -1;
+    if (!is_safe_docker_ref_token(ref)) return -1;
 
     std::string started_at = trim_copy(exec_read_all(
-        "docker inspect --format '{{.State.StartedAt}}' " + ref + " 2>/dev/null"));
+        "docker inspect --format '{{.State.StartedAt}}' " + shell_quote_single(ref) + " 2>/dev/null"));
     if (started_at.empty() || started_at == "0001-01-01T00:00:00Z") return -1;
 
     std::string epoch = trim_copy(exec_read_all(
@@ -475,8 +508,9 @@ bool env_offline_enabled() {
 }
 
 std::string get_container_pid(const std::string& identifier) {
+    if (!is_safe_docker_ref_token(identifier)) return "";
     return trim_copy(exec_read_all(
-        "docker inspect --format '{{.State.Pid}}' " + identifier + " 2>/dev/null"));
+        "docker inspect --format '{{.State.Pid}}' " + shell_quote_single(identifier) + " 2>/dev/null"));
 }
 
 ProcessAbuseInfo collect_process_abuse(const std::string& identifier) {
@@ -536,24 +570,25 @@ std::string resolve_local_container_ref(const std::string& identifier, const std
     if (!uuid.empty()) candidates.push_back(uuid);
 
     for (const auto& candidate : candidates) {
+        if (!is_safe_docker_ref_token(candidate)) continue;
         std::string inspect = trim_copy(exec_read_all(
-            "docker inspect --format '{{.Id}}' " + candidate + " 2>/dev/null"));
+            "docker inspect --format '{{.Id}}' " + shell_quote_single(candidate) + " 2>/dev/null"));
         if (!inspect.empty()) return candidate;
     }
 
-    if (!uuid.empty()) {
+    if (!uuid.empty() && is_safe_docker_ref_token(uuid)) {
         std::string by_label = trim_copy(exec_read_all(
-            "docker ps --filter label=service_uuid=" + uuid + " --format '{{.ID}}' | head -n 1"));
+            "docker ps --filter " + shell_quote_single("label=service_uuid=" + uuid) + " --format '{{.ID}}' | head -n 1"));
         if (!by_label.empty()) return by_label;
 
         std::string by_name = trim_copy(exec_read_all(
-            "docker ps --filter name=" + uuid + " --format '{{.ID}}' | head -n 1"));
+            "docker ps --filter " + shell_quote_single("name=" + uuid) + " --format '{{.ID}}' | head -n 1"));
         if (!by_name.empty()) return by_name;
     }
 
-    if (!identifier.empty()) {
+    if (!identifier.empty() && is_safe_docker_ref_token(identifier)) {
         std::string by_name = trim_copy(exec_read_all(
-            "docker ps --filter name=" + identifier + " --format '{{.ID}}' | head -n 1"));
+            "docker ps --filter " + shell_quote_single("name=" + identifier) + " --format '{{.ID}}' | head -n 1"));
         if (!by_name.empty()) return by_name;
     }
 
@@ -562,8 +597,8 @@ std::string resolve_local_container_ref(const std::string& identifier, const std
 
 bool restart_container(const std::string& identifier, const std::string& uuid = "") {
     std::string ref = resolve_local_container_ref(identifier, uuid);
-    if (ref.empty()) return false;
-    int rc = system(("docker restart -t 5 " + ref + " >/dev/null 2>&1").c_str());
+    if (!is_safe_docker_ref_token(ref)) return false;
+    int rc = system(("docker restart -t 5 " + shell_quote_single(ref) + " >/dev/null 2>&1").c_str());
     return rc == 0;
 }
 
@@ -585,18 +620,18 @@ std::string detect_dropper_artifact(const std::string& server_uuid) {
 
 bool stop_container_now(const std::string& identifier, const std::string& uuid = "") {
     std::string ref = resolve_local_container_ref(identifier, uuid);
-    if (ref.empty()) return false;
-    int rc = system(("docker stop -t 3 " + ref + " >/dev/null 2>&1").c_str());
+    if (!is_safe_docker_ref_token(ref)) return false;
+    int rc = system(("docker stop -t 3 " + shell_quote_single(ref) + " >/dev/null 2>&1").c_str());
     if (rc == 0) return true;
-    return system(("docker kill " + ref + " >/dev/null 2>&1").c_str()) == 0;
+    return system(("docker kill " + shell_quote_single(ref) + " >/dev/null 2>&1").c_str()) == 0;
 }
 
 bool read_local_resources(const std::string& identifier, const std::string& uuid, ResourceSnapshot& snap) {
     std::string ref = resolve_local_container_ref(identifier, uuid);
-    if (ref.empty()) return false;
+    if (!is_safe_docker_ref_token(ref)) return false;
 
     std::string state_line = trim_copy(exec_read_all(
-        "docker inspect --format '{{.State.Status}}|{{.State.Running}}' " + ref + " 2>/dev/null"));
+        "docker inspect --format '{{.State.Status}}|{{.State.Running}}' " + shell_quote_single(ref) + " 2>/dev/null"));
     std::vector<std::string> state_parts = split_copy(state_line, '|');
     if (state_parts.size() < 2) return false;
 
@@ -604,7 +639,7 @@ bool read_local_resources(const std::string& identifier, const std::string& uuid
     snap.is_suspended = false;
 
     std::string stat_line = trim_copy(exec_read_all(
-        "docker stats --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}' " + ref + " 2>/dev/null"));
+        "docker stats --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}' " + shell_quote_single(ref) + " 2>/dev/null"));
     std::vector<std::string> stat_parts = split_copy(stat_line, '|');
     if (stat_parts.size() < 2) return false;
 
@@ -705,7 +740,7 @@ std::map<std::string, std::string> get_container_ip_actor_map() {
         if (id.empty()) continue;
 
         std::string ips = exec_read_all(
-            "docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' " + id + " 2>/dev/null");
+            "docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' " + shell_quote_single(id) + " 2>/dev/null");
         std::stringstream is(ips);
         std::string ip;
         while (is >> ip) {
@@ -719,6 +754,7 @@ std::map<std::string, std::string> get_container_ip_actor_map() {
 
 bool block_iptables_ip(const std::string& ip) {
     if (ip.empty() || is_private_or_local_ip(ip)) return false;
+    if (!is_safe_ip_literal_token(ip)) return false;
     std::string check_cmd = "iptables -C PTEROPROTECT -s " + ip + " -j DROP >/dev/null 2>&1";
     if (system(check_cmd.c_str()) == 0) return true;
     std::string add_cmd = "iptables -I PTEROPROTECT -s " + ip + " -j DROP >/dev/null 2>&1";
@@ -729,7 +765,7 @@ InboundStats collect_inbound_stats(const std::string& identifier) {
     InboundStats stats;
     static std::map<std::string, std::string> actor_map = get_container_ip_actor_map();
     std::string pid = get_container_pid(identifier);
-    if (pid.empty() || pid == "0") return stats;
+    if (pid.empty() || pid == "0" || !is_safe_numeric_token(pid)) return stats;
 
     std::string cmd = "nsenter -t " + pid + " -n ss -tnH state established,syn-recv,fin-wait-1,fin-wait-2,close-wait,last-ack,time-wait 2>/dev/null";
     std::string body = exec_read_all(cmd);
@@ -827,7 +863,7 @@ InboundStats collect_inbound_stats(const std::string& identifier) {
 
 std::string block_abusive_inbound_ips(const std::string& identifier) {
     std::string pid = get_container_pid(identifier);
-    if (pid.empty() || pid == "0") return "";
+    if (pid.empty() || pid == "0" || !is_safe_numeric_token(pid)) return "";
 
     std::string cmd = "nsenter -t " + pid + " -n ss -tnH 2>/dev/null";
     std::string body = exec_read_all(cmd);
@@ -1047,7 +1083,7 @@ bool ResourceMonitor::refresh_server_list() {
             if (container_id.empty() || uuid.empty()) continue;
 
             std::string limit_line = trim_copy(exec_read_all(
-                "docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}' " + container_id + " 2>/dev/null"));
+                "docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}' " + shell_quote_single(container_id) + " 2>/dev/null"));
             std::vector<std::string> limit_parts = split_copy(limit_line, '|');
 
             PtlcServerEntry srv;

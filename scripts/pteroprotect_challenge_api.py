@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import random
@@ -19,6 +20,8 @@ _cfg_cache = {"at": 0.0, "data": {}}
 _nonce_lock = threading.Lock()
 _nonces = {}
 _ephemeral_secret = secrets.token_urlsafe(32)
+_rate_lock = threading.Lock()
+_rate_windows = {}
 
 
 def _b64u(data: bytes) -> str:
@@ -89,10 +92,28 @@ def is_enabled():
 
 
 def client_ip(handler):
-    xff = (handler.headers.get("X-Forwarded-For") or "").strip()
-    if xff:
-        return xff.split(",")[0].strip()
-    return (handler.client_address[0] or "").strip()
+    def _first_ip(raw: str) -> str:
+        candidate = str(raw or "").split(",", 1)[0].strip()
+        if not candidate:
+            return ""
+        try:
+            ipaddress.ip_address(candidate)
+            return candidate
+        except Exception:
+            return ""
+
+    peer = (handler.client_address[0] or "").strip()
+    allow_forwarded = peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+    if allow_forwarded:
+        real_ip = _first_ip(handler.headers.get("X-Real-IP", ""))
+        if real_ip:
+            return real_ip
+        xff_ip = _first_ip(handler.headers.get("X-Forwarded-For", ""))
+        if xff_ip:
+            return xff_ip
+
+    resolved_peer = _first_ip(peer)
+    return resolved_peer or "127.0.0.1"
 
 
 def ua_fingerprint(handler):
@@ -150,6 +171,45 @@ def cleanup_nonces():
             _nonces.pop(k, None)
 
 
+def normalize_redirect_path(raw: str) -> str:
+    try:
+        parsed = urlparse(str(raw or ""))
+    except Exception:
+        return "/"
+
+    path = parsed.path or "/"
+    if not path.startswith("/"):
+        return "/"
+
+    sanitized = path
+    if parsed.query:
+        sanitized += "?" + parsed.query
+    if parsed.fragment:
+        sanitized += "#" + parsed.fragment
+
+    if "\n" in sanitized or "\r" in sanitized or "\x00" in sanitized:
+        return "/"
+
+    if len(sanitized) > 2048:
+        return "/"
+
+    return sanitized
+
+
+def rate_allow(ip: str, bucket: str, limit: int, window_sec: int) -> bool:
+    now = int(time.time())
+    key = f"{bucket}:{ip}"
+    with _rate_lock:
+        rec = _rate_windows.get(key)
+        if not rec or now - int(rec.get("start", 0)) >= window_sec:
+            rec = {"start": now, "count": 0}
+        rec["count"] = int(rec.get("count", 0)) + 1
+        _rate_windows[key] = rec
+        if int(rec["count"]) > limit:
+            return False
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "PteroProtectChallenge/1.0"
 
@@ -161,6 +221,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(body)))
         if extra_headers:
             for k, v in extra_headers.items():
@@ -173,6 +236,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -233,6 +300,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/new":
             if not is_enabled():
                 return self._json(200, {"ok": True, "disabled": True})
+            if not rate_allow(ip, "challenge_new", 40, 60):
+                return self._json(429, {"ok": False, "error": "rate_limited"})
             cleanup_nonces()
             a = random.randint(11, 89)
             b = random.randint(11, 89)
@@ -249,9 +318,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "nonce": nonce, "question": f"{a} {op} {b} = ?"})
 
         if path == "/page":
-            rd = q.get("rd", ["/"])[0]
-            rd = rd if rd.startswith("/") else "/"
-            rd_q = urlencode({"rd": rd})
+            rd = normalize_redirect_path(q.get("rd", ["/"])[0])
+            rd_js = json.dumps(rd)
             html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PteroProtect Challenge</title>
@@ -266,7 +334,7 @@ button{{margin-top:10px;background:#1f6feb;border-color:#2d7cf0;cursor:pointer}}
 </div><script>
 let nonce=""; const elQ=document.getElementById("q"), elA=document.getElementById("a"), elB=document.getElementById("b"), elE=document.getElementById("e");
 async function loadC(){{elE.textContent=""; const r=await fetch("/__pteroprotect/challenge/new",{{cache:"no-store"}}); const j=await r.json(); if(!j.ok) throw new Error("challenge unavailable"); nonce=j.nonce; elQ.textContent=j.question;}}
-elB.onclick=async()=>{{try{{ const r=await fetch("/__pteroprotect/challenge/solve",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{nonce:nonce,answer:elA.value||"",rd:"{rd}"}})}}); const j=await r.json(); if(!j.ok) throw new Error(j.error||"failed"); location.href=j.redirect||"{rd}"; }}catch(err){{elE.textContent=String(err.message||err);}}}};
+elB.onclick=async()=>{{try{{ const r=await fetch("/__pteroprotect/challenge/solve",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{nonce:nonce,answer:elA.value||"",rd:{rd_js}}})}}); const j=await r.json(); if(!j.ok) throw new Error(j.error||"failed"); location.href=j.redirect||{rd_js}; }}catch(err){{elE.textContent=String(err.message||err);}}}};
 loadC().catch(e=>elE.textContent=String(e.message||e));
 </script></body></html>"""
             return self._html(200, html)
@@ -280,6 +348,11 @@ loadC().catch(e=>elE.textContent=String(e.message||e));
         ua = ua_fingerprint(self)
 
         if path == "/check":
+            if not is_enabled():
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             ck = self._parse_cookie()
             tok = ck.get(cookie_name(), "")
             if tok and verify_token(tok, ip, ua):
@@ -310,12 +383,13 @@ loadC().catch(e=>elE.textContent=String(e.message||e));
 
         if not is_enabled():
             return self._json(200, {"ok": True, "redirect": "/"})
+        if not rate_allow(ip, "challenge_solve", 80, 60):
+            return self._json(429, {"ok": False, "error": "rate_limited"})
 
         body = self._read_json()
         nonce = str(body.get("nonce", "")).strip()
         answer = str(body.get("answer", "")).strip()
-        rd = str(body.get("rd", "/")).strip()
-        rd = rd if rd.startswith("/") else "/"
+        rd = normalize_redirect_path(str(body.get("rd", "/")).strip())
 
         with _nonce_lock:
             rec = _nonces.pop(nonce, None)
