@@ -326,6 +326,29 @@ foreach (Pterodactyl\Models\Node::query()->pluck("fqdn")->toArray() as $fqdn) {
     done | sort -u | paste -sd, -
 }
 
+repair_node_volume_permissions() {
+    local volumes_root="/var/lib/pterodactyl/volumes"
+    local vol=""
+    local repaired=0
+
+    [[ -d "${volumes_root}" ]] || return 0
+
+    echo "[setup] repairing writable paths for Node.js server volumes..."
+    while IFS= read -r -d '' vol; do
+        [[ -d "${vol}" ]] || continue
+        [[ -f "${vol}/package.json" ]] || continue
+
+        mkdir -p "${vol}/node_modules" "${vol}/.npm" "${vol}/tmp" "${vol}/tmp/logs"
+        if command -v chattr >/dev/null 2>&1; then
+            chattr -R -i "${vol}/node_modules" "${vol}/.npm" "${vol}/tmp" >/dev/null 2>&1 || true
+        fi
+        chmod -R a+rwX "${vol}/node_modules" "${vol}/.npm" "${vol}/tmp" >/dev/null 2>&1 || true
+        repaired=$((repaired + 1))
+    done < <(find "${volumes_root}" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+
+    echo "[setup] node volume permission repair complete (${repaired} volume(s))."
+}
+
 collect_local_interface_ips_v4() {
     ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | sort -u
 }
@@ -1281,14 +1304,14 @@ PY
         echo "[setup] preparing wings reverse-proxy guard on :8080..."
         CHALLENGE_PORT="$(read_network_setting waf_challenge_port 18444)"
         WINGS_REPLICAS_RAW="$(read_network_setting wings_guard_replicas "")"
-        WINGS_ROOTLESS_ENABLED="$(read_network_setting wings_rootless_enabled true)"
-        WINGS_ROOTLESS_CONTAINER_UID="$(read_network_setting wings_rootless_container_uid 1000)"
-        WINGS_ROOTLESS_CONTAINER_GID="$(read_network_setting wings_rootless_container_gid 1000)"
+        WINGS_ROOTLESS_ENABLED="false"
+        WINGS_ROOTLESS_CONTAINER_UID="1000"
+        WINGS_ROOTLESS_CONTAINER_GID="1000"
         WINGS_DISABLE_REMOTE_DOWNLOAD="$(read_network_setting wings_disable_remote_download true)"
-        WINGS_USERNS_MODE="$(read_network_setting wings_userns_mode private)"
+        WINGS_USERNS_MODE="host"
         WINGS_ENABLE_ICC="$(read_network_setting wings_enable_icc false)"
         WINGS_IGNORE_PANEL_CONFIG_UPDATES="$(read_network_setting wings_ignore_panel_config_updates true)"
-        WINGS_OPENAT_MODE="$(read_network_setting wings_openat_mode strict)"
+        WINGS_OPENAT_MODE="compat"
         [[ "${CHALLENGE_PORT}" =~ ^[0-9]+$ ]] || CHALLENGE_PORT="18444"
         [[ "${WINGS_ROOTLESS_CONTAINER_UID}" =~ ^[0-9]+$ ]] || WINGS_ROOTLESS_CONTAINER_UID="1000"
         [[ "${WINGS_ROOTLESS_CONTAINER_GID}" =~ ^[0-9]+$ ]] || WINGS_ROOTLESS_CONTAINER_GID="1000"
@@ -1456,14 +1479,14 @@ def as_bool(value: str, default: bool) -> bool:
         return False
     return default
 
-rootless_enabled = as_bool(sys.argv[2] if len(sys.argv) > 2 else "true", True)
+rootless_enabled = as_bool(sys.argv[2] if len(sys.argv) > 2 else "false", False)
 rootless_uid = str(sys.argv[3] if len(sys.argv) > 3 else "1000").strip() or "1000"
 rootless_gid = str(sys.argv[4] if len(sys.argv) > 4 else "1000").strip() or "1000"
 disable_remote_download = as_bool(sys.argv[5] if len(sys.argv) > 5 else "true", True)
-userns_mode = str(sys.argv[6] if len(sys.argv) > 6 else "private").strip() or "private"
+userns_mode = str(sys.argv[6] if len(sys.argv) > 6 else "host").strip() or "host"
 enable_icc = as_bool(sys.argv[7] if len(sys.argv) > 7 else "false", False)
 ignore_panel_cfg_updates = as_bool(sys.argv[8] if len(sys.argv) > 8 else "true", True)
-openat_mode = str(sys.argv[9] if len(sys.argv) > 9 else "strict").strip() or "strict"
+openat_mode = str(sys.argv[9] if len(sys.argv) > 9 else "compat").strip() or "compat"
 
 lines = p.read_text().splitlines()
 out = []
@@ -1520,14 +1543,14 @@ for line in lines:
         in_docker = False
         in_docker_network = False
 
-    if in_api and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(host|port|ssl|disable_remote_download):', line):
+    if in_api and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(host|port|ssl):', line):
         in_ssl = False
     if in_user and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line):
         in_user = False
         in_rootless = False
     if in_rootless and re.match(r'^\s{4}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line):
         in_rootless = False
-    if in_docker and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(network|userns_mode):', line):
+    if in_docker and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(network):', line):
         in_docker_network = False
     if in_docker_network and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line):
         in_docker_network = False
@@ -1548,27 +1571,10 @@ for line in lines:
         out.append('  port: 18080')
         continue
 
-    if in_api and re.match(r'^\s{2}disable_remote_download:\s*', line):
-        out.append(f"  disable_remote_download: {'true' if disable_remote_download else 'false'}")
-        continue
-
     if in_ssl and re.match(r'^\s{4}enabled:\s*', line):
         out.append('    enabled: false')
         continue
 
-    if in_rootless and re.match(r'^\s{6}enabled:\s*', line):
-        out.append(f"      enabled: {'true' if rootless_enabled else 'false'}")
-        continue
-    if in_rootless and re.match(r'^\s{6}container_uid:\s*', line):
-        out.append(f"      container_uid: {rootless_uid}")
-        continue
-    if in_rootless and re.match(r'^\s{6}container_gid:\s*', line):
-        out.append(f"      container_gid: {rootless_gid}")
-        continue
-
-    if in_docker and re.match(r'^\s{2}userns_mode:\s*', line):
-        out.append(f'  userns_mode: "{userns_mode}"')
-        continue
     if in_docker_network and re.match(r'^\s{4}enable_icc:\s*', line):
         out.append(f"    enable_icc: {'true' if enable_icc else 'false'}")
         continue
@@ -1579,10 +1585,6 @@ for line in lines:
     if re.match(r'^allowed_mounts:\s*', line):
         out.append("allowed_mounts: []")
         continue
-    if re.match(r'^\s{2}openat_mode:\s*', line):
-        out.append(f"  openat_mode: {openat_mode}")
-        continue
-
     out.append(line)
 
 p.write_text('\n'.join(out) + '\n')
@@ -2003,6 +2005,8 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
         fi
     fi
 fi
+
+repair_node_volume_permissions
 
 if command -v sudo >/dev/null 2>&1; then
     echo "[setup] configuring sudoers for panel protect controls..."

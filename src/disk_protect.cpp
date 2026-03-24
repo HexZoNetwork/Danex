@@ -882,7 +882,16 @@ void DiskProtector::init(const std::string& path, double max_disk, int max_size,
 
 bool DiskProtector::is_path_allowed(const std::string& path) {
     static const std::vector<std::string> allowed = {
-        "/node_modules/", "/vendor/", "/.git/", "/.cache/", "/.dann_quarantine/"
+        "/node_modules/",
+        "/vendor/",
+        "/.git/",
+        "/.cache/",
+        "/.dann_quarantine/",
+        "/tmp/",
+        "/logs/",
+        "/.npm/",
+        "/.pnpm-store/",
+        "/.yarn/"
     };
     for (const auto& seg : allowed) if (path.find(seg) != std::string::npos) return true;
     std::string lower = to_lower_copy(path);
