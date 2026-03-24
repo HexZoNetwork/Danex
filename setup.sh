@@ -951,91 +951,118 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
             PANEL_INSTALL_OK=0
             PANEL_BUILD_OK=0
             PANEL_LOCK_BERRY=0
-            PANEL_SKIP_YARN=1
-            echo "[setup] using npm-first frontend install path (yarn disabled by default)."
-            if [[ -f "${PANEL_DIR}/yarn.lock" ]] && grep -Eq '^[[:space:]]*__metadata:' "${PANEL_DIR}/yarn.lock"; then
+            PANEL_HAS_YARN_LOCK=0
+            PANEL_ALLOW_NPM_FALLBACK=0
+            if [[ -f "${PANEL_DIR}/yarn.lock" ]]; then
+                PANEL_HAS_YARN_LOCK=1
+            fi
+            if (( PANEL_HAS_YARN_LOCK == 1 )) && grep -Eq '^[[:space:]]*__metadata:' "${PANEL_DIR}/yarn.lock"; then
                 PANEL_LOCK_BERRY=1
-                PANEL_SKIP_YARN=1
-                echo "[setup] detected Yarn Berry lockfile; skipping Yarn classic install path."
+            fi
+            case "${PTEROPROTECT_ALLOW_NPM_PANEL_BUILD:-}" in
+                1|true|TRUE|yes|YES|on|ON) PANEL_ALLOW_NPM_FALLBACK=1 ;;
+            esac
+
+            echo "[setup] using yarn-first frontend install path."
+            if [[ -d "${PANEL_DIR}/node_modules" ]]; then
+                echo "[setup] removing existing node_modules to avoid mixed npm/yarn state..."
+                rm -rf "${PANEL_DIR}/node_modules"
             fi
 
-            if (( PANEL_SKIP_YARN == 0 )) && command -v corepack >/dev/null 2>&1; then
-                echo "[setup] trying corepack yarn first..."
+            if command -v corepack >/dev/null 2>&1; then
+                echo "[setup] trying corepack yarn..."
                 (cd "${PANEL_DIR}" && corepack enable >/dev/null 2>&1 || true)
                 if (( PANEL_LOCK_BERRY == 1 )); then
                     (cd "${PANEL_DIR}" && corepack prepare yarn@stable --activate >/dev/null 2>&1 || true)
+                else
+                    (cd "${PANEL_DIR}" && corepack prepare yarn@1.22.22 --activate >/dev/null 2>&1 || true)
                 fi
-                if (cd "${PANEL_DIR}" && corepack yarn -s install --immutable); then
-                    PANEL_INSTALL_OK=1
-                elif (cd "${PANEL_DIR}" && corepack yarn -s install --frozen-lockfile); then
-                    PANEL_INSTALL_OK=1
-                elif (cd "${PANEL_DIR}" && corepack yarn -s install); then
+                if (( PANEL_LOCK_BERRY == 1 )); then
+                    if (cd "${PANEL_DIR}" && corepack yarn -s install --immutable); then
+                        PANEL_INSTALL_OK=1
+                    fi
+                else
+                    if (cd "${PANEL_DIR}" && corepack yarn -s install --frozen-lockfile); then
+                        PANEL_INSTALL_OK=1
+                    fi
+                fi
+                if (( PANEL_INSTALL_OK == 0 )) && (cd "${PANEL_DIR}" && corepack yarn -s install); then
                     PANEL_INSTALL_OK=1
                 fi
                 if (( PANEL_INSTALL_OK == 1 )); then
                     if (cd "${PANEL_DIR}" && corepack yarn -s build:production); then
                         PANEL_BUILD_OK=1
+                    elif (cd "${PANEL_DIR}" && corepack yarn -s build); then
+                        PANEL_BUILD_OK=1
                     fi
                 fi
             fi
 
-            if (( PANEL_INSTALL_OK == 0 )) && (( PANEL_SKIP_YARN == 0 )); then
+            if (( PANEL_INSTALL_OK == 0 )); then
                 if command -v yarn >/dev/null 2>&1; then
                     echo "[setup] corepack yarn failed, trying system yarn..."
-                    if (cd "${PANEL_DIR}" && yarn -s install --frozen-lockfile); then
-                        PANEL_INSTALL_OK=1
-                    elif (cd "${PANEL_DIR}" && yarn -s install); then
+                    if (( PANEL_LOCK_BERRY == 1 )); then
+                        (cd "${PANEL_DIR}" && yarn -s install --immutable) || true
+                    else
+                        (cd "${PANEL_DIR}" && yarn -s install --frozen-lockfile) || true
+                    fi
+                    if (cd "${PANEL_DIR}" && yarn -s install); then
                         PANEL_INSTALL_OK=1
                     fi
-                    if (( PANEL_INSTALL_OK == 1 )) && (cd "${PANEL_DIR}" && yarn -s build:production); then
+                    if (( PANEL_INSTALL_OK == 1 )) && (( PANEL_BUILD_OK == 0 )) && (cd "${PANEL_DIR}" && yarn -s build:production); then
                         PANEL_BUILD_OK=1
                     fi
                 elif command -v yarnpkg >/dev/null 2>&1; then
                     echo "[setup] corepack yarn failed, trying yarnpkg..."
-                    if (cd "${PANEL_DIR}" && yarnpkg -s install --frozen-lockfile); then
-                        PANEL_INSTALL_OK=1
-                    elif (cd "${PANEL_DIR}" && yarnpkg -s install); then
+                    if (( PANEL_LOCK_BERRY == 1 )); then
+                        (cd "${PANEL_DIR}" && yarnpkg -s install --immutable) || true
+                    else
+                        (cd "${PANEL_DIR}" && yarnpkg -s install --frozen-lockfile) || true
+                    fi
+                    if (cd "${PANEL_DIR}" && yarnpkg -s install); then
                         PANEL_INSTALL_OK=1
                     fi
-                    if (( PANEL_INSTALL_OK == 1 )) && (cd "${PANEL_DIR}" && yarnpkg -s build:production); then
+                    if (( PANEL_INSTALL_OK == 1 )) && (( PANEL_BUILD_OK == 0 )) && (cd "${PANEL_DIR}" && yarnpkg -s build:production); then
                         PANEL_BUILD_OK=1
                     fi
                 elif command -v npx >/dev/null 2>&1; then
                     echo "[setup] corepack yarn failed, trying npx yarn..."
-                    if (cd "${PANEL_DIR}" && npx --yes yarn -s install --frozen-lockfile); then
-                        PANEL_INSTALL_OK=1
-                    elif (cd "${PANEL_DIR}" && npx --yes yarn -s install); then
+                    if (( PANEL_LOCK_BERRY == 1 )); then
+                        (cd "${PANEL_DIR}" && npx --yes yarn -s install --immutable) || true
+                    else
+                        (cd "${PANEL_DIR}" && npx --yes yarn -s install --frozen-lockfile) || true
+                    fi
+                    if (cd "${PANEL_DIR}" && npx --yes yarn -s install); then
                         PANEL_INSTALL_OK=1
                     fi
-                    if (( PANEL_INSTALL_OK == 1 )) && (cd "${PANEL_DIR}" && npx --yes yarn -s build:production); then
+                    if (( PANEL_INSTALL_OK == 1 )) && (( PANEL_BUILD_OK == 0 )) && (cd "${PANEL_DIR}" && npx --yes yarn -s build:production); then
                         PANEL_BUILD_OK=1
                     fi
                 fi
             fi
 
             if (( PANEL_BUILD_OK == 0 )) && command -v npm >/dev/null 2>&1; then
-                echo "[setup] yarn path failed, trying npm fallback..."
-                if (cd "${PANEL_DIR}" && npm install --legacy-peer-deps --include=dev --no-audit --no-fund --loglevel=error); then
-                    PANEL_INSTALL_OK=1
-                    if (cd "${PANEL_DIR}" && npm run build:production --silent); then
-                        PANEL_BUILD_OK=1
-                    elif (cd "${PANEL_DIR}" && npm run build --silent); then
-                        PANEL_BUILD_OK=1
+                if (( PANEL_HAS_YARN_LOCK == 0 || PANEL_ALLOW_NPM_FALLBACK == 1 )); then
+                    echo "[setup] yarn path failed, trying npm fallback..."
+                    rm -rf "${PANEL_DIR}/node_modules" "${PANEL_DIR}/package-lock.json" >/dev/null 2>&1 || true
+                    if (cd "${PANEL_DIR}" && npm install --legacy-peer-deps --include=dev --no-audit --no-fund --loglevel=error); then
+                        PANEL_INSTALL_OK=1
+                        if (cd "${PANEL_DIR}" && npm run build:production --silent); then
+                            PANEL_BUILD_OK=1
+                        elif (cd "${PANEL_DIR}" && npm run build --silent); then
+                            PANEL_BUILD_OK=1
+                        fi
+                    elif (cd "${PANEL_DIR}" && npm install --legacy-peer-deps --force --include=dev --no-audit --no-fund --loglevel=error); then
+                        PANEL_INSTALL_OK=1
+                        if (cd "${PANEL_DIR}" && npm run build:production --silent); then
+                            PANEL_BUILD_OK=1
+                        elif (cd "${PANEL_DIR}" && npm run build --silent); then
+                            PANEL_BUILD_OK=1
+                        fi
                     fi
-                elif (cd "${PANEL_DIR}" && npm install --legacy-peer-deps --force --include=dev --no-audit --no-fund --loglevel=error); then
-                    PANEL_INSTALL_OK=1
-                    if (cd "${PANEL_DIR}" && npm run build:production --silent); then
-                        PANEL_BUILD_OK=1
-                    elif (cd "${PANEL_DIR}" && npm run build --silent); then
-                        PANEL_BUILD_OK=1
-                    fi
-                elif (cd "${PANEL_DIR}" && npm install --force --include=dev --no-audit --no-fund --loglevel=error); then
-                    PANEL_INSTALL_OK=1
-                    if (cd "${PANEL_DIR}" && npm run build:production --silent); then
-                        PANEL_BUILD_OK=1
-                    elif (cd "${PANEL_DIR}" && npm run build --silent); then
-                        PANEL_BUILD_OK=1
-                    fi
+                else
+                    echo "[setup] warning: yarn.lock exists; npm fallback disabled to avoid mixed dependency tree." >&2
+                    echo "[setup]          set PTEROPROTECT_ALLOW_NPM_PANEL_BUILD=1 to force npm fallback." >&2
                 fi
             fi
 
