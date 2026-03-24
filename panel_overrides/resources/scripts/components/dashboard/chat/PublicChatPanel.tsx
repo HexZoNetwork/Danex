@@ -846,7 +846,7 @@ export default () => {
                         }}>
                             <div css={tw`flex items-center justify-between gap-2`}>
                                 <div css={tw`flex items-center gap-2 min-w-0`}>
-                                    <div css={tw`w-8 h-8 rounded-full overflow-hidden shrink-0`}>
+                                    <div css={tw`w-8 h-8 rounded-full overflow-hidden flex-shrink-0`}>
                                         {conversationAvatar(conversation).src ? (
                                             <AvatarImage src={conversationAvatar(conversation).src || ''} alt={conversationAvatar(conversation).label} />
                                         ) : (
@@ -869,7 +869,7 @@ export default () => {
                 <MainHeader>
                     <div css={tw`min-w-0 flex items-center gap-3`}>
                         {activeConversation && (
-                            <div css={tw`w-9 h-9 rounded-full overflow-hidden shrink-0`}>
+                            <div css={tw`w-9 h-9 rounded-full overflow-hidden flex-shrink-0`}>
                                 {conversationAvatar(activeConversation).src ? (
                                     <AvatarImage
                                         src={conversationAvatar(activeConversation).src || ''}
