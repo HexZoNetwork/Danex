@@ -1263,6 +1263,20 @@ pat = re.compile(
 m = pat.search(text)
 if m:
     block_body = m.group(1)
+    # Keep this idempotent: remove existing challenge directives anywhere
+    # inside the location block before re-inserting canonical lines.
+    block_body = re.sub(
+        r'^\s*auth_request\s+/__pteroprotect/challenge/check;\s*\n',
+        '',
+        block_body,
+        flags=re.MULTILINE,
+    )
+    block_body = re.sub(
+        r'^\s*error_page\s+401\s*=\s*@pteroprotect_challenge_redirect;\s*\n',
+        '',
+        block_body,
+        flags=re.MULTILINE,
+    )
     new_block = (
         "    location / {\n"
         "        auth_request /__pteroprotect/challenge/check;\n"
@@ -1336,6 +1350,70 @@ text = pattern.sub(replacement, text, count=1)
 path.write_text(text)
 PY
     fi
+
+    # Normalize duplicated challenge directives from previous/manual edits
+    # so repeated setup runs remain nginx-safe.
+    python3 - \
+        "${NGINX_DIR}/sites-available/pterodactyl.conf" \
+        "${NGINX_DIR}/sites-enabled/pterodactyl.conf" \
+        "${NGINX_DIR}/snippets/pteroprotect_server.conf" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+targets = [Path(p) for p in sys.argv[1:] if p]
+
+def canonical(line: str) -> str:
+    s = line.strip()
+    if not s.endswith(";"):
+        return ""
+    s = s[:-1].strip()
+    s = re.sub(r"\s+", " ", s)
+    return s + ";"
+
+def challenge_key(canon: str) -> str:
+    if not canon:
+        return ""
+    if canon.startswith("auth_request ") and "/__pteroprotect/challenge/" in canon:
+        return canon
+    if canon == "error_page 401 = @pteroprotect_challenge_redirect;":
+        return canon
+    if canon == "error_page 401 403 = @drop_cto;":
+        return canon
+    return ""
+
+for path in targets:
+    if not path.exists():
+        continue
+    try:
+        lines = path.read_text().splitlines(keepends=True)
+    except Exception:
+        continue
+
+    stack = []
+    out = []
+    changed = False
+    for line in lines:
+        canon = canonical(line)
+        key = challenge_key(canon)
+        if key and stack:
+            seen = stack[-1]
+            if key in seen:
+                changed = True
+                continue
+            seen.add(key)
+
+        out.append(line)
+        for ch in line:
+            if ch == "{":
+                stack.append(set())
+            elif ch == "}":
+                if stack:
+                    stack.pop()
+
+    if changed:
+        path.write_text("".join(out))
+PY
 
     WINGS_GUARD_PREPARED=0
     WINGS_CONFIG_BACKUP=""
