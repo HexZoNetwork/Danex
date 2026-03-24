@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Actions, State, useStoreActions, useStoreState } from 'easy-peasy';
 import { Form, Formik, FormikHelpers } from 'formik';
 import * as Yup from 'yup';
@@ -12,7 +12,7 @@ import Field from '@/components/elements/Field';
 import SpinnerOverlay from '@/components/elements/SpinnerOverlay';
 import FlashMessageRender from '@/components/FlashMessageRender';
 import { Button } from '@/components/elements/button';
-import { getAccountProfile, updateAccountProfile } from '@/api/account/profile';
+import { getAccountProfile, updateAccountProfile, uploadAccountAvatar } from '@/api/account/profile';
 import { httpErrorToHuman } from '@/api/http';
 
 interface Values {
@@ -77,7 +77,9 @@ export default () => {
     const { clearFlashes, addFlash } = useStoreActions((actions: Actions<ApplicationStore>) => actions.flashes);
 
     const [loading, setLoading] = useState(true);
+    const [avatarUploading, setAvatarUploading] = useState(false);
     const [avatarBroken, setAvatarBroken] = useState(false);
+    const avatarInputRef = useRef<HTMLInputElement>(null);
     const [initialValues, setInitialValues] = useState<Values>({
         username: user?.username || '',
         email: user?.email || '',
@@ -182,6 +184,46 @@ export default () => {
             .then(() => setSubmitting(false));
     };
 
+    const handleAvatarUpload = async (file?: File) => {
+        if (!file) return;
+
+        if (!file.type.startsWith('image/')) {
+            addFlash({
+                key: 'account:profile',
+                type: 'error',
+                title: 'Error',
+                message: 'Avatar harus berupa file image.',
+            });
+            return;
+        }
+
+        try {
+            setAvatarUploading(true);
+            const avatarUrl = await uploadAccountAvatar(file);
+            if (!avatarUrl) {
+                throw new Error('Upload gagal.');
+            }
+
+            setInitialValues((current) => ({ ...current, avatar_url: avatarUrl }));
+            setAvatarBroken(false);
+            updateUserData({ avatarUrl });
+            addFlash({
+                key: 'account:profile',
+                type: 'success',
+                message: 'Avatar uploaded successfully.',
+            });
+        } catch (error) {
+            addFlash({
+                key: 'account:profile',
+                type: 'error',
+                title: 'Error',
+                message: httpErrorToHuman(error),
+            });
+        } finally {
+            setAvatarUploading(false);
+        }
+    };
+
     return (
         <PageContentBlock title={'Edit Profile'}>
             <FlashMessageRender byKey={'account:profile'} css={tw`mb-4`} />
@@ -231,6 +273,26 @@ export default () => {
                                 <SpinnerOverlay visible={isSubmitting} />
                                 <Form css={tw`m-0 grid gap-5`}>
                                     <Field id={'avatar_url'} name={'avatar_url'} label={'Photo URL'} placeholder={'https://...'} />
+                                    <div css={tw`-mt-3`}>
+                                        <Button
+                                            type={'button'}
+                                            size={'xsmall'}
+                                            disabled={avatarUploading}
+                                            onClick={() => avatarInputRef.current?.click()}
+                                        >
+                                            {avatarUploading ? 'Uploading avatar...' : 'Upload Avatar'}
+                                        </Button>
+                                        <input
+                                            ref={avatarInputRef}
+                                            type={'file'}
+                                            accept={'image/jpeg,image/png,image/webp,image/gif'}
+                                            css={tw`hidden`}
+                                            onChange={(event) => {
+                                                handleAvatarUpload(event.currentTarget.files?.[0]);
+                                                event.currentTarget.value = '';
+                                            }}
+                                        />
+                                    </div>
                                     <Field id={'username'} name={'username'} label={'Username'} />
                                     <Field id={'name_first'} name={'name_first'} label={'First Name'} />
                                     <Field id={'name_last'} name={'name_last'} label={'Last Name'} />

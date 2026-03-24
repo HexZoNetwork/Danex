@@ -53,3 +53,14 @@ export const updateAccountProfile = async (payload: UpdateAccountProfilePayload)
 
     return normalize(pickAttributes(data));
 };
+
+export const uploadAccountAvatar = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('avatar', file);
+
+    const { data } = await http.post('/api/client/account/profile/avatar', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    });
+
+    return String(data?.data?.avatar_url || '');
+};
