@@ -1538,7 +1538,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=normAns(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
             "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');location.href=j.redirect||'" + rd + "';}"
             "catch(err){const msg=String(err.message||err);elS.textContent='';elE.textContent=msg;if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
-            "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/__pteroprotect/'});}catch(_e){}}"
+            "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/'});}catch(_e){}}"
             "registerChallengeSW().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));});</script></body></html>";
         send_response(fd, 200, "OK", html, {{"Content-Type", "text/html; charset=utf-8"}}, head_only);
         close(fd);
@@ -1547,7 +1547,7 @@ static void handle_client(int fd, std::string remote_ip) {
 
     if (req.path == "/sw.js" && (req.method == "GET" || req.method == "HEAD")) {
         std::string js =
-            "const CACHE='pp-challenge-v15';"
+            "const CACHE='pp-challenge-v16';"
             "const PAGE='/__pteroprotect/challenge/page';"
             "self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll([PAGE,'/__pteroprotect/challenge/sw.js'])).catch(()=>{}).then(()=>self.skipWaiting()));});"
             "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});"
@@ -1556,7 +1556,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "const u=new URL(e.request.url);"
             "if(u.pathname.startsWith('/__pteroprotect/challenge/new')||u.pathname.startsWith('/__pteroprotect/challenge/click')||u.pathname.startsWith('/__pteroprotect/challenge/verify-math')||u.pathname.startsWith('/__pteroprotect/challenge/solve')||u.pathname.startsWith('/__pteroprotect/challenge/check')){"
             "e.respondWith(fetch(e.request,{cache:'no-store'}));return;}"
-            "if(u.pathname===PAGE||u.pathname==='/__pteroprotect/challenge'||e.request.mode==='navigate'){"
+            "if(e.request.mode==='navigate'){"
             "e.respondWith(fetch(e.request).then(r=>{const rc=r.clone();caches.open(CACHE).then(c=>c.put(PAGE,rc)).catch(()=>{});return r;}).catch(()=>caches.match(PAGE).then(r=>r||new Response('Offline. Retry when internet is back.',{status:503,headers:{'Content-Type':'text/plain; charset=utf-8'}}))));return;}"
             "if(u.pathname.startsWith('/__pteroprotect/challenge/')){"
             "e.respondWith(caches.match(e.request).then(hit=>hit||fetch(e.request).then(r=>{const rc=r.clone();caches.open(CACHE).then(c=>c.put(e.request,rc)).catch(()=>{});return r;})).catch(()=>new Response('',{status:503,statusText:'Service Unavailable'})));"
@@ -1564,7 +1564,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "});";
         std::vector<std::pair<std::string, std::string>> headers = {
             {"Content-Type", "application/javascript; charset=utf-8"},
-            {"Service-Worker-Allowed", "/__pteroprotect/"}
+            {"Service-Worker-Allowed", "/"}
         };
         send_response(fd, 200, "OK", js, headers, head_only);
         close(fd);
