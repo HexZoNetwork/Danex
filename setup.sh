@@ -1363,23 +1363,26 @@ import sys
 
 targets = [Path(p) for p in sys.argv[1:] if p]
 
-def canonical(line: str) -> str:
-    s = line.strip()
-    if not s.endswith(";"):
+def line_key(line: str) -> str:
+    # Strip comments for matching while keeping original line content in output.
+    body = line.split("#", 1)[0].strip()
+    if ";" not in body:
         return ""
-    s = s[:-1].strip()
-    s = re.sub(r"\s+", " ", s)
-    return s + ";"
+    body = body[: body.find(";") + 1]
+    body = re.sub(r"\s+", " ", body).strip()
+    if not body:
+        return ""
 
-def challenge_key(canon: str) -> str:
-    if not canon:
-        return ""
-    if canon.startswith("auth_request ") and "/__pteroprotect/challenge/" in canon:
-        return canon
-    if canon == "error_page 401 = @pteroprotect_challenge_redirect;":
-        return canon
-    if canon == "error_page 401 403 = @drop_cto;":
-        return canon
+    # Deduplicate all auth_request directives in same context, regardless target.
+    if body.startswith("auth_request "):
+        return "auth_request"
+
+    # Deduplicate relevant challenge error_page mappings in same context.
+    if re.fullmatch(r"error_page 401 = @pteroprotect_challenge_redirect;", body):
+        return "error_page_challenge_401"
+    if re.fullmatch(r"error_page 401 403 = @drop_cto;", body):
+        return "error_page_drop_cto_401_403"
+
     return ""
 
 for path in targets:
@@ -1394,8 +1397,7 @@ for path in targets:
     out = []
     changed = False
     for line in lines:
-        canon = canonical(line)
-        key = challenge_key(canon)
+        key = line_key(line)
         if key and stack:
             seen = stack[-1]
             if key in seen:
