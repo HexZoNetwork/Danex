@@ -661,7 +661,9 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
                 close $efh;
             }
 
-            # Fill missing/empty database keys from panel .env
+            # Database credentials must follow panel .env on each setup run.
+            # This prevents stale repo/install config.json values from
+            # overwriting correct per-server DB credentials.
             my %db_env = (
                 host => "DB_HOST",
                 name => "DB_DATABASE",
@@ -670,11 +672,8 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
             );
             for my $db_key (keys %db_env) {
                 my $ek = $db_env{$db_key};
-                next if !defined($env{$ek}) || $env{$ek} eq "";
-                my $cur = $j->{database}{$db_key};
-                if (!defined($cur) || (ref($cur) eq "" && $cur eq "")) {
-                    $j->{database}{$db_key} = $env{$ek};
-                }
+                next if !exists($env{$ek});
+                $j->{database}{$db_key} = defined($env{$ek}) ? $env{$ek} : "";
             }
 
             # Fill missing/empty network keys from PTEROPROTECT_* env vars
