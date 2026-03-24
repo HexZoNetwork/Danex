@@ -32,7 +32,7 @@ class ProtectController extends Controller
 
         if (!$this->isVerified($request)) {
             return view('admin.protect.verify', [
-                'portalUrl' => 'http://152.42.212.105:18443/',
+                'portalUrl' => $this->unblockPortalUrl($request),
             ]);
         }
 
@@ -765,6 +765,54 @@ class ProtectController extends Controller
         $value = preg_replace('/[\p{C}\p{Z}]+/u', '', $value) ?? '';
 
         return trim($value);
+    }
+
+    private function unblockPortalUrl(Request $request): string
+    {
+        $host = $this->detectEth0Ipv4();
+        if ($host === '') {
+            $host = (string) $request->server('SERVER_ADDR', '');
+        }
+        if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $fallbackHost = parse_url((string) config('app.url', ''), PHP_URL_HOST);
+            $host = is_string($fallbackHost) ? $fallbackHost : '';
+        }
+        if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $host = '127.0.0.1';
+        }
+
+        $port = $this->unblockPortalPort();
+        return sprintf('http://%s:%d/', $host, $port);
+    }
+
+    private function detectEth0Ipv4(): string
+    {
+        $result = $this->run(['ip', '-4', '-o', 'addr', 'show', 'dev', 'eth0', 'scope', 'global'], 4);
+        if (($result['exit'] ?? 1) !== 0) {
+            return '';
+        }
+
+        $output = (string) ($result['output'] ?? '');
+        if (preg_match('/\binet\s+([0-9.]+)\//', $output, $m) === 1) {
+            $ip = trim((string) ($m[1] ?? ''));
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                return $ip;
+            }
+        }
+
+        return '';
+    }
+
+    private function unblockPortalPort(): int
+    {
+        $network = $this->networkConfig();
+        $raw = $network['unblock_portal_port'] ?? 18443;
+        $port = (int) $raw;
+        if ($port < 1 || $port > 65535) {
+            return 18443;
+        }
+
+        return $port;
     }
 
     private function buildAllowedCommand(string $rawCommand): ?array
