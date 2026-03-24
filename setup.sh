@@ -1131,17 +1131,15 @@ for block in ("location = /auth/login",):
         rf'({re.escape(block)} \{{\n)'
         r'(?:    auth_request /__pteroprotect/challenge/check;\n)?'
         r'(?:    error_page 401 = @pteroprotect_challenge_redirect;\n)?'
-        r'(?:        limit_conn pteroprotect_conn \d+;\n)?'
-        r'(?:        limit_conn pteroprotect_auth_global_conn \d+;\n)?'
-        r'(?:        limit_req zone=pteroprotect_auth_global_req burst=\d+ nodelay;\n)?'
-        r'(?:        limit_req zone=pteroprotect_auth burst=\d+ nodelay;\n)?'
-        r'        try_files \$uri \$uri/ /index\.php\?\$query_string;\n'
-        r'    \}\n'
+        r'(?:    limit_conn pteroprotect_conn \d+;\n)?'
+        r'(?:    limit_conn pteroprotect_auth_global_conn \d+;\n)?'
+        r'(?:    limit_req zone=pteroprotect_auth_global_req burst=\d+ nodelay;\n)?'
+        r'(?:    limit_req zone=pteroprotect_auth burst=\d+ nodelay;\n)?'
+        r'    try_files \$uri \$uri/ /index\.php\?\$query_string;\n'
+        r'\}\n'
     )
     replacement = (
         f"{block} {{\n"
-        "    auth_request /__pteroprotect/challenge/check;\n"
-        "    error_page 401 = @pteroprotect_challenge_redirect;\n"
         f"    limit_conn pteroprotect_conn {auth_conn_limit};\n"
         "    limit_conn pteroprotect_auth_global_conn 100;\n"
         "    limit_req zone=pteroprotect_auth_global_req burst=30 nodelay;\n"
