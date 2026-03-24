@@ -1684,6 +1684,26 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
     fi
 fi
 
+WINGS_NOFILE_LIMIT="$(read_network_setting wings_nofile_limit 262144)"
+if [[ ! "${WINGS_NOFILE_LIMIT}" =~ ^[0-9]+$ ]]; then
+    WINGS_NOFILE_LIMIT=262144
+fi
+if (( WINGS_NOFILE_LIMIT < 65535 )); then
+    WINGS_NOFILE_LIMIT=65535
+fi
+if (( WINGS_NOFILE_LIMIT > 1048576 )); then
+    WINGS_NOFILE_LIMIT=1048576
+fi
+
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^wings\.service'; then
+    echo "[setup] applying wings NOFILE override (${WINGS_NOFILE_LIMIT})..."
+    mkdir -p /etc/systemd/system/wings.service.d
+    cat > /etc/systemd/system/wings.service.d/override.conf <<EOF
+[Service]
+LimitNOFILE=${WINGS_NOFILE_LIMIT}
+EOF
+fi
+
 if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.service" ]]; then
     echo "[setup] reloading systemd and enabling pteroprotect..."
     systemctl daemon-reload
@@ -1720,6 +1740,15 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
     if [[ -f "${SYSTEMD_DIR}/pteroprotect-challenge.service" ]]; then
         systemctl enable pteroprotect-challenge >/dev/null 2>&1 || true
         systemctl restart pteroprotect-challenge >/dev/null 2>&1 || systemctl start pteroprotect-challenge >/dev/null 2>&1 || true
+    fi
+    if systemctl list-unit-files 2>/dev/null | grep -q '^wings\.service'; then
+        systemctl enable wings >/dev/null 2>&1 || true
+        if ! systemctl restart wings >/dev/null 2>&1; then
+            systemctl start wings >/dev/null 2>&1 || true
+        fi
+        if ! systemctl is-active --quiet wings; then
+            echo "[setup] warning: wings is not active after applying NOFILE override." >&2
+        fi
     fi
 fi
 
