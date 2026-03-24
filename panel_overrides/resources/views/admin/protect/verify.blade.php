@@ -16,7 +16,7 @@
 @section('content')
 <div class="row">
     <div class="col-md-8 col-md-offset-2">
-        <div class="box box-danger">
+        <div class="box box-default">
             <div class="box-header with-border">
                 <h3 class="box-title">Verification Needed</h3>
             </div>
@@ -31,7 +31,7 @@
                         <label>Protect Token</label>
                         <input type="password" name="token" class="form-control" placeholder="Masukkan token" required />
                     </div>
-                    <button type="submit" class="btn btn-danger">Verify Access</button>
+                    <button type="submit" class="btn btn-primary">Verify Access</button>
                 </form>
             </div>
         </div>

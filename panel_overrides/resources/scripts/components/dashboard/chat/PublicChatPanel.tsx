@@ -16,36 +16,38 @@ import {
     getConversations,
     getPublicMessages,
     markPublicMessagesRead,
+    muteChatMember,
     postPublicMessage,
     PublicChatMessage,
     searchChatUsers,
     setGroupAdmin,
     toggleReaction,
     updateGroupConversation,
+    unmuteChatMember,
     uploadPublicMedia,
     votePoll,
     kickGroupMember,
 } from '@/api/chat/publicChat';
 import { Button } from '@/components/elements/button/index';
 
-const Root = tw.div`bg-neutral-900 rounded-lg border border-neutral-700 h-full min-h-[70vh] max-h-[85vh] flex flex-col lg:flex-row overflow-hidden`;
-const Sidebar = tw.div`w-full lg:w-[21rem] border-b lg:border-b-0 lg:border-r border-neutral-700 bg-[#111c2d] flex flex-col`;
-const SideHeader = tw.div`px-4 py-3 border-b border-neutral-700`;
+const Root = tw.div`bg-neutral-900 rounded-lg border border-neutral-800 h-full min-h-[70vh] max-h-[85vh] flex flex-col lg:flex-row overflow-hidden`;
+const Sidebar = tw.div`w-full lg:w-[21rem] border-b lg:border-b-0 lg:border-r border-neutral-800 bg-neutral-900 flex flex-col`;
+const SideHeader = tw.div`px-4 py-3 border-b border-neutral-800`;
 const SideTitle = tw.h2`text-base font-semibold text-neutral-100`;
-const SideBlock = tw.div`p-3 border-b border-neutral-800`;
+const SideBlock = tw.div`p-3 border-b border-neutral-900`;
 const SideList = tw.div`flex-1 overflow-y-auto p-2 space-y-2`;
-const ConvButton = tw.button`w-full text-left p-2 rounded-md border border-neutral-700 bg-neutral-900 hover:bg-neutral-800 transition`;
-const Input = tw.input`w-full rounded-md border border-neutral-600 bg-neutral-800 text-neutral-100 px-3 py-2 text-sm focus:outline-none focus:border-cyan-400`;
-const TextArea = tw.textarea`w-full rounded-md border border-neutral-600 bg-neutral-800 text-neutral-100 px-3 py-2 text-sm min-h-[66px] focus:outline-none focus:border-cyan-400`;
-const Small = tw.button`text-xs text-cyan-300 hover:text-cyan-200`;
-const Tiny = tw.button`text-[11px] text-neutral-300 hover:text-cyan-200 px-2 py-1 rounded border border-neutral-600 hover:border-cyan-400`;
+const ConvButton = tw.button`w-full text-left p-2 rounded-md border border-neutral-800 bg-neutral-900 hover:bg-neutral-900 transition`;
+const Input = tw.input`w-full rounded-md border border-neutral-700 bg-neutral-900 text-neutral-100 px-3 py-2 text-sm focus:outline-none focus:border-neutral-500`;
+const TextArea = tw.textarea`w-full rounded-md border border-neutral-700 bg-neutral-900 text-neutral-100 px-3 py-2 text-sm min-h-[66px] focus:outline-none focus:border-neutral-500`;
+const Small = tw.button`text-xs text-neutral-300 hover:text-neutral-100`;
+const Tiny = tw.button`text-[11px] text-neutral-300 hover:text-neutral-100 px-2 py-1 rounded border border-neutral-600 hover:border-neutral-400`;
 
-const Main = tw.div`flex-1 flex flex-col min-w-0 min-h-0 bg-[#0d1625]`;
-const MainHeader = tw.div`px-4 py-3 border-b border-neutral-700 flex items-center justify-between`;
+const Main = tw.div`flex-1 flex flex-col min-w-0 min-h-0 bg-neutral-900`;
+const MainHeader = tw.div`px-4 py-3 border-b border-neutral-800 flex items-center justify-between`;
 const HeaderTitle = tw.h3`text-base font-semibold text-neutral-100 truncate`;
 const HeaderMeta = tw.div`text-xs text-neutral-400`;
 const Body = tw.div`flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2`;
-const Composer = tw.form`flex-shrink-0 p-3 border-t border-neutral-700 bg-neutral-900 space-y-2`;
+const Composer = tw.form`flex-shrink-0 p-3 border-t border-neutral-800 bg-neutral-900 space-y-2`;
 
 const BubbleWrap = tw.div`flex`;
 const Bubble = tw.div`relative max-w-[94%] lg:max-w-[84%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words`;
@@ -54,6 +56,7 @@ const Tag = tw.span`px-1.5 py-0.5 rounded bg-neutral-700 text-[10px] text-neutra
 
 const AvatarImage = tw.img`w-full h-full object-cover`;
 const AvatarFallback = tw.div`w-full h-full bg-neutral-700 text-[10px] font-bold text-neutral-100 flex items-center justify-center`;
+const OnlineDot = tw.span`absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full bg-blue-500 border border-neutral-900`;
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/gi;
 const TOKEN_REGEX = /(https?:\/\/[^\s]+|@[a-zA-Z0-9._-]{3,32})/g;
@@ -107,6 +110,37 @@ const safeDate = (value: string | null | undefined): string => {
     } catch {
         return '-';
     }
+};
+
+const ONLINE_WINDOW_MS = 2 * 60 * 1000;
+
+const toUnixMs = (value: string | null | undefined): number => {
+    if (!value) return 0;
+    const t = new Date(value).getTime();
+
+    return Number.isFinite(t) ? t : 0;
+};
+
+const presenceLabel = (lastSeenMs: number): { online: boolean; text: string } => {
+    if (!lastSeenMs) {
+        return { online: false, text: 'last seen unknown' };
+    }
+
+    const diff = Date.now() - lastSeenMs;
+    if (diff <= ONLINE_WINDOW_MS) {
+        return { online: true, text: 'online' };
+    }
+
+    const date = new Date(lastSeenMs);
+    if (Number.isNaN(date.getTime())) {
+        return { online: false, text: 'last seen unknown' };
+    }
+
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const day = format(date, 'yyyy-MM-dd');
+    const stamp = day === today ? format(date, 'HH:mm') : format(date, 'MMM d, yyyy HH:mm');
+
+    return { online: false, text: `last seen ${stamp}` };
 };
 
 const avatarForName = (name: string): string => {
@@ -170,7 +204,7 @@ const renderRichBody = (body: string | null, selfUsername: string) => {
 
         if (chunk.startsWith('http') && isSafeHttpUrl(chunk)) {
             return (
-                <a key={`${chunk}-${idx}`} href={chunk} target={'_blank'} rel={'noopener noreferrer'} css={tw`underline text-cyan-300`}>
+                <a key={`${chunk}-${idx}`} href={chunk} target={'_blank'} rel={'noopener noreferrer'} css={tw`underline text-neutral-200`}>
                     {chunk}
                 </a>
             );
@@ -181,7 +215,7 @@ const renderRichBody = (body: string | null, selfUsername: string) => {
             const isMe = mention === selfUsername.toLowerCase();
 
             return (
-                <span key={`${chunk}-${idx}`} css={isMe ? tw`text-yellow-300 font-semibold` : tw`text-cyan-200 font-medium`}>
+                <span key={`${chunk}-${idx}`} css={isMe ? tw`text-neutral-100 font-semibold` : tw`text-neutral-200 font-medium`}>
                     {chunk}
                 </span>
             );
@@ -262,6 +296,7 @@ export default () => {
         avatarUrl?: string | null;
         birthday?: string | null;
         joinedAt?: string | null;
+        lastSeen?: string | null;
     } | null>(null);
 
     const listRef = useRef<HTMLDivElement>(null);
@@ -289,6 +324,18 @@ export default () => {
             .filter((c) => (c.name || '').toLowerCase().includes(q) || (c.groupUsername || '').toLowerCase().includes(q) || (c.groupCode || '').toLowerCase().includes(q))
             .slice(0, 6);
     }, [search, conversations]);
+    const userLastSeenMap = useMemo(() => {
+        const map: Record<string, number> = {};
+        for (const item of messages) {
+            const key = String(item.username || '').toLowerCase();
+            if (!key) continue;
+            const seen = toUnixMs(item.createdAt);
+            if (!seen) continue;
+            map[key] = Math.max(map[key] || 0, seen);
+        }
+
+        return map;
+    }, [messages]);
 
     const lastId = useMemo(() => (messages.length ? messages[messages.length - 1].id : undefined), [messages]);
 
@@ -686,6 +733,16 @@ export default () => {
         return 'GROUP';
     };
 
+    const resolvePresence = (username: string, fallback?: string | null) => {
+        const key = username.toLowerCase();
+        const lastSeenMs = Math.max(userLastSeenMap[key] || 0, toUnixMs(fallback));
+
+        return {
+            lastSeenMs,
+            ...presenceLabel(lastSeenMs),
+        };
+    };
+
     const openProfile = (payload: {
         id?: number;
         username: string;
@@ -693,6 +750,7 @@ export default () => {
         avatarUrl?: string | null;
         birthday?: string | null;
         joinedAt?: string | null;
+        lastSeen?: string | null;
     }) => {
         setProfilePopup({
             id: payload.id,
@@ -701,16 +759,66 @@ export default () => {
             avatarUrl: payload.avatarUrl || null,
             birthday: payload.birthday || null,
             joinedAt: payload.joinedAt || null,
+            lastSeen: payload.lastSeen || null,
         });
     };
+    const popupTargetMuted = useMemo(() => {
+        if (!profilePopup || !activeConversation) return false;
+        const member = activeConversation.members.find((m) => (profilePopup.id ? m.id === profilePopup.id : m.username === profilePopup.username));
+        if (!member?.mutedUntil) return false;
+        const expires = toUnixMs(member.mutedUntil);
+        if (!expires) return true;
 
-    const conversationAvatar = (conversation: ChatConversation): { label: string; src: string | null } => {
+        return expires > Date.now();
+    }, [profilePopup, activeConversation]);
+
+    const handlePopupMessage = async () => {
+        if (!profilePopup?.username) return;
+        await openPrivateChat(profilePopup.username);
+        setProfilePopup(null);
+    };
+
+    const handlePopupCall = async () => {
+        if (!activeConversationId || !profilePopup?.username) return;
+        try {
+            const label = activeConversation?.type === 'group' ? 'group call' : 'call';
+            const created = await postPublicMessage({
+                conversationId: activeConversationId,
+                message: `📞 ${selfUsername} started a ${label} with @${profilePopup.username}`,
+                mediaType: 'text',
+            });
+            setMessages((current) => [...current, created]);
+            setProfilePopup(null);
+            requestAnimationFrame(scrollToBottom);
+        } catch (error) {
+            clearAndAddHttpError({ key: 'dashboard', error });
+        }
+    };
+
+    const handlePopupMuteToggle = async () => {
+        if (!activeConversation || !profilePopup?.id) return;
+        if (profilePopup.username.toLowerCase() === selfUsername.toLowerCase()) return;
+        try {
+            if (popupTargetMuted) {
+                await unmuteChatMember(activeConversation.id, profilePopup.id);
+            } else {
+                await muteChatMember(activeConversation.id, profilePopup.id);
+            }
+            await loadConvoList(true);
+        } catch (error) {
+            clearAndAddHttpError({ key: 'dashboard', error });
+        }
+    };
+
+    const conversationAvatar = (conversation: ChatConversation): { label: string; src: string | null; online: boolean } => {
         if (conversation.type === 'private') {
             const other = conversation.members.find((m) => m.username.toLowerCase() !== selfUsername.toLowerCase());
             if (other) {
+                const presence = resolvePresence(other.username, conversation.lastMessageAt);
                 return {
                     label: other.displayName || other.username,
                     src: other.avatarUrl || null,
+                    online: presence.online,
                 };
             }
         }
@@ -718,8 +826,24 @@ export default () => {
         return {
             label: conversation.name,
             src: null,
+            online: false,
         };
     };
+    const dmPeer = useMemo(() => {
+        if (!activeConversation || activeConversation.type !== 'private') return null;
+
+        return activeConversation.members.find((m) => m.username.toLowerCase() !== selfUsername.toLowerCase()) || null;
+    }, [activeConversation, selfUsername]);
+    const dmPresence = useMemo(() => {
+        if (!dmPeer) return null;
+
+        return resolvePresence(dmPeer.username, activeConversation?.lastMessageAt || null);
+    }, [dmPeer, activeConversation?.lastMessageAt, userLastSeenMap]);
+    const popupPresence = useMemo(() => {
+        if (!profilePopup) return null;
+
+        return resolvePresence(profilePopup.username, profilePopup.lastSeen || null);
+    }, [profilePopup, userLastSeenMap]);
 
     return (
         <Root>
@@ -739,7 +863,7 @@ export default () => {
                     {searchResult.length > 0 && (
                         <div css={tw`mt-2 space-y-1 max-h-40 overflow-y-auto`}>
                             {searchResult.map((user) => (
-                                <div key={user.id} css={tw`flex items-center justify-between rounded bg-neutral-800 px-2 py-1`}>
+                                <div key={user.id} css={tw`flex items-center justify-between rounded bg-neutral-900 px-2 py-1`}>
                                     <button
                                         type={'button'}
                                         css={tw`min-w-0 flex items-center gap-2 text-left`}
@@ -751,6 +875,7 @@ export default () => {
                                                 avatarUrl: user.avatarUrl,
                                                 birthday: user.birthday || null,
                                                 joinedAt: user.createdAt || null,
+                                                lastSeen: null,
                                             })
                                         }
                                     >
@@ -783,7 +908,7 @@ export default () => {
                     {foundGroups.length > 0 && (
                         <div css={tw`mt-2 space-y-1 max-h-36 overflow-y-auto`}>
                             {foundGroups.map((group) => (
-                                <div key={`found-group-${group.id}`} css={tw`flex items-center justify-between rounded bg-neutral-800 px-2 py-1`}>
+                                <div key={`found-group-${group.id}`} css={tw`flex items-center justify-between rounded bg-neutral-900 px-2 py-1`}>
                                     <div css={tw`min-w-0`}>
                                         <p css={tw`text-xs text-neutral-100 truncate`}>{group.name}</p>
                                         <p css={tw`text-[11px] text-neutral-400 truncate`}>@{group.groupUsername || 'group'} • {group.groupCode || '-'}</p>
@@ -840,25 +965,33 @@ export default () => {
 
                 <SideList>
                     {conversations.map((conversation) => (
-                        <ConvButton key={conversation.id} type={'button'} css={activeConversationId === conversation.id ? tw`border-cyan-500 bg-cyan-900/20` : undefined} onClick={() => {
+                        <ConvButton key={conversation.id} type={'button'} css={activeConversationId === conversation.id ? tw`border-neutral-600 bg-neutral-800/50` : undefined} onClick={() => {
                             setActiveConversationId(conversation.id);
                             setMobilePane('room');
                         }}>
                             <div css={tw`flex items-center justify-between gap-2`}>
                                 <div css={tw`flex items-center gap-2 min-w-0`}>
-                                    <div css={tw`w-8 h-8 rounded-full overflow-hidden flex-shrink-0`}>
+                                    <div css={tw`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 relative`}>
                                         {conversationAvatar(conversation).src ? (
                                             <AvatarImage src={conversationAvatar(conversation).src || ''} alt={conversationAvatar(conversation).label} />
                                         ) : (
                                             <AvatarFallback>{avatarForName(conversationAvatar(conversation).label)}</AvatarFallback>
                                         )}
+                                        {conversationAvatar(conversation).online && <OnlineDot />}
                                     </div>
                                     <p css={tw`text-sm text-neutral-100 truncate`}>{conversation.name}</p>
                                 </div>
                                 <Tag>{convLabel(conversation)}</Tag>
                             </div>
                             <p css={tw`text-[11px] text-neutral-400 mt-1`}>
-                                {conversation.lastMessageAt ? safeTime(conversation.lastMessageAt) : 'No messages yet'}
+                                {conversation.type === 'private' && conversation.members.length
+                                    ? resolvePresence(
+                                          (conversation.members.find((m) => m.username.toLowerCase() !== selfUsername.toLowerCase()) || conversation.members[0]).username,
+                                          conversation.lastMessageAt
+                                      ).text
+                                    : conversation.lastMessageAt
+                                    ? safeTime(conversation.lastMessageAt)
+                                    : 'No messages yet'}
                             </p>
                         </ConvButton>
                     ))}
@@ -869,7 +1002,7 @@ export default () => {
                 <MainHeader>
                     <div css={tw`min-w-0 flex items-center gap-3`}>
                         {activeConversation && (
-                            <div css={tw`w-9 h-9 rounded-full overflow-hidden flex-shrink-0`}>
+                            <div css={tw`w-9 h-9 rounded-full overflow-hidden flex-shrink-0 relative`}>
                                 {conversationAvatar(activeConversation).src ? (
                                     <AvatarImage
                                         src={conversationAvatar(activeConversation).src || ''}
@@ -878,12 +1011,15 @@ export default () => {
                                 ) : (
                                     <AvatarFallback>{avatarForName(conversationAvatar(activeConversation).label)}</AvatarFallback>
                                 )}
+                                {conversationAvatar(activeConversation).online && <OnlineDot />}
                             </div>
                         )}
                         <div css={tw`min-w-0`}>
                             <HeaderTitle>{activeConversation?.name || 'Select chat'}</HeaderTitle>
                             <HeaderMeta>
-                                {activeConversation
+                                {activeConversation?.type === 'private' && dmPresence
+                                    ? dmPresence.text
+                                    : activeConversation
                                     ? `${Array.isArray(activeConversation.members) ? activeConversation.members.length : 0} member${
                                           Array.isArray(activeConversation.members) && activeConversation.members.length === 1 ? '' : 's'
                                       }`
@@ -900,7 +1036,7 @@ export default () => {
                 </MainHeader>
 
                 {activeConversation?.type === 'group' && (myGroupRole === 'owner' || myGroupRole === 'admin') && (
-                    <div css={tw`px-3 py-2 border-b border-neutral-700 bg-neutral-900 space-y-2`}>
+                    <div css={tw`px-3 py-2 border-b border-neutral-800 bg-neutral-900 space-y-2`}>
                         <div css={tw`flex items-center justify-between gap-2`}>
                             <p css={tw`text-xs text-neutral-300`}>Group controls</p>
                             <Small type={'button'} onClick={() => setGroupToolsCollapsed((v) => !v)}>
@@ -964,10 +1100,10 @@ export default () => {
                                 </div>
                                 <div css={tw`flex flex-wrap gap-1`}>
                                     {activeConversation.members.map((member) => (
-                                        <div key={`gm-${member.id}`} css={tw`px-2 py-1 rounded bg-neutral-800 text-xs flex items-center gap-1`}>
+                                        <div key={`gm-${member.id}`} css={tw`px-2 py-1 rounded bg-neutral-900 text-xs flex items-center gap-1`}>
                                             <button
                                                 type={'button'}
-                                                css={tw`text-cyan-200`}
+                                                css={tw`text-neutral-200`}
                                                 onClick={() =>
                                                     openProfile({
                                                         id: member.id,
@@ -976,6 +1112,7 @@ export default () => {
                                                         avatarUrl: member.avatarUrl,
                                                         birthday: member.birthday || null,
                                                         joinedAt: member.createdAt || null,
+                                                        lastSeen: null,
                                                     })
                                                 }
                                             >
@@ -1047,7 +1184,7 @@ export default () => {
                                 >
                                     <Bubble
                                         css={[
-                                            item.isOwn ? tw`bg-cyan-800/75 text-cyan-50` : tw`bg-neutral-800 text-neutral-100`,
+                                            item.isOwn ? tw`bg-neutral-700 text-neutral-100` : tw`bg-neutral-900 text-neutral-100`,
                                             mentionsMe ? tw`ring-1 ring-yellow-300` : undefined,
                                             highlightedMessageId === item.id ? tw`ring-2 ring-cyan-300` : undefined,
                                         ]}
@@ -1055,7 +1192,7 @@ export default () => {
                                         {isPollImage && (
                                             <button
                                                 type={'button'}
-                                                css={tw`absolute top-2 right-2 text-[10px] px-2 py-1 rounded border border-cyan-400/60 text-cyan-200 hover:bg-cyan-900/40`}
+                                                css={tw`absolute top-2 right-2 text-[10px] px-2 py-1 rounded border border-neutral-500 text-neutral-200 hover:bg-neutral-700`}
                                                 onClick={() => setPreviewImageUrl(item.mediaUrl!)}
                                             >
                                                 See Full
@@ -1072,15 +1209,17 @@ export default () => {
                                                     avatarUrl: item.avatarUrl,
                                                     birthday: item.birthday,
                                                     joinedAt: item.joinedAt,
+                                                    lastSeen: item.createdAt,
                                                 })
                                             }
                                         >
-                                            <div css={tw`w-7 h-7 rounded-full overflow-hidden`}>
+                                            <div css={tw`w-7 h-7 rounded-full overflow-hidden relative`}>
                                                 {item.avatarUrl ? (
                                                     <AvatarImage src={item.avatarUrl} alt={item.displayName || item.username} />
                                                 ) : (
                                                     <AvatarFallback>{avatarForName(item.displayName)}</AvatarFallback>
                                                 )}
+                                                {resolvePresence(item.username, item.createdAt).online && <OnlineDot />}
                                             </div>
                                             <div css={tw`leading-tight min-w-0`}>
                                                 <div css={tw`text-[11px] font-semibold opacity-90 truncate`}>{item.displayName}</div>
@@ -1089,8 +1228,8 @@ export default () => {
                                         </button>
 
                                         {item.reply && (
-                                            <div css={tw`mb-2 rounded-md border-l-2 border-cyan-400 bg-black/20 px-2 py-1`}>
-                                                <button type={'button'} css={tw`text-[11px] text-cyan-200`} onClick={() => scrollToMessage(item.reply!.id)}>
+                                                <div css={tw`mb-2 rounded-md border-l-2 border-neutral-600 bg-neutral-900/70 px-2 py-1`}>
+                                                <button type={'button'} css={tw`text-[11px] text-neutral-200`} onClick={() => scrollToMessage(item.reply!.id)}>
                                                     Reply to @{item.reply.username}: {item.reply.body || '[empty]'}
                                                 </button>
                                             </div>
@@ -1133,15 +1272,15 @@ export default () => {
                                                         href={previewLink}
                                                         target={'_blank'}
                                                         rel={'noopener noreferrer'}
-                                                        css={tw`mt-2 block rounded-md border border-neutral-600 bg-neutral-900/70 p-2 hover:border-cyan-400`}
+                                                        css={tw`mt-2 block rounded-md border border-neutral-700 bg-neutral-900/70 p-2 hover:border-neutral-600`}
                                                     >
                                                         <p css={tw`text-[11px] text-neutral-400 uppercase tracking-wide`}>Link preview</p>
-                                                        <p css={tw`text-sm text-cyan-300 break-all`}>{formatLinkLabel(previewLink)}</p>
+                                                        <p css={tw`text-sm text-neutral-200 break-all`}>{formatLinkLabel(previewLink)}</p>
                                                     </a>
                                                 )}
 
                                                 {item.poll && safeOptions.length > 0 && (
-                                                    <div css={tw`mt-2 rounded-md border border-neutral-600 bg-black/20 p-2`}>
+                                                    <div css={tw`mt-2 rounded-md border border-neutral-700 bg-neutral-900/60 p-2`}>
                                                         <p css={tw`text-sm font-semibold`}>{item.poll.question}</p>
                                                         {isPollImage && (
                                                             <button
@@ -1163,8 +1302,8 @@ export default () => {
                                                                     type={'button'}
                                                                     onClick={() => handleVote(item.id, idx)}
                                                                     css={[
-                                                                        tw`w-full text-left rounded px-2 py-1 border border-neutral-600 hover:border-cyan-400 flex items-center justify-between text-xs`,
-                                                                        item.poll?.myVote === idx ? tw`bg-cyan-900/40 border-cyan-500` : undefined,
+                                                                        tw`w-full text-left rounded px-2 py-1 border border-neutral-600 hover:border-neutral-500 flex items-center justify-between text-xs`,
+                                                                        item.poll?.myVote === idx ? tw`bg-neutral-700 border-neutral-500` : undefined,
                                                                     ]}
                                                                 >
                                                                     <span>{opt.text}</span>
@@ -1189,8 +1328,8 @@ export default () => {
                                                         type={'button'}
                                                         onClick={() => reactToMessage(item.id, emoji)}
                                                         css={[
-                                                            tw`text-[10px] px-1.5 py-0.5 rounded border border-neutral-600`,
-                                                            mine ? tw`bg-cyan-900/40 border-cyan-400` : tw`hover:border-cyan-300`,
+                                                            tw`text-[10px] px-1.5 py-0.5 rounded border border-neutral-700`,
+                                                            mine ? tw`bg-neutral-700 border-neutral-600` : tw`hover:border-neutral-600`,
                                                         ]}
                                                     >
                                                         {emoji} {count > 0 ? count : ''}
@@ -1226,12 +1365,12 @@ export default () => {
 
                 <Composer onSubmit={handleSend}>
                     {dragging && (
-                        <div css={tw`rounded-md border border-cyan-400/50 bg-cyan-900/20 p-2 text-xs text-cyan-100`}>
+                        <div css={tw`rounded-md border border-neutral-700 bg-neutral-900/60 p-2 text-xs text-neutral-200`}>
                             Drop file to choose Quick/Compressed upload...
                         </div>
                     )}
                     {replyingTo && (
-                        <div css={tw`rounded-md border border-cyan-500/40 bg-cyan-900/20 p-2 text-xs text-cyan-100 flex items-center justify-between gap-2`}>
+                        <div css={tw`rounded-md border border-neutral-700 bg-neutral-900/60 p-2 text-xs text-neutral-200 flex items-center justify-between gap-2`}>
                             <span css={tw`truncate`}>
                                 Replying @{replyingTo.username}: {replyingTo.body || '[media]'}
                             </span>
@@ -1243,7 +1382,7 @@ export default () => {
 
                     {pollOpen && (
                         <div
-                            css={tw`rounded-md border border-neutral-600 bg-neutral-900 p-2 space-y-2`}
+                            css={tw`rounded-md border border-neutral-700 bg-neutral-900 p-2 space-y-2`}
                             onDragOver={(e) => e.preventDefault()}
                             onDrop={(e) => {
                                 e.preventDefault();
@@ -1271,7 +1410,7 @@ export default () => {
                                 />
                             ))}
                             <div css={tw`flex items-center gap-2 flex-wrap`}>
-                                <label css={tw`text-xs text-cyan-300 cursor-pointer`}>
+                                <label css={tw`text-xs text-neutral-300 cursor-pointer`}>
                                     {uploading ? 'Uploading...' : 'Add poll image'}
                                     <input
                                         type={'file'}
@@ -1293,7 +1432,7 @@ export default () => {
                                     Compressed upload
                                 </Small>
                                 {pollMediaUrl && (
-                                    <button type={'button'} onClick={() => setPreviewImageUrl(pollMediaUrl)} css={tw`text-xs text-cyan-200 underline`}>
+                                    <button type={'button'} onClick={() => setPreviewImageUrl(pollMediaUrl)} css={tw`text-xs text-neutral-200 underline`}>
                                         preview
                                     </button>
                                 )}
@@ -1331,7 +1470,7 @@ export default () => {
 
                     <div css={tw`flex items-center justify-between gap-2 flex-wrap`}>
                         <div css={tw`flex items-center gap-2`}>
-                            <label css={tw`text-xs text-cyan-300 cursor-pointer`}>
+                            <label css={tw`text-xs text-neutral-300 cursor-pointer`}>
                                 {uploading ? 'Uploading...' : 'Attach media'}
                                 <input
                                     ref={uploadInputRef}
@@ -1384,14 +1523,14 @@ export default () => {
                             <div css={tw`flex gap-2`}>
                                 <Tiny
                                     type={'button'}
-                                    css={uploadMode === 'quick' ? tw`border-cyan-400 text-cyan-200` : undefined}
+                                    css={uploadMode === 'quick' ? tw`border-neutral-400 text-neutral-100` : undefined}
                                     onClick={() => setUploadMode('quick')}
                                 >
                                     Quick
                                 </Tiny>
                                 <Tiny
                                     type={'button'}
-                                    css={uploadMode === 'compressed' ? tw`border-cyan-400 text-cyan-200` : undefined}
+                                    css={uploadMode === 'compressed' ? tw`border-neutral-400 text-neutral-100` : undefined}
                                     onClick={() => setUploadMode('compressed')}
                                 >
                                     Compressed
@@ -1446,28 +1585,62 @@ export default () => {
                     css={tw`fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4`}
                     onClick={() => setProfilePopup(null)}
                 >
-                    <div css={tw`w-full max-w-md rounded-lg border border-neutral-600 bg-[#0f1b2e] overflow-hidden`} onClick={(e) => e.stopPropagation()}>
-                        <div css={tw`px-6 py-6 border-b border-neutral-700 bg-[#13243d]`}>
-                            <div css={tw`w-20 h-20 rounded-full overflow-hidden mx-auto border-4 border-black`}>
-                                {profilePopup.avatarUrl ? (
-                                    <AvatarImage src={profilePopup.avatarUrl} alt={profilePopup.displayName} />
-                                ) : (
-                                    <AvatarFallback>{avatarForName(profilePopup.displayName || profilePopup.username)}</AvatarFallback>
-                                )}
+                    <div css={tw`w-full max-w-md rounded-lg border border-neutral-600 bg-neutral-800 overflow-hidden`} onClick={(e) => e.stopPropagation()}>
+                        <div css={tw`px-4 py-3 border-b border-neutral-700 bg-neutral-700`}>
+                            <div css={tw`flex items-center justify-between`}>
+                                <button type={'button'} css={tw`text-neutral-300 hover:text-neutral-100 text-xs`} onClick={() => setProfilePopup(null)}>
+                                    Back
+                                </button>
+                                <button type={'button'} css={tw`text-neutral-300 hover:text-neutral-100 text-xs`} onClick={() => setProfilePopup(null)}>
+                                    Close
+                                </button>
                             </div>
-                            <p css={tw`text-center text-neutral-100 font-semibold mt-3 text-lg`}>{profilePopup.displayName}</p>
-                            <p css={tw`text-center text-cyan-300 text-sm`}>@{profilePopup.username}</p>
+                            <div css={tw`pt-4`}>
+                                <div css={tw`w-20 h-20 rounded-full overflow-hidden mx-auto border-2 border-neutral-900 relative`}>
+                                    {profilePopup.avatarUrl ? (
+                                        <AvatarImage src={profilePopup.avatarUrl} alt={profilePopup.displayName} />
+                                    ) : (
+                                        <AvatarFallback>{avatarForName(profilePopup.displayName || profilePopup.username)}</AvatarFallback>
+                                    )}
+                                    {popupPresence?.online && <OnlineDot css={tw`border-neutral-700`} />}
+                                </div>
+                            </div>
+                            <p css={tw`text-center text-neutral-100 font-semibold mt-3 text-xl`}>{profilePopup.displayName}</p>
+                            <p css={tw`text-center text-neutral-300 text-sm`}>{popupPresence?.text || 'last seen unknown'}</p>
+                            <div css={tw`grid grid-cols-4 gap-2 mt-4`}>
+                                <button type={'button'} css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200`} onClick={handlePopupMessage}>
+                                    Message
+                                </button>
+                                <button
+                                    type={'button'}
+                                    css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200 disabled:opacity-50`}
+                                    onClick={handlePopupMuteToggle}
+                                    disabled={!activeConversation || !profilePopup.id}
+                                >
+                                    {popupTargetMuted ? 'Unmute' : 'Mute'}
+                                </button>
+                                <button type={'button'} css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200`} onClick={handlePopupCall}>
+                                    Call
+                                </button>
+                                <button type={'button'} css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200`} onClick={() => setProfilePopup(null)}>
+                                    More
+                                </button>
+                            </div>
                         </div>
-                        <div css={tw`px-5 py-4 space-y-4`}>
+                        <div css={tw`px-5 py-4 space-y-4 bg-neutral-800`}>
                             <div>
-                                <p css={tw`text-neutral-100`}>{safeDate(profilePopup.birthday || null)}</p>
+                                <p css={tw`text-neutral-200`}>{profilePopup.username ? `@${profilePopup.username}` : '-'}</p>
+                                <p css={tw`text-neutral-400 text-sm`}>Username</p>
+                            </div>
+                            <div>
+                                <p css={tw`text-neutral-200`}>{safeDate(profilePopup.birthday || null)}</p>
                                 <p css={tw`text-neutral-400 text-sm`}>Birthday</p>
                             </div>
                             <div>
-                                <p css={tw`text-neutral-100`}>{safeDate(profilePopup.joinedAt || null)}</p>
+                                <p css={tw`text-neutral-200`}>{safeDate(profilePopup.joinedAt || null)}</p>
                                 <p css={tw`text-neutral-400 text-sm`}>Joined</p>
                             </div>
-                            <div css={tw`pt-2`}>
+                            <div css={tw`pt-1`}>
                                 <Button type={'button'} size={'xsmall'} onClick={() => setProfilePopup(null)}>
                                     Close
                                 </Button>

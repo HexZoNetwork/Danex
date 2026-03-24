@@ -28,6 +28,8 @@ Route::prefix('/chat')->group(function () {
     Route::post('/conversations/{conversation}/members', [Client\PublicChatController::class, 'addGroupMember'])->middleware('throttle:40,1');
     Route::delete('/conversations/{conversation}/members/{member}', [Client\PublicChatController::class, 'kickGroupMember'])->middleware('throttle:40,1');
     Route::post('/conversations/{conversation}/members/{member}/ban', [Client\PublicChatController::class, 'banGroupMember'])->middleware('throttle:40,1');
+    Route::post('/conversations/{conversation}/members/{member}/mute', [Client\PublicChatController::class, 'muteMember'])->middleware('throttle:40,1');
+    Route::delete('/conversations/{conversation}/members/{member}/mute', [Client\PublicChatController::class, 'unmuteMember'])->middleware('throttle:40,1');
     Route::post('/conversations/{conversation}/members/{member}/admin', [Client\PublicChatController::class, 'setGroupAdmin'])->middleware('throttle:30,1');
     Route::get('/messages', [Client\PublicChatController::class, 'index']);
     Route::post('/messages', [Client\PublicChatController::class, 'store'])->middleware('throttle:40,1');

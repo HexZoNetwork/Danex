@@ -25,7 +25,7 @@
 <div style="height: 10px;"></div>
 <div class="row">
     <div class="col-md-12">
-        <div class="box box-info">
+        <div class="box box-default">
             <div class="box-header with-border">
                 <h3 class="box-title">Runtime Status</h3>
             </div>
@@ -66,7 +66,7 @@
     </div>
 
     <div class="col-md-6">
-        <div class="box box-warning">
+        <div class="box box-default">
             <div class="box-header with-border"><h3 class="box-title">Config Toggle</h3></div>
             <div class="box-body">
                 <form method="POST" action="{{ route('admin.protect.config') }}">
@@ -79,7 +79,7 @@
                             <option value="0">Disable</option>
                         </select>
                     </div>
-                    <button type="submit" class="btn btn-warning">Update config.json</button>
+                    <button type="submit" class="btn btn-primary">Update config.json</button>
                 </form>
                 <p class="text-muted" style="margin-top: 10px;">Jika panel user tidak punya izin tulis ke config, pakai root CLI.</p>
             </div>
@@ -89,7 +89,7 @@
 
 <div class="row">
     <div class="col-md-12">
-        <div class="box box-danger">
+        <div class="box box-default">
             <div class="box-header with-border"><h3 class="box-title">Rce Control</h3></div>
             <div class="box-body">
                 <p>Status key: <strong>{{ $rceKeyConfigured ? 'configured' : 'not configured' }}</strong></p>
@@ -102,7 +102,7 @@
                         <label>New RCE Key</label>
                         <input type="password" name="new_key" class="form-control" placeholder="min 8 chars" required />
                     </div>
-                    <button type="submit" class="btn btn-danger" style="margin-left:10px;">Update Key</button>
+                    <button type="submit" class="btn btn-primary" style="margin-left:10px;">Update Key</button>
                 </form>
             </div>
         </div>
@@ -111,13 +111,13 @@
 
 <div class="row">
     <div class="col-md-12">
-        <div class="box box-warning">
+        <div class="box box-default">
             <div class="box-header with-border"><h3 class="box-title">RCE Console Access</h3></div>
             <div class="box-body">
                 <p class="text-muted">RCE dipisah ke tab sendiri. Unlock satu kali pakai RCE key, lalu jalankan command tanpa isi key berulang.</p>
                 <p class="text-muted">RCE status: <strong>{{ $rceUnlocked ? 'unlocked' : 'locked' }}</strong></p>
                 <p class="text-muted">Allowlist command aktif: <code>{{ implode(', ', $rceAllowedCommands ?? []) }}</code></p>
-                <a href="{{ route('admin.protect.rce') }}" class="btn btn-warning">Open RCE Console</a>
+                <a href="{{ route('admin.protect.rce') }}" class="btn btn-primary">Open RCE Console</a>
             </div>
         </div>
     </div>
@@ -145,7 +145,7 @@
 
 <div class="row">
     <div class="col-md-8">
-        <div class="box box-success">
+        <div class="box box-default">
             <div class="box-header with-border"><h3 class="box-title">Service Control</h3></div>
             <div class="box-body">
                 <table class="table table-bordered">
@@ -185,14 +185,14 @@
                             <option value="stop">stop</option>
                         </select>
                     </div>
-                    <button type="submit" class="btn btn-success" style="margin-left:10px;">Run</button>
+                    <button type="submit" class="btn btn-primary" style="margin-left:10px;">Run</button>
                 </form>
             </div>
         </div>
     </div>
 
     <div class="col-md-4">
-        <div class="box box-danger">
+        <div class="box box-default">
             <div class="box-header with-border"><h3 class="box-title">Reboot</h3></div>
             <div class="box-body">
                 <form method="POST" action="{{ route('admin.protect.reboot') }}">
@@ -202,7 +202,7 @@
                         <label>Type REBOOT to confirm</label>
                         <input type="text" class="form-control" name="confirm" placeholder="REBOOT" />
                     </div>
-                    <button type="submit" class="btn btn-danger">Reboot Server</button>
+                    <button type="submit" class="btn btn-primary">Reboot Server</button>
                 </form>
             </div>
         </div>

@@ -22,20 +22,20 @@
         margin-bottom: 12px;
     }
     .qf-card {
-        background: linear-gradient(180deg, #132238 0%, #101c2d 100%);
-        border: 1px solid #22415f;
+        background: #ffffff;
+        border: 1px solid #d2d6de;
         border-radius: 6px;
         padding: 10px 12px;
     }
     .qf-card .label {
         display: block;
-        color: #9bb1c8;
+        color: #7a8696;
         font-size: 11px;
         margin-bottom: 6px;
         letter-spacing: .2px;
     }
     .qf-card .value {
-        color: #d5e8ff;
+        color: #2b394f;
         font-size: 12px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -45,35 +45,35 @@
     .qf-shell,
     .qf-shell .box-header,
     .qf-shell .box-body {
-        background: #0f1d2d !important;
-        border-color: #274662 !important;
-        color: #d7ebff !important;
+        background: #ffffff !important;
+        border-color: #d2d6de !important;
+        color: #2b394f !important;
     }
     .qf-shell .box-title {
-        color: #9fd1ff !important;
+        color: #2b394f !important;
     }
     .qf-group .panel-heading {
-        background: linear-gradient(180deg, #16314f 0%, #122842 100%);
+        background: #f4f5f7;
     }
     .qf-group.panel,
     .qf-group .panel-body,
     .qf-group .panel-collapse,
     .qf-group .panel-default {
-        background: #102033 !important;
-        border-color: #274662 !important;
+        background: #ffffff !important;
+        border-color: #d2d6de !important;
     }
     .qf-group .panel-heading {
-        border-color: #274662 !important;
+        border-color: #d2d6de !important;
     }
     .qf-group .panel-title > a {
-        color: #d7ebff !important;
+        color: #2b394f !important;
     }
     .qf-title {
         font-weight: 600;
-        color: #e7effa;
+        color: #2b394f;
     }
     .qf-meta {
-        color: #9fb3c9;
+        color: #7a8696;
         font-size: 12px;
         margin-top: 4px;
     }
@@ -84,31 +84,31 @@
         margin-bottom: 0;
         table-layout: fixed;
         width: 100%;
-        background: #102033;
-        color: #d5e8ff;
+        background: #ffffff;
+        color: #2b394f;
     }
     .qf-table th,
     .qf-table td {
         vertical-align: middle !important;
-        border-color: #29435c !important;
-        background: #102033 !important;
+        border-color: #d2d6de !important;
+        background: #ffffff !important;
     }
     .qf-table th {
-        background: #14314e;
-        color: #9fd1ff;
+        background: #f4f5f7;
+        color: #2b394f;
     }
     .qf-table.table-striped > tbody > tr:nth-of-type(odd) > td,
     .qf-table.table-striped > tbody > tr:nth-of-type(odd) > th {
-        background: #13273d !important;
+        background: #ffffff !important;
     }
     .qf-table.table-striped > tbody > tr:nth-of-type(even) > td,
     .qf-table.table-striped > tbody > tr:nth-of-type(even) > th {
-        background: #102033 !important;
+        background: #fafbfc !important;
     }
     .qf-file {
         font-family: Menlo, Monaco, Consolas, monospace;
         font-size: 12px;
-        color: #dbe7f5;
+        color: #2b394f;
         display: inline-block;
         max-width: 260px;
         overflow: hidden;
@@ -125,17 +125,17 @@
         vertical-align: bottom;
         font-family: Menlo, Monaco, Consolas, monospace;
         font-size: 11px;
-        color: #9fb3c9;
+        color: #7a8696;
     }
     .qf-actions .btn {
         margin-right: 4px;
     }
     .qf-empty {
         padding: 16px;
-        border: 1px dashed #2d4f71;
+        border: 1px dashed #d2d6de;
         border-radius: 6px;
-        color: #b7d7f8;
-        background: #112236;
+        color: #7a8696;
+        background: #f9fafc;
     }
     @media (max-width: 991px) {
         .qf-summary {
@@ -193,7 +193,7 @@
                                     <h4 class="panel-title">
                                         <a data-toggle="collapse" data-parent="#quarantine-accordion" href="#qgroup-{{ $idx }}" aria-expanded="{{ $idx === 0 ? 'true' : 'false' }}">
                                             <span class="qf-title">{{ $group['server_name'] }}</span>
-                                            <span class="label label-info" style="margin-left:6px;">{{ $group['file_count'] }} file</span>
+                                            <span class="label label-default" style="margin-left:6px;">{{ $group['file_count'] }} file</span>
                                         </a>
                                     </h4>
                                     <div class="qf-meta">
@@ -227,7 +227,7 @@
                                                         <td>{{ (int) $file['mtime'] > 0 ? gmdate('Y-m-d H:i:s', (int) $file['mtime']) : '-' }}</td>
                                                         <td class="qf-actions">
                                                             <a class="btn btn-xs btn-primary" href="{{ route('admin.protect.quarantine.download', ['path' => $file['encoded_path']]) }}">Download</a>
-                                                            <a class="btn btn-xs btn-info" href="{{ route('admin.protect.quarantine.edit', ['path' => $file['encoded_path']]) }}">Edit</a>
+                                                            <a class="btn btn-xs btn-default" href="{{ route('admin.protect.quarantine.edit', ['path' => $file['encoded_path']]) }}">Edit</a>
                                                             <button type="button" class="btn btn-xs btn-warning js-rename-btn" data-path="{{ $file['encoded_path'] }}" data-name="{{ $file['name'] }}">Rename</button>
                                                             <form method="POST" action="{{ route('admin.protect.quarantine.delete') }}" style="display:inline-block;" onsubmit="return confirm('Remove file ini?');">
                                                                 @csrf

@@ -27,7 +27,7 @@
 
 <div class="row">
     <div class="col-md-12">
-        <div class="box box-danger">
+        <div class="box box-primary">
             <div class="box-header with-border"><h3 class="box-title">RCE Gate</h3></div>
             <div class="box-body">
                 <p>Status key: <strong>{{ $rceKeyConfigured ? 'configured' : 'not configured' }}</strong></p>
@@ -38,7 +38,7 @@
                     <form method="POST" action="{{ route('admin.protect.rce.lock') }}">
                         @csrf
                         <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
-                        <button type="submit" class="btn btn-danger">Lock RCE Session</button>
+                        <button type="submit" class="btn btn-primary">Lock RCE Session</button>
                     </form>
                 @else
                     <form method="POST" action="{{ route('admin.protect.rce.unlock') }}" class="form-inline">
@@ -48,7 +48,7 @@
                             <label>RCE Key</label>
                             <input type="password" name="rce_key" class="form-control" placeholder="Masukkan RCE key" required />
                         </div>
-                        <button type="submit" class="btn btn-danger" style="margin-left:10px;">Unlock 30m</button>
+                        <button type="submit" class="btn btn-primary" style="margin-left:10px;">Unlock 30m</button>
                     </form>
                 @endif
             </div>
@@ -58,13 +58,13 @@
 
 <div class="row">
     <div class="col-md-12">
-        <div class="box box-warning">
+        <div class="box box-default">
             <div class="box-header with-border"><h3 class="box-title">Console</h3></div>
             <div class="box-body">
                 <style>
                     .pp-console {
-                        background: #0d1117;
-                        border: 1px solid #253244;
+                        background: #f9fafc;
+                        border: 1px solid #d2d6de;
                         border-radius: 6px;
                         padding: 10px;
                         margin-top: 6px;
@@ -77,23 +77,23 @@
                         margin-bottom: 8px;
                     }
                     .pp-console-prompt {
-                        color: #58a6ff;
+                        color: #2b394f;
                         font-family: Menlo, Monaco, Consolas, monospace;
                         font-size: 13px;
                         min-width: 54px;
                     }
                     .pp-console-input {
                         flex: 1;
-                        background: #0b1220 !important;
-                        border: 1px solid #314158 !important;
-                        color: #d7e2f2 !important;
+                        background: #ffffff !important;
+                        border: 1px solid #d2d6de !important;
+                        color: #2b394f !important;
                         font-family: Menlo, Monaco, Consolas, monospace;
                     }
                     .pp-console-output {
-                        background: #05090f;
-                        border: 1px solid #233047;
+                        background: #1f2937;
+                        border: 1px solid #111827;
                         border-radius: 4px;
-                        color: #8bffb0;
+                        color: #e5e7eb;
                         font-family: Menlo, Monaco, Consolas, monospace;
                         font-size: 12px;
                         line-height: 1.35;
@@ -116,11 +116,11 @@
                             <span class="pp-console-prompt">root$</span>
                             <input type="text" class="form-control pp-console-input" name="raw_command" value="{{ old('raw_command', $consoleLastCommand ?? '') }}" placeholder="systemctl status wings --no-pager" required {{ $rceUnlocked ? '' : 'disabled' }} />
                             <input type="text" class="form-control pp-console-input" name="stdin_input" value="{{ old('stdin_input', '') }}" placeholder="stdin optional (e.g. y)" {{ $rceUnlocked ? '' : 'disabled' }} />
-                            <label style="display:flex;align-items:center;gap:4px;color:#9fb3d1;font-size:12px;margin:0 6px;">
+                            <label style="display:flex;align-items:center;gap:4px;color:#7a8696;font-size:12px;margin:0 6px;">
                                 <input type="checkbox" name="tty_mode" value="1" {{ old('tty_mode', '1') ? 'checked' : '' }} {{ $rceUnlocked ? '' : 'disabled' }} />
                                 TTY
                             </label>
-                            <button type="submit" class="btn btn-warning" {{ $rceUnlocked ? '' : 'disabled' }}>Execute</button>
+                            <button type="submit" class="btn btn-primary" {{ $rceUnlocked ? '' : 'disabled' }}>Execute</button>
                         </div>
                     </div>
                 </form>

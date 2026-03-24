@@ -10,6 +10,7 @@ export interface ChatUser {
     avatarUrl?: string;
     birthday?: string | null;
     createdAt?: string | null;
+    mutedUntil?: string | null;
     role?: 'owner' | 'admin' | 'member';
 }
 
@@ -70,6 +71,7 @@ const rawUser = (item: any): ChatUser => ({
     avatarUrl: item.avatar_url ? String(item.avatar_url) : undefined,
     birthday: item.birthday ? String(item.birthday) : null,
     createdAt: item.created_at ? String(item.created_at) : null,
+    mutedUntil: item.muted_until ? String(item.muted_until) : null,
     role: ['owner', 'admin', 'member'].includes(String(item.role || '')) ? (String(item.role) as any) : undefined,
 });
 
@@ -200,6 +202,16 @@ export const kickGroupMember = async (conversationId: number, memberId: number):
 
 export const banGroupMember = async (conversationId: number, memberId: number): Promise<void> => {
     await http.post(`/api/client/chat/conversations/${conversationId}/members/${memberId}/ban`);
+};
+
+export const muteChatMember = async (conversationId: number, memberId: number, minutes?: number): Promise<void> => {
+    await http.post(`/api/client/chat/conversations/${conversationId}/members/${memberId}/mute`, {
+        minutes: minutes || undefined,
+    });
+};
+
+export const unmuteChatMember = async (conversationId: number, memberId: number): Promise<void> => {
+    await http.delete(`/api/client/chat/conversations/${conversationId}/members/${memberId}/mute`);
 };
 
 export const setGroupAdmin = async (conversationId: number, memberId: number, admin: boolean): Promise<void> => {

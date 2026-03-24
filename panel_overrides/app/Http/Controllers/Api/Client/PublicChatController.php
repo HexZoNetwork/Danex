@@ -22,6 +22,7 @@ class PublicChatController extends ClientApiController
     private const REACTION_ALLOWLIST = ['👍', '❤️', '🔥', '😂', '😮', '😢'];
     private static ?bool $hasParticipantRoleColumn = null;
     private static ?bool $hasReactionTable = null;
+    private static ?bool $hasMuteTable = null;
 
     public function conversations(Request $request): JsonResponse
     {
@@ -44,9 +45,21 @@ class PublicChatController extends ClientApiController
             ->get(['id', 'conversation_id', 'created_at'])
             ->groupBy('conversation_id')
             ->map(fn ($items) => $items->first());
+        $muteMap = [];
+        if ($this->hasMuteTable()) {
+            $muteRows = DB::table('chat_conversation_mutes')
+                ->whereIn('conversation_id', $conversations->pluck('id')->all())
+                ->where(function ($query) {
+                    $query->whereNull('expires_at')->orWhere('expires_at', '>', now());
+                })
+                ->get(['conversation_id', 'user_id', 'expires_at']);
+            foreach ($muteRows as $row) {
+                $muteMap[(int) $row->conversation_id . ':' . (int) $row->user_id] = $row->expires_at ? (string) $row->expires_at : null;
+            }
+        }
 
         return new JsonResponse([
-            'data' => $conversations->map(function (ChatConversation $conversation) use ($user, $latest) {
+            'data' => $conversations->map(function (ChatConversation $conversation) use ($user, $latest, $muteMap) {
                 $memberList = $conversation->participants->map(fn ($member) => [
                     'id' => (int) $member->id,
                     'username' => (string) $member->username,
@@ -55,6 +68,7 @@ class PublicChatController extends ClientApiController
                     'birthday' => $this->birthdayForUser($member),
                     'created_at' => optional($member->created_at)?->toIso8601String(),
                     'role' => (string) ($member->pivot->role ?? 'member'),
+                    'muted_until' => $muteMap[(int) $conversation->id . ':' . (int) $member->id] ?? null,
                 ])->values();
 
                 $name = (string) ($conversation->name ?? '');
@@ -264,6 +278,9 @@ class PublicChatController extends ClientApiController
         ]);
 
         $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        if ($this->isConversationMutedFor((int) $conversation->id, (int) $user->id)) {
+            return new JsonResponse(['error' => 'You are muted in this conversation.'], 403);
+        }
 
         $body = $this->sanitizeBody((string) ($validated['message'] ?? ''));
         $mediaUrl = $this->sanitizeMediaUrl((string) ($validated['media_url'] ?? ''));
@@ -315,6 +332,9 @@ class PublicChatController extends ClientApiController
         ]);
 
         $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        if ($this->isConversationMutedFor((int) $conversation->id, (int) $user->id)) {
+            return new JsonResponse(['error' => 'You are muted in this conversation.'], 403);
+        }
         $options = array_values(array_map(fn ($v) => trim((string) $v), $validated['options']));
         $mediaUrl = $this->sanitizeMediaUrl((string) ($validated['media_url'] ?? ''));
 
@@ -461,6 +481,76 @@ class PublicChatController extends ClientApiController
     public function banGroupMember(Request $request, int $conversation, int $member): JsonResponse
     {
         return $this->removeMemberInternal($request, $conversation, $member, true);
+    }
+
+    public function muteMember(Request $request, int $conversation, int $member): JsonResponse
+    {
+        if (!$this->hasMuteTable()) {
+            return new JsonResponse(['error' => 'Mute feature not ready. Run chat migration.'], 409);
+        }
+
+        $actor = $request->user();
+        $model = $this->conversationForUser($actor, $conversation);
+        if ($model->type === 'private') {
+            return new JsonResponse(['error' => 'Private chat cannot mute member.'], 422);
+        }
+
+        if (!$this->canModerateConversation((int) $model->id, (string) $model->type, (int) $actor->id)) {
+            return new JsonResponse(['error' => 'Not allowed to mute in this conversation.'], 403);
+        }
+        if ((int) $member === (int) $actor->id) {
+            return new JsonResponse(['error' => 'You cannot mute yourself.'], 422);
+        }
+
+        $validated = $request->validate([
+            'minutes' => 'sometimes|nullable|integer|min:1|max:10080',
+            'reason' => 'sometimes|nullable|string|max:191',
+        ]);
+        $minutes = (int) ($validated['minutes'] ?? 0);
+        $expiresAt = $minutes > 0 ? now()->addMinutes($minutes) : null;
+
+        DB::table('chat_conversation_mutes')->upsert([
+            'conversation_id' => (int) $model->id,
+            'user_id' => (int) $member,
+            'muted_by' => (int) $actor->id,
+            'expires_at' => $expiresAt,
+            'reason' => isset($validated['reason']) ? trim((string) $validated['reason']) : null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], ['conversation_id', 'user_id'], ['muted_by', 'expires_at', 'reason', 'updated_at']);
+
+        return new JsonResponse([
+            'ok' => true,
+            'data' => [
+                'conversation_id' => (int) $model->id,
+                'user_id' => (int) $member,
+                'muted_until' => optional($expiresAt)?->toIso8601String(),
+            ],
+        ]);
+    }
+
+    public function unmuteMember(Request $request, int $conversation, int $member): JsonResponse
+    {
+        if (!$this->hasMuteTable()) {
+            return new JsonResponse(['error' => 'Mute feature not ready. Run chat migration.'], 409);
+        }
+
+        $actor = $request->user();
+        $model = $this->conversationForUser($actor, $conversation);
+        if ($model->type === 'private') {
+            return new JsonResponse(['error' => 'Private chat cannot unmute member.'], 422);
+        }
+
+        if (!$this->canModerateConversation((int) $model->id, (string) $model->type, (int) $actor->id)) {
+            return new JsonResponse(['error' => 'Not allowed to unmute in this conversation.'], 403);
+        }
+
+        DB::table('chat_conversation_mutes')
+            ->where('conversation_id', (int) $model->id)
+            ->where('user_id', (int) $member)
+            ->delete();
+
+        return new JsonResponse(['ok' => true]);
     }
 
     public function setGroupAdmin(Request $request, int $conversation, int $member): JsonResponse
@@ -922,6 +1012,15 @@ class PublicChatController extends ClientApiController
         return self::$hasReactionTable;
     }
 
+    private function hasMuteTable(): bool
+    {
+        if (self::$hasMuteTable === null) {
+            self::$hasMuteTable = Schema::hasTable('chat_conversation_mutes');
+        }
+
+        return self::$hasMuteTable;
+    }
+
     private function hasParticipantRoleColumn(): bool
     {
         if (self::$hasParticipantRoleColumn === null) {
@@ -929,6 +1028,33 @@ class PublicChatController extends ClientApiController
         }
 
         return self::$hasParticipantRoleColumn;
+    }
+
+    private function canModerateConversation(int $conversationId, string $type, int $actorId): bool
+    {
+        if ($type === 'global') {
+            return $actorId === 1;
+        }
+        if ($type !== 'group') {
+            return false;
+        }
+
+        return $this->isGroupAdminOrOwner($conversationId, $actorId);
+    }
+
+    private function isConversationMutedFor(int $conversationId, int $userId): bool
+    {
+        if (!$this->hasMuteTable()) {
+            return false;
+        }
+
+        return DB::table('chat_conversation_mutes')
+            ->where('conversation_id', $conversationId)
+            ->where('user_id', $userId)
+            ->where(function ($query) {
+                $query->whereNull('expires_at')->orWhere('expires_at', '>', now());
+            })
+            ->exists();
     }
 
     /**

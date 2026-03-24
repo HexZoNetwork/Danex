@@ -28,7 +28,7 @@
 
 <div class="row">
     <div class="col-md-12">
-        <div class="box box-info">
+        <div class="box box-default">
             <div class="box-header with-border">
                 <h3 class="box-title">{{ $fileName }}</h3>
             </div>
@@ -43,7 +43,7 @@
                     <input type="hidden" name="path" value="{{ base64_encode($filePath) }}" />
                     <div class="form-group">
                         <label>Editor</label>
-                        <textarea id="qeditor" name="content" class="form-control" rows="26" style="font-family: Menlo, Monaco, Consolas, monospace; background: #0f1720; color: #d7e2f2; border: 1px solid #2b415f;">{{ $fileContent }}</textarea>
+                        <textarea id="qeditor" name="content" class="form-control" rows="26" style="font-family: Menlo, Monaco, Consolas, monospace; background: #ffffff; color: #2b394f; border: 1px solid #d2d6de;">{{ $fileContent }}</textarea>
                     </div>
                     <button type="submit" class="btn btn-success">Save File</button>
                     <a href="{{ route('admin.protect.quarantine') }}" class="btn btn-default">Back</a>
