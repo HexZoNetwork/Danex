@@ -326,27 +326,42 @@ foreach (Pterodactyl\Models\Node::query()->pluck("fqdn")->toArray() as $fqdn) {
     done | sort -u | paste -sd, -
 }
 
-repair_node_volume_permissions() {
+repair_container_volume_permissions() {
     local volumes_root="/var/lib/pterodactyl/volumes"
     local vol=""
     local repaired=0
+    local container_uid="1000"
+    local container_gid="1000"
 
     [[ -d "${volumes_root}" ]] || return 0
 
-    echo "[setup] repairing writable paths for Node.js server volumes..."
+    if [[ -f /etc/pterodactyl/config.yml ]]; then
+        container_uid="$(awk -F': ' '/^[[:space:]]{6}container_uid:[[:space:]]*/{gsub(/[^0-9]/,"",$2); if($2!=""){print $2; exit}}' /etc/pterodactyl/config.yml 2>/dev/null || true)"
+        container_gid="$(awk -F': ' '/^[[:space:]]{6}container_gid:[[:space:]]*/{gsub(/[^0-9]/,"",$2); if($2!=""){print $2; exit}}' /etc/pterodactyl/config.yml 2>/dev/null || true)"
+    fi
+    [[ "${container_uid}" =~ ^[0-9]+$ ]] || container_uid="1000"
+    [[ "${container_gid}" =~ ^[0-9]+$ ]] || container_gid="1000"
+
+    echo "[setup] repairing permissions for all container volumes (uid:gid ${container_uid}:${container_gid})..."
     while IFS= read -r -d '' vol; do
         [[ -d "${vol}" ]] || continue
-        [[ -f "${vol}/package.json" ]] || continue
 
-        mkdir -p "${vol}/node_modules" "${vol}/.npm" "${vol}/tmp" "${vol}/tmp/logs"
+        mkdir -p "${vol}/tmp" "${vol}/tmp/logs"
         if command -v chattr >/dev/null 2>&1; then
-            chattr -R -i "${vol}/node_modules" "${vol}/.npm" "${vol}/tmp" >/dev/null 2>&1 || true
+            chattr -R -i "${vol}" >/dev/null 2>&1 || true
         fi
-        chmod -R a+rwX "${vol}/node_modules" "${vol}/.npm" "${vol}/tmp" >/dev/null 2>&1 || true
+
+        chown -R "${container_uid}:${container_gid}" "${vol}" >/dev/null 2>&1 || true
+        # Keep container root secure but always accessible for its owner.
+        find "${vol}" -type d -exec chmod u+rwx,go+rx {} \; >/dev/null 2>&1 || true
+        find "${vol}" -type f -exec chmod u+rw,go+r {} \; >/dev/null 2>&1 || true
+        # Preserve executable entrypoints commonly used by runtime.
+        [[ -d "${vol}/node_modules/.bin" ]] && chmod -R u+rwx,go+rx "${vol}/node_modules/.bin" >/dev/null 2>&1 || true
+
         repaired=$((repaired + 1))
     done < <(find "${volumes_root}" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 
-    echo "[setup] node volume permission repair complete (${repaired} volume(s))."
+    echo "[setup] container volume permission repair complete (${repaired} volume(s))."
 }
 
 collect_local_interface_ips_v4() {
@@ -1543,14 +1558,14 @@ for line in lines:
         in_docker = False
         in_docker_network = False
 
-    if in_api and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(host|port|ssl):', line):
+    if in_api and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(host|port|ssl|disable_remote_download):', line):
         in_ssl = False
     if in_user and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line):
         in_user = False
         in_rootless = False
     if in_rootless and re.match(r'^\s{4}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line):
         in_rootless = False
-    if in_docker and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(network):', line):
+    if in_docker and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(network|userns_mode):', line):
         in_docker_network = False
     if in_docker_network and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line):
         in_docker_network = False
@@ -1571,10 +1586,27 @@ for line in lines:
         out.append('  port: 18080')
         continue
 
+    if in_api and re.match(r'^\s{2}disable_remote_download:\s*', line):
+        out.append(f"  disable_remote_download: {'true' if disable_remote_download else 'false'}")
+        continue
+
     if in_ssl and re.match(r'^\s{4}enabled:\s*', line):
         out.append('    enabled: false')
         continue
 
+    if in_rootless and re.match(r'^\s{6}enabled:\s*', line):
+        out.append(f"      enabled: {'true' if rootless_enabled else 'false'}")
+        continue
+    if in_rootless and re.match(r'^\s{6}container_uid:\s*', line):
+        out.append(f"      container_uid: {rootless_uid}")
+        continue
+    if in_rootless and re.match(r'^\s{6}container_gid:\s*', line):
+        out.append(f"      container_gid: {rootless_gid}")
+        continue
+
+    if in_docker and re.match(r'^\s{2}userns_mode:\s*', line):
+        out.append(f'  userns_mode: "{userns_mode}"')
+        continue
     if in_docker_network and re.match(r'^\s{4}enable_icc:\s*', line):
         out.append(f"    enable_icc: {'true' if enable_icc else 'false'}")
         continue
@@ -1584,6 +1616,9 @@ for line in lines:
         continue
     if re.match(r'^allowed_mounts:\s*', line):
         out.append("allowed_mounts: []")
+        continue
+    if re.match(r'^\s{2}openat_mode:\s*', line):
+        out.append(f"  openat_mode: {openat_mode}")
         continue
     out.append(line)
 
@@ -2005,8 +2040,6 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
         fi
     fi
 fi
-
-repair_node_volume_permissions
 
 if command -v sudo >/dev/null 2>&1; then
     echo "[setup] configuring sudoers for panel protect controls..."
