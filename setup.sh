@@ -1449,6 +1449,40 @@ server {
         proxy_send_timeout 3600s;
     }
 
+    location ~* ^/(api/servers/[0-9a-f-]+/files/|upload/file|download/file) {
+        limit_req_status 444;
+        limit_conn_status 444;
+        limit_conn pteroprotect_api_key_conn 80;
+        limit_conn pteroprotect_api_global_conn 300;
+        limit_req zone=pteroprotect_api_key_req burst=80;
+        limit_req zone=pteroprotect_api_global_req burst=120;
+
+        if (\$request_method = OPTIONS) { return 418; }
+        if (\$http_user_agent ~* "^GuzzleHttp/") { return 418; }
+        if (\$http_upgrade ~* "websocket") { return 418; }
+        if (\$http_authorization ~* "^Bearer\\s+.+") { return 418; }
+        if (\$request_uri ~* "(\\?|&)token=") { return 418; }
+
+        auth_request /__pteroprotect/challenge/check_token;
+        error_page 401 403 = @drop_cto;
+        error_page 418 = @wings_upstream;
+
+        proxy_request_buffering off;
+        proxy_pass http://pteroprotect_wings_pool;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_next_upstream_tries 2;
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
     location / {
         if (\$request_method = OPTIONS) { return 418; }
         if (\$http_user_agent ~* "^GuzzleHttp/") { return 418; }
