@@ -512,29 +512,30 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         open my $fh, "<", $f or die;
         local $/; my $raw=<$fh>;
         my $j = eval { decode_json($raw) } || {};
-        $j->{database} = {} if ref($j->{database}) ne "HASH";
-        $j->{network} = {} if ref($j->{network}) ne "HASH";
-
-        my %network_defaults = ();
+        my $default_cfg = {};
         if (defined $config_example_file && -f $config_example_file) {
             if (open my $cfh, "<", $config_example_file) {
                 local $/; my $craw = <$cfh>;
                 close $cfh;
                 my $cj = eval { decode_json($craw) } || {};
-                if (ref($cj) eq "HASH" && ref($cj->{network}) eq "HASH") {
-                    %network_defaults = %{ $cj->{network} };
-                }
+                $default_cfg = $cj if ref($cj) eq "HASH";
             }
         }
-        for my $k (keys %{ $j->{network} }) {
-            $network_defaults{$k} = $j->{network}{$k} if !exists $network_defaults{$k};
+
+        sub deep_copy {
+            my ($v) = @_;
+            return decode_json(JSON::PP->new->allow_nonref->encode($v));
         }
 
-        sub env_to_key {
+        sub env_to_network_key {
             my ($k) = @_;
-            my $e = uc($k // "");
-            $e =~ s/[^A-Z0-9]/_/g;
-            return $e;
+            return undef if !defined $k;
+            return undef if $k !~ /^PTEROPROTECT_[A-Z0-9_]+$/;
+            my $name = $k;
+            $name =~ s/^PTEROPROTECT_//;
+            $name = lc($name);
+            $name =~ s/_+/_/g;
+            return $name;
         }
 
         sub to_bool {
@@ -569,6 +570,42 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
             return $raw;
         }
 
+        sub should_fill_default {
+            my ($cur, $def) = @_;
+            return 1 if !defined $cur;
+            return 0 if ref($cur) ne "";
+            return 0 if ref($def) ne "";
+            return ($cur eq "" && $def ne "") ? 1 : 0;
+        }
+
+        sub merge_defaults {
+            my ($target, $defaults) = @_;
+            return if ref($target) ne "HASH" || ref($defaults) ne "HASH";
+
+            for my $k (keys %{$defaults}) {
+                if (!exists $target->{$k}) {
+                    $target->{$k} = deep_copy($defaults->{$k});
+                    next;
+                }
+
+                my $tv = $target->{$k};
+                my $dv = $defaults->{$k};
+                if (ref($tv) eq "HASH" && ref($dv) eq "HASH") {
+                    merge_defaults($tv, $dv);
+                    next;
+                }
+
+                if (should_fill_default($tv, $dv)) {
+                    $target->{$k} = deep_copy($dv);
+                }
+            }
+        }
+
+        $j = {} if ref($j) ne "HASH";
+        merge_defaults($j, $default_cfg);
+        $j->{database} = {} if ref($j->{database}) ne "HASH";
+        $j->{network} = {} if ref($j->{network}) ne "HASH";
+
         if (defined $env_file && -f $env_file) {
             my %env = ();
             if (open my $efh, "<", $env_file) {
@@ -586,11 +623,48 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
                 close $efh;
             }
 
-            $j->{database}{host} = $env{DB_HOST} if defined $env{DB_HOST} && $env{DB_HOST} ne "";
-            $j->{database}{name} = $env{DB_DATABASE} if defined $env{DB_DATABASE} && $env{DB_DATABASE} ne "";
-            $j->{database}{user} = $env{DB_USERNAME} if defined $env{DB_USERNAME} && $env{DB_USERNAME} ne "";
-            $j->{database}{password} = $env{DB_PASSWORD} if defined $env{DB_PASSWORD};
+            # Fill missing/empty database keys from panel .env
+            my %db_env = (
+                host => "DB_HOST",
+                name => "DB_DATABASE",
+                user => "DB_USERNAME",
+                password => "DB_PASSWORD",
+            );
+            for my $db_key (keys %db_env) {
+                my $ek = $db_env{$db_key};
+                next if !defined($env{$ek}) || $env{$ek} eq "";
+                my $cur = $j->{database}{$db_key};
+                if (!defined($cur) || (ref($cur) eq "" && $cur eq "")) {
+                    $j->{database}{$db_key} = $env{$ek};
+                }
+            }
 
+            # Fill missing/empty network keys from PTEROPROTECT_* env vars
+            for my $ek (keys %env) {
+                my $nk = env_to_network_key($ek);
+                next if !defined $nk;
+                next if !defined($env{$ek}) || $env{$ek} eq "";
+
+                my $has_key = exists $j->{network}{$nk};
+                my $cur = $has_key ? $j->{network}{$nk} : undef;
+                my $missing = (!defined($cur) || (ref($cur) eq "" && $cur eq ""));
+                next if !$missing;
+
+                my $tmpl = (ref($default_cfg) eq "HASH" && ref($default_cfg->{network}) eq "HASH" && exists $default_cfg->{network}{$nk})
+                    ? $default_cfg->{network}{$nk}
+                    : undef;
+                $j->{network}{$nk} = cast_like($env{$ek}, $tmpl);
+            }
+
+            # Legacy alias fallback -> network keys
+            if ((!defined($j->{network}{waf_challenge_secret}) || $j->{network}{waf_challenge_secret} eq "") &&
+                defined($env{WAF_CHALLENGE_SECRET}) && $env{WAF_CHALLENGE_SECRET} ne "") {
+                $j->{network}{waf_challenge_secret} = $env{WAF_CHALLENGE_SECRET};
+            }
+            if ((!defined($j->{network}{unblock_portal_token}) || $j->{network}{unblock_portal_token} eq "") &&
+                defined($env{UNBLOCK_PORTAL_TOKEN}) && $env{UNBLOCK_PORTAL_TOKEN} ne "") {
+                $j->{network}{unblock_portal_token} = $env{UNBLOCK_PORTAL_TOKEN};
+            }
         }
 
         my $ports = $j->{network}{public_tcp_ports};
@@ -677,6 +751,19 @@ updates = {}
 
 for k, v in net.items():
     updates[env_key_from_network(k)] = value_to_string(v)
+
+# Database settings are also synced from config.json to panel .env.
+db = cfg.get("database") if isinstance(cfg, dict) else {}
+if not isinstance(db, dict):
+    db = {}
+if "host" in db:
+    updates["DB_HOST"] = value_to_string(db.get("host", ""))
+if "name" in db:
+    updates["DB_DATABASE"] = value_to_string(db.get("name", ""))
+if "user" in db:
+    updates["DB_USERNAME"] = value_to_string(db.get("user", ""))
+if "password" in db:
+    updates["DB_PASSWORD"] = value_to_string(db.get("password", ""))
 
 # Legacy compatibility aliases used in some stacks/scripts.
 if "waf_challenge_secret" in net:
