@@ -670,7 +670,7 @@ static bool behavior_pass(const json& behavior, const NonceRec& rec) {
 }
 
 static bool ua_declared_browser(const std::string& ua) {
-    if (ua.size() < 20 || ua.size() > 700) return false;
+    if (ua.size() < 8 || ua.size() > 1200) return false;
     const std::string low = to_lower(ua);
     static const std::vector<std::string> blocked = {
         "curl/", "wget/", "python-requests", "go-http-client", "okhttp", "libwww-perl",
@@ -679,12 +679,28 @@ static bool ua_declared_browser(const std::string& ua) {
     for (const auto& bad : blocked) {
         if (low.find(bad) != std::string::npos) return false;
     }
-    if (low.find("mozilla/5.0") == std::string::npos) return false;
+    if (low.find("mozilla/5.0") == std::string::npos &&
+        low.find("mozilla/") == std::string::npos &&
+        low.find("applewebkit/") == std::string::npos &&
+        low.find("gecko/") == std::string::npos) {
+        return false;
+    }
     static const std::vector<std::string> browsers = {
-        "chrome/", "edg/", "firefox/", "safari/", "opr/", "samsungbrowser/"
+        "chrome/", "crios/", "edg/", "edga/", "edgios/", "firefox/", "fxios/",
+        "safari/", "opr/", "opera/", "samsungbrowser/", "miuibrowser/", "huaweibrowser/",
+        "duckduckgo/", "brave/", "vivaldi/"
     };
     for (const auto& tok : browsers) {
         if (low.find(tok) != std::string::npos) return true;
+    }
+    // Allow common mobile webview style signatures after bot token filtering.
+    if (low.find("mobile") != std::string::npos &&
+        (low.find("version/") != std::string::npos || low.find("wv") != std::string::npos)) {
+        return true;
+    }
+    if (low.find("mozilla/") != std::string::npos &&
+        (low.find("applewebkit/") != std::string::npos || low.find("gecko/") != std::string::npos)) {
+        return true;
     }
     return false;
 }
@@ -1544,7 +1560,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "function randBtn(){if(!elHB||!elCW||!elHW)return;if(Date.now()<humanPauseUntil)return;const pad=14;const topMin=(elCW.clientWidth<640?76:90);const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=12){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
             "function fmtMs(ms){const t=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(t/60);const s=t%60;return String(m)+'m '+String(s).padStart(2,'0')+'s';}"
             "function updateWait(){const now=Date.now();if(now<hardPenaltyUntil){if(elHW)elHW.style.display='none';}else{if(elHW)elHW.style.display='';}const ms=unlockAt-now;if(ms<=0){elCT.textContent='OK';}else{elCT.textContent=fmtMs(ms);}if(uiLocked||hardOpened||enteredChallenge){showChal();elB.disabled=!powReady;elS.textContent=powReady?'Challenge ready. Tap Continue.':'Preparing browser proof...';if(ms<=0&&waitTimer&&powReady){clearInterval(waitTimer);waitTimer=null;}return;}if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elS.textContent='Connection check passed.';elB.disabled=false;if(elHW){elHW.style.display='';elHB.disabled=false;elHB.textContent='I am human, pass me';}return;}const label=fmtMs(ms);showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}"
-            "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;clickSamples=[];if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},1200);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new',{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error('challenge unavailable');"
+            "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;clickSamples=[];if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},1200);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new',{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error(String(j.error||'challenge unavailable'));"
             "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';powSalt=String(j.pow_salt||'');powBits=Math.max(8,Math.min(24,Number(j.pow_bits||18)));powCounter=-1;powHash='';powReady=false;clickVerified=!!(clickVerified||hardOpened||enteredChallenge||humanReady||uiLocked);setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;phase2Hint='';elPQ.textContent='Tahap 1: selesaikan math dulu.';elPHint.textContent='';drawPattern();elQ.textContent=j.question;restartsLeft=3;elRB.disabled=true;elRB.textContent='Restart ('+String(restartsLeft)+')';"
             "elS.textContent='Running browser PoW...';const pow=await solvePow(nonce,powSalt,powBits);powCounter=pow.counter;powHash=pow.hash;powReady=true;elRB.disabled=false;elS.textContent='PoW passed in '+String(pow.ms)+'ms.';"
             "const raw=Number(j.connection_delay_ms||0);const baseDelay=Math.min(21600000,Math.max(0,raw));const penaltyLeft=Math.max(0,hardPenaltyUntil-Date.now());const d=Math.max(baseDelay,penaltyLeft);const keepOpened=(uiLocked||hardOpened||clickVerified||enteredChallenge||humanReady||phase===2)&&penaltyLeft<=0;started=Date.now();unlockAt=Date.now()+d;if(keepOpened){lockChallengeUI();elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();}else{humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';if(penaltyLeft>0&&elHW)elHW.style.display='none';}updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,1000);}"
