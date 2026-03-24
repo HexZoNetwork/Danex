@@ -60,6 +60,8 @@ struct NonceRec {
     bool click_verified = false;
     bool math_verified = false;
     int math_fail_count = 0;
+    std::time_t click_bucket_sec = 0;
+    int click_bucket_count = 0;
     int pow_bits = 18;
     int min_connection_ms = 5000;
     std::time_t exp = 0;
@@ -1389,6 +1391,7 @@ static void handle_client(int fd, std::string remote_ip) {
             return;
         }
         bool ok = false;
+        bool rate_limited = false;
         {
             std::lock_guard<std::mutex> lock(g_nonce_mu);
             auto it = g_nonce_map.find(nonce);
@@ -1398,9 +1401,25 @@ static void handle_client(int fd, std::string remote_ip) {
                 it->second.ua == ua_fp &&
                 !it->second.click_key.empty() &&
                 click_value == it->second.click_key) {
-                it->second.click_verified = true;
-                ok = true;
+                const std::time_t now_sec = std::time(nullptr);
+                if (it->second.click_bucket_sec != now_sec) {
+                    it->second.click_bucket_sec = now_sec;
+                    it->second.click_bucket_count = 0;
+                }
+                it->second.click_bucket_count++;
+                if (it->second.click_bucket_count > 30) {
+                    rate_limited = true;
+                    g_nonce_map.erase(it);
+                } else {
+                    it->second.click_verified = true;
+                    ok = true;
+                }
             }
+        }
+        if (rate_limited) {
+            send_response(fd, 429, "Too Many Requests", "{\"ok\":false,\"error\":\"click_rate_limited\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            close(fd);
+            return;
         }
         if (!ok) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"click_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
@@ -1450,6 +1469,24 @@ static void handle_client(int fd, std::string remote_ip) {
             "button:hover{filter:brightness(1.07)}button:disabled{opacity:.66;cursor:not-allowed}"
             ".hint{margin-top:10px;color:var(--muted);font-size:12px}.status{margin-top:10px;color:#9fd2ff;min-height:18px;font-size:13px}.err{margin-top:6px;color:var(--err);min-height:18px;font-size:13px}"
             "@media (max-width:640px){.connbox{min-height:52vh}.row{flex-direction:column}button{width:100%}#human_btn{width:142px;min-height:30px;font-size:10px;padding:6px 8px}}"
+            ":root{--bg:#1f2933;--bg2:#263445;--card:#2f3b4d;--line:#42536b;--text:#e5edf7;--muted:#9fb0c7;--acc:#3b82f6;--err:#fca5a5}"
+            "body{background:linear-gradient(180deg,var(--bg),var(--bg2));font-family:'Segoe UI',Tahoma,sans-serif;padding:14px}"
+            ".card{width:min(760px,98vw);background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.22)}"
+            ".head{padding:12px 14px;border-bottom:1px solid var(--line)}.title{font-size:15px}.sub{font-size:12px}.dot{background:var(--acc);box-shadow:none}"
+            ".body{padding:14px}.tabs{margin:0 0 10px;gap:8px}.tab{padding:8px 10px;border-radius:7px;border-color:var(--line);background:#2d3a4d;color:var(--muted)}"
+            ".tab.on{background:#253347;border-color:#4d617d;color:var(--text)}"
+            ".big{background:transparent;border:0;padding:0}.connbox{min-height:260px;max-height:none;padding:10px 0 0 0;position:relative;display:block;overflow:hidden}"
+            ".human-wrap{position:absolute;left:14px;top:90px;display:block;margin:0;z-index:2}"
+            ".phase-ind{border-radius:999px;padding:4px 10px;border-color:#516581;background:#31435a;color:#dce8f7;letter-spacing:.3px}"
+            ".phase-ind.p1,.phase-ind.p2{border-color:#516581;background:#31435a;color:#dce8f7;box-shadow:none}"
+            ".q{font-size:14px;color:var(--muted);margin:0 0 8px}.qa{margin:0 0 10px;padding:12px;border-radius:7px;border:1px solid var(--line);background:#2a3648;color:var(--text)}"
+            ".pat{margin:0 0 10px;padding:10px;border-radius:7px;border:1px solid var(--line);background:#2a3648}"
+            ".row{gap:8px}.row input{min-width:0}input,button{height:40px;padding:9px 12px;border-radius:7px;border:1px solid var(--line);background:#2a3648;color:var(--text)}"
+            "input:focus{border-color:#5d8fd1;box-shadow:0 0 0 1px rgba(93,143,209,.35)}"
+            "button{background:var(--acc);border-color:var(--acc);min-width:110px}button.secondary{background:#2a3648;border-color:var(--line);color:#cfe0f5}"
+            "#human_btn{width:auto;min-width:190px;min-height:38px;padding:0 14px;letter-spacing:.1px;box-shadow:none}"
+            "button:hover{filter:brightness(1.03)}.hint{font-size:13px;color:var(--muted)}.status{color:#9fc5ff}.err{color:var(--err)}.timer{text-shadow:none;font-size:24px}"
+            "@media (max-width:640px){.card{width:100%}.body{padding:12px}.tab{padding:7px 8px}.q{font-size:13px}.row{flex-direction:column}button{width:100%}.connbox{min-height:200px;padding-top:8px}.human-wrap{top:76px}#human_btn{width:auto!important;min-width:138px;min-height:32px;font-size:11px;padding:0 10px}}"
             "</style></head><body><div class=\"card\">"
             "<div class=\"head\"><span class=\"dot\"></span><span class=\"title\">PteroProtect Verification</span><span class=\"sub\">30m clearance</span></div>"
             "<div class=\"body\"><div class=\"tabs\"><div class=\"tab on\" id=\"tab_conn\">Connection</div><div class=\"tab\" id=\"tab_chal\">Challenge</div></div>"
@@ -1485,24 +1522,24 @@ static void handle_client(int fd, std::string remote_ip) {
             "function lockChallengeUI(){uiLocked=true;hardOpened=true;enteredChallenge=true;humanReady=true;showChal();}"
             "function setPhaseMath(){phase=1;elQ.style.display='';elInputWrap.style.display='';elPat.style.display='none';elA.value='';if(elPI){elPI.textContent='PHASE 1';elPI.className='phase-ind p1';}}"
             "function setPhasePattern(){phase=2;lockChallengeUI();elQ.style.display='';elQ.textContent='Ikuti urutan titik sesuai petunjuk, lalu tekan Continue.';elInputWrap.style.display='none';elPat.style.display='block';if(elPI){elPI.textContent='PHASE 2';elPI.className='phase-ind p2';}}"
-            "function randBtn(){if(!elHB||!elCW||!elHW)return;if(Date.now()<humanPauseUntil)return;const pad=14;const topMin=14;const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=12){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
+            "function randBtn(){if(!elHB||!elCW||!elHW)return;if(Date.now()<humanPauseUntil)return;const pad=14;const topMin=(elCW.clientWidth<640?76:90);const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=12){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
             "function fmtMs(ms){const t=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(t/60);const s=t%60;return String(m)+'m '+String(s).padStart(2,'0')+'s';}"
-            "function updateWait(){const ms=unlockAt-Date.now();if(ms<=0){elCT.textContent='OK';}else{elCT.textContent=fmtMs(ms);}if(uiLocked||hardOpened||enteredChallenge){showChal();elB.disabled=false;elS.textContent='Challenge opened. No cooldown for submit.';if(ms<=0&&waitTimer){clearInterval(waitTimer);waitTimer=null;}return;}if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elS.textContent='Connection check passed.';elB.disabled=false;return;}const label=fmtMs(ms);showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}"
-            "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},1100);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new',{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error('challenge unavailable');"
+            "function updateWait(){const ms=unlockAt-Date.now();if(ms<=0){elCT.textContent='OK';}else{elCT.textContent=fmtMs(ms);}if(uiLocked||hardOpened||enteredChallenge){showChal();elB.disabled=!powReady;elS.textContent=powReady?'Challenge ready. Tap Continue.':'Preparing browser proof...';if(ms<=0&&waitTimer&&powReady){clearInterval(waitTimer);waitTimer=null;}return;}if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elS.textContent='Connection check passed.';elB.disabled=false;return;}const label=fmtMs(ms);showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}"
+            "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},1200);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new',{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error('challenge unavailable');"
             "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';powSalt=String(j.pow_salt||'');powBits=Math.max(8,Math.min(24,Number(j.pow_bits||18)));powCounter=-1;powHash='';powReady=false;clickVerified=false;setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;phase2Hint='';elPQ.textContent='Tahap 1: selesaikan math dulu.';elPHint.textContent='';drawPattern();elQ.textContent=j.question;restartsLeft=3;elRB.disabled=true;elRB.textContent='Restart ('+String(restartsLeft)+')';"
             "elS.textContent='Running browser PoW...';const pow=await solvePow(nonce,powSalt,powBits);powCounter=pow.counter;powHash=pow.hash;powReady=true;elRB.disabled=false;elS.textContent='PoW passed in '+String(pow.ms)+'ms.';"
-            "const raw=Number(j.connection_delay_ms||0);const d=Math.min(21600000,Math.max(0,raw));const keepOpened=(uiLocked||hardOpened||clickVerified||enteredChallenge||humanReady||phase===2);started=Date.now();unlockAt=Date.now()+d;if(keepOpened){lockChallengeUI();elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();}else{humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';}updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,250);}"
-            "elHB.onclick=async()=>{try{if(!nonce||!hk){throw new Error('challenge unavailable');}const c={nonce:nonce,click:hk};const cr=await fetch('/__pteroprotect/challenge/click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});const cj=await cr.json();if(!cj.ok){throw new Error(cj.error||'click_invalid');}lockChallengeUI();clickVerified=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();updateWait();}catch(err){elE.textContent=String(err.message||err);}};"
+            "const raw=Number(j.connection_delay_ms||0);const d=Math.min(21600000,Math.max(0,raw));const keepOpened=(uiLocked||hardOpened||clickVerified||enteredChallenge||humanReady||phase===2);started=Date.now();unlockAt=Date.now()+d;if(keepOpened){lockChallengeUI();elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();}else{humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';}updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,1000);}"
+            "elHB.onclick=async()=>{try{if(!nonce||!hk){throw new Error('challenge unavailable');}const c={nonce:nonce,click:hk};const cr=await fetch('/__pteroprotect/challenge/click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});const cj=await cr.json();if(!cj.ok){throw new Error(cj.error||'click_invalid');}lockChallengeUI();clickVerified=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();if(powReady){elA.focus();}updateWait();}catch(err){elE.textContent=String(err.message||err);}};"
             "const pauseHumanBtn=(ms)=>{humanPauseUntil=Math.max(humanPauseUntil,Date.now()+ms);};elHB.addEventListener('pointerenter',()=>pauseHumanBtn(1400));elHB.addEventListener('pointerdown',()=>pauseHumanBtn(2200));elHB.addEventListener('touchstart',()=>pauseHumanBtn(2200),{passive:true});elHB.addEventListener('focus',()=>pauseHumanBtn(1800));window.addEventListener('resize',()=>{if(!humanReady)randBtn();});"
             "elA.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();elB.click();}});"
             "elRB.onclick=async()=>{if(restartsLeft<=0){elRB.disabled=true;return;}restartsLeft-=1;elRB.textContent='Restart ('+String(restartsLeft)+')';if(restartsLeft<=0)elRB.disabled=true;elE.textContent='';if(phase===1){elS.textContent='Math di-reset.';elA.value='';elA.focus();elB.disabled=!powReady;return;}if(phase===2){elS.textContent='Pattern di-reset.';clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;drawPattern();elB.disabled=!powReady;return;}elS.textContent='Challenge di-reset.';elB.disabled=!powReady;};"
-            "elB.onclick=async()=>{try{if(Date.now()<unlockAt&&!enteredChallenge){updateWait();return;}if(!powReady){elS.textContent='PoW masih diproses...';elB.disabled=false;return;}if(!clickVerified){throw new Error('click_required');}elE.textContent='';elB.disabled=true;"
+            "elB.onclick=async()=>{try{if(Date.now()<unlockAt&&!enteredChallenge){updateWait();return;}if(!powReady){elS.textContent='Preparing browser proof...';elB.disabled=true;return;}if(!clickVerified){throw new Error('click_required');}elE.textContent='';elB.disabled=true;"
             "if(phase===1){const m={nonce:nonce};m[ak]=normAns(elA.value||'');const mr=await fetch('/__pteroprotect/challenge/verify-math',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)});const mj=await mr.json();if(!mj.ok)throw new Error(mj.error||'math_failed');setPhasePattern();pseq=Array.isArray(mj.pattern_points)?mj.pattern_points:[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 2: klik angka sesuai urutan.';phase2Hint=sanitizeHint(String(mj.pattern_hint||''));elPHint.textContent=phase2Hint;drawPattern();elB.disabled=false;return;}"
             "const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=normAns(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
             "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');location.href=j.redirect||'" + rd + "';}"
             "catch(err){const msg=String(err.message||err);elS.textContent='';elE.textContent=msg;if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
-            "async function cleanupOldChallengeCaches(){try{if(window.caches&&caches.keys){const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}if('serviceWorker' in navigator&&navigator.serviceWorker.getRegistrations){const regs=await navigator.serviceWorker.getRegistrations();await Promise.all(regs.filter(r=>String(r.scope||'').includes('/__pteroprotect/challenge/')).map(r=>r.unregister()));}}catch(_e){}}"
-            "cleanupOldChallengeCaches().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));});</script></body></html>";
+            "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/__pteroprotect/challenge/'});}catch(_e){}}"
+            "registerChallengeSW().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));});</script></body></html>";
         send_response(fd, 200, "OK", html, {{"Content-Type", "text/html; charset=utf-8"}}, head_only);
         close(fd);
         return;
@@ -1510,16 +1547,19 @@ static void handle_client(int fd, std::string remote_ip) {
 
     if (req.path == "/sw.js" && (req.method == "GET" || req.method == "HEAD")) {
         std::string js =
-            "const CACHE='pp-challenge-v12';"
-            "const PRECACHE=[];"
-            "self.addEventListener('install',e=>{e.waitUntil(self.skipWaiting());});"
+            "const CACHE='pp-challenge-v14';"
+            "const PAGE='/__pteroprotect/challenge/page';"
+            "self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll([PAGE,'/__pteroprotect/challenge/sw.js'])).catch(()=>{}).then(()=>self.skipWaiting()));});"
             "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});"
             "self.addEventListener('fetch',e=>{"
+            "if(e.request.method!=='GET')return;"
             "const u=new URL(e.request.url);"
             "if(u.pathname.startsWith('/__pteroprotect/challenge/new')||u.pathname.startsWith('/__pteroprotect/challenge/click')||u.pathname.startsWith('/__pteroprotect/challenge/verify-math')||u.pathname.startsWith('/__pteroprotect/challenge/solve')||u.pathname.startsWith('/__pteroprotect/challenge/check')){"
-            "e.respondWith(fetch(e.request));return;}"
+            "e.respondWith(fetch(e.request,{cache:'no-store'}));return;}"
+            "if(u.pathname===PAGE||u.pathname==='/__pteroprotect/challenge'||e.request.mode==='navigate'){"
+            "e.respondWith(fetch(e.request).then(r=>{const rc=r.clone();caches.open(CACHE).then(c=>c.put(PAGE,rc)).catch(()=>{});return r;}).catch(()=>caches.match(PAGE).then(r=>r||new Response('Offline. Retry when internet is back.',{status:503,headers:{'Content-Type':'text/plain; charset=utf-8'}}))));return;}"
             "if(u.pathname.startsWith('/__pteroprotect/challenge/')){"
-            "e.respondWith(fetch(e.request,{cache:'no-store'}).catch(()=>new Response('',{status:503,statusText:'Service Unavailable'})));"
+            "e.respondWith(caches.match(e.request).then(hit=>hit||fetch(e.request).then(r=>{const rc=r.clone();caches.open(CACHE).then(c=>c.put(e.request,rc)).catch(()=>{});return r;})).catch(()=>new Response('',{status:503,statusText:'Service Unavailable'})));"
             "}"
             "});";
         std::vector<std::pair<std::string, std::string>> headers = {
