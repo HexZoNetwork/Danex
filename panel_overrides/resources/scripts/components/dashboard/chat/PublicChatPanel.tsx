@@ -51,10 +51,10 @@ const Small = tw.button`text-xs text-neutral-300 hover:text-neutral-100`;
 const Tiny = tw.button`text-[11px] text-neutral-300 hover:text-neutral-100 px-2 py-1 rounded border border-neutral-600 hover:border-neutral-400`;
 
 const Main = tw.div`flex-1 flex flex-col min-w-0 min-h-0 bg-neutral-900`;
-const MainHeader = tw.div`px-4 py-3 border-b border-neutral-700 flex items-center justify-between`;
+const MainHeader = tw.div`px-3 py-2 lg:px-4 lg:py-3 border-b border-neutral-700 flex items-center justify-between`;
 const HeaderTitle = tw.h3`text-base font-semibold text-neutral-100 truncate`;
 const HeaderMeta = tw.div`text-xs text-neutral-400`;
-const Body = tw.div`flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2`;
+const Body = tw.div`flex-1 min-h-0 overflow-y-auto px-2 py-2 lg:px-4 lg:py-3 space-y-2`;
 const Composer = tw.form`flex-shrink-0 p-3 border-t border-neutral-700 bg-neutral-800 space-y-2`;
 
 const BubbleWrap = tw.div`flex`;
@@ -346,6 +346,8 @@ export default () => {
     const analyserRef = useRef<AnalyserNode | null>(null);
     const analyserTimerRef = useRef<number | null>(null);
     const micSyncLastRef = useRef<{ muted: boolean; level: number; at: number }>({ muted: false, level: -1, at: 0 });
+    const activeConversationRef = useRef<number | null>(null);
+    const loadMessagesSeqRef = useRef<number>(0);
 
     const activeConversation = useMemo(
         () => conversations.find((item) => item.id === activeConversationId) || null,
@@ -412,9 +414,11 @@ export default () => {
     };
 
     const loadMessages = async (conversationId: number) => {
+        const seq = ++loadMessagesSeqRef.current;
         setLoading(true);
         try {
             const list = await getPublicMessages({ conversationId, limit: 80 });
+            if (activeConversationRef.current !== conversationId || loadMessagesSeqRef.current !== seq) return;
             setMessages(list);
             if (list.length) {
                 await markPublicMessagesRead(conversationId, list.map((m) => m.id));
@@ -422,23 +426,27 @@ export default () => {
             clearFlashes('dashboard');
             requestAnimationFrame(scrollToBottom);
         } finally {
-            setLoading(false);
+            if (loadMessagesSeqRef.current === seq) {
+                setLoading(false);
+            }
         }
     };
 
     const pollIncoming = async () => {
-        if (!activeConversationId || !lastId) return;
+        const conversationId = activeConversationRef.current;
+        if (!conversationId || !lastId) return;
 
         try {
-            const incoming = await getPublicMessages({ conversationId: activeConversationId, sinceId: lastId, limit: 100 });
+            const incoming = await getPublicMessages({ conversationId, sinceId: lastId, limit: 100 });
             if (!incoming.length) return;
+            if (activeConversationRef.current !== conversationId) return;
 
             setMessages((current) => {
                 const known = new Set(current.map((m) => m.id));
 
                 return [...current, ...incoming.filter((m) => !known.has(m.id))];
             });
-            await markPublicMessagesRead(activeConversationId, incoming.map((m) => m.id));
+            await markPublicMessagesRead(conversationId, incoming.map((m) => m.id));
             requestAnimationFrame(scrollToBottom);
         } catch {
             // silent poll failure
@@ -474,6 +482,10 @@ export default () => {
     }, []);
 
     useEffect(() => {
+        activeConversationRef.current = activeConversationId;
+    }, [activeConversationId]);
+
+    useEffect(() => {
         if (!activeConversationId) {
             setMessages([]);
             setLoading(false);
@@ -481,6 +493,7 @@ export default () => {
             return;
         }
 
+        setMessages([]);
         loadMessages(activeConversationId).catch((error) => {
             clearAndAddHttpError({ key: 'dashboard', error });
             setLoading(false);
@@ -1637,7 +1650,7 @@ export default () => {
                             </HeaderMeta>
                         </div>
                     </div>
-                    <div css={tw`flex items-center gap-2`}>
+                    <div css={tw`flex items-center gap-1.5 lg:gap-2`}>
                         {activeConversation && (
                             <Tiny type={'button'} onClick={handleHeaderCall} disabled={callLoading}>
                                 Call
@@ -1646,7 +1659,7 @@ export default () => {
                         <Tiny type={'button'} css={tw`lg:hidden`} onClick={() => setMobilePane('chats')}>
                             Back
                         </Tiny>
-                        <div css={tw`text-xs text-neutral-400`}>{messages.length} msgs</div>
+                        <div css={tw`hidden lg:block text-xs text-neutral-400`}>{messages.length} msgs</div>
                     </div>
                 </MainHeader>
 
@@ -1776,7 +1789,7 @@ export default () => {
                             setPendingUploadFile(file);
                         }
                     }}
-                    css={dragging ? tw`ring-2 ring-cyan-400` : undefined}
+                    css={dragging ? tw`ring-2 ring-neutral-500` : undefined}
                 >
                     {loading ? (
                         <p css={tw`text-sm text-neutral-400 text-center py-6`}>Loading...</p>
@@ -1802,8 +1815,8 @@ export default () => {
                                             item.isOwn
                                                 ? tw`bg-neutral-700 border border-neutral-600 text-neutral-100`
                                                 : tw`bg-neutral-800 border border-neutral-700 text-neutral-100`,
-                                            mentionsMe ? tw`ring-1 ring-yellow-300` : undefined,
-                                            highlightedMessageId === item.id ? tw`ring-2 ring-cyan-300` : undefined,
+                                            mentionsMe ? tw`ring-1 ring-neutral-400` : undefined,
+                                            highlightedMessageId === item.id ? tw`ring-2 ring-neutral-500` : undefined,
                                         ]}
                                     >
                                         {isPollImage && (
@@ -1873,7 +1886,7 @@ export default () => {
                                                         <img
                                                             src={item.mediaUrl}
                                                             alt={item.mediaName || 'chat image'}
-                                                            css={tw`rounded-md max-h-72 object-cover cursor-pointer`}
+                                                            css={tw`rounded-md max-h-56 lg:max-h-72 max-w-[64vw] lg:max-w-full object-contain cursor-pointer`}
                                                         />
                                                     </button>
                                                 )}
@@ -2085,8 +2098,8 @@ export default () => {
                         }}
                     />
 
-                    <div css={tw`flex items-center justify-between gap-2 flex-wrap`}>
-                        <div css={tw`flex items-center gap-2`}>
+                    <div css={tw`flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2`}>
+                        <div css={tw`flex items-center gap-2 flex-wrap`}>
                             <label css={tw`text-xs text-neutral-300 cursor-pointer`}>
                                 {uploading ? 'Uploading...' : 'Attach media'}
                                 <input
@@ -2122,7 +2135,7 @@ export default () => {
                                 {pollOpen ? 'Hide poll' : 'Create poll'}
                             </Small>
                         </div>
-                        <Button type={'submit'} disabled={sending || (!message.trim() && !mediaUrl.trim())}>
+                        <Button type={'submit'} css={tw`w-full lg:w-auto`} disabled={sending || (!message.trim() && !mediaUrl.trim())}>
                             Send
                         </Button>
                     </div>
