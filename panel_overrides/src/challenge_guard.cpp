@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -16,6 +17,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <csignal>
 #include <cstring>
 #include <fstream>
@@ -40,7 +42,8 @@ struct Settings {
     int ttl = 1800;
     int pow_bits = 18;
     std::string cookie_name = "pp_clearance";
-    std::string secret = "dannhexzoprotect";
+    std::string secret;
+    std::vector<std::string> trusted_hosts;
 };
 
 struct NonceRec {
@@ -77,6 +80,8 @@ static std::mutex g_cfg_mu;
 static Settings g_cached_cfg;
 static std::time_t g_cached_cfg_at = 0;
 static std::string g_cfg_path = "/pteroprotect/config.json";
+static std::string g_ephemeral_secret;
+static std::string random_nonce();
 
 static inline std::string trim(const std::string& in) {
     std::size_t b = 0;
@@ -272,6 +277,39 @@ static int json_get_int(const json& root, const std::string& key, int fallback) 
     return fallback;
 }
 
+static bool host_or_cidr_matches_ip(const std::string& host_or_ip, const std::string& ip) {
+    std::string h = trim(host_or_ip);
+    std::string c = trim(ip);
+    if (h.empty() || c.empty()) return false;
+    if (h == c) return true;
+
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* res = nullptr;
+    if (getaddrinfo(h.c_str(), nullptr, &hints, &res) != 0) return false;
+
+    bool matched = false;
+    char buf[INET6_ADDRSTRLEN] = {0};
+    for (addrinfo* p = res; p != nullptr; p = p->ai_next) {
+        if (p->ai_family == AF_INET) {
+            auto* a4 = reinterpret_cast<sockaddr_in*>(p->ai_addr);
+            if (inet_ntop(AF_INET, &a4->sin_addr, buf, sizeof(buf)) != nullptr && c == std::string(buf)) {
+                matched = true;
+                break;
+            }
+        } else if (p->ai_family == AF_INET6) {
+            auto* a6 = reinterpret_cast<sockaddr_in6*>(p->ai_addr);
+            if (inet_ntop(AF_INET6, &a6->sin6_addr, buf, sizeof(buf)) != nullptr && c == std::string(buf)) {
+                matched = true;
+                break;
+            }
+        }
+    }
+    freeaddrinfo(res);
+    return matched;
+}
+
 static Settings load_settings() {
     std::lock_guard<std::mutex> lock(g_cfg_mu);
     std::time_t now = std::time(nullptr);
@@ -296,12 +334,39 @@ static Settings load_settings() {
             if (s.cookie_name.empty()) s.cookie_name = "pp_clearance";
             s.secret = trim(json_get_string(net, "waf_challenge_secret", ""));
             if (s.secret.empty()) {
-                s.secret = trim(json_get_string(net, "unblock_portal_token", "dannhexzoprotect"));
+                s.secret = trim(json_get_string(net, "unblock_portal_token", ""));
             }
-            if (s.secret.empty()) s.secret = "dannhexzoprotect";
+            if (net.contains("trusted_hosts")) {
+                if (net["trusted_hosts"].is_array()) {
+                    for (const auto& item : net["trusted_hosts"]) {
+                        if (!item.is_string()) continue;
+                        std::string host = trim(item.get<std::string>());
+                        if (!host.empty()) s.trusted_hosts.push_back(host);
+                    }
+                } else if (net["trusted_hosts"].is_string()) {
+                    std::stringstream ss(net["trusted_hosts"].get<std::string>());
+                    std::string part;
+                    while (std::getline(ss, part, ',')) {
+                        part = trim(part);
+                        if (!part.empty()) s.trusted_hosts.push_back(part);
+                    }
+                }
+            }
         } catch (...) {
             // keep defaults
         }
+    }
+    if (s.secret.empty()) {
+        const char* env_secret = std::getenv("PTEROPROTECT_WAF_CHALLENGE_SECRET");
+        if (env_secret && *env_secret) s.secret = trim(env_secret);
+    }
+    if (s.secret.empty()) {
+        const char* env_token = std::getenv("PTEROPROTECT_UNBLOCK_PORTAL_TOKEN");
+        if (env_token && *env_token) s.secret = trim(env_token);
+    }
+    if (s.secret.empty()) {
+        if (g_ephemeral_secret.empty()) g_ephemeral_secret = random_nonce();
+        s.secret = g_ephemeral_secret;
     }
     g_cached_cfg = s;
     g_cached_cfg_at = now;
@@ -933,6 +998,14 @@ static bool is_loopback_ip(const std::string& ip) {
     return t == "127.0.0.1" || t == "::1" || t == "::ffff:127.0.0.1";
 }
 
+static bool is_trusted_client_ip(const Settings& s, const std::string& ip) {
+    if (is_loopback_ip(ip)) return true;
+    for (const auto& host : s.trusted_hosts) {
+        if (host_or_cidr_matches_ip(host, ip)) return true;
+    }
+    return false;
+}
+
 static std::string session_scope_key(const std::string& ip, const std::string& ua_fp) {
     return ip + "|" + ua_fp;
 }
@@ -1149,12 +1222,9 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        std::map<std::string, std::string> q = parse_query(req.query);
-        std::string wing_q_token = q.count("token") ? trim(q["token"]) : "";
-        const bool query_token_ok = ptero_api_token_format_ok(wing_q_token) || daemon_bearer_token_format_ok(wing_q_token);
-        const bool internal_loopback_bypass = is_loopback_ip(ip) && has_valid_auth_token_header(req, ip);
-        const bool token_ok = has_valid_auth_token_header(req, ip) || query_token_ok;
-        if (internal_loopback_bypass || token_ok) {
+        const bool trusted_client = is_trusted_client_ip(s, ip);
+        const bool token_ok = trusted_client && has_valid_auth_token_header(req, ip);
+        if (token_ok) {
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
             send_response(fd, 401, "Unauthorized", "", {}, head_only);

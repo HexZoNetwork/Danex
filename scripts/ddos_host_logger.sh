@@ -121,6 +121,14 @@ safe_cmd() {
     bash -lc "$1" 2>/dev/null || true
 }
 
+sanitize_shell_single_quoted() {
+    local value="$1"
+    value="${value//$'\r'/}"
+    value="${value//$'\n'/}"
+    value="${value//\'/}"
+    printf '%s' "${value}"
+}
+
 read_panel_env() {
     local key="$1"
     local value
@@ -1869,6 +1877,7 @@ while true; do
     DYNAMIC_BLOCK_DRY_RUN="$(normalize_bool "$(read_network_setting dynamic_block_dry_run 0)")"
     SELF_UNBLOCK_ESSENTIALS="$(normalize_bool "$(read_network_setting self_unblock_essentials 1)")"
     HTTP_IGNORE_PATH_REGEX="$(read_network_setting host_http_ignore_path_regex '^/api/client/servers/.+/websocket$|^/api/remote/')"
+    HTTP_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${HTTP_IGNORE_PATH_REGEX}")"
     SELF_DDOS_QUARANTINE_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_quarantine_enabled 0)")"
     SELF_DDOS_SERVER_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting self_ddos_server_req_threshold 300)" 20)"
     SELF_DDOS_RATE_LIMIT_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_rate_limit_enabled 1)")"
@@ -1881,6 +1890,7 @@ while true; do
     SCANNER_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting scanner_block_enabled 1)")"
     PROBE_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting probe_req_threshold 16)" 2)"
     PROBE_PATH_REGEX="$(read_network_setting probe_path_regex '^/(wp-admin|wp-login\\.php|xmlrpc\\.php|boaform|cgi-bin|vendor/phpunit|\\.env|actuator|jmx-console|manager/html|login\\.do|console|solr/|owncloud/status\\.php|status\\.php|WebInterface|aspera/faspex|Telerik\\.Web\\.UI\\.WebResource\\.axd|sitecore|jasperserver|OA_HTML|identity|admin/|xampp|\\.git|server-status)')"
+    PROBE_PATH_REGEX="$(sanitize_shell_single_quoted "${PROBE_PATH_REGEX}")"
     SQLI_PROBE_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting sqli_probe_block_enabled 1)")"
     SQLI_PROBE_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting sqli_probe_req_threshold 4)" 2)"
     LIMITER_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting limiter_block_enabled 1)")"
@@ -1891,6 +1901,8 @@ while true; do
     BAD_TOKEN_LOG_TAIL_LINES="$(clamp_min_int "$(read_network_setting bad_token_log_tail_lines 2000)" 100)"
     BAD_TOKEN_PATH_REGEX="$(read_network_setting bad_token_path_regex '^/api/application/|^/api/client/|^/auth/login$')"
     BAD_TOKEN_STATUS_REGEX="$(read_network_setting bad_token_status_regex '^(401|403|419)$')"
+    BAD_TOKEN_PATH_REGEX="$(sanitize_shell_single_quoted "${BAD_TOKEN_PATH_REGEX}")"
+    BAD_TOKEN_STATUS_REGEX="$(sanitize_shell_single_quoted "${BAD_TOKEN_STATUS_REGEX}")"
     EMERGENCY_INPUT_GUARD_ENABLED="$(normalize_bool "$(read_network_setting emergency_input_guard_enabled 1)")"
     EMERGENCY_INPUT_CONN_LIMIT_PER_IP="$(clamp_min_int "$(read_network_setting emergency_input_conn_limit_per_ip 120)" 20)"
     EMERGENCY_INPUT_NEW_PER_IP_PER_SEC="$(clamp_min_int "$(read_network_setting emergency_input_new_per_ip_per_sec 80)" 5)"
@@ -1935,6 +1947,7 @@ while true; do
     EMERGENCY_NGINX_PROFILE_ENABLED="$(normalize_bool "$(read_network_setting emergency_nginx_profile_enabled 1)")"
     EMERGENCY_NGINX_RELOAD_MIN_INTERVAL_SEC="$(clamp_min_int "$(read_network_setting emergency_nginx_reload_min_interval_sec 60)" 10)"
     SERVICE_ACTIVITY_PATH_REGEX="$(read_network_setting service_activity_path_regex '^/api/remote/|^/api/client/servers/.+/websocket$')"
+    SERVICE_ACTIVITY_PATH_REGEX="$(sanitize_shell_single_quoted "${SERVICE_ACTIVITY_PATH_REGEX}")"
     SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD="$(clamp_min_int "$(read_network_setting service_activity_aggressive_threshold 120)" 10)"
     SERVICE_ACTIVITY_EMERGENCY_THRESHOLD="$(clamp_min_int "$(read_network_setting service_activity_emergency_threshold 240)" 20)"
     SERVICE_ACTIVITY_DELTA_AGGRESSIVE="$(clamp_min_int "$(read_network_setting service_activity_delta_aggressive 60)" 5)"

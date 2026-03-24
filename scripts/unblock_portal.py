@@ -9,7 +9,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 GUARD_HOME = os.environ.get("DANN_GUARD_HOME", "/pteroprotect")
@@ -457,15 +457,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _query_token(self):
         parsed = urlparse(self.path)
-        qp = {}
         try:
-            for kv in parsed.query.split("&"):
-                if "=" in kv:
-                    k, v = kv.split("=", 1)
-                    qp[k] = v
+            qp = parse_qs(parsed.query, keep_blank_values=True)
+            values = qp.get("token", [])
+            if values:
+                return str(values[0])
         except Exception:
-            qp = {}
-        return qp.get("token", "")
+            pass
+        return ""
 
     def _silent_drop(self, delay_sec=35):
         try:

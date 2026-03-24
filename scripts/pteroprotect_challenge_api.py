@@ -18,6 +18,7 @@ CONFIG_PATH = os.environ.get("PTEROPROTECT_CONFIG_PATH", "/pteroprotect/config.j
 _cfg_cache = {"at": 0.0, "data": {}}
 _nonce_lock = threading.Lock()
 _nonces = {}
+_ephemeral_secret = secrets.token_urlsafe(32)
 
 
 def _b64u(data: bytes) -> str:
@@ -61,7 +62,13 @@ def challenge_secret():
     fallback = str(net_setting("unblock_portal_token", "") or "").strip()
     if fallback:
         return fallback
-    return "dannhexzoprotect"
+    env_secret = str(os.environ.get("PTEROPROTECT_WAF_CHALLENGE_SECRET", "") or "").strip()
+    if env_secret:
+        return env_secret
+    env_fallback = str(os.environ.get("PTEROPROTECT_UNBLOCK_PORTAL_TOKEN", "") or "").strip()
+    if env_fallback:
+        return env_fallback
+    return _ephemeral_secret
 
 
 def challenge_ttl():

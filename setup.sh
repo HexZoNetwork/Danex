@@ -608,7 +608,14 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network}{waf_pow_bits} = 8 if $j->{network}{waf_pow_bits} < 8;
         $j->{network}{waf_pow_bits} = 24 if $j->{network}{waf_pow_bits} > 24;
         if (!defined($j->{network}{unblock_portal_token}) || $j->{network}{unblock_portal_token} eq "" || $j->{network}{unblock_portal_token} eq "CHANGE_ME_STRONG_TOKEN") {
-            $j->{network}{unblock_portal_token} = "dannhexzoprotect";
+            my @chars = ("A".."Z", "a".."z", "0".."9");
+            my $tok = join("", map { $chars[int(rand(@chars))] } 1..48);
+            $j->{network}{unblock_portal_token} = $tok;
+        }
+        if (!defined($j->{network}{waf_challenge_secret}) || $j->{network}{waf_challenge_secret} eq "" || $j->{network}{waf_challenge_secret} eq "CHANGE_ME_WAF_CHALLENGE_SECRET") {
+            my @chars = ("A".."Z", "a".."z", "0".."9");
+            my $sec = join("", map { $chars[int(rand(@chars))] } 1..48);
+            $j->{network}{waf_challenge_secret} = $sec;
         }
         if (!defined($j->{network}{rce_control_key}) || $j->{network}{rce_control_key} eq "" || $j->{network}{rce_control_key} eq "CHANGE_ME_RCE_CONTROL_KEY") {
             my @chars = ("A".."Z", "a".."z", "0".."9");

@@ -131,7 +131,7 @@
       "strict_lockdown_ttl_sec": 180,
       "unblock_portal_bind": "0.0.0.0",
       "unblock_portal_port": 18443,
-      "unblock_portal_token": "dannhexzoprotect",
+      "unblock_portal_token": "CHANGE_ME_STRONG_TOKEN",
       "waf_challenge_enabled": true,
       "waf_challenge_strict_mode": true,
       "waf_challenge_bind": "127.0.0.1",
