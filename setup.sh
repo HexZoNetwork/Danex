@@ -1281,7 +1281,17 @@ PY
         echo "[setup] preparing wings reverse-proxy guard on :8080..."
         CHALLENGE_PORT="$(read_network_setting waf_challenge_port 18444)"
         WINGS_REPLICAS_RAW="$(read_network_setting wings_guard_replicas "")"
+        WINGS_ROOTLESS_ENABLED="$(read_network_setting wings_rootless_enabled true)"
+        WINGS_ROOTLESS_CONTAINER_UID="$(read_network_setting wings_rootless_container_uid 1000)"
+        WINGS_ROOTLESS_CONTAINER_GID="$(read_network_setting wings_rootless_container_gid 1000)"
+        WINGS_DISABLE_REMOTE_DOWNLOAD="$(read_network_setting wings_disable_remote_download true)"
+        WINGS_USERNS_MODE="$(read_network_setting wings_userns_mode private)"
+        WINGS_ENABLE_ICC="$(read_network_setting wings_enable_icc false)"
+        WINGS_IGNORE_PANEL_CONFIG_UPDATES="$(read_network_setting wings_ignore_panel_config_updates true)"
+        WINGS_OPENAT_MODE="$(read_network_setting wings_openat_mode strict)"
         [[ "${CHALLENGE_PORT}" =~ ^[0-9]+$ ]] || CHALLENGE_PORT="18444"
+        [[ "${WINGS_ROOTLESS_CONTAINER_UID}" =~ ^[0-9]+$ ]] || WINGS_ROOTLESS_CONTAINER_UID="1000"
+        [[ "${WINGS_ROOTLESS_CONTAINER_GID}" =~ ^[0-9]+$ ]] || WINGS_ROOTLESS_CONTAINER_GID="1000"
 
         WINGS_NODE_FQDN=""
         if command -v php >/dev/null 2>&1 && [[ -f "${PANEL_DIR}/artisan" ]]; then
@@ -1421,7 +1431,15 @@ PY
                 WINGS_GUARD_LINK_PRESENT=1
             fi
 
-            python3 - /etc/pterodactyl/config.yml <<'PY'
+            python3 - /etc/pterodactyl/config.yml \
+                "${WINGS_ROOTLESS_ENABLED}" \
+                "${WINGS_ROOTLESS_CONTAINER_UID}" \
+                "${WINGS_ROOTLESS_CONTAINER_GID}" \
+                "${WINGS_DISABLE_REMOTE_DOWNLOAD}" \
+                "${WINGS_USERNS_MODE}" \
+                "${WINGS_ENABLE_ICC}" \
+                "${WINGS_IGNORE_PANEL_CONFIG_UPDATES}" \
+                "${WINGS_OPENAT_MODE}" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -1430,10 +1448,32 @@ p = Path(sys.argv[1])
 if not p.exists():
     raise SystemExit(0)
 
+def as_bool(value: str, default: bool) -> bool:
+    v = str(value or "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return default
+
+rootless_enabled = as_bool(sys.argv[2] if len(sys.argv) > 2 else "true", True)
+rootless_uid = str(sys.argv[3] if len(sys.argv) > 3 else "1000").strip() or "1000"
+rootless_gid = str(sys.argv[4] if len(sys.argv) > 4 else "1000").strip() or "1000"
+disable_remote_download = as_bool(sys.argv[5] if len(sys.argv) > 5 else "true", True)
+userns_mode = str(sys.argv[6] if len(sys.argv) > 6 else "private").strip() or "private"
+enable_icc = as_bool(sys.argv[7] if len(sys.argv) > 7 else "false", False)
+ignore_panel_cfg_updates = as_bool(sys.argv[8] if len(sys.argv) > 8 else "true", True)
+openat_mode = str(sys.argv[9] if len(sys.argv) > 9 else "strict").strip() or "strict"
+
 lines = p.read_text().splitlines()
 out = []
 in_api = False
 in_ssl = False
+in_system = False
+in_user = False
+in_rootless = False
+in_docker = False
+in_docker_network = False
 
 for line in lines:
     if re.match(r'^api:\s*$', line):
@@ -1442,9 +1482,55 @@ for line in lines:
         out.append(line)
         continue
 
-    if in_api and re.match(r'^[^\s]', line):
+    if re.match(r'^system:\s*$', line):
+        in_system = True
+        in_user = False
+        in_rootless = False
+        out.append(line)
+        continue
+
+    if in_system and re.match(r'^\s{2}user:\s*$', line):
+        in_user = True
+        in_rootless = False
+        out.append(line)
+        continue
+
+    if in_user and re.match(r'^\s{4}rootless:\s*$', line):
+        in_rootless = True
+        out.append(line)
+        continue
+
+    if re.match(r'^docker:\s*$', line):
+        in_docker = True
+        in_docker_network = False
+        out.append(line)
+        continue
+
+    if in_docker and re.match(r'^\s{2}network:\s*$', line):
+        in_docker_network = True
+        out.append(line)
+        continue
+
+    if re.match(r'^[^\s]', line):
         in_api = False
         in_ssl = False
+        in_system = False
+        in_user = False
+        in_rootless = False
+        in_docker = False
+        in_docker_network = False
+
+    if in_api and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(host|port|ssl|disable_remote_download):', line):
+        in_ssl = False
+    if in_user and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line):
+        in_user = False
+        in_rootless = False
+    if in_rootless and re.match(r'^\s{4}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line):
+        in_rootless = False
+    if in_docker and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line) and not re.match(r'^\s{2}(network|userns_mode):', line):
+        in_docker_network = False
+    if in_docker_network and re.match(r'^\s{2}[a-zA-Z_][a-zA-Z0-9_]*:\s*', line):
+        in_docker_network = False
 
     if in_api and re.match(r'^\s{2}ssl:\s*$', line):
         in_ssl = True
@@ -1462,8 +1548,39 @@ for line in lines:
         out.append('  port: 18080')
         continue
 
+    if in_api and re.match(r'^\s{2}disable_remote_download:\s*', line):
+        out.append(f"  disable_remote_download: {'true' if disable_remote_download else 'false'}")
+        continue
+
     if in_ssl and re.match(r'^\s{4}enabled:\s*', line):
         out.append('    enabled: false')
+        continue
+
+    if in_rootless and re.match(r'^\s{6}enabled:\s*', line):
+        out.append(f"      enabled: {'true' if rootless_enabled else 'false'}")
+        continue
+    if in_rootless and re.match(r'^\s{6}container_uid:\s*', line):
+        out.append(f"      container_uid: {rootless_uid}")
+        continue
+    if in_rootless and re.match(r'^\s{6}container_gid:\s*', line):
+        out.append(f"      container_gid: {rootless_gid}")
+        continue
+
+    if in_docker and re.match(r'^\s{2}userns_mode:\s*', line):
+        out.append(f'  userns_mode: "{userns_mode}"')
+        continue
+    if in_docker_network and re.match(r'^\s{4}enable_icc:\s*', line):
+        out.append(f"    enable_icc: {'true' if enable_icc else 'false'}")
+        continue
+
+    if re.match(r'^ignore_panel_config_updates:\s*', line):
+        out.append(f"ignore_panel_config_updates: {'true' if ignore_panel_cfg_updates else 'false'}")
+        continue
+    if re.match(r'^allowed_mounts:\s*', line):
+        out.append("allowed_mounts: []")
+        continue
+    if re.match(r'^\s{2}openat_mode:\s*', line):
+        out.append(f"  openat_mode: {openat_mode}")
         continue
 
     out.append(line)
@@ -1749,6 +1866,7 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
     HOST_IPV6_ENABLED="$(read_network_setting ipv6_enabled true)"
     HOST_PUBLIC_TCP_PORTS="$(read_network_setting public_tcp_ports 80,443,8080,18443)"
     HOST_EGRESS_GUARD_ENABLED="$(read_network_setting egress_guard_enabled true)"
+    HOST_DOCKER_STRICT_ISOLATION_ENABLED="$(read_network_setting docker_strict_isolation_enabled true)"
     HOST_EGRESS_TCP_BLOCK_PORTS="$(read_network_setting egress_tcp_block_ports 25,465,587,2525,23,2323,4444,5555,6667,6697,11211)"
     HOST_EGRESS_UDP_BLOCK_PORTS="$(read_network_setting egress_udp_block_ports 19,123,161,1900,11211)"
     HOST_UDP_GUARD_ENABLED="$(read_network_setting input_guard_all_udp_enabled true)"
@@ -1770,6 +1888,11 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
         HOST_EGRESS_GUARD_ENABLED="1"
     elif [[ "${HOST_EGRESS_GUARD_ENABLED}" == "false" ]]; then
         HOST_EGRESS_GUARD_ENABLED="0"
+    fi
+    if [[ "${HOST_DOCKER_STRICT_ISOLATION_ENABLED}" == "true" ]]; then
+        HOST_DOCKER_STRICT_ISOLATION_ENABLED="1"
+    elif [[ "${HOST_DOCKER_STRICT_ISOLATION_ENABLED}" == "false" ]]; then
+        HOST_DOCKER_STRICT_ISOLATION_ENABLED="0"
     fi
     if [[ "${HOST_IP_TRUST_BW_ENABLED}" == "true" ]]; then
         HOST_IP_TRUST_BW_ENABLED="1"
@@ -1793,6 +1916,7 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
             PTEROPROTECT_IPV6_ENABLED="${HOST_IPV6_ENABLED}" \
             PTEROPROTECT_PUBLIC_TCP_PORTS="${HOST_PUBLIC_TCP_PORTS}" \
             PTEROPROTECT_EGRESS_GUARD_ENABLED="${HOST_EGRESS_GUARD_ENABLED}" \
+            PTEROPROTECT_DOCKER_STRICT_ISOLATION_ENABLED="${HOST_DOCKER_STRICT_ISOLATION_ENABLED}" \
             PTEROPROTECT_EGRESS_TCP_BLOCK_PORTS="${HOST_EGRESS_TCP_BLOCK_PORTS}" \
             PTEROPROTECT_EGRESS_UDP_BLOCK_PORTS="${HOST_EGRESS_UDP_BLOCK_PORTS}" \
             PTEROPROTECT_UDP_GUARD_ENABLED="${HOST_UDP_GUARD_ENABLED}" \

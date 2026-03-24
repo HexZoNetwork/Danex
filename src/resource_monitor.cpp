@@ -626,6 +626,13 @@ bool stop_container_now(const std::string& identifier, const std::string& uuid =
     return system(("docker kill " + shell_quote_single(ref) + " >/dev/null 2>&1").c_str()) == 0;
 }
 
+bool send_sigterm_container(const std::string& identifier, const std::string& uuid = "") {
+    std::string ref = resolve_local_container_ref(identifier, uuid);
+    if (!is_safe_docker_ref_token(ref)) return false;
+    int rc = system(("docker kill --signal=TERM " + shell_quote_single(ref) + " >/dev/null 2>&1").c_str());
+    return rc == 0;
+}
+
 bool read_local_resources(const std::string& identifier, const std::string& uuid, ResourceSnapshot& snap) {
     std::string ref = resolve_local_container_ref(identifier, uuid);
     if (!is_safe_docker_ref_token(ref)) return false;
@@ -1581,14 +1588,22 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     bool restart_ok = false;
     bool suspended = false;
     bool container_stopped = false;
+    bool sigterm_sent = false;
     bool api_net_only = api_profile.enabled && net_trigger && !self_ddos && !cpu_trigger && !ram_trigger && !process_trigger;
     bool resource_suspend_ready = resource_only_trigger && resource_strike_count >= RESOURCE_SUSPEND_STRIKES;
     bool force_suspend = process_trigger || activity_trigger || self_ddos || bw_trigger || resource_suspend_ready || score_now <= 25.0;
     bool should_suspend = force_suspend || total_restarts >= (MAX_RESTART_BEFORE_SUSPEND - 1);
     if (api_net_only && score_now > 20.0) should_suspend = false;
+    bool resource_sigterm_only = resource_only_trigger && !process_trigger && !activity_trigger && !self_ddos && !bw_trigger;
     if (should_suspend) {
-        container_stopped = stop_container_now(srv.identifier, srv.uuid);
-        suspended = db.suspend_server(db_info.id);
+        if (resource_sigterm_only) {
+            sigterm_sent = send_sigterm_container(srv.identifier, srv.uuid);
+            container_stopped = sigterm_sent;
+            suspended = false;
+        } else {
+            container_stopped = stop_container_now(srv.identifier, srv.uuid);
+            suspended = db.suspend_server(db_info.id);
+        }
         if (suspended || container_stopped) total_restarts++;
     } else if (offline_mode) {
         if (api_net_only) {
@@ -1610,7 +1625,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         consecutive_ram_hit[srv.uuid]  = 0;
         consecutive_net_hit[srv.uuid]  = 0;
         restart_count[srv.uuid]        = total_restarts;
-        resource_strikes[srv.uuid]     = suspended ? 0 : resource_strike_count;
+        resource_strikes[srv.uuid]     = (suspended || container_stopped) ? 0 : resource_strike_count;
         if (activity_abuse.last_id > 0) last_activity_log_id[srv.uuid] = activity_abuse.last_id;
     }
     save_state();
@@ -1684,18 +1699,19 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         db_info.id, db_info.uuid, db_info.name,
         violation_type_str, det.str(),
         "", 0, 0.0, 0,
-        suspended ? "suspended" : (container_stopped ? "container_stopped" : (restart_ok ? "restarted" : "observe_only")),
+        suspended ? "suspended" : (sigterm_sent ? "sigterm_sent" : (container_stopped ? "container_stopped" : (restart_ok ? "restarted" : "observe_only"))),
         severity
     );
     db.bump_daily_stats(suspended ? 1 : 0, 0, 0);
 
     logger.info("🚨 " + abuse_type + " — " + srv.name + " (" + srv.uuid + ") | " + det.str() +
-                (suspended ? " | SUSPENDED" : (container_stopped ? " | CONTAINER_STOPPED" : (restart_ok ? " | RESTARTED" : " | OBSERVED"))));
+                (suspended ? " | SUSPENDED" : (sigterm_sent ? " | SIGTERM_SENT" : (container_stopped ? " | CONTAINER_STOPPED" : (restart_ok ? " | RESTARTED" : " | OBSERVED")))));
 
     // ── Telegram alert ────────────────────────────────────────────────────────
     std::string action_text = suspended ? "Server suspended via database ✅" :
+                              (sigterm_sent ? "SIGTERM sent to container ✅" :
                               (container_stopped ? "Container stopped locally ✅" :
-                               (restart_ok ? "Container restarted locally ✅" : "Observed only ⚠️"));
+                               (restart_ok ? "Container restarted locally ✅" : "Observed only ⚠️")));
     bot.send_html_message(build_alert(
         abuse_type, db_info,
         cpu_pct_raw_used, snap.cpu_absolute, srv.cpu_limit,

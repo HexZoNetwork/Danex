@@ -38,6 +38,7 @@ const ConvButton = tw.button`w-full text-left p-2 rounded-md border border-neutr
 const Input = tw.input`w-full rounded-md border border-neutral-600 bg-neutral-800 text-neutral-100 px-3 py-2 text-sm focus:outline-none focus:border-cyan-400`;
 const TextArea = tw.textarea`w-full rounded-md border border-neutral-600 bg-neutral-800 text-neutral-100 px-3 py-2 text-sm min-h-[66px] focus:outline-none focus:border-cyan-400`;
 const Small = tw.button`text-xs text-cyan-300 hover:text-cyan-200`;
+const Tiny = tw.button`text-[11px] text-neutral-300 hover:text-cyan-200 px-2 py-1 rounded border border-neutral-600 hover:border-cyan-400`;
 
 const Main = tw.div`flex-1 flex flex-col min-w-0 min-h-0 bg-[#0d1625]`;
 const MainHeader = tw.div`px-4 py-3 border-b border-neutral-700 flex items-center justify-between`;
@@ -50,6 +51,9 @@ const BubbleWrap = tw.div`flex`;
 const Bubble = tw.div`relative max-w-[94%] lg:max-w-[84%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words`;
 const Meta = tw.div`mt-1 text-[11px] text-neutral-400 flex items-center gap-2`;
 const Tag = tw.span`px-1.5 py-0.5 rounded bg-neutral-700 text-[10px] text-neutral-200`;
+
+const AvatarImage = tw.img`w-full h-full object-cover`;
+const AvatarFallback = tw.div`w-full h-full bg-neutral-700 text-[10px] font-bold text-neutral-100 flex items-center justify-center`;
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/gi;
 const TOKEN_REGEX = /(https?:\/\/[^\s]+|@[a-zA-Z0-9._-]{3,32})/g;
@@ -93,6 +97,18 @@ const safeTime = (value: string | null | undefined): string => {
     }
 };
 
+const safeDate = (value: string | null | undefined): string => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+
+    try {
+        return format(date, 'MMM d, yyyy');
+    } catch {
+        return '-';
+    }
+};
+
 const avatarForName = (name: string): string => {
     const clean = name.trim();
     if (!clean) return '?';
@@ -100,6 +116,48 @@ const avatarForName = (name: string): string => {
     if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
 
     return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
+};
+
+const isImageFile = (file: File): boolean =>
+    file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(file.name);
+
+const compressImageFile = async (file: File, quality = 0.8, maxEdge = 1600): Promise<File> => {
+    const url = URL.createObjectURL(file);
+    try {
+        const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('Failed to load image.'));
+            img.src = url;
+        });
+
+        const ratio = Math.min(1, maxEdge / Math.max(image.width, image.height));
+        const width = Math.max(1, Math.round(image.width * ratio));
+        const height = Math.max(1, Math.round(image.height * ratio));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+            return file;
+        }
+        ctx.drawImage(image, 0, 0, width, height);
+
+        const blob = await new Promise<Blob | null>((resolve) => {
+            canvas.toBlob((result) => resolve(result), 'image/jpeg', quality);
+        });
+        if (!blob) {
+            return file;
+        }
+
+        return new File([blob], file.name.replace(/\.[^.]+$/, '') + '-compressed.jpg', {
+            type: 'image/jpeg',
+            lastModified: Date.now(),
+        });
+    } finally {
+        URL.revokeObjectURL(url);
+    }
 };
 
 const renderRichBody = (body: string | null, selfUsername: string) => {
@@ -160,6 +218,9 @@ export default () => {
     const [sending, setSending] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [dragging, setDragging] = useState(false);
+    const [uploadMode, setUploadMode] = useState<'quick' | 'compressed'>('quick');
+    const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
+    const [pendingUploadTarget, setPendingUploadTarget] = useState<'composer' | 'poll'>('composer');
 
     const [message, setMessage] = useState('');
     const [mediaUrl, setMediaUrl] = useState('');
@@ -194,9 +255,20 @@ export default () => {
     const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
     const [mobilePane, setMobilePane] = useState<'chats' | 'room'>('chats');
     const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+    const [profilePopup, setProfilePopup] = useState<{
+        id?: number;
+        username: string;
+        displayName: string;
+        avatarUrl?: string | null;
+        birthday?: string | null;
+        joinedAt?: string | null;
+    } | null>(null);
 
     const listRef = useRef<HTMLDivElement>(null);
     const messageRefs = useRef<Record<number, HTMLDivElement | null>>({});
+    const uploadInputRef = useRef<HTMLInputElement>(null);
+    const quickSendInputRef = useRef<HTMLInputElement>(null);
+    const compressedSendInputRef = useRef<HTMLInputElement>(null);
 
     const activeConversation = useMemo(
         () => conversations.find((item) => item.id === activeConversationId) || null,
@@ -352,20 +424,73 @@ export default () => {
         setGroupToolsCollapsed(true);
     }, [activeConversation?.id]);
 
-    const onUpload = async (file?: File) => {
+    const normalizeUploadedType = (mediaType: string): 'image' | 'audio' | 'link' =>
+        mediaType === 'audio' ? 'audio' : mediaType === 'image' ? 'image' : 'link';
+
+    const uploadPreparedFile = async (file: File, compressed = false) => {
+        const prepared = compressed && isImageFile(file) ? await compressImageFile(file) : file;
+
+        return uploadPublicMedia(prepared);
+    };
+
+    const sendUploadedAsMessage = async (
+        uploaded: { url: string; mediaType: string; mediaName: string | null; mediaMime: string | null },
+        fallbackName: string
+    ) => {
+        if (!activeConversationId) return;
+
+        const created = await postPublicMessage({
+            conversationId: activeConversationId,
+            message: '',
+            mediaUrl: uploaded.url,
+            mediaType: normalizeUploadedType(uploaded.mediaType),
+            mediaName: uploaded.mediaName || fallbackName,
+            mediaMime: uploaded.mediaMime || undefined,
+            replyToId: replyingTo?.id,
+        });
+        setMessages((current) => [...current, created]);
+        setReplyingTo(null);
+        requestAnimationFrame(scrollToBottom);
+        await loadConvoList(true);
+    };
+
+    const onUpload = async (
+        file: File | undefined,
+        options?: { compressed?: boolean; quickSend?: boolean; forPoll?: boolean }
+    ) => {
         if (!file) return;
+
+        const compressed = Boolean(options?.compressed);
+        const quickSend = Boolean(options?.quickSend);
+        const forPoll = Boolean(options?.forPoll);
 
         try {
             setUploading(true);
-            const uploaded = await uploadPublicMedia(file);
+            if (quickSend) setSending(true);
+
+            const uploaded = await uploadPreparedFile(file, compressed);
+            if (forPoll) {
+                if (uploaded.mediaType !== 'image') return;
+                setPollMediaUrl(uploaded.url);
+                setPollMediaName(uploaded.mediaName || file.name);
+                setPollMediaMime(uploaded.mediaMime || file.type || '');
+                return;
+            }
+
+            if (quickSend) {
+                await sendUploadedAsMessage(uploaded, file.name);
+                return;
+            }
+
             setMediaUrl(uploaded.url);
-            setMediaType(uploaded.mediaType === 'audio' ? 'audio' : uploaded.mediaType === 'image' ? 'image' : 'link');
+            setMediaType(normalizeUploadedType(uploaded.mediaType));
             setMediaName(uploaded.mediaName || file.name);
             setMediaMime(uploaded.mediaMime || file.type || '');
         } catch (error) {
             clearAndAddHttpError({ key: 'dashboard', error });
         } finally {
             setUploading(false);
+            setSending(false);
         }
     };
 
@@ -378,23 +503,8 @@ export default () => {
         setReplyingTo(null);
     };
 
-    const uploadPollImage = async (file?: File) => {
-        if (!file) return;
-
-        try {
-            setUploading(true);
-            const uploaded = await uploadPublicMedia(file);
-            if (uploaded.mediaType !== 'image') {
-                return;
-            }
-            setPollMediaUrl(uploaded.url);
-            setPollMediaName(uploaded.mediaName || file.name);
-            setPollMediaMime(uploaded.mediaMime || file.type || '');
-        } catch (error) {
-            clearAndAddHttpError({ key: 'dashboard', error });
-        } finally {
-            setUploading(false);
-        }
+    const uploadPollImage = async (file?: File, compressed = false) => {
+        await onUpload(file, { forPoll: true, compressed });
     };
 
     const handleSend = async (event?: React.FormEvent) => {
@@ -576,6 +686,41 @@ export default () => {
         return 'GROUP';
     };
 
+    const openProfile = (payload: {
+        id?: number;
+        username: string;
+        displayName: string;
+        avatarUrl?: string | null;
+        birthday?: string | null;
+        joinedAt?: string | null;
+    }) => {
+        setProfilePopup({
+            id: payload.id,
+            username: payload.username,
+            displayName: payload.displayName,
+            avatarUrl: payload.avatarUrl || null,
+            birthday: payload.birthday || null,
+            joinedAt: payload.joinedAt || null,
+        });
+    };
+
+    const conversationAvatar = (conversation: ChatConversation): { label: string; src: string | null } => {
+        if (conversation.type === 'private') {
+            const other = conversation.members.find((m) => m.username.toLowerCase() !== selfUsername.toLowerCase());
+            if (other) {
+                return {
+                    label: other.displayName || other.username,
+                    src: other.avatarUrl || null,
+                };
+            }
+        }
+
+        return {
+            label: conversation.name,
+            src: null,
+        };
+    };
+
     return (
         <Root>
             <Sidebar css={mobilePane === 'room' ? tw`hidden lg:flex` : undefined}>
@@ -595,10 +740,32 @@ export default () => {
                         <div css={tw`mt-2 space-y-1 max-h-40 overflow-y-auto`}>
                             {searchResult.map((user) => (
                                 <div key={user.id} css={tw`flex items-center justify-between rounded bg-neutral-800 px-2 py-1`}>
-                                    <div css={tw`min-w-0`}>
-                                        <p css={tw`text-xs text-neutral-100 truncate`}>{user.displayName}</p>
-                                        <p css={tw`text-[11px] text-neutral-400 truncate`}>@{user.username}</p>
-                                    </div>
+                                    <button
+                                        type={'button'}
+                                        css={tw`min-w-0 flex items-center gap-2 text-left`}
+                                        onClick={() =>
+                                            openProfile({
+                                                id: user.id,
+                                                username: user.username,
+                                                displayName: user.displayName,
+                                                avatarUrl: user.avatarUrl,
+                                                birthday: user.birthday || null,
+                                                joinedAt: user.createdAt || null,
+                                            })
+                                        }
+                                    >
+                                        <div css={tw`w-7 h-7 rounded-full overflow-hidden`}>
+                                            {user.avatarUrl ? (
+                                                <AvatarImage src={user.avatarUrl} alt={user.displayName || user.username} />
+                                            ) : (
+                                                <AvatarFallback>{avatarForName(user.displayName || user.username)}</AvatarFallback>
+                                            )}
+                                        </div>
+                                        <div css={tw`min-w-0`}>
+                                            <p css={tw`text-xs text-neutral-100 truncate`}>{user.displayName}</p>
+                                            <p css={tw`text-[11px] text-neutral-400 truncate`}>@{user.username}</p>
+                                        </div>
+                                    </button>
                                     <div css={tw`flex items-center gap-1 ml-2`}>
                                         {user.username.toLowerCase() !== selfUsername.toLowerCase() && (
                                             <Small type={'button'} onClick={() => openPrivateChat(user.username)}>
@@ -673,17 +840,21 @@ export default () => {
 
                 <SideList>
                     {conversations.map((conversation) => (
-                        <ConvButton
-                            key={conversation.id}
-                            type={'button'}
-                            css={activeConversationId === conversation.id ? tw`border-cyan-500 bg-cyan-900/20` : undefined}
-                            onClick={() => {
-                                setActiveConversationId(conversation.id);
-                                setMobilePane('room');
-                            }}
-                        >
+                        <ConvButton key={conversation.id} type={'button'} css={activeConversationId === conversation.id ? tw`border-cyan-500 bg-cyan-900/20` : undefined} onClick={() => {
+                            setActiveConversationId(conversation.id);
+                            setMobilePane('room');
+                        }}>
                             <div css={tw`flex items-center justify-between gap-2`}>
-                                <p css={tw`text-sm text-neutral-100 truncate`}>{conversation.name}</p>
+                                <div css={tw`flex items-center gap-2 min-w-0`}>
+                                    <div css={tw`w-8 h-8 rounded-full overflow-hidden shrink-0`}>
+                                        {conversationAvatar(conversation).src ? (
+                                            <AvatarImage src={conversationAvatar(conversation).src || ''} alt={conversationAvatar(conversation).label} />
+                                        ) : (
+                                            <AvatarFallback>{avatarForName(conversationAvatar(conversation).label)}</AvatarFallback>
+                                        )}
+                                    </div>
+                                    <p css={tw`text-sm text-neutral-100 truncate`}>{conversation.name}</p>
+                                </div>
                                 <Tag>{convLabel(conversation)}</Tag>
                             </div>
                             <p css={tw`text-[11px] text-neutral-400 mt-1`}>
@@ -696,15 +867,29 @@ export default () => {
 
             <Main css={mobilePane === 'chats' ? tw`hidden lg:flex` : undefined}>
                 <MainHeader>
-                    <div css={tw`min-w-0`}>
-                        <HeaderTitle>{activeConversation?.name || 'Select chat'}</HeaderTitle>
-                        <HeaderMeta>
-                            {activeConversation
-                                ? `${Array.isArray(activeConversation.members) ? activeConversation.members.length : 0} member${
-                                      Array.isArray(activeConversation.members) && activeConversation.members.length === 1 ? '' : 's'
-                                  }`
-                                : 'No conversation selected'}
-                        </HeaderMeta>
+                    <div css={tw`min-w-0 flex items-center gap-3`}>
+                        {activeConversation && (
+                            <div css={tw`w-9 h-9 rounded-full overflow-hidden shrink-0`}>
+                                {conversationAvatar(activeConversation).src ? (
+                                    <AvatarImage
+                                        src={conversationAvatar(activeConversation).src || ''}
+                                        alt={conversationAvatar(activeConversation).label}
+                                    />
+                                ) : (
+                                    <AvatarFallback>{avatarForName(conversationAvatar(activeConversation).label)}</AvatarFallback>
+                                )}
+                            </div>
+                        )}
+                        <div css={tw`min-w-0`}>
+                            <HeaderTitle>{activeConversation?.name || 'Select chat'}</HeaderTitle>
+                            <HeaderMeta>
+                                {activeConversation
+                                    ? `${Array.isArray(activeConversation.members) ? activeConversation.members.length : 0} member${
+                                          Array.isArray(activeConversation.members) && activeConversation.members.length === 1 ? '' : 's'
+                                      }`
+                                    : 'No conversation selected'}
+                            </HeaderMeta>
+                        </div>
                     </div>
                     <div css={tw`flex items-center gap-2`}>
                         <Button type={'button'} size={'xsmall'} css={tw`lg:hidden`} onClick={() => setMobilePane('chats')}>
@@ -780,7 +965,22 @@ export default () => {
                                 <div css={tw`flex flex-wrap gap-1`}>
                                     {activeConversation.members.map((member) => (
                                         <div key={`gm-${member.id}`} css={tw`px-2 py-1 rounded bg-neutral-800 text-xs flex items-center gap-1`}>
-                                            <span>@{member.username}</span>
+                                            <button
+                                                type={'button'}
+                                                css={tw`text-cyan-200`}
+                                                onClick={() =>
+                                                    openProfile({
+                                                        id: member.id,
+                                                        username: member.username,
+                                                        displayName: member.displayName,
+                                                        avatarUrl: member.avatarUrl,
+                                                        birthday: member.birthday || null,
+                                                        joinedAt: member.createdAt || null,
+                                                    })
+                                                }
+                                            >
+                                                @{member.username}
+                                            </button>
                                             <span css={tw`text-neutral-400`}>({member.role || 'member'})</span>
                                             {member.username !== selfUsername && (
                                                 <>
@@ -820,11 +1020,8 @@ export default () => {
                         setDragging(false);
                         const file = e.dataTransfer?.files?.[0];
                         if (file) {
-                            if (pollOpen) {
-                                uploadPollImage(file);
-                            } else {
-                                onUpload(file);
-                            }
+                            setPendingUploadTarget(pollOpen ? 'poll' : 'composer');
+                            setPendingUploadFile(file);
                         }
                     }}
                     css={dragging ? tw`ring-2 ring-cyan-400` : undefined}
@@ -864,15 +1061,32 @@ export default () => {
                                                 See Full
                                             </button>
                                         )}
-                                        <div css={tw`flex items-center gap-2 mb-1`}>
-                                            <div css={tw`w-6 h-6 rounded-full bg-neutral-700 text-[10px] font-bold text-neutral-100 flex items-center justify-center`}>
-                                                {avatarForName(item.displayName)}
+                                        <button
+                                            type={'button'}
+                                            css={tw`flex items-center gap-2 mb-1 text-left`}
+                                            onClick={() =>
+                                                openProfile({
+                                                    id: item.userId,
+                                                    username: item.username,
+                                                    displayName: item.displayName,
+                                                    avatarUrl: item.avatarUrl,
+                                                    birthday: item.birthday,
+                                                    joinedAt: item.joinedAt,
+                                                })
+                                            }
+                                        >
+                                            <div css={tw`w-7 h-7 rounded-full overflow-hidden`}>
+                                                {item.avatarUrl ? (
+                                                    <AvatarImage src={item.avatarUrl} alt={item.displayName || item.username} />
+                                                ) : (
+                                                    <AvatarFallback>{avatarForName(item.displayName)}</AvatarFallback>
+                                                )}
                                             </div>
                                             <div css={tw`leading-tight min-w-0`}>
-                                                <div css={tw`text-[11px] font-semibold opacity-80 truncate`}>{item.displayName}</div>
+                                                <div css={tw`text-[11px] font-semibold opacity-90 truncate`}>{item.displayName}</div>
                                                 <div css={tw`text-[10px] opacity-60 truncate`}>@{item.username}</div>
                                             </div>
-                                        </div>
+                                        </button>
 
                                         {item.reply && (
                                             <div css={tw`mb-2 rounded-md border-l-2 border-cyan-400 bg-black/20 px-2 py-1`}>
@@ -1013,7 +1227,7 @@ export default () => {
                 <Composer onSubmit={handleSend}>
                     {dragging && (
                         <div css={tw`rounded-md border border-cyan-400/50 bg-cyan-900/20 p-2 text-xs text-cyan-100`}>
-                            Drop file to upload...
+                            Drop file to choose Quick/Compressed upload...
                         </div>
                     )}
                     {replyingTo && (
@@ -1034,7 +1248,10 @@ export default () => {
                             onDrop={(e) => {
                                 e.preventDefault();
                                 const file = e.dataTransfer?.files?.[0];
-                                if (file) uploadPollImage(file);
+                                if (file) {
+                                    setPendingUploadTarget('poll');
+                                    setPendingUploadFile(file);
+                                }
                             }}
                         >
                             <Input
@@ -1060,9 +1277,21 @@ export default () => {
                                         type={'file'}
                                         accept={'image/*'}
                                         css={tw`hidden`}
-                                        onChange={(e) => uploadPollImage(e.currentTarget.files?.[0])}
+                                        onChange={(e) => uploadPollImage(e.currentTarget.files?.[0], false)}
                                     />
                                 </label>
+                                <Small
+                                    type={'button'}
+                                    onClick={() => {
+                                        const picker = document.createElement('input');
+                                        picker.type = 'file';
+                                        picker.accept = 'image/*';
+                                        picker.onchange = () => uploadPollImage(picker.files?.[0], true);
+                                        picker.click();
+                                    }}
+                                >
+                                    Compressed upload
+                                </Small>
                                 {pollMediaUrl && (
                                     <button type={'button'} onClick={() => setPreviewImageUrl(pollMediaUrl)} css={tw`text-xs text-cyan-200 underline`}>
                                         preview
@@ -1103,14 +1332,35 @@ export default () => {
                     <div css={tw`flex items-center justify-between gap-2 flex-wrap`}>
                         <div css={tw`flex items-center gap-2`}>
                             <label css={tw`text-xs text-cyan-300 cursor-pointer`}>
-                                {uploading ? 'Uploading...' : 'Upload media'}
+                                {uploading ? 'Uploading...' : 'Attach media'}
                                 <input
+                                    ref={uploadInputRef}
                                     type={'file'}
                                     accept={'image/*,audio/*'}
                                     css={tw`hidden`}
-                                    onChange={(e) => onUpload(e.currentTarget.files?.[0])}
+                                    onChange={(e) => onUpload(e.currentTarget.files?.[0], { compressed: false })}
                                 />
                             </label>
+                            <Tiny type={'button'} onClick={() => quickSendInputRef.current?.click()} disabled={uploading || sending}>
+                                Quick Send
+                            </Tiny>
+                            <Tiny type={'button'} onClick={() => compressedSendInputRef.current?.click()} disabled={uploading || sending}>
+                                Compressed
+                            </Tiny>
+                            <input
+                                ref={quickSendInputRef}
+                                type={'file'}
+                                accept={'image/*,audio/*'}
+                                css={tw`hidden`}
+                                onChange={(e) => onUpload(e.currentTarget.files?.[0], { quickSend: true, compressed: false })}
+                            />
+                            <input
+                                ref={compressedSendInputRef}
+                                type={'file'}
+                                accept={'image/*'}
+                                css={tw`hidden`}
+                                onChange={(e) => onUpload(e.currentTarget.files?.[0], { quickSend: true, compressed: true })}
+                            />
                             {mediaUrl && <Tag>{mediaType || 'link'} ready</Tag>}
                             <Small type={'button'} onClick={() => setPollOpen((v) => !v)}>
                                 {pollOpen ? 'Hide poll' : 'Create poll'}
@@ -1122,6 +1372,110 @@ export default () => {
                     </div>
                 </Composer>
             </Main>
+            {pendingUploadFile && (
+                <div
+                    css={tw`fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4`}
+                    onClick={() => setPendingUploadFile(null)}
+                >
+                    <div css={tw`w-full max-w-sm rounded-lg border border-neutral-600 bg-neutral-900 p-4 space-y-3`} onClick={(e) => e.stopPropagation()}>
+                        <h4 css={tw`text-sm font-semibold text-neutral-100`}>Upload file</h4>
+                        <p css={tw`text-xs text-neutral-400 break-all`}>{pendingUploadFile.name}</p>
+                        {isImageFile(pendingUploadFile) && (
+                            <div css={tw`flex gap-2`}>
+                                <Tiny
+                                    type={'button'}
+                                    css={uploadMode === 'quick' ? tw`border-cyan-400 text-cyan-200` : undefined}
+                                    onClick={() => setUploadMode('quick')}
+                                >
+                                    Quick
+                                </Tiny>
+                                <Tiny
+                                    type={'button'}
+                                    css={uploadMode === 'compressed' ? tw`border-cyan-400 text-cyan-200` : undefined}
+                                    onClick={() => setUploadMode('compressed')}
+                                >
+                                    Compressed
+                                </Tiny>
+                            </div>
+                        )}
+                        <div css={tw`flex flex-wrap gap-2`}>
+                            <Button
+                                type={'button'}
+                                size={'xsmall'}
+                                onClick={async () => {
+                                    const file = pendingUploadFile;
+                                    const target = pendingUploadTarget;
+                                    setPendingUploadFile(null);
+                                    if (!file) return;
+                                    await onUpload(file, {
+                                        quickSend: true,
+                                        compressed: isImageFile(file) && uploadMode === 'compressed',
+                                        forPoll: target === 'poll',
+                                    });
+                                }}
+                            >
+                                Send now
+                            </Button>
+                            <Button
+                                type={'button'}
+                                size={'xsmall'}
+                                color={'secondary'}
+                                onClick={async () => {
+                                    const file = pendingUploadFile;
+                                    const target = pendingUploadTarget;
+                                    setPendingUploadFile(null);
+                                    if (!file) return;
+                                    await onUpload(file, {
+                                        quickSend: false,
+                                        compressed: isImageFile(file) && uploadMode === 'compressed',
+                                        forPoll: target === 'poll',
+                                    });
+                                }}
+                            >
+                                Attach only
+                            </Button>
+                            <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => setPendingUploadFile(null)}>
+                                Cancel
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {profilePopup && (
+                <div
+                    css={tw`fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4`}
+                    onClick={() => setProfilePopup(null)}
+                >
+                    <div css={tw`w-full max-w-md rounded-lg border border-neutral-600 bg-[#0f1b2e] overflow-hidden`} onClick={(e) => e.stopPropagation()}>
+                        <div css={tw`px-6 py-6 border-b border-neutral-700 bg-[#13243d]`}>
+                            <div css={tw`w-20 h-20 rounded-full overflow-hidden mx-auto border-4 border-black`}>
+                                {profilePopup.avatarUrl ? (
+                                    <AvatarImage src={profilePopup.avatarUrl} alt={profilePopup.displayName} />
+                                ) : (
+                                    <AvatarFallback>{avatarForName(profilePopup.displayName || profilePopup.username)}</AvatarFallback>
+                                )}
+                            </div>
+                            <p css={tw`text-center text-neutral-100 font-semibold mt-3 text-lg`}>{profilePopup.displayName}</p>
+                            <p css={tw`text-center text-cyan-300 text-sm`}>@{profilePopup.username}</p>
+                        </div>
+                        <div css={tw`px-5 py-4 space-y-4`}>
+                            <div>
+                                <p css={tw`text-neutral-100`}>{safeDate(profilePopup.birthday || null)}</p>
+                                <p css={tw`text-neutral-400 text-sm`}>Birthday</p>
+                            </div>
+                            <div>
+                                <p css={tw`text-neutral-100`}>{safeDate(profilePopup.joinedAt || null)}</p>
+                                <p css={tw`text-neutral-400 text-sm`}>Joined</p>
+                            </div>
+                            <div css={tw`pt-2`}>
+                                <Button type={'button'} size={'xsmall'} onClick={() => setProfilePopup(null)}>
+                                    Close
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
             {previewImageUrl && (
                 <div
                     css={tw`fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4`}

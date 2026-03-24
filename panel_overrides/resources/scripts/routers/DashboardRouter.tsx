@@ -9,6 +9,7 @@ import SubNavigation from '@/components/elements/SubNavigation';
 import { useLocation } from 'react-router';
 import Spinner from '@/components/elements/Spinner';
 import routes from '@/routers/routes';
+import AccountProfileContainer from '@/components/dashboard/AccountProfileContainer';
 
 export default () => {
     const location = useLocation();
@@ -38,6 +39,9 @@ export default () => {
                                     {name}
                                 </NavLink>
                             ))}
+                        <NavLink to={'/account/profile'} exact>
+                            Profile
+                        </NavLink>
                     </div>
                 </SubNavigation>
             )}
@@ -55,6 +59,9 @@ export default () => {
                                 <Component />
                             </Route>
                         ))}
+                        <Route path={'/account/profile'} exact>
+                            <AccountProfileContainer />
+                        </Route>
                         <Route path={'*'}>
                             <NotFound />
                         </Route>

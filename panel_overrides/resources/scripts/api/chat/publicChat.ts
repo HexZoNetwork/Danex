@@ -7,6 +7,9 @@ export interface ChatUser {
     id: number;
     username: string;
     displayName: string;
+    avatarUrl?: string;
+    birthday?: string | null;
+    createdAt?: string | null;
     role?: 'owner' | 'admin' | 'member';
 }
 
@@ -32,6 +35,9 @@ export interface PublicChatMessage {
     userId: number;
     username: string;
     displayName: string;
+    avatarUrl: string | null;
+    birthday: string | null;
+    joinedAt: string | null;
     mentions: string[];
     body: string | null;
     mediaUrl: string | null;
@@ -48,6 +54,9 @@ export interface PublicChatMessage {
         id: number;
         username: string;
         displayName: string;
+        avatarUrl: string | null;
+        birthday: string | null;
+        joinedAt: string | null;
         body: string;
     } | null;
     poll: ChatPoll | null;
@@ -58,6 +67,9 @@ const rawUser = (item: any): ChatUser => ({
     id: Number(item.id),
     username: String(item.username || ''),
     displayName: String(item.display_name || item.username || ''),
+    avatarUrl: item.avatar_url ? String(item.avatar_url) : undefined,
+    birthday: item.birthday ? String(item.birthday) : null,
+    createdAt: item.created_at ? String(item.created_at) : null,
     role: ['owner', 'admin', 'member'].includes(String(item.role || '')) ? (String(item.role) as any) : undefined,
 });
 
@@ -97,6 +109,9 @@ const rawDataToMessage = (item: any): PublicChatMessage => ({
     userId: Number(item.user_id),
     username: String(item.username || ''),
     displayName: String(item.display_name || item.username || ''),
+    avatarUrl: item.avatar_url ? String(item.avatar_url) : null,
+    birthday: item.birthday ? String(item.birthday) : null,
+    joinedAt: item.joined_at ? String(item.joined_at) : null,
     mentions: Array.isArray(item.mentions) ? item.mentions.map(String) : [],
     body: item.body ?? null,
     mediaUrl: item.media_url ?? null,
@@ -114,6 +129,9 @@ const rawDataToMessage = (item: any): PublicChatMessage => ({
               id: Number(item.reply.id),
               username: String(item.reply.username || ''),
               displayName: String(item.reply.display_name || item.reply.username || ''),
+              avatarUrl: item.reply.avatar_url ? String(item.reply.avatar_url) : null,
+              birthday: item.reply.birthday ? String(item.reply.birthday) : null,
+              joinedAt: item.reply.joined_at ? String(item.reply.joined_at) : null,
               body: String(item.reply.body || ''),
           }
         : null,

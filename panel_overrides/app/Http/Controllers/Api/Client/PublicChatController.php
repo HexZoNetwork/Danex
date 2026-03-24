@@ -29,7 +29,7 @@ class PublicChatController extends ClientApiController
         $global = $this->globalConversation();
 
         $conversations = ChatConversation::query()
-            ->with('participants:id,username,name_first,name_last')
+            ->with('participants:id,username,name_first,name_last,email,avatar_url,birthday,created_at')
             ->where('id', $global->id)
             ->orWhere(function ($query) use ($user) {
                 $query->where('id', '!=', self::GLOBAL_CONVERSATION_ID)
@@ -51,6 +51,9 @@ class PublicChatController extends ClientApiController
                     'id' => (int) $member->id,
                     'username' => (string) $member->username,
                     'display_name' => trim((string) ($member->name_first . ' ' . $member->name_last)) ?: (string) $member->username,
+                    'avatar_url' => $this->avatarUrlForUser($member),
+                    'birthday' => $this->birthdayForUser($member),
+                    'created_at' => optional($member->created_at)?->toIso8601String(),
                     'role' => (string) ($member->pivot->role ?? 'member'),
                 ])->values();
 
@@ -87,7 +90,7 @@ class PublicChatController extends ClientApiController
         $query = trim((string) $validated['query']);
 
         $users = User::query()
-            ->select(['id', 'username', 'name_first', 'name_last'])
+            ->select(['id', 'username', 'name_first', 'name_last', 'avatar_url', 'birthday', 'created_at', 'email'])
             ->where('id', '!=', (int) $viewer->id)
             ->where(function ($q) use ($query) {
                 $q->where('username', 'like', '%' . $query . '%')
@@ -103,6 +106,9 @@ class PublicChatController extends ClientApiController
                 'id' => (int) $user->id,
                 'username' => (string) $user->username,
                 'display_name' => trim((string) ($user->name_first . ' ' . $user->name_last)) ?: (string) $user->username,
+                'avatar_url' => $this->avatarUrlForUser($user),
+                'birthday' => $this->birthdayForUser($user),
+                'created_at' => optional($user->created_at)?->toIso8601String(),
             ])->values(),
         ]);
     }
@@ -219,7 +225,10 @@ class PublicChatController extends ClientApiController
 
         $query = PublicChatMessage::query()
             ->where('conversation_id', $conversation->id)
-            ->with('user:id,username,name_first,name_last', 'replyTo.user:id,username,name_first,name_last')
+            ->with(
+                'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+                'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+            )
             ->orderByDesc('id');
 
         if ($sinceId > 0) {
@@ -282,7 +291,10 @@ class PublicChatController extends ClientApiController
             'media_mime' => $this->sanitizeMime((string) ($validated['media_mime'] ?? '')),
         ]);
 
-        $message->load('user:id,username,name_first,name_last', 'replyTo.user:id,username,name_first,name_last');
+        $message->load(
+            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+        );
 
         return new JsonResponse([
             'data' => $this->transformMessage($message, (int) $user->id, ['counts' => [], 'readByOthers' => []], ['byMessage' => [], 'mine' => []], ['byMessage' => [], 'mine' => []]),
@@ -317,7 +329,7 @@ class PublicChatController extends ClientApiController
             'poll_options' => $options,
         ]);
 
-        $message->load('user:id,username,name_first,name_last');
+        $message->load('user:id,username,name_first,name_last,email,avatar_url,birthday,created_at');
 
         return new JsonResponse([
             'data' => $this->transformMessage($message, (int) $user->id, ['counts' => [], 'readByOthers' => []], ['byMessage' => [], 'mine' => []], ['byMessage' => [], 'mine' => []]),
@@ -351,7 +363,10 @@ class PublicChatController extends ClientApiController
             'created_at' => now(),
         ], ['message_id', 'user_id'], ['option_index', 'created_at']);
 
-        $model->load('user:id,username,name_first,name_last', 'replyTo.user:id,username,name_first,name_last');
+        $model->load(
+            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+        );
         $stats = $this->readStats([$model->id]);
         $poll = $this->pollStats([$model->id], (int) $user->id);
 
@@ -521,7 +536,10 @@ class PublicChatController extends ClientApiController
             ]);
         }
 
-        $model->load('user:id,username,name_first,name_last', 'replyTo.user:id,username,name_first,name_last');
+        $model->load(
+            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+        );
         $stats = $this->readStats([$model->id]);
         $poll = $this->pollStats([$model->id], (int) $user->id);
         $reactions = $this->reactionStats([$model->id], (int) $user->id);
@@ -555,7 +573,10 @@ class PublicChatController extends ClientApiController
         $model->edited_at = now();
         $model->save();
 
-        $model->load('user:id,username,name_first,name_last', 'replyTo.user:id,username,name_first,name_last');
+        $model->load(
+            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+        );
         $stats = $this->readStats([$model->id]);
         $poll = $this->pollStats([$model->id], (int) $user->id);
 
@@ -940,6 +961,9 @@ class PublicChatController extends ClientApiController
             'user_id' => (int) $message->user_id,
             'username' => $username,
             'display_name' => $displayName !== '' ? $displayName : $username,
+            'avatar_url' => $this->avatarUrlForUser($message->user),
+            'birthday' => $this->birthdayForUser($message->user),
+            'joined_at' => optional($message->user?->created_at)?->toDateString(),
             'mentions' => array_values(array_unique(array_map('strval', (array) ($message->mention_usernames ?? [])))),
             'body' => $message->body,
             'media_url' => $message->media_url,
@@ -957,6 +981,9 @@ class PublicChatController extends ClientApiController
                 'username' => (string) ($message->replyTo->user?->username ?? 'unknown'),
                 'display_name' => trim((string) (($message->replyTo->user?->name_first ?? '') . ' ' . ($message->replyTo->user?->name_last ?? '')))
                     ?: (string) ($message->replyTo->user?->username ?? 'unknown'),
+                'avatar_url' => $this->avatarUrlForUser($message->replyTo->user),
+                'birthday' => $this->birthdayForUser($message->replyTo->user),
+                'joined_at' => optional($message->replyTo->user?->created_at)?->toDateString(),
                 'body' => (string) ($message->replyTo->body ?? ''),
             ] : null,
             'poll' => $pollPayload,
@@ -1040,5 +1067,37 @@ class PublicChatController extends ClientApiController
         }
 
         return 'link';
+    }
+
+    private function avatarUrlForUser(?User $user): ?string
+    {
+        if (!$user) {
+            return null;
+        }
+
+        $custom = trim((string) ($user->avatar_url ?? ''));
+        if ($custom !== '' && preg_match('#^https?://#i', $custom) === 1) {
+            return mb_substr($custom, 0, 2048);
+        }
+
+        return 'https://gravatar.com/avatar/' . md5(Str::lower((string) $user->email));
+    }
+
+    private function birthdayForUser(?User $user): ?string
+    {
+        if (!$user) {
+            return null;
+        }
+
+        $birthday = $user->birthday;
+        if ($birthday instanceof \DateTimeInterface) {
+            return $birthday->format('Y-m-d');
+        }
+
+        if (is_string($birthday) && trim($birthday) !== '') {
+            return mb_substr(trim($birthday), 0, 10);
+        }
+
+        return optional($user->created_at)?->toDateString();
     }
 }

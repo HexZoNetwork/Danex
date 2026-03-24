@@ -31,6 +31,7 @@ HOST_IPS="$(hostname -I 2>/dev/null || true)"
 IPV6_ENABLED="${PTEROPROTECT_IPV6_ENABLED:-1}"
 PUBLIC_TCP_PORTS="${PTEROPROTECT_PUBLIC_TCP_PORTS:-80,443}"
 EGRESS_GUARD_ENABLED="${PTEROPROTECT_EGRESS_GUARD_ENABLED:-1}"
+DOCKER_STRICT_ISOLATION_ENABLED="${PTEROPROTECT_DOCKER_STRICT_ISOLATION_ENABLED:-1}"
 EGRESS_TCP_BLOCK_PORTS="${PTEROPROTECT_EGRESS_TCP_BLOCK_PORTS:-25,465,587,2525,23,2323,4444,5555,6667,6697,11211}"
 EGRESS_UDP_BLOCK_PORTS="${PTEROPROTECT_EGRESS_UDP_BLOCK_PORTS:-19,123,161,1900,11211}"
 NEW_CONN_RATE="${PTEROPROTECT_NEW_CONN_RATE:-12}"
@@ -53,6 +54,7 @@ SYNPROXY_MSS="${PTEROPROTECT_SYNPROXY_MSS:-1460}"
 SYNPROXY_WSCALE="${PTEROPROTECT_SYNPROXY_WSCALE:-7}"
 INFRA_HOSTS_RAW="${PTEROPROTECT_INFRA_HOSTS:-}"
 WINGS_CONFIG="${PTEROPROTECT_WINGS_CONFIG:-/etc/pterodactyl/config.yml}"
+WINGS_DOCKER_NETWORK_NAME="${PTEROPROTECT_WINGS_DOCKER_NETWORK_NAME:-}"
 GUARD_HOME="${DANN_GUARD_HOME:-/pteroprotect}"
 CONFIG_PATH="${GUARD_HOME}/config.json"
 UNBLOCK_PORTAL_PORT="${PTEROPROTECT_UNBLOCK_PORTAL_PORT:-}"
@@ -149,6 +151,34 @@ read_wings_sftp_port() {
         port="2022"
     fi
     printf '%s' "${port}"
+}
+
+read_wings_docker_network_name() {
+    local name="${WINGS_DOCKER_NETWORK_NAME}"
+    if [[ -z "${name}" && -f "${WINGS_CONFIG}" ]]; then
+        name="$(awk '
+            BEGIN{indocker=0;innet=0}
+            /^[[:space:]]*docker:[[:space:]]*$/ {indocker=1; innet=0; next}
+            indocker && /^[^[:space:]]/ {indocker=0; innet=0}
+            indocker && /^[[:space:]]{2}network:[[:space:]]*$/ {innet=1; next}
+            innet && /^[[:space:]]{4}name:[[:space:]]*/ {
+                sub(/^[[:space:]]{4}name:[[:space:]]*/, "", $0)
+                gsub(/["'\'']/, "", $0)
+                print $0
+                exit
+            }' "${WINGS_CONFIG}" 2>/dev/null || true)"
+    fi
+    if [[ -z "${name}" ]]; then
+        name="pterodactyl_nw"
+    fi
+    printf '%s' "${name}"
+}
+
+docker_network_subnets_v4() {
+    local name="$1"
+    command -v docker >/dev/null 2>&1 || return 0
+    docker network inspect "${name}" --format '{{range .IPAM.Config}}{{if .Subnet}}{{println .Subnet}}{{end}}{{end}}' 2>/dev/null \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' | sort -u
 }
 
 build_wings_guard_ports() {
@@ -794,6 +824,18 @@ if iptables -S DOCKER-USER >/dev/null 2>&1; then
     iptables -A "${DOCKER_CHAIN}" -d 169.254.170.2/32 -j DROP
     iptables -A "${DOCKER_CHAIN}" -d 100.100.100.200/32 -j DROP
     iptables -A "${DOCKER_CHAIN}" -d 169.254.0.0/16 -j DROP
+    if [[ "${DOCKER_STRICT_ISOLATION_ENABLED}" == "1" ]]; then
+        WINGS_DOCKER_NETWORK_NAME="$(read_wings_docker_network_name)"
+        while read -r docker_subnet_v4; do
+            [[ -z "${docker_subnet_v4}" ]] && continue
+            iptables -A "${DOCKER_CHAIN}" -d "${docker_subnet_v4}" -j RETURN
+        done < <(docker_network_subnets_v4 "${WINGS_DOCKER_NETWORK_NAME}")
+        # Block container access to host/private ranges to reduce breakout blast radius.
+        iptables -A "${DOCKER_CHAIN}" -d 127.0.0.0/8 -j DROP
+        iptables -A "${DOCKER_CHAIN}" -d 10.0.0.0/8 -j DROP
+        iptables -A "${DOCKER_CHAIN}" -d 172.16.0.0/12 -j DROP
+        iptables -A "${DOCKER_CHAIN}" -d 192.168.0.0/16 -j DROP
+    fi
     if [[ "${EGRESS_GUARD_ENABLED}" == "1" ]]; then
         if [[ -n "${EGRESS_TCP_BLOCK_PORTS}" ]]; then
             iptables -A "${DOCKER_CHAIN}" -p tcp -m multiport --dports "${EGRESS_TCP_BLOCK_PORTS}" -j DROP
