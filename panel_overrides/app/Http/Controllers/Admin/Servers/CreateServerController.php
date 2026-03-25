@@ -62,10 +62,6 @@ class CreateServerController extends Controller
         if ((int) $request->user()->id !== 1 && $ownerId === 1) {
             throw new AccessDeniedHttpException('Cannot create or modify resources owned by primary admin.');
         }
-        if ((int) $request->user()->id !== 1 && !$this->ownership->isOwnedBy('users', $ownerId, (int) $request->user()->id)) {
-            throw new AccessDeniedHttpException('Server owner must be a user created by this admin.');
-        }
-
         $data = $request->except(['_token']);
         if (!empty($data['custom_image'])) {
             $data['image'] = $data['custom_image'];

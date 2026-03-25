@@ -86,8 +86,8 @@ class PteroProtectRestrictedApplicationApi
             if ($ownerId === 1) {
                 throw new AccessDeniedHttpException('Cannot create or modify resources owned by primary admin.');
             }
-            if ($ownerId <= 0 || !$this->ownership->isOwnedBy('users', $ownerId, $adminUserId, $tokenIdentifier)) {
-                throw new AccessDeniedHttpException('Server owner must be a user created by this API key.');
+            if ($ownerId <= 0) {
+                throw new AccessDeniedHttpException('Invalid server owner.');
             }
 
             return $next($request);

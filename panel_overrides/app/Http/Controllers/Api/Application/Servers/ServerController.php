@@ -71,10 +71,6 @@ class ServerController extends ApplicationApiController
         if ($ownerId <= 0) {
             throw new AccessDeniedHttpException('Invalid server owner.');
         }
-        if ((int) $request->user()->id !== 1 && !$this->ownership->isOwnedBy('users', $ownerId, (int) $request->user()->id, $this->tokenIdentifier($request))) {
-            throw new AccessDeniedHttpException('Server owner must be a user created by this API key.');
-        }
-
         $server = $this->creationService->handle($request->validated(), $request->getDeploymentObject());
         $this->ownership->remember('servers', (int) $server->id, (int) $request->user()->id, $this->tokenIdentifier($request));
 
