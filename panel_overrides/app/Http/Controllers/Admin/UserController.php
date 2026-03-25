@@ -63,6 +63,7 @@ class UserController extends Controller
         if (!is_array($owned)) {
             $owned = $this->ownership->ownedIdsFor('users', (int) $request->user()->id);
         }
+        $owned = $this->withCurrentUserId($owned, (int) $request->user()->id);
 
         $query = User::query()->select('users.*')
             ->selectRaw('COUNT(DISTINCT(subusers.id)) as subuser_of_count')
@@ -154,19 +155,41 @@ class UserController extends Controller
 
     public function json(Request $request): Model|Collection
     {
-        $owned = $request->attributes->get('pteroprotect_owned_user_ids');
-        if (!is_array($owned)) {
-            $owned = $this->ownership->ownedIdsFor('users', (int) $request->user()->id);
-        }
-
         $query = User::query();
-        if ($owned === []) {
-            $query->whereRaw('1 = 0');
+        $isServerOwnerLookup = $request->query('scope') === 'server_owner';
+
+        if ($isServerOwnerLookup && (int) $request->user()->id !== 1) {
+            // Delegated admins can assign server ownership to any non-primary user.
+            $query->where('id', '!=', 1);
         } else {
-            $query->whereIn('id', $owned);
+            $owned = $request->attributes->get('pteroprotect_owned_user_ids');
+            if (!is_array($owned)) {
+                $owned = $this->ownership->ownedIdsFor('users', (int) $request->user()->id);
+            }
+            $owned = $this->withCurrentUserId($owned, (int) $request->user()->id);
+
+            if ($owned === []) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $query->whereIn('id', $owned);
+            }
         }
 
-        $users = QueryBuilder::for($query)->allowedFilters(['email'])->paginate(25);
+        $term = trim((string) (
+            $request->query('query')
+            ?? data_get($request->query('filter', []), 'email')
+            ?? ''
+        ));
+
+        if ($term !== '') {
+            $query->where(function ($builder) use ($term) {
+                $like = '%' . $term . '%';
+                $builder->where('email', 'like', $like)
+                    ->orWhere('username', 'like', $like)
+                    ->orWhere('name_first', 'like', $like)
+                    ->orWhere('name_last', 'like', $like);
+            });
+        }
 
         if ($request->query('user_id')) {
             $user = $query->findOrFail($request->input('user_id'));
@@ -176,12 +199,14 @@ class UserController extends Controller
             return $user;
         }
 
+        $users = $query->orderBy('email')->limit(25)->get();
+
         return $users->map(function ($item) {
             // @phpstan-ignore-next-line property.notFound
             $item->md5 = md5(strtolower($item->email));
 
             return $item;
-        });
+        })->values();
     }
 
     private function denyIfNotOwned(Request $request, User $user): void
@@ -192,8 +217,34 @@ class UserController extends Controller
         if ((int) $user->id === 1) {
             throw new AccessDeniedHttpException('Primary admin account cannot be modified.');
         }
+        if ((int) $request->user()->id === (int) $user->id) {
+            return;
+        }
         if (!$this->ownership->isOwnedBy('users', (int) $user->id, (int) $request->user()->id)) {
             throw new AccessDeniedHttpException('You do not own this user resource.');
         }
+    }
+
+    /**
+     * @param array<int,mixed> $owned
+     * @return list<int>
+     */
+    private function withCurrentUserId(array $owned, int $currentUserId): array
+    {
+        $ids = [];
+        foreach ($owned as $id) {
+            if (is_numeric($id)) {
+                $ids[] = (int) $id;
+            }
+        }
+
+        if ($currentUserId > 0 && $currentUserId !== 1) {
+            $ids[] = $currentUserId;
+        }
+
+        $ids = array_values(array_unique($ids));
+        sort($ids, SORT_NUMERIC);
+
+        return $ids;
     }
 }

@@ -39,7 +39,9 @@ class PteroProtectRestrictedAdmin
             $request->merge(['root_admin' => false]);
 
             if ($request->isMethod('get') && preg_match('#^admin/users(?:/accounts\.json)?$#i', $path) === 1) {
-                $request->attributes->set('pteroprotect_owned_user_ids', $this->ownership->ownedIdsFor('users', (int) $user->id));
+                if ($request->query('scope') !== 'server_owner') {
+                    $request->attributes->set('pteroprotect_owned_user_ids', $this->ownership->ownedIdsFor('users', (int) $user->id));
+                }
             }
 
             $targetUser = $request->route('user');
