@@ -1116,7 +1116,53 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
         CDN_STATIC_CACHE_TTL="7d"
     fi
     perl -0pi -e "s/__PP_STATIC_TTL__/${CDN_STATIC_CACHE_TTL}/g;" "${NGINX_DIR}/snippets/pteroprotect_server.conf"
+    # Keep static cache lane deterministic: never fall back into Laravel.
+    python3 - "${NGINX_DIR}/snippets/pteroprotect_server.conf" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+pattern = re.compile(
+    r'(location ~\* \\\.\(\?:css\|js\|mjs\|map\|jpg\|jpeg\|gif\|png\|webp\|avif\|ico\|svg\|woff\|woff2\|ttf\|eot\)\$ \{\n'
+    r'(?:    .*\n)*?)'
+    r'(    add_header Cache-Control "public, immutable"(?: always)?;\n)?'
+    r'(?:    access_log off;\n)?'
+    r'(?:    try_files \$uri \$uri/ /index\.php\?\$query_string;\n|    try_files \$uri =404;\n)?'
+    r'(\})',
+    re.M,
+)
+m = pattern.search(text)
+if m:
+    start = m.group(1)
+    end = m.group(4)
+    replacement = (
+        f"{start}"
+        '    add_header Cache-Control "public, immutable" always;\n'
+        "    access_log off;\n"
+        "    try_files $uri =404;\n"
+        f"{end}"
+    )
+    text = text[:m.start()] + replacement + text[m.end():]
+    path.write_text(text)
+PY
     perl -0pi -e "s/(zone=pteroprotect_req:20m rate=)\\d+(r\\/s;)/\${1}${HTTP_REQ_RATE}\${2}/g; s/(zone=pteroprotect_auth:10m rate=)\\d+(r\\/m;)/\${1}${HTTP_AUTH_REQ_RATE_PER_MIN}\${2}/g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
+
+    # Resolve the active panel vhost config path across distro/custom layouts.
+    PANEL_NGINX_CONF=""
+    if [[ -e "${NGINX_DIR}/sites-enabled/pterodactyl.conf" ]]; then
+        PANEL_NGINX_CONF="$(readlink -f "${NGINX_DIR}/sites-enabled/pterodactyl.conf" 2>/dev/null || true)"
+    fi
+    if [[ -z "${PANEL_NGINX_CONF}" && -f "${NGINX_DIR}/sites-available/pterodactyl.conf" ]]; then
+        PANEL_NGINX_CONF="${NGINX_DIR}/sites-available/pterodactyl.conf"
+    fi
+    if [[ -z "${PANEL_NGINX_CONF}" ]]; then
+        PANEL_NGINX_CONF="$(grep -Rsl "root ${PANEL_DIR}/public;" "${NGINX_DIR}/sites-available" "${NGINX_DIR}/sites-enabled" "${NGINX_DIR}/conf.d" 2>/dev/null | head -n1 || true)"
+    fi
+    if [[ -n "${PANEL_NGINX_CONF}" && ! -f "${PANEL_NGINX_CONF}" ]]; then
+        PANEL_NGINX_CONF=""
+    fi
     python3 - "${NGINX_DIR}/snippets/pteroprotect_server.conf" "${AUTH_CONN_LIMIT}" "${HTTP_AUTH_REQ_BURST}" <<'PY'
 import pathlib
 import re
@@ -1241,7 +1287,8 @@ elif "location /api/ {" not in text:
 path.write_text(text)
 PY
 
-    python3 - "${NGINX_DIR}/sites-available/pterodactyl.conf" <<'PY'
+    if [[ -n "${PANEL_NGINX_CONF}" ]]; then
+    python3 - "${PANEL_NGINX_CONF}" <<'PY'
 import pathlib
 import re
 import sys
@@ -1285,16 +1332,17 @@ if m:
     text = text[:m.start()] + new_block + text[m.end():]
     path.write_text(text)
 PY
-
-    if [[ -f "${NGINX_DIR}/sites-available/pterodactyl.conf" ]] && ! grep -q "pteroprotect_server.conf" "${NGINX_DIR}/sites-available/pterodactyl.conf"; then
-        perl -0pi -e 's/server_name\s+([^;]+);\n/server_name $1;\n\n    include \/etc\/nginx\/snippets\/pteroprotect_server.conf;\n/' "${NGINX_DIR}/sites-available/pterodactyl.conf"
     fi
 
-    if [[ -f "${NGINX_DIR}/sites-available/pterodactyl.conf" ]]; then
-        perl -0pi -e 's/access_log\s+off;/access_log \/var\/log\/nginx\/pteroprotect.access.log combined;/g;' "${NGINX_DIR}/sites-available/pterodactyl.conf"
-        perl -0pi -e "s/limit_conn pteroprotect_conn \\d+;/limit_conn pteroprotect_conn ${HTTP_CONN_LIMIT};/g; s/limit_req zone=pteroprotect_req burst=\\d+ nodelay;/limit_req zone=pteroprotect_req burst=${HTTP_REQ_BURST} nodelay;/g;" "${NGINX_DIR}/sites-available/pterodactyl.conf"
-        if ! grep -q "limit_conn pteroprotect_conn ${HTTP_CONN_LIMIT};" "${NGINX_DIR}/sites-available/pterodactyl.conf"; then
-            python3 - "${NGINX_DIR}/sites-available/pterodactyl.conf" "${HTTP_CONN_LIMIT}" "${HTTP_REQ_BURST}" <<'PY'
+    if [[ -n "${PANEL_NGINX_CONF}" && -f "${PANEL_NGINX_CONF}" ]] && ! grep -q "pteroprotect_server.conf" "${PANEL_NGINX_CONF}"; then
+        perl -0pi -e 's/server_name\s+([^;]+);\n/server_name $1;\n\n    include \/etc\/nginx\/snippets\/pteroprotect_server.conf;\n/' "${PANEL_NGINX_CONF}"
+    fi
+
+    if [[ -n "${PANEL_NGINX_CONF}" && -f "${PANEL_NGINX_CONF}" ]]; then
+        perl -0pi -e 's/access_log\s+off;/access_log \/var\/log\/nginx\/pteroprotect.access.log combined;/g;' "${PANEL_NGINX_CONF}"
+        perl -0pi -e "s/limit_conn pteroprotect_conn \\d+;/limit_conn pteroprotect_conn ${HTTP_CONN_LIMIT};/g; s/limit_req zone=pteroprotect_req burst=\\d+ nodelay;/limit_req zone=pteroprotect_req burst=${HTTP_REQ_BURST} nodelay;/g;" "${PANEL_NGINX_CONF}"
+        if ! grep -q "limit_conn pteroprotect_conn ${HTTP_CONN_LIMIT};" "${PANEL_NGINX_CONF}"; then
+            python3 - "${PANEL_NGINX_CONF}" "${HTTP_CONN_LIMIT}" "${HTTP_REQ_BURST}" <<'PY'
 import pathlib
 import sys
 
@@ -1317,7 +1365,7 @@ if needle in text and f"limit_conn pteroprotect_conn {conn_limit};" not in text:
 PY
         fi
 
-        python3 - "${NGINX_DIR}/sites-available/pterodactyl.conf" "${HTTP_CONN_LIMIT}" "${HTTP_REQ_BURST}" <<'PY'
+        python3 - "${PANEL_NGINX_CONF}" "${HTTP_CONN_LIMIT}" "${HTTP_REQ_BURST}" <<'PY'
 import pathlib
 import re
 import sys
@@ -1347,14 +1395,20 @@ replacement = (
 text = pattern.sub(replacement, text, count=1)
 path.write_text(text)
 PY
+    else
+        echo "[setup] warning: panel nginx vhost not found; skip vhost patching." >&2
     fi
 
     # Normalize duplicated challenge directives from previous/manual edits
     # so repeated setup runs remain nginx-safe.
-    python3 - \
-        "${NGINX_DIR}/sites-available/pterodactyl.conf" \
-        "${NGINX_DIR}/sites-enabled/pterodactyl.conf" \
-        "${NGINX_DIR}/snippets/pteroprotect_server.conf" <<'PY'
+    DEDUPE_TARGETS=("${NGINX_DIR}/snippets/pteroprotect_server.conf")
+    if [[ -n "${PANEL_NGINX_CONF}" ]]; then
+        DEDUPE_TARGETS=("${PANEL_NGINX_CONF}" "${DEDUPE_TARGETS[@]}")
+    fi
+    if [[ -e "${NGINX_DIR}/sites-enabled/pterodactyl.conf" ]]; then
+        DEDUPE_TARGETS+=("${NGINX_DIR}/sites-enabled/pterodactyl.conf")
+    fi
+    python3 - "${DEDUPE_TARGETS[@]}" <<'PY'
 from pathlib import Path
 import re
 import sys
