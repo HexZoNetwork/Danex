@@ -37,12 +37,17 @@
                                 <td><code>
                                     @if (Auth::user()->is($key->user))
                                         @php
-                                            $tokenSuffix = rescue(static fn () => decrypt($key->token), '****', false);
+                                            $tokenDecryptFailed = false;
+                                            $tokenSuffix = rescue(static fn () => decrypt($key->token), null, false);
                                             if (!is_string($tokenSuffix) || $tokenSuffix === '') {
                                                 $tokenSuffix = '****';
+                                                $tokenDecryptFailed = true;
                                             }
                                         @endphp
                                         {{ $key->identifier . $tokenSuffix }}
+                                        @if ($tokenDecryptFailed)
+                                            <br><small class="text-warning">Legacy key cannot be displayed. Revoke and create a new key.</small>
+                                        @endif
                                     @else
                                         {{ $key->identifier . '****' }}
                                     @endif
