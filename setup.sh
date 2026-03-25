@@ -531,17 +531,16 @@ BACKUP_FILE="${BACKUP_DIR}/dann_guard_backup_$(date -u +%Y%m%d_%H%M%S).tar.gz"
 tar --exclude='./obj' --exclude='./dann_guard' --exclude='./.git' --exclude='./backups' -C "${PROJECT_DIR}" -czf "${BACKUP_FILE}" .
 
 echo "[setup] syncing project workspace to ${INSTALL_DIR}..."
-existing_config_backup=""
-if [[ -f "${INSTALL_DIR}/config.json" ]]; then
-    existing_config_backup="$(mktemp)"
-    cp "${INSTALL_DIR}/config.json" "${existing_config_backup}"
-fi
 mkdir -p "${INSTALL_DIR}"
 tar --exclude='./obj' --exclude='./dann_guard' --exclude='./.git' -C "${PROJECT_DIR}" -cf - . | tar -C "${INSTALL_DIR}" -xf -
-if [[ -n "${existing_config_backup}" && -f "${existing_config_backup}" ]]; then
-    mv "${existing_config_backup}" "${INSTALL_DIR}/config.json"
+if [[ -f "${PROJECT_DIR}/config.json" ]]; then
+    cp "${PROJECT_DIR}/config.json" "${INSTALL_DIR}/config.json"
+    echo "[setup] config source: ${PROJECT_DIR}/config.json -> ${INSTALL_DIR}/config.json"
 elif [[ ! -f "${INSTALL_DIR}/config.json" && -f "${INSTALL_DIR}/config.example.json" ]]; then
     cp "${INSTALL_DIR}/config.example.json" "${INSTALL_DIR}/config.json"
+    echo "[setup] config source: ${INSTALL_DIR}/config.example.json (generated default)"
+elif [[ -f "${INSTALL_DIR}/config.json" ]]; then
+    echo "[setup] config source: existing ${INSTALL_DIR}/config.json"
 fi
 
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
@@ -2124,10 +2123,10 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
             PTEROPROTECT_IP_TRUST_BW_BAD_KBPS="${HOST_IP_TRUST_BW_BAD_KBPS}" \
             PTEROPROTECT_IP_TRUST_BW_WORST_KBPS="${HOST_IP_TRUST_BW_WORST_KBPS}" \
             PTEROPROTECT_IP_TRUST_BW_BURST_KB="${HOST_IP_TRUST_BW_BURST_KB}" \
-            "${INSTALL_DIR}/scripts/install_host_protection.sh" || true
+            "${INSTALL_DIR}/scripts/install_host_protection.sh"
     else
         echo "[setup] disabling host firewall protection to avoid false positives..."
-        PTEROPROTECT_FIREWALL_DISABLE="1" "${INSTALL_DIR}/scripts/install_host_protection.sh" || true
+        PTEROPROTECT_FIREWALL_DISABLE="1" "${INSTALL_DIR}/scripts/install_host_protection.sh"
     fi
 fi
 
@@ -2170,31 +2169,56 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
     fi
     if [[ -f "${SYSTEMD_DIR}/pteroprotect-hostguard.service" ]]; then
         if [[ "${HOST_FIREWALL_ENABLED}" == "1" ]]; then
-            systemctl enable pteroprotect-hostguard >/dev/null 2>&1 || true
-            systemctl restart pteroprotect-hostguard >/dev/null 2>&1 || systemctl start pteroprotect-hostguard >/dev/null 2>&1 || true
+            systemctl enable pteroprotect-hostguard >/dev/null 2>&1
+            if ! systemctl restart pteroprotect-hostguard >/dev/null 2>&1; then
+                systemctl start pteroprotect-hostguard >/dev/null 2>&1
+            fi
+            if ! systemctl is-active --quiet pteroprotect-hostguard; then
+                echo "[setup] error: pteroprotect-hostguard is not active after setup." >&2
+                exit 1
+            fi
         else
             systemctl disable --now pteroprotect-hostguard >/dev/null 2>&1 || true
         fi
     fi
     if [[ -f "${SYSTEMD_DIR}/pteroprotect-ddoslog.service" ]]; then
-        systemctl enable pteroprotect-ddoslog >/dev/null 2>&1 || true
-        systemctl restart pteroprotect-ddoslog >/dev/null 2>&1 || systemctl start pteroprotect-ddoslog >/dev/null 2>&1 || true
+        systemctl enable pteroprotect-ddoslog >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-ddoslog >/dev/null 2>&1; then
+            systemctl start pteroprotect-ddoslog >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-ddoslog; then
+            echo "[setup] error: pteroprotect-ddoslog is not active after setup." >&2
+            exit 1
+        fi
     fi
     if [[ -f "${SYSTEMD_DIR}/pteroprotect-unblock-portal.service" ]]; then
-        systemctl enable pteroprotect-unblock-portal >/dev/null 2>&1 || true
-        systemctl restart pteroprotect-unblock-portal >/dev/null 2>&1 || systemctl start pteroprotect-unblock-portal >/dev/null 2>&1 || true
+        systemctl enable pteroprotect-unblock-portal >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-unblock-portal >/dev/null 2>&1; then
+            systemctl start pteroprotect-unblock-portal >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-unblock-portal; then
+            echo "[setup] error: pteroprotect-unblock-portal is not active after setup." >&2
+            exit 1
+        fi
     fi
     if [[ -f "${SYSTEMD_DIR}/pteroprotect-challenge.service" ]]; then
-        systemctl enable pteroprotect-challenge >/dev/null 2>&1 || true
-        systemctl restart pteroprotect-challenge >/dev/null 2>&1 || systemctl start pteroprotect-challenge >/dev/null 2>&1 || true
+        systemctl enable pteroprotect-challenge >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-challenge >/dev/null 2>&1; then
+            systemctl start pteroprotect-challenge >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-challenge; then
+            echo "[setup] error: pteroprotect-challenge is not active after setup." >&2
+            exit 1
+        fi
     fi
     if systemctl list-unit-files 2>/dev/null | grep -q '^wings\.service'; then
-        systemctl enable wings >/dev/null 2>&1 || true
+        systemctl enable wings >/dev/null 2>&1
         if ! systemctl restart wings >/dev/null 2>&1; then
-            systemctl start wings >/dev/null 2>&1 || true
+            systemctl start wings >/dev/null 2>&1
         fi
         if ! systemctl is-active --quiet wings; then
-            echo "[setup] warning: wings is not active after applying NOFILE override." >&2
+            echo "[setup] error: wings is not active after applying NOFILE override." >&2
+            exit 1
         fi
     fi
 fi
