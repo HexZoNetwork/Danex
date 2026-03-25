@@ -46,6 +46,8 @@
       "host_http_access_per_window": 24,
       "host_http_ignore_path_regex": "^/api/.+/websocket$|^/api/remote/|^/api/application/",
       "host_log_tail_lines": 800,
+      "host_global_new_burst": 2400,
+      "host_global_new_per_sec": 1200,
       "host_new_conn_burst": 40,
       "host_new_conn_per_ip": 25,
       "host_recent_hitcount": 160,
@@ -116,6 +118,8 @@
       "self_ddos_server_req_threshold": 300,
       "ssh_conn_limit_per_ip": 10,
       "ssh_guard_enabled": true,
+      "ssh_global_new_burst": 220,
+      "ssh_global_new_per_sec": 90,
       "ssh_new_per_ip_burst": 30,
       "ssh_new_per_ip_per_min": 20,
       "service_activity_aggressive_threshold": 120,
@@ -167,8 +171,7 @@
       ],
       "rce_default_timeout_sec": 15,
       "trusted_hosts": [
-         "freepanel.gacor.kontol.gantengdann.my.id",
-         "node.freepanel.gantengdann.my.id"
+         "Wings Loe"
       ],
       "trusted_login_threshold_multiplier": 4,
       "trusted_login_ttl_sec": 2592000,

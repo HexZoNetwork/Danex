@@ -15,6 +15,7 @@ SELF_DDOS_RATE_IPSET4="pteroprotect_selfddos_rl_v4"
 SELF_DDOS_RATE_IPSET6="pteroprotect_selfddos_rl_v6"
 SELF_DDOS_RATE_CHAIN4="PTEROPROTECT-SELFDDOS-RL"
 SELF_DDOS_RATE_CHAIN6="PTEROPROTECT-SELFDDOS-RL-V6"
+SELF_DDOS_RATE_LIMIT_CHAIN_READY=0
 BW_IPSET4_PROBATION="pteroprotect_bw_probation_v4"
 BW_IPSET4_BAD="pteroprotect_bw_bad_v4"
 BW_IPSET4_WORST="pteroprotect_bw_worst_v4"
@@ -429,6 +430,7 @@ resolve_container_ips_by_server_identifier() {
 
 ensure_self_ddos_rate_limit_chains() {
     [[ "${SELF_DDOS_RATE_LIMIT_ENABLED:-0}" == "1" ]] || return 0
+    [[ "${SELF_DDOS_RATE_LIMIT_CHAIN_READY:-0}" == "1" ]] && return 0
     command -v iptables >/dev/null 2>&1 || return 0
     command -v ipset >/dev/null 2>&1 || return 0
 
@@ -440,11 +442,19 @@ ensure_self_ddos_rate_limit_chains() {
         iptables -C DOCKER-USER -j "${SELF_DDOS_RATE_CHAIN4}" >/dev/null 2>&1 || iptables -I DOCKER-USER 1 -j "${SELF_DDOS_RATE_CHAIN4}"
     fi
     iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    # Inbound flood protection to container IPs (self-ddos victim path): match destination container IP.
+    iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m set --match-set "${SELF_DDOS_RATE_IPSET4}" dst -p tcp -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_selfddos_tcp_in_v4 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+        --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode dstip --hashlimit-dstmask 32 -j DROP
+    iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m set --match-set "${SELF_DDOS_RATE_IPSET4}" dst -p udp -m hashlimit \
+        --hashlimit-name pteroprotect_selfddos_udp_in_v4 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+        --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode dstip --hashlimit-dstmask 32 -j DROP
+    # Outbound abuse protection from compromised container.
     iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m set --match-set "${SELF_DDOS_RATE_IPSET4}" src -p tcp -m conntrack --ctstate NEW -m hashlimit \
-        --hashlimit-name pteroprotect_selfddos_tcp --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+        --hashlimit-name pteroprotect_selfddos_tcp_out_v4 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
         --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
     iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m set --match-set "${SELF_DDOS_RATE_IPSET4}" src -p udp -m hashlimit \
-        --hashlimit-name pteroprotect_selfddos_udp --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+        --hashlimit-name pteroprotect_selfddos_udp_out_v4 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
         --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
     iptables -A "${SELF_DDOS_RATE_CHAIN4}" -j RETURN
 
@@ -457,14 +467,22 @@ ensure_self_ddos_rate_limit_chains() {
             ip6tables -C DOCKER-USER -j "${SELF_DDOS_RATE_CHAIN6}" >/dev/null 2>&1 || ip6tables -I DOCKER-USER 1 -j "${SELF_DDOS_RATE_CHAIN6}"
         fi
         ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+        ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m set --match-set "${SELF_DDOS_RATE_IPSET6}" dst -p tcp -m conntrack --ctstate NEW -m hashlimit \
+            --hashlimit-name pteroprotect_selfddos_tcp_in_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+            --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode dstip --hashlimit-dstmask 128 -j DROP
+        ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m set --match-set "${SELF_DDOS_RATE_IPSET6}" dst -p udp -m hashlimit \
+            --hashlimit-name pteroprotect_selfddos_udp_in_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+            --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode dstip --hashlimit-dstmask 128 -j DROP
         ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m set --match-set "${SELF_DDOS_RATE_IPSET6}" src -p tcp -m conntrack --ctstate NEW -m hashlimit \
-            --hashlimit-name pteroprotect_selfddos_tcp_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+            --hashlimit-name pteroprotect_selfddos_tcp_out_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
             --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
         ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m set --match-set "${SELF_DDOS_RATE_IPSET6}" src -p udp -m hashlimit \
-            --hashlimit-name pteroprotect_selfddos_udp_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+            --hashlimit-name pteroprotect_selfddos_udp_out_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
             --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
         ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -j RETURN
     fi
+
+    SELF_DDOS_RATE_LIMIT_CHAIN_READY=1
 }
 
 apply_self_ddos_rate_limit_for_server() {
@@ -1896,6 +1914,7 @@ while true; do
     SELF_DDOS_RATE_LIMIT_BURST="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_burst 20)" 1)"
     SELF_DDOS_RATE_LIMIT_TTL_SEC="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_ttl_sec 900)" 30)"
     SELF_DDOS_FLOW_WATCH_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_flow_watch_enabled 1)")"
+    SELF_DDOS_RATE_LIMIT_CHAIN_READY=0
     OWNER_QUARANTINE_THRESHOLD="$(clamp_min_int "$(read_network_setting owner_quarantine_threshold 5)" 1)"
     OWNER_QUARANTINE_WINDOW_SEC="$(clamp_min_int "$(read_network_setting owner_quarantine_window_sec 86400)" 300)"
     SCANNER_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting scanner_block_enabled 1)")"

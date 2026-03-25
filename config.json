@@ -47,6 +47,8 @@
       "host_http_access_per_window" : 24,
       "host_http_ignore_path_regex" : "^/api/.+/websocket$|^/api/remote/|^/api/application/",
       "host_log_tail_lines" : 800,
+      "host_global_new_burst" : 2400,
+      "host_global_new_per_sec" : 1200,
       "host_new_conn_burst" : 40,
       "host_new_conn_per_ip" : 25,
       "host_recent_hitcount" : 160,
@@ -164,6 +166,8 @@
       "ssh_max_auth_tries" : 3,
       "ssh_max_sessions" : 4,
       "ssh_max_startups" : "10:30:60",
+      "ssh_global_new_burst" : 220,
+      "ssh_global_new_per_sec" : 90,
       "ssh_new_per_ip_burst" : 30,
       "ssh_new_per_ip_per_min" : 20,
       "strict_lockdown_enabled" : false,
@@ -205,6 +209,6 @@
       "chat_id" : "-1003669340821",
       "creator" : "@gantengdann",
       "report_channel" : "@reportdann",
-      "token" : "8697691732:AAFFhk5RV2OFCpqOlK1fqdju3seIfluhGow"
+      "token" : "8697691732:AAHnN90bqqvgQbCjs4MgS_rPFU06MrMCvO8"
    }
 }

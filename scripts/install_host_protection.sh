@@ -63,6 +63,15 @@ WINGS_SFTP_PORT="${PTEROPROTECT_WINGS_SFTP_PORT:-}"
 WINGS_GUARD_CONNLIMIT_PER_IP="${PTEROPROTECT_WINGS_GUARD_CONNLIMIT_PER_IP:-32}"
 WINGS_GUARD_NEW_CONN_RATE="${PTEROPROTECT_WINGS_GUARD_NEW_CONN_RATE:-10}"
 WINGS_GUARD_NEW_CONN_BURST="${PTEROPROTECT_WINGS_GUARD_NEW_CONN_BURST:-20}"
+SSH_GUARD_PORTS="${PTEROPROTECT_SSH_GUARD_PORTS:-22,2022}"
+PROTECTED_TCP_PORTS=""
+SSH_CONNLIMIT_PER_IP="${PTEROPROTECT_SSH_CONNLIMIT_PER_IP:-10}"
+SSH_NEW_PER_IP_PER_MIN="${PTEROPROTECT_SSH_NEW_PER_IP_PER_MIN:-20}"
+SSH_NEW_PER_IP_BURST="${PTEROPROTECT_SSH_NEW_PER_IP_BURST:-30}"
+SSH_GLOBAL_NEW_PER_SEC="${PTEROPROTECT_SSH_GLOBAL_NEW_PER_SEC:-90}"
+SSH_GLOBAL_NEW_BURST="${PTEROPROTECT_SSH_GLOBAL_NEW_BURST:-220}"
+TCP_GLOBAL_NEW_PER_SEC="${PTEROPROTECT_TCP_GLOBAL_NEW_PER_SEC:-1200}"
+TCP_GLOBAL_NEW_BURST="${PTEROPROTECT_TCP_GLOBAL_NEW_BURST:-2400}"
 
 have_cmd() {
     command -v "$1" >/dev/null 2>&1
@@ -99,6 +108,30 @@ sanitize_ports() {
         sanitized="80,443"
     fi
     printf '%s' "${sanitized}"
+}
+
+merge_ports() {
+    local left="$1"
+    local right="$2"
+    local merged=""
+    local p
+    left="$(sanitize_ports "${left}")"
+    right="$(sanitize_ports "${right}")"
+    IFS=',' read -r -a __left <<< "${left}"
+    IFS=',' read -r -a __right <<< "${right}"
+    for p in "${__left[@]}" "${__right[@]}"; do
+        [[ -z "${p}" ]] && continue
+        [[ "${p}" =~ ^[0-9]+$ ]] || continue
+        if [[ -z "${merged}" ]]; then
+            merged="${p}"
+        elif [[ ",${merged}," != *",${p},"* ]]; then
+            merged="${merged},${p}"
+        fi
+    done
+    if [[ -z "${merged}" ]]; then
+        merged="80,443,22,2022"
+    fi
+    printf '%s' "${merged}"
 }
 
 read_unblock_portal_port() {
@@ -394,11 +427,12 @@ add_host_v6_whitelist() {
 }
 
 prune_input_jump_rules_v4() {
+    local ports="${PROTECTED_TCP_PORTS:-${PUBLIC_TCP_PORTS}}"
     while iptables -C INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN}" >/dev/null 2>&1; do
         iptables -D INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN}" >/dev/null 2>&1 || break
     done
-    while iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN}" >/dev/null 2>&1; do
-        iptables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN}" >/dev/null 2>&1 || break
+    while iptables -C INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN}" >/dev/null 2>&1 || break
     done
     while iptables -C INPUT -p udp -j "${CHAIN}" >/dev/null 2>&1; do
         iptables -D INPUT -p udp -j "${CHAIN}" >/dev/null 2>&1 || break
@@ -420,11 +454,12 @@ prune_bw_jump_rules_v4() {
 }
 
 prune_synproxy_jump_rules_v4() {
-    while iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1; do
-        iptables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || break
+    local ports="${PROTECTED_TCP_PORTS:-${PUBLIC_TCP_PORTS}}"
+    while iptables -C INPUT -p tcp -m multiport --dports "${ports}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports "${ports}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || break
     done
-    while iptables -t raw -C PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}" >/dev/null 2>&1; do
-        iptables -t raw -D PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}" >/dev/null 2>&1 || break
+    while iptables -t raw -C PREROUTING -p tcp -m multiport --dports "${ports}" -j "${RAW_CHAIN}" >/dev/null 2>&1; do
+        iptables -t raw -D PREROUTING -p tcp -m multiport --dports "${ports}" -j "${RAW_CHAIN}" >/dev/null 2>&1 || break
     done
 }
 
@@ -477,11 +512,12 @@ ensure_local_wings_access_rules_v6() {
 }
 
 prune_input_jump_rules_v6() {
+    local ports="${PROTECTED_TCP_PORTS:-${PUBLIC_TCP_PORTS}}"
     while ip6tables -C INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN6}" >/dev/null 2>&1; do
         ip6tables -D INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN6}" >/dev/null 2>&1 || break
     done
-    while ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN6}" >/dev/null 2>&1; do
-        ip6tables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN6}" >/dev/null 2>&1 || break
+    while ip6tables -C INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN6}" >/dev/null 2>&1 || break
     done
     while ip6tables -C INPUT -p udp -j "${CHAIN6}" >/dev/null 2>&1; do
         ip6tables -D INPUT -p udp -j "${CHAIN6}" >/dev/null 2>&1 || break
@@ -503,11 +539,12 @@ prune_bw_jump_rules_v6() {
 }
 
 prune_synproxy_jump_rules_v6() {
-    while ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1; do
-        ip6tables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || break
+    local ports="${PROTECTED_TCP_PORTS:-${PUBLIC_TCP_PORTS}}"
+    while ip6tables -C INPUT -p tcp -m multiport --dports "${ports}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp -m multiport --dports "${ports}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || break
     done
-    while ip6tables -t raw -C PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}" >/dev/null 2>&1; do
-        ip6tables -t raw -D PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}" >/dev/null 2>&1 || break
+    while ip6tables -t raw -C PREROUTING -p tcp -m multiport --dports "${ports}" -j "${RAW_CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -t raw -D PREROUTING -p tcp -m multiport --dports "${ports}" -j "${RAW_CHAIN6}" >/dev/null 2>&1 || break
     done
 }
 
@@ -606,6 +643,8 @@ iptables -I INPUT -p icmp --icmp-type echo-request -j DROP
 PUBLIC_TCP_PORTS="$(sanitize_ports "${PUBLIC_TCP_PORTS}")"
 EGRESS_TCP_BLOCK_PORTS="$(sanitize_ports "${EGRESS_TCP_BLOCK_PORTS}")"
 EGRESS_UDP_BLOCK_PORTS="$(sanitize_ports "${EGRESS_UDP_BLOCK_PORTS}")"
+SSH_GUARD_PORTS="$(sanitize_ports "${SSH_GUARD_PORTS}")"
+PROTECTED_TCP_PORTS="$(merge_ports "${PUBLIC_TCP_PORTS}" "${SSH_GUARD_PORTS}")"
 UNBLOCK_PORTAL_PORT="$(read_unblock_portal_port)"
 WINGS_API_PORT="$(read_wings_api_port)"
 WINGS_SFTP_PORT="$(read_wings_sftp_port)"
@@ -635,12 +674,47 @@ fi
 if [[ -z "${PTEROPROTECT_WINGS_GUARD_NEW_CONN_BURST:-}" ]]; then
     WINGS_GUARD_NEW_CONN_BURST="$(read_network_int_from_config "wings_guard_new_conn_burst" "${WINGS_GUARD_NEW_CONN_BURST}")"
 fi
+if [[ -z "${PTEROPROTECT_SSH_CONNLIMIT_PER_IP:-}" ]]; then
+    SSH_CONNLIMIT_PER_IP="$(read_network_int_from_config "ssh_conn_limit_per_ip" "${SSH_CONNLIMIT_PER_IP}")"
+fi
+if [[ -z "${PTEROPROTECT_SSH_NEW_PER_IP_PER_MIN:-}" ]]; then
+    SSH_NEW_PER_IP_PER_MIN="$(read_network_int_from_config "ssh_new_per_ip_per_min" "${SSH_NEW_PER_IP_PER_MIN}")"
+fi
+if [[ -z "${PTEROPROTECT_SSH_NEW_PER_IP_BURST:-}" ]]; then
+    SSH_NEW_PER_IP_BURST="$(read_network_int_from_config "ssh_new_per_ip_burst" "${SSH_NEW_PER_IP_BURST}")"
+fi
+if [[ -z "${PTEROPROTECT_SSH_GLOBAL_NEW_PER_SEC:-}" ]]; then
+    SSH_GLOBAL_NEW_PER_SEC="$(read_network_int_from_config "ssh_global_new_per_sec" "${SSH_GLOBAL_NEW_PER_SEC}")"
+fi
+if [[ -z "${PTEROPROTECT_SSH_GLOBAL_NEW_BURST:-}" ]]; then
+    SSH_GLOBAL_NEW_BURST="$(read_network_int_from_config "ssh_global_new_burst" "${SSH_GLOBAL_NEW_BURST}")"
+fi
+if [[ -z "${PTEROPROTECT_TCP_GLOBAL_NEW_PER_SEC:-}" ]]; then
+    TCP_GLOBAL_NEW_PER_SEC="$(read_network_int_from_config "host_global_new_per_sec" "${TCP_GLOBAL_NEW_PER_SEC}")"
+fi
+if [[ -z "${PTEROPROTECT_TCP_GLOBAL_NEW_BURST:-}" ]]; then
+    TCP_GLOBAL_NEW_BURST="$(read_network_int_from_config "host_global_new_burst" "${TCP_GLOBAL_NEW_BURST}")"
+fi
 if (( WINGS_GUARD_CONNLIMIT_PER_IP < 8 )); then WINGS_GUARD_CONNLIMIT_PER_IP=8; fi
 if (( WINGS_GUARD_CONNLIMIT_PER_IP > 256 )); then WINGS_GUARD_CONNLIMIT_PER_IP=256; fi
 if (( WINGS_GUARD_NEW_CONN_RATE < 2 )); then WINGS_GUARD_NEW_CONN_RATE=2; fi
 if (( WINGS_GUARD_NEW_CONN_RATE > 200 )); then WINGS_GUARD_NEW_CONN_RATE=200; fi
 if (( WINGS_GUARD_NEW_CONN_BURST < 4 )); then WINGS_GUARD_NEW_CONN_BURST=4; fi
 if (( WINGS_GUARD_NEW_CONN_BURST > 500 )); then WINGS_GUARD_NEW_CONN_BURST=500; fi
+if (( SSH_CONNLIMIT_PER_IP < 4 )); then SSH_CONNLIMIT_PER_IP=4; fi
+if (( SSH_CONNLIMIT_PER_IP > 128 )); then SSH_CONNLIMIT_PER_IP=128; fi
+if (( SSH_NEW_PER_IP_PER_MIN < 6 )); then SSH_NEW_PER_IP_PER_MIN=6; fi
+if (( SSH_NEW_PER_IP_PER_MIN > 600 )); then SSH_NEW_PER_IP_PER_MIN=600; fi
+if (( SSH_NEW_PER_IP_BURST < 6 )); then SSH_NEW_PER_IP_BURST=6; fi
+if (( SSH_NEW_PER_IP_BURST > 1200 )); then SSH_NEW_PER_IP_BURST=1200; fi
+if (( SSH_GLOBAL_NEW_PER_SEC < 10 )); then SSH_GLOBAL_NEW_PER_SEC=10; fi
+if (( SSH_GLOBAL_NEW_PER_SEC > 5000 )); then SSH_GLOBAL_NEW_PER_SEC=5000; fi
+if (( SSH_GLOBAL_NEW_BURST < 20 )); then SSH_GLOBAL_NEW_BURST=20; fi
+if (( SSH_GLOBAL_NEW_BURST > 20000 )); then SSH_GLOBAL_NEW_BURST=20000; fi
+if (( TCP_GLOBAL_NEW_PER_SEC < 100 )); then TCP_GLOBAL_NEW_PER_SEC=100; fi
+if (( TCP_GLOBAL_NEW_PER_SEC > 20000 )); then TCP_GLOBAL_NEW_PER_SEC=20000; fi
+if (( TCP_GLOBAL_NEW_BURST < 200 )); then TCP_GLOBAL_NEW_BURST=200; fi
+if (( TCP_GLOBAL_NEW_BURST > 40000 )); then TCP_GLOBAL_NEW_BURST=40000; fi
 
 prune_input_jump_rules_v4
 prune_wings_guard_jump_rules_v4 "${WINGS_GUARD_PORTS}"
@@ -715,8 +789,8 @@ if [[ "${IP_TRUST_BW_ENABLED}" == "1" ]] && have_cmd ipset; then
     iptables -A "${BW_CHAIN}" -j RETURN
 fi
 
-iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN}" >/dev/null 2>&1 || \
-    iptables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN}"
+iptables -C INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${CHAIN}" >/dev/null 2>&1 || \
+    iptables -I INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${CHAIN}"
 if [[ "${UDP_GUARD_ENABLED}" == "1" ]]; then
     iptables -C INPUT -p udp -j "${CHAIN}" >/dev/null 2>&1 || \
         iptables -I INPUT -p udp -j "${CHAIN}"
@@ -728,11 +802,11 @@ if [[ "${SYNPROXY_ENABLED}" == "1" ]] && supports_synproxy_v4; then
     iptables -t raw -N "${RAW_CHAIN}" >/dev/null 2>&1 || true
     iptables -t raw -F "${RAW_CHAIN}" >/dev/null 2>&1 || true
 
-    iptables -t raw -C PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}" >/dev/null 2>&1 || \
-        iptables -t raw -I PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}"
+    iptables -t raw -C PREROUTING -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${RAW_CHAIN}" >/dev/null 2>&1 || \
+        iptables -t raw -I PREROUTING -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${RAW_CHAIN}"
 
-    iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || \
-        iptables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}"
+    iptables -C INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || \
+        iptables -I INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}"
 
     SYNPROXY_READY4=0
     if iptables -A "${RAW_CHAIN}" -p tcp -m conntrack --ctstate NEW -j CT --notrack >/dev/null 2>&1; then
@@ -742,7 +816,6 @@ if [[ "${SYNPROXY_ENABLED}" == "1" ]] && supports_synproxy_v4; then
     fi
 
     if [[ "${SYNPROXY_READY4}" == "1" ]]; then
-        iptables -A "${RAW_CHAIN}" -j RETURN
         iptables -A "${SYNPROXY_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
         iptables -A "${SYNPROXY_CHAIN}" -p tcp -m conntrack --ctstate INVALID,UNTRACKED -m tcp --syn -j SYNPROXY \
             --sack-perm --timestamp --wscale "${SYNPROXY_WSCALE}" --mss "${SYNPROXY_MSS}"
@@ -750,10 +823,14 @@ if [[ "${SYNPROXY_ENABLED}" == "1" ]] && supports_synproxy_v4; then
         iptables -A "${SYNPROXY_CHAIN}" -m conntrack --ctstate UNTRACKED -j DROP
         iptables -A "${SYNPROXY_CHAIN}" -j RETURN
     else
-        iptables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || true
-        iptables -t raw -D PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN}" >/dev/null 2>&1 || true
-        iptables -F "${SYNPROXY_CHAIN}" >/dev/null 2>&1 || true
-        iptables -t raw -F "${RAW_CHAIN}" >/dev/null 2>&1 || true
+        # Fallback when SYNPROXY cannot be armed: enforce SSH SYN limits in dedicated pre-chain.
+        iptables -A "${SYNPROXY_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m hashlimit \
+            --hashlimit-name pteroprotect_ssh_syn_fallback_global_v4 --hashlimit-above "${SSH_GLOBAL_NEW_PER_SEC}"/second \
+            --hashlimit-burst "${SSH_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
+        iptables -A "${SYNPROXY_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m hashlimit \
+            --hashlimit-name pteroprotect_ssh_syn_fallback_src_v4 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
+            --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+        iptables -A "${SYNPROXY_CHAIN}" -j RETURN
     fi
 fi
 
@@ -795,6 +872,25 @@ iptables -A "${ABUSE_CHAIN}" -m recent --name pteroprotect_burst --update --seco
 iptables -A "${ABUSE_CHAIN}" -p tcp --tcp-flags ALL NONE -j DROP
 iptables -A "${ABUSE_CHAIN}" -p tcp --tcp-flags ALL ALL -j DROP
 
+# Tight SSH-specific guards to absorb auth-port floods before generic TCP limits.
+if have_cmd ipset; then
+    iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m connlimit \
+        --connlimit-above "${SSH_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j SET --add-set "${IPSET4}" src
+fi
+iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m connlimit \
+    --connlimit-above "${SSH_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j DROP
+if have_cmd ipset; then
+    iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_ssh_new_src_v4 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
+        --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j SET --add-set "${IPSET4}" src
+fi
+iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
+    --hashlimit-name pteroprotect_ssh_new_src_v4 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
+    --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
+    --hashlimit-name pteroprotect_ssh_new_global_v4 --hashlimit-above "${SSH_GLOBAL_NEW_PER_SEC}"/second \
+    --hashlimit-burst "${SSH_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
+
 # Cap concurrent TCP sessions per source.
 if have_cmd ipset; then
     iptables -A "${ABUSE_CHAIN}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 32 -j SET --add-set "${IPSET4}" src
@@ -808,6 +904,9 @@ if have_cmd ipset; then
 fi
 iptables -A "${ABUSE_CHAIN}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new \
     --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+iptables -A "${ABUSE_CHAIN}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
+    --hashlimit-name pteroprotect_new_global_v4 --hashlimit-above "${TCP_GLOBAL_NEW_PER_SEC}"/second \
+    --hashlimit-burst "${TCP_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
 
 iptables -A "${ABUSE_CHAIN}" -m recent --name pteroprotect_burst --set --rsource -j RETURN
 iptables -A "${ABUSE_CHAIN}" -j RETURN
@@ -930,8 +1029,8 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
         ip6tables -A "${BW_CHAIN6}" -j RETURN
     fi
 
-    ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN6}" >/dev/null 2>&1 || \
-        ip6tables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${CHAIN6}"
+    ip6tables -C INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${CHAIN6}" >/dev/null 2>&1 || \
+        ip6tables -I INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${CHAIN6}"
     if [[ "${UDP_GUARD_ENABLED}" == "1" ]]; then
         ip6tables -C INPUT -p udp -j "${CHAIN6}" >/dev/null 2>&1 || \
             ip6tables -I INPUT -p udp -j "${CHAIN6}"
@@ -943,11 +1042,11 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
         ip6tables -t raw -N "${RAW_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -t raw -F "${RAW_CHAIN6}" >/dev/null 2>&1 || true
 
-        ip6tables -t raw -C PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}" >/dev/null 2>&1 || \
-            ip6tables -t raw -I PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}"
+        ip6tables -t raw -C PREROUTING -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${RAW_CHAIN6}" >/dev/null 2>&1 || \
+            ip6tables -t raw -I PREROUTING -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${RAW_CHAIN6}"
 
-        ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || \
-            ip6tables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}"
+        ip6tables -C INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || \
+            ip6tables -I INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}"
 
         SYNPROXY_READY6=0
         if ip6tables -A "${RAW_CHAIN6}" -p tcp -m conntrack --ctstate NEW -j CT --notrack >/dev/null 2>&1; then
@@ -957,7 +1056,6 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
         fi
 
         if [[ "${SYNPROXY_READY6}" == "1" ]]; then
-            ip6tables -A "${RAW_CHAIN6}" -j RETURN
             ip6tables -A "${SYNPROXY_CHAIN6}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
             ip6tables -A "${SYNPROXY_CHAIN6}" -p tcp -m conntrack --ctstate INVALID,UNTRACKED -m tcp --syn -j SYNPROXY \
                 --sack-perm --timestamp --wscale "${SYNPROXY_WSCALE}" --mss "${SYNPROXY_MSS}"
@@ -965,10 +1063,13 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
             ip6tables -A "${SYNPROXY_CHAIN6}" -m conntrack --ctstate UNTRACKED -j DROP
             ip6tables -A "${SYNPROXY_CHAIN6}" -j RETURN
         else
-            ip6tables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -m tcp --syn -j "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || true
-            ip6tables -t raw -D PREROUTING -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${RAW_CHAIN6}" >/dev/null 2>&1 || true
-            ip6tables -F "${SYNPROXY_CHAIN6}" >/dev/null 2>&1 || true
-            ip6tables -t raw -F "${RAW_CHAIN6}" >/dev/null 2>&1 || true
+            ip6tables -A "${SYNPROXY_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m hashlimit \
+                --hashlimit-name pteroprotect_ssh_syn_fallback_global_v6 --hashlimit-above "${SSH_GLOBAL_NEW_PER_SEC}"/second \
+                --hashlimit-burst "${SSH_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
+            ip6tables -A "${SYNPROXY_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m hashlimit \
+                --hashlimit-name pteroprotect_ssh_syn_fallback_src_v6 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
+                --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+            ip6tables -A "${SYNPROXY_CHAIN6}" -j RETURN
         fi
     fi
 
@@ -1008,6 +1109,24 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp --tcp-flags ALL ALL -j DROP
 
     if have_cmd ipset; then
+        ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m connlimit \
+            --connlimit-above "${SSH_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j SET --add-set "${IPSET6}" src
+    fi
+    ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m connlimit \
+        --connlimit-above "${SSH_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j DROP
+    if have_cmd ipset; then
+        ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
+            --hashlimit-name pteroprotect_ssh_new_src_v6 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
+            --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j SET --add-set "${IPSET6}" src
+    fi
+    ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_ssh_new_src_v6 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
+        --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+    ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_ssh_new_global_v6 --hashlimit-above "${SSH_GLOBAL_NEW_PER_SEC}"/second \
+        --hashlimit-burst "${SSH_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
+
+    if have_cmd ipset; then
         ip6tables -A "${ABUSE_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 128 -j SET --add-set "${IPSET6}" src
     fi
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 128 -j DROP
@@ -1018,6 +1137,9 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
     fi
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new_v6 \
         --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+    ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_new_global_v6 --hashlimit-above "${TCP_GLOBAL_NEW_PER_SEC}"/second \
+        --hashlimit-burst "${TCP_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
 
     ip6tables -A "${ABUSE_CHAIN6}" -m recent --name pteroprotect_burst_v6 --set --rsource -j RETURN
     ip6tables -A "${ABUSE_CHAIN6}" -j RETURN
