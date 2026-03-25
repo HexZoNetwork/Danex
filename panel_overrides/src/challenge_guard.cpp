@@ -1410,10 +1410,12 @@ static void handle_client(int fd, std::string remote_ip) {
             auto it = g_nonce_map.find(nonce);
             if (it != g_nonce_map.end() &&
                 it->second.exp >= std::time(nullptr) &&
-                it->second.ip == ip &&
                 it->second.ua == ua_fp &&
                 !it->second.click_key.empty() &&
                 click_value == it->second.click_key) {
+                // Mobile/CDN paths can temporarily shift edge IP between requests.
+                // Keep nonce bound to current IP once the click handshake is valid.
+                it->second.ip = ip;
                 it->second.click_verified = true;
                 ok = true;
             }

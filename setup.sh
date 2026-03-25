@@ -1080,6 +1080,11 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     HTTP_AUTH_REQ_RATE_PER_MIN="$(read_network_setting http_auth_req_rate_per_min 20)"
     HTTP_AUTH_REQ_BURST="$(read_network_setting http_auth_req_burst 20)"
     CDN_STATIC_CACHE_TTL="$(read_network_setting cdn_static_cache_ttl 7d)"
+    REAL_IP_ENABLED_RAW="$(read_network_setting real_ip_enabled false)"
+    REAL_IP_HEADER="$(read_network_setting real_ip_header CF-Connecting-IP)"
+    REAL_IP_RECURSIVE_RAW="$(read_network_setting real_ip_recursive true)"
+    TRUSTED_PROXY_IPV4_CIDRS="$(read_network_setting trusted_proxy_ipv4_cidrs "")"
+    TRUSTED_PROXY_IPV6_CIDRS="$(read_network_setting trusted_proxy_ipv6_cidrs "")"
     AUTH_CONN_LIMIT=20
     WEBSOCKET_CONN_LIMIT="$(read_network_setting websocket_conn_limit "")"
     WEBSOCKET_GLOBAL_CONN_LIMIT="$(read_network_setting websocket_global_conn_limit "")"
@@ -1110,6 +1115,7 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     fi
     mkdir -p "${NGINX_DIR}/conf.d" "${NGINX_DIR}/snippets"
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_http_zones.conf" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
+    cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_realip.conf" "${NGINX_DIR}/conf.d/pteroprotect_realip.conf"
     cp "${INSTALL_DIR}/host_overrides/nginx/snippets/pteroprotect_server.conf" "${NGINX_DIR}/snippets/pteroprotect_server.conf"
     if [[ ! "${CDN_STATIC_CACHE_TTL}" =~ ^[0-9]+[smhdw]$ ]]; then
         CDN_STATIC_CACHE_TTL="7d"
@@ -1135,7 +1141,7 @@ pattern = re.compile(
 m = pattern.search(text)
 if m:
     start = m.group(1)
-    end = m.group(4)
+    end = m.group(3)
     replacement = (
         f"{start}"
         '    add_header Cache-Control "public, immutable" always;\n'
@@ -1147,6 +1153,77 @@ if m:
     path.write_text(text)
 PY
     perl -0pi -e "s/(zone=pteroprotect_req:20m rate=)\\d+(r\\/s;)/\${1}${HTTP_REQ_RATE}\${2}/g; s/(zone=pteroprotect_auth:10m rate=)\\d+(r\\/m;)/\${1}${HTTP_AUTH_REQ_RATE_PER_MIN}\${2}/g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
+    python3 - "${NGINX_DIR}/conf.d/pteroprotect_realip.conf" "${REAL_IP_ENABLED_RAW}" "${REAL_IP_HEADER}" "${REAL_IP_RECURSIVE_RAW}" "${TRUSTED_PROXY_IPV4_CIDRS}" "${TRUSTED_PROXY_IPV6_CIDRS}" <<'PY'
+import ipaddress
+import pathlib
+import sys
+
+
+def as_bool(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_csv(value: str):
+    out = []
+    for item in str(value).split(","):
+        item = item.strip()
+        if item:
+            out.append(item)
+    return out
+
+
+def normalize_cidrs(raw_list, version: int):
+    normalized = []
+    seen = set()
+    for item in raw_list:
+        try:
+            net = ipaddress.ip_network(item, strict=False)
+        except Exception:
+            continue
+        if net.version != version:
+            continue
+        text = net.with_prefixlen
+        if text not in seen:
+            seen.add(text)
+            normalized.append(text)
+    return normalized
+
+
+path = pathlib.Path(sys.argv[1])
+enabled = as_bool(sys.argv[2])
+header = str(sys.argv[3]).strip()
+recursive = as_bool(sys.argv[4])
+v4_raw = parse_csv(sys.argv[5])
+v6_raw = parse_csv(sys.argv[6])
+
+allowed_headers = {"CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP", "True-Client-IP"}
+if header not in allowed_headers:
+    header = "CF-Connecting-IP"
+
+v4 = normalize_cidrs(v4_raw, 4)
+v6 = normalize_cidrs(v6_raw, 6)
+
+lines = [
+    "# managed by pteroprotect setup.sh",
+    "# real_ip trust chain for CDN / reverse proxy edges",
+]
+if enabled and (v4 or v6):
+    lines.append(f"real_ip_header {header};")
+    lines.append(f"real_ip_recursive {'on' if recursive else 'off'};")
+    for cidr in v4:
+        lines.append(f"set_real_ip_from {cidr};")
+    for cidr in v6:
+        lines.append(f"set_real_ip_from {cidr};")
+else:
+    lines.extend(
+        [
+            "# real_ip disabled (set network.real_ip_enabled=true and provide trusted_proxy_*_cidrs)",
+            "# no set_real_ip_from entries were applied",
+        ]
+    )
+
+path.write_text("\n".join(lines) + "\n")
+PY
 
     # Resolve the active panel vhost config path across distro/custom layouts.
     PANEL_NGINX_CONF=""
