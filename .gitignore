@@ -12,7 +12,7 @@ installer/danex
 # Python cache
 __pycache__/
 *.pyc
-
+config.json
 # Archives and logs
 *.tar.gz
 *.log
