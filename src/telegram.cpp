@@ -38,6 +38,15 @@ size_t TelegramBot::write_callback(void* contents, size_t size, size_t nmemb, st
 }
 
 bool TelegramBot::send_html_message(const std::string& message) {
+    return send_html_message_to(chat_id, message);
+}
+
+bool TelegramBot::send_report_message(const std::string& message) {
+    const std::string& target = report_channel.empty() ? chat_id : report_channel;
+    return send_html_message_to(target, message);
+}
+
+bool TelegramBot::send_html_message_to(const std::string& target_chat_id, const std::string& message) {
     if (offline_mode_enabled()) {
         logger.warn("⚠️ Offline mode active, but telegram send still attempted");
     }
@@ -55,9 +64,9 @@ bool TelegramBot::send_html_message(const std::string& message) {
     std::string encoded_str(encoded_message);
     curl_free(encoded_message);
     
-    std::string post_fields = "chat_id=" + chat_id + "&text=" + encoded_str + "&parse_mode=HTML";
+    std::string post_fields = "chat_id=" + target_chat_id + "&text=" + encoded_str + "&parse_mode=HTML";
     
-    logger.info("📤 Sending to Telegram: " + chat_id);
+    logger.info("📤 Sending to Telegram: " + target_chat_id);
     
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_fields.c_str());

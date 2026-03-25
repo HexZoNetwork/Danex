@@ -1317,7 +1317,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
 
         logger.info("🚨 OFFLINE DROPPER ARTIFACT — " + srv.name + " (" + srv.uuid + ") | " + details +
                     (suspended ? " | SUSPENDED" : (container_stopped ? " | CONTAINER_STOPPED" : " | OBSERVED")));
-        bot.send_html_message(build_alert(
+        bot.send_report_message(build_alert(
             "OFFLINE DROPPER ARTIFACT", db_info,
             0.0, 0.0, srv.cpu_limit,
             0.0, 0, srv.mem_limit_bytes,
@@ -1433,7 +1433,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
 
             logger.info("🚨 CONSOLE / PAYLOAD ABUSE — " + srv.name + " (" + srv.uuid + ") | " +
                         det.str() + (suspended ? " | SUSPENDED" : " | OBSERVED"));
-            bot.send_html_message(build_alert(
+            bot.send_report_message(build_alert(
                 "CONSOLE / PAYLOAD ABUSE", db_info,
                 cpu_pct_raw_used, snap.cpu_absolute, srv.cpu_limit,
                 ram_pct_used, snap.mem_bytes, srv.mem_limit_bytes,
@@ -1712,7 +1712,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
                               (sigterm_sent ? "SIGTERM sent to container ✅" :
                               (container_stopped ? "Container stopped locally ✅" :
                                (restart_ok ? "Container restarted locally ✅" : "Observed only ⚠️")));
-    bot.send_html_message(build_alert(
+    bot.send_report_message(build_alert(
         abuse_type, db_info,
         cpu_pct_raw_used, snap.cpu_absolute, srv.cpu_limit,
         ram_pct_used, snap.mem_bytes, effective_mem_limit_bytes,

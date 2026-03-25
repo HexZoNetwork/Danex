@@ -23,7 +23,8 @@ public:
               const std::string& cr);
     
     bool send_html_message(const std::string& message);
-    
+    bool send_report_message(const std::string& message);
+
     void notify_suspend(const ServerInfo& info, const std::string& reason, 
                         const std::string& details, const std::string& action);
     
@@ -37,6 +38,9 @@ public:
     void notify_disk_over(const ServerInfo& info, double total_gb, int file_count);
     
     void notify_startup();
+
+private:
+    bool send_html_message_to(const std::string& target_chat_id, const std::string& message);
 };
 
 extern TelegramBot bot;

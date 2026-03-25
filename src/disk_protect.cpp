@@ -1491,7 +1491,7 @@ void DiskProtector::check_server(const std::string& uuid) {
         if (should_send_alert(uuid, alert_signature, now)) {
             std::string action_taken = suspended ? "suspended"
                 : (local_container_stopped ? "container_stopped" : "observe_only");
-            bot.send_html_message(rakit_laporan_server(
+            bot.send_report_message(rakit_laporan_server(
                 reason, disk_gb, spike_disk, total_mb_deleted, info, deleted, tcp_conns, biggest_sources, action_taken
             ));
         } else {
@@ -1530,7 +1530,7 @@ void DiskProtector::check_server(const std::string& uuid) {
         if (should_send_alert(uuid, alert_signature, now)) {
             std::string action_taken = suspended ? "suspended"
                 : (local_container_stopped ? "container_stopped" : (soft_only_quarantine ? "soft_quarantine" : "file_delete"));
-            bot.send_html_message(rakit_laporan_server(
+            bot.send_report_message(rakit_laporan_server(
                 file_alert_type, disk_gb, 0, total_mb_deleted, info, deleted, tcp_conns, biggest_sources, action_taken
             ));
         } else {
