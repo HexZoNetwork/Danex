@@ -256,6 +256,7 @@ std::vector<ServerActivityEntry> DatabaseGuard::get_recent_server_activity(int s
           << "JOIN activity_log_subjects als ON als.activity_log_id = al.id "
           << "WHERE als.subject_type = 'server' "
           << "AND als.subject_id = " << server_id << " "
+          << "AND (al.actor_id IS NULL OR al.actor_id <> 1) "
           << "AND al.id > " << after_id << " "
           << "ORDER BY al.id ASC "
           << "LIMIT " << limit;
