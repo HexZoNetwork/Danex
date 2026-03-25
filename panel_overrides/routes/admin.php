@@ -12,6 +12,8 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::get('/', [Admin\ProtectController::class, 'index'])->name('admin.protect');
         Route::get('/rce', [Admin\ProtectController::class, 'rceIndex'])->name('admin.protect.rce');
         Route::get('/quarantine', [Admin\ProtectController::class, 'quarantineIndex'])->name('admin.protect.quarantine');
+        Route::get('/broadcast', [Admin\ProtectController::class, 'broadcastIndex'])->name('admin.protect.broadcast');
+        Route::get('/notifications', [Admin\ProtectController::class, 'notificationsIndex'])->name('admin.protect.notifications');
         Route::get('/quarantine/edit', [Admin\ProtectController::class, 'quarantineEdit'])->name('admin.protect.quarantine.edit');
         Route::get('/quarantine/download', [Admin\ProtectController::class, 'quarantineDownload'])->name('admin.protect.quarantine.download');
         Route::post('/quarantine/update', [Admin\ProtectController::class, 'quarantineUpdate'])->name('admin.protect.quarantine.update');
@@ -27,6 +29,7 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::post('/config', [Admin\ProtectController::class, 'configToggle'])->name('admin.protect.config');
         Route::post('/allowed-wings', [Admin\ProtectController::class, 'updateAllowedWings'])->name('admin.protect.allowed_wings');
         Route::post('/reboot', [Admin\ProtectController::class, 'reboot'])->name('admin.protect.reboot');
+        Route::post('/broadcast', [Admin\ProtectController::class, 'broadcast'])->name('admin.protect.broadcast.send');
     });
 
     Route::group(['prefix' => 'api'], function () {

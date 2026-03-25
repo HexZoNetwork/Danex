@@ -184,6 +184,19 @@
             <li><a href="{{ route('admin.protect') }}">Protection Control</a></li>
             <li><a href="{{ route('admin.protect.rce') }}">RCE Console</a></li>
             <li class="active"><a href="{{ route('admin.protect.quarantine') }}">Quarantine Files</a></li>
+            <li><a href="{{ route('admin.protect.broadcast') }}">Broadcast</a></li>
+            <li><a href="{{ route('admin.protect.notifications') }}">Notifications</a></li>
+        </ul>
+    </div>
+</div>
+<div style="height: 10px;"></div>
+
+<div class="row">
+    <div class="col-md-12">
+        <ul class="nav nav-tabs pp-tabs">
+            <li><a href="{{ route('admin.protect') }}">Protection Control</a></li>
+            <li><a href="{{ route('admin.protect.rce') }}">RCE Console</a></li>
+            <li class="active"><a href="{{ route('admin.protect.quarantine') }}">Quarantine Files</a></li>
         </ul>
     </div>
 </div>

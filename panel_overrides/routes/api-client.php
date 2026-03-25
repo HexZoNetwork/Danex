@@ -33,6 +33,11 @@ Route::prefix('/chat')->withoutMiddleware('throttle:api')->group(function () {
     Route::post('/conversations/{conversation}/members/{member}/admin', [Client\PublicChatController::class, 'setGroupAdmin'])->middleware('throttle:30,1');
     Route::get('/messages', [Client\PublicChatController::class, 'index']);
     Route::post('/messages', [Client\PublicChatController::class, 'store'])->middleware('throttle:40,1');
+    Route::post('/presence', [Client\PublicChatController::class, 'presence'])->middleware('throttle:180,1');
+    Route::get('/notifications', [Client\PublicChatController::class, 'notifications']);
+    Route::post('/notifications/read', [Client\PublicChatController::class, 'readNotifications']);
+    Route::post('/notifications/mute', [Client\PublicChatController::class, 'muteNotifications']);
+    Route::post('/notifications/unmute', [Client\PublicChatController::class, 'unmuteNotifications']);
     Route::get('/calls/state', [Client\PublicChatController::class, 'callState']);
     Route::post('/calls/start', [Client\PublicChatController::class, 'startCall'])->middleware('throttle:30,1');
     Route::post('/calls/join', [Client\PublicChatController::class, 'joinCall']);

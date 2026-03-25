@@ -19,15 +19,20 @@ class PublicChatController extends ClientApiController
     private const DEFAULT_LIMIT = 50;
     private const MAX_LIMIT = 100;
     private const MAX_MESSAGE_LENGTH = 2000;
+    private const PRESENCE_ONLINE_WINDOW_SECONDS = 75;
+    private const NOTIFICATION_MAX_LIMIT = 120;
     private const REACTION_ALLOWLIST = ['👍', '❤️', '🔥', '😂', '😮', '😢'];
     private static ?bool $hasParticipantRoleColumn = null;
     private static ?bool $hasReactionTable = null;
     private static ?bool $hasMuteTable = null;
     private static ?bool $hasCallTables = null;
+    private static ?bool $hasPresenceTable = null;
+    private static ?bool $hasNotificationTables = null;
 
     public function conversations(Request $request): JsonResponse
     {
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $global = $this->globalConversation();
 
         $conversations = ChatConversation::query()
@@ -58,9 +63,41 @@ class PublicChatController extends ClientApiController
                 $muteMap[(int) $row->conversation_id . ':' . (int) $row->user_id] = $row->expires_at ? (string) $row->expires_at : null;
             }
         }
+        $notificationMuteMap = [];
+        if ($this->hasNotificationTables()) {
+            $nRows = DB::table('chat_notification_mutes')
+                ->where('user_id', (int) $user->id)
+                ->whereIn('conversation_id', $conversations->pluck('id')->all())
+                ->where(function ($query) {
+                    $query->whereNull('muted_until')->orWhere('muted_until', '>', now());
+                })
+                ->get(['conversation_id', 'muted_until']);
+            foreach ($nRows as $row) {
+                $notificationMuteMap[(int) $row->conversation_id] = $row->muted_until ? (string) $row->muted_until : null;
+            }
+        }
+
+        $presenceMap = [];
+        if ($this->hasPresenceTable()) {
+            $memberIds = $conversations->flatMap(fn (ChatConversation $conversation) => $conversation->participants->pluck('id'))
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->all();
+
+            if ($memberIds !== []) {
+                $presenceRows = DB::table('chat_user_presence')
+                    ->whereIn('user_id', $memberIds)
+                    ->get(['user_id', 'last_seen_at']);
+
+                foreach ($presenceRows as $row) {
+                    $presenceMap[(int) $row->user_id] = $row->last_seen_at ? (string) $row->last_seen_at : null;
+                }
+            }
+        }
 
         return new JsonResponse([
-            'data' => $conversations->map(function (ChatConversation $conversation) use ($user, $latest, $muteMap) {
+            'data' => $conversations->map(function (ChatConversation $conversation) use ($user, $latest, $muteMap, $presenceMap, $notificationMuteMap) {
                 $memberList = $conversation->participants->map(fn ($member) => [
                     'id' => (int) $member->id,
                     'username' => (string) $member->username,
@@ -70,6 +107,8 @@ class PublicChatController extends ClientApiController
                     'created_at' => optional($member->created_at)?->toIso8601String(),
                     'role' => (string) ($member->pivot->role ?? 'member'),
                     'muted_until' => $muteMap[(int) $conversation->id . ':' . (int) $member->id] ?? null,
+                    'last_seen_at' => $presenceMap[(int) $member->id] ?? null,
+                    'is_online' => $this->isPresenceOnline($presenceMap[(int) $member->id] ?? null),
                 ])->values();
 
                 $name = (string) ($conversation->name ?? '');
@@ -86,8 +125,10 @@ class PublicChatController extends ClientApiController
                     'id' => (int) $conversation->id,
                     'type' => (string) $conversation->type,
                     'name' => $name !== '' ? $name : ucfirst((string) $conversation->type),
+                    'avatar_url' => $this->sanitizeMediaUrl((string) ($conversation->avatar_url ?? '')) ?: null,
                     'group_username' => $conversation->group_username,
                     'group_code' => $conversation->group_code,
+                    'notification_muted_until' => $notificationMuteMap[(int) $conversation->id] ?? null,
                     'members' => $memberList,
                     'last_message_at' => $last?->created_at?->toIso8601String(),
                 ];
@@ -177,6 +218,7 @@ class PublicChatController extends ClientApiController
             'name' => 'required|string|min:2|max:80',
             'group_username' => 'required|string|min:3|max:32|regex:/^[a-zA-Z0-9._-]+$/',
             'group_code' => 'sometimes|nullable|string|min:4|max:32|regex:/^[a-zA-Z0-9._-]+$/',
+            'avatar_url' => 'sometimes|nullable|url|max:2048',
             'member_usernames' => 'sometimes|array|max:50',
             'member_usernames.*' => 'string|exists:users,username',
         ]);
@@ -202,6 +244,7 @@ class PublicChatController extends ClientApiController
         $conversation = ChatConversation::query()->create([
             'type' => 'group',
             'name' => trim((string) $validated['name']),
+            'avatar_url' => $this->sanitizeMediaUrl((string) ($validated['avatar_url'] ?? '')) ?: null,
             'group_username' => $groupUsername,
             'group_code' => $groupCode,
             'created_by' => (int) $user->id,
@@ -228,6 +271,7 @@ class PublicChatController extends ClientApiController
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'sometimes|integer|min:1',
             'limit' => 'sometimes|integer|min:1|max:' . self::MAX_LIMIT,
@@ -268,6 +312,7 @@ class PublicChatController extends ClientApiController
     public function store(Request $request): JsonResponse
     {
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
             'message' => 'nullable|string|max:' . self::MAX_MESSAGE_LENGTH,
@@ -313,6 +358,7 @@ class PublicChatController extends ClientApiController
             'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
             'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
         );
+        $this->notifyConversationMessage((int) $conversation->id, (int) $user->id, $body !== '' ? $body : null);
 
         return new JsonResponse([
             'data' => $this->transformMessage($message, (int) $user->id, ['counts' => [], 'readByOthers' => []], ['byMessage' => [], 'mine' => []], ['byMessage' => [], 'mine' => []]),
@@ -322,6 +368,7 @@ class PublicChatController extends ClientApiController
     public function storePoll(Request $request): JsonResponse
     {
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
             'question' => 'required|string|min:2|max:255',
@@ -351,6 +398,7 @@ class PublicChatController extends ClientApiController
         ]);
 
         $message->load('user:id,username,name_first,name_last,email,avatar_url,birthday,created_at');
+        $this->notifyConversationMessage((int) $conversation->id, (int) $user->id, '[Poll] ' . trim((string) $validated['question']));
 
         return new JsonResponse([
             'data' => $this->transformMessage($message, (int) $user->id, ['counts' => [], 'readByOthers' => []], ['byMessage' => [], 'mine' => []], ['byMessage' => [], 'mine' => []]),
@@ -411,6 +459,7 @@ class PublicChatController extends ClientApiController
             'name' => 'sometimes|string|min:2|max:80',
             'group_username' => 'sometimes|string|min:3|max:32|regex:/^[a-zA-Z0-9._-]+$/',
             'group_code' => 'sometimes|string|min:4|max:32|regex:/^[a-zA-Z0-9._-]+$/',
+            'avatar_url' => 'sometimes|nullable|url|max:2048',
         ]);
 
         if (array_key_exists('name', $validated)) {
@@ -432,6 +481,9 @@ class PublicChatController extends ClientApiController
                 return new JsonResponse(['error' => 'Group code is already taken.'], 422);
             }
             $model->group_code = $groupCode;
+        }
+        if (array_key_exists('avatar_url', $validated)) {
+            $model->avatar_url = $this->sanitizeMediaUrl((string) ($validated['avatar_url'] ?? '')) ?: null;
         }
         $model->save();
 
@@ -694,6 +746,7 @@ class PublicChatController extends ClientApiController
     public function markRead(Request $request): JsonResponse
     {
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
             'message_ids' => 'sometimes|array|max:200',
@@ -758,6 +811,7 @@ class PublicChatController extends ClientApiController
         }
 
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
             'since_id' => 'sometimes|integer|min:0',
@@ -809,6 +863,7 @@ class PublicChatController extends ClientApiController
         }
 
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
         ]);
@@ -838,6 +893,7 @@ class PublicChatController extends ClientApiController
         }
 
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
         ]);
@@ -860,6 +916,7 @@ class PublicChatController extends ClientApiController
         }
 
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
         ]);
@@ -890,6 +947,7 @@ class PublicChatController extends ClientApiController
         }
 
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
         ]);
@@ -925,6 +983,7 @@ class PublicChatController extends ClientApiController
         }
 
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
             'type' => 'required|string|in:offer,answer,ice,ring,ring_response',
@@ -956,6 +1015,22 @@ class PublicChatController extends ClientApiController
             (string) $validated['type'],
             $payload
         );
+        if ((string) $validated['type'] === 'ring' && $toUserId !== null) {
+            $callerName = trim((string) (($user->name_first ?? '') . ' ' . ($user->name_last ?? '')));
+            if ($callerName === '') {
+                $callerName = (string) $user->username;
+            }
+            $this->createNotification(
+                $toUserId,
+                (int) $conversation->id,
+                (int) $user->id,
+                'call',
+                'Incoming Call',
+                $callerName . ' is calling you',
+                $this->avatarUrlForUser($user),
+                ['signal_id' => $signalId]
+            );
+        }
 
         return new JsonResponse(['ok' => true, 'data' => ['signal_id' => $signalId]]);
     }
@@ -967,6 +1042,7 @@ class PublicChatController extends ClientApiController
         }
 
         $user = $request->user();
+        $this->touchPresence((int) $user->id);
         $validated = $request->validate([
             'conversation_id' => 'required|integer|min:1',
             'muted' => 'sometimes|boolean',
@@ -991,6 +1067,169 @@ class PublicChatController extends ClientApiController
             ->where('call_session_id', (int) $session->id)
             ->where('user_id', (int) $user->id)
             ->update($update);
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function presence(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+
+        return new JsonResponse([
+            'ok' => true,
+            'data' => [
+                'user_id' => (int) $user->id,
+                'is_online' => true,
+                'server_time' => now()->toIso8601String(),
+            ],
+        ]);
+    }
+
+    public function notifications(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'since_id' => 'sometimes|integer|min:0',
+            'limit' => 'sometimes|integer|min:1|max:' . self::NOTIFICATION_MAX_LIMIT,
+        ]);
+
+        if (!$this->hasNotificationTables()) {
+            return new JsonResponse(['data' => [], 'unread_count' => 0, 'last_notification_id' => (int) ($validated['since_id'] ?? 0)]);
+        }
+
+        $sinceId = (int) ($validated['since_id'] ?? 0);
+        $limit = (int) ($validated['limit'] ?? 60);
+        $rows = DB::table('chat_notifications')
+            ->where('user_id', (int) $user->id)
+            ->where('id', '>', $sinceId)
+            ->orderBy('id')
+            ->limit($limit)
+            ->get(['id', 'conversation_id', 'from_user_id', 'source_type', 'title', 'body', 'avatar_url', 'meta', 'created_at']);
+
+        $ids = $rows->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $readMap = [];
+        if ($ids !== []) {
+            $readMap = DB::table('chat_notification_reads')
+                ->where('user_id', (int) $user->id)
+                ->whereIn('notification_id', $ids)
+                ->pluck('read_at', 'notification_id')
+                ->toArray();
+        }
+        $unreadCount = DB::table('chat_notifications as n')
+            ->where('n.user_id', (int) $user->id)
+            ->whereNotExists(function ($query) use ($user) {
+                $query->select(DB::raw(1))
+                    ->from('chat_notification_reads as r')
+                    ->whereColumn('r.notification_id', 'n.id')
+                    ->where('r.user_id', (int) $user->id);
+            })
+            ->count();
+
+        $lastId = $sinceId;
+        foreach ($rows as $row) {
+            $lastId = max($lastId, (int) $row->id);
+        }
+
+        return new JsonResponse([
+            'data' => $rows->map(function ($row) use ($readMap) {
+                $id = (int) $row->id;
+                return [
+                    'id' => $id,
+                    'conversation_id' => $row->conversation_id !== null ? (int) $row->conversation_id : null,
+                    'from_user_id' => $row->from_user_id !== null ? (int) $row->from_user_id : null,
+                    'source_type' => (string) $row->source_type,
+                    'title' => (string) $row->title,
+                    'body' => $row->body !== null ? (string) $row->body : null,
+                    'avatar_url' => $row->avatar_url !== null ? (string) $row->avatar_url : null,
+                    'meta' => $this->decodeJsonPayload($row->meta),
+                    'created_at' => $row->created_at ? (string) $row->created_at : null,
+                    'read' => array_key_exists($id, $readMap),
+                ];
+            })->values(),
+            'unread_count' => (int) $unreadCount,
+            'last_notification_id' => $lastId,
+        ]);
+    }
+
+    public function readNotifications(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'notification_ids' => 'sometimes|array|max:500',
+            'notification_ids.*' => 'integer|min:1',
+        ]);
+        if (!$this->hasNotificationTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $ids = array_values(array_unique(array_map('intval', (array) ($validated['notification_ids'] ?? []))));
+        if ($ids === []) {
+            $ids = DB::table('chat_notifications')
+                ->where('user_id', (int) $user->id)
+                ->orderByDesc('id')
+                ->limit(500)
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->all();
+        }
+
+        $rows = array_map(fn (int $id) => [
+            'notification_id' => $id,
+            'user_id' => (int) $user->id,
+            'read_at' => now(),
+        ], $ids);
+        if ($rows !== []) {
+            DB::table('chat_notification_reads')->upsert($rows, ['notification_id', 'user_id'], ['read_at']);
+        }
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function muteNotifications(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'minutes' => 'sometimes|nullable|integer|min:1|max:10080',
+        ]);
+        if (!$this->hasNotificationTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $minutes = (int) ($validated['minutes'] ?? 0);
+        $until = $minutes > 0 ? now()->addMinutes($minutes) : null;
+        DB::table('chat_notification_mutes')->upsert([
+            'user_id' => (int) $user->id,
+            'conversation_id' => (int) $conversation->id,
+            'muted_until' => $until,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], ['user_id', 'conversation_id'], ['muted_until', 'updated_at']);
+
+        return new JsonResponse(['ok' => true, 'data' => ['muted_until' => optional($until)?->toIso8601String()]]);
+    }
+
+    public function unmuteNotifications(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        if (!$this->hasNotificationTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        DB::table('chat_notification_mutes')
+            ->where('user_id', (int) $user->id)
+            ->where('conversation_id', (int) $conversation->id)
+            ->delete();
 
         return new JsonResponse(['ok' => true]);
     }
@@ -1439,6 +1678,170 @@ class PublicChatController extends ClientApiController
         }
 
         return self::$hasParticipantRoleColumn;
+    }
+
+    private function hasPresenceTable(): bool
+    {
+        if (self::$hasPresenceTable === null) {
+            self::$hasPresenceTable = Schema::hasTable('chat_user_presence');
+        }
+
+        return self::$hasPresenceTable;
+    }
+
+    private function hasNotificationTables(): bool
+    {
+        if (self::$hasNotificationTables === null) {
+            self::$hasNotificationTables = Schema::hasTable('chat_notifications')
+                && Schema::hasTable('chat_notification_reads')
+                && Schema::hasTable('chat_notification_mutes');
+        }
+
+        return self::$hasNotificationTables;
+    }
+
+    private function touchPresence(int $userId): void
+    {
+        if ($userId <= 0 || !$this->hasPresenceTable()) {
+            return;
+        }
+
+        $now = now();
+        DB::table('chat_user_presence')->upsert([
+            'user_id' => $userId,
+            'last_seen_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], ['user_id'], ['last_seen_at', 'updated_at']);
+    }
+
+    private function isPresenceOnline(?string $lastSeenAt): bool
+    {
+        if (!$lastSeenAt) {
+            return false;
+        }
+        try {
+            return now()->diffInSeconds(\Illuminate\Support\Carbon::parse($lastSeenAt), false) >= -self::PRESENCE_ONLINE_WINDOW_SECONDS;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function isNotificationMuted(int $userId, int $conversationId): bool
+    {
+        if (!$this->hasNotificationTables()) {
+            return false;
+        }
+
+        return DB::table('chat_notification_mutes')
+            ->where('user_id', $userId)
+            ->where('conversation_id', $conversationId)
+            ->where(function ($query) {
+                $query->whereNull('muted_until')->orWhere('muted_until', '>', now());
+            })
+            ->exists();
+    }
+
+    private function createNotification(
+        int $userId,
+        ?int $conversationId,
+        ?int $fromUserId,
+        string $sourceType,
+        string $title,
+        ?string $body,
+        ?string $avatarUrl,
+        ?array $meta = null
+    ): void {
+        if ($userId <= 0 || !$this->hasNotificationTables()) {
+            return;
+        }
+
+        DB::table('chat_notifications')->insert([
+            'user_id' => $userId,
+            'conversation_id' => $conversationId,
+            'from_user_id' => $fromUserId,
+            'source_type' => mb_substr(trim($sourceType), 0, 24),
+            'title' => mb_substr(trim($title), 0, 191),
+            'body' => $body !== null ? mb_substr(trim($body), 0, 2000) : null,
+            'avatar_url' => $avatarUrl ? mb_substr(trim($avatarUrl), 0, 2048) : null,
+            'meta' => $meta ? json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+            'created_at' => now(),
+        ]);
+    }
+
+    private function notifyConversationMessage(int $conversationId, int $fromUserId, ?string $body): void
+    {
+        if (!$this->hasNotificationTables()) {
+            return;
+        }
+
+        $conversation = ChatConversation::query()->whereKey($conversationId)->first();
+        if (!$conversation) {
+            return;
+        }
+        $fromUser = User::query()->whereKey($fromUserId)->first();
+        if (!$fromUser) {
+            return;
+        }
+
+        $fromName = trim((string) (($fromUser->name_first ?? '') . ' ' . ($fromUser->name_last ?? '')));
+        if ($fromName === '') {
+            $fromName = (string) $fromUser->username;
+        }
+        $bodyText = trim((string) ($body ?? ''));
+        if ($bodyText === '') {
+            $bodyText = 'Sent a new message';
+        }
+
+        $recipientIds = [];
+        if ($conversation->type === 'global') {
+            $recipientIds = DB::table('public_chat_messages')
+                ->where('conversation_id', (int) $conversation->id)
+                ->where('user_id', '!=', $fromUserId)
+                ->distinct()
+                ->pluck('user_id')
+                ->map(fn ($id) => (int) $id)
+                ->values()
+                ->all();
+        } else {
+            $recipientIds = DB::table('chat_conversation_participants')
+                ->where('conversation_id', (int) $conversation->id)
+                ->where('user_id', '!=', $fromUserId)
+                ->pluck('user_id')
+                ->map(fn ($id) => (int) $id)
+                ->values()
+                ->all();
+        }
+
+        $avatar = null;
+        if ($conversation->type === 'group') {
+            $avatar = $this->sanitizeMediaUrl((string) ($conversation->avatar_url ?? '')) ?: null;
+        }
+        if ($avatar === null) {
+            $avatar = $this->avatarUrlForUser($fromUser);
+        }
+
+        foreach ($recipientIds as $recipientId) {
+            if ($recipientId <= 0 || $recipientId === $fromUserId) {
+                continue;
+            }
+            if ($this->isNotificationMuted($recipientId, (int) $conversation->id)) {
+                continue;
+            }
+            $title = $conversation->type === 'private'
+                ? $fromName
+                : (($conversation->name ?: ucfirst((string) $conversation->type)) . ' • ' . $fromName);
+            $this->createNotification(
+                $recipientId,
+                (int) $conversation->id,
+                $fromUserId,
+                $conversation->type === 'private' ? 'dm' : ($conversation->type === 'group' ? 'group' : 'global'),
+                $title,
+                $bodyText,
+                $avatar,
+                ['conversation_type' => (string) $conversation->type]
+            );
+        }
     }
 
     private function canModerateConversation(int $conversationId, string $type, int $actorId): bool

@@ -4,7 +4,9 @@ namespace Pterodactyl\Http\Controllers\Admin;
 
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Illuminate\View\View;
 use Prologue\Alerts\AlertsMessageBag;
@@ -105,6 +107,109 @@ class ProtectController extends Controller
             'quarantineDirName' => $quarantineInfo['dirName'],
             'postProtectToken' => $this->expectedToken(),
         ]);
+    }
+
+    public function broadcastIndex(Request $request): View|RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $history = collect();
+        if ($this->hasChatNotificationTable()) {
+            $history = DB::table('chat_notifications')
+                ->where('source_type', 'system')
+                ->orderByDesc('id')
+                ->limit(80)
+                ->get(['id', 'title', 'body', 'created_at']);
+        }
+
+        return view('admin.protect.broadcast', [
+            'postProtectToken' => $this->expectedToken(),
+            'history' => $history,
+        ]);
+    }
+
+    public function notificationsIndex(Request $request): View|RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $history = collect();
+        if ($this->hasChatNotificationTable()) {
+            $history = DB::table('chat_notifications as n')
+                ->leftJoin('chat_conversations as c', 'c.id', '=', 'n.conversation_id')
+                ->leftJoin('users as u', 'u.id', '=', 'n.from_user_id')
+                ->orderByDesc('n.id')
+                ->limit(200)
+                ->get([
+                    'n.id',
+                    'n.user_id',
+                    'n.conversation_id',
+                    'n.from_user_id',
+                    'n.source_type',
+                    'n.title',
+                    'n.body',
+                    'n.created_at',
+                    'c.name as conversation_name',
+                    'u.username as from_username',
+                ]);
+        }
+
+        return view('admin.protect.notifications', [
+            'history' => $history,
+        ]);
+    }
+
+    public function broadcast(Request $request): RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        if (!$this->hasChatNotificationTable()) {
+            $this->alert->danger('Chat notification table belum siap. Jalankan migration chat terbaru.')->flash();
+            return redirect()->route('admin.protect.broadcast');
+        }
+
+        $validated = $request->validate([
+            'title' => 'required|string|min:2|max:191',
+            'body' => 'required|string|min:2|max:2000',
+        ]);
+
+        $title = trim((string) $validated['title']);
+        $body = trim((string) $validated['body']);
+        $users = DB::table('users')->select('id')->get();
+        if ($users->isEmpty()) {
+            $this->alert->danger('Tidak ada user untuk dikirimi broadcast.')->flash();
+            return redirect()->route('admin.protect.broadcast');
+        }
+
+        $now = now();
+        $rows = [];
+        foreach ($users as $user) {
+            $rows[] = [
+                'user_id' => (int) $user->id,
+                'conversation_id' => null,
+                'from_user_id' => null,
+                'source_type' => 'system',
+                'title' => $title,
+                'body' => $body,
+                'avatar_url' => null,
+                'meta' => json_encode(['broadcast' => true], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'created_at' => $now,
+            ];
+        }
+        foreach (array_chunk($rows, 500) as $chunk) {
+            DB::table('chat_notifications')->insert($chunk);
+        }
+
+        $this->alert->success('Broadcast terkirim ke ' . count($rows) . ' user.')->flash();
+        return redirect()->route('admin.protect.broadcast');
     }
 
     public function quarantineDownload(Request $request): Response|RedirectResponse
@@ -1531,5 +1636,10 @@ class ProtectController extends Controller
         }
 
         return array_merge(['/usr/bin/sudo', '-n'], $command);
+    }
+
+    private function hasChatNotificationTable(): bool
+    {
+        return Schema::hasTable('chat_notifications');
     }
 }

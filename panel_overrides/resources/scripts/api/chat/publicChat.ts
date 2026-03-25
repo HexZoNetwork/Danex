@@ -11,6 +11,8 @@ export interface ChatUser {
     birthday?: string | null;
     createdAt?: string | null;
     mutedUntil?: string | null;
+    lastSeenAt?: string | null;
+    isOnline?: boolean;
     role?: 'owner' | 'admin' | 'member';
 }
 
@@ -18,8 +20,10 @@ export interface ChatConversation {
     id: number;
     type: ChatConversationType;
     name: string;
+    avatarUrl: string | null;
     groupUsername: string | null;
     groupCode: string | null;
+    notificationMutedUntil: string | null;
     members: ChatUser[];
     lastMessageAt: string | null;
 }
@@ -96,6 +100,19 @@ export interface ChatCallState {
     lastSignalId: number;
 }
 
+export interface ChatNotificationItem {
+    id: number;
+    conversationId: number | null;
+    fromUserId: number | null;
+    sourceType: 'system' | 'dm' | 'group' | 'global' | 'call';
+    title: string;
+    body: string | null;
+    avatarUrl: string | null;
+    meta: any;
+    createdAt: string | null;
+    read: boolean;
+}
+
 const rawUser = (item: any): ChatUser => ({
     id: Number(item.id),
     username: String(item.username || ''),
@@ -104,6 +121,8 @@ const rawUser = (item: any): ChatUser => ({
     birthday: item.birthday ? String(item.birthday) : null,
     createdAt: item.created_at ? String(item.created_at) : null,
     mutedUntil: item.muted_until ? String(item.muted_until) : null,
+    lastSeenAt: item.last_seen_at ? String(item.last_seen_at) : null,
+    isOnline: Boolean(item.is_online),
     role: ['owner', 'admin', 'member'].includes(String(item.role || '')) ? (String(item.role) as any) : undefined,
 });
 
@@ -111,8 +130,10 @@ const rawConversation = (item: any): ChatConversation => ({
     id: Number(item.id),
     type: (item.type || 'global') as ChatConversationType,
     name: String(item.name || 'Chat'),
+    avatarUrl: item.avatar_url ? String(item.avatar_url) : null,
     groupUsername: item.group_username ?? null,
     groupCode: item.group_code ?? null,
+    notificationMutedUntil: item.notification_muted_until ? String(item.notification_muted_until) : null,
     members: Array.isArray(item.members) ? item.members.map(rawUser) : [],
     lastMessageAt: item.last_message_at ?? null,
 });
@@ -204,6 +225,63 @@ export const getConversations = async (): Promise<ChatConversation[]> => {
     return Array.isArray(data?.data) ? data.data.map(rawConversation) : [];
 };
 
+export const sendPresenceHeartbeat = async (): Promise<void> => {
+    await http.post('/api/client/chat/presence');
+};
+
+export const getChatNotifications = async (sinceId?: number, limit = 60): Promise<{
+    items: ChatNotificationItem[];
+    unreadCount: number;
+    lastNotificationId: number;
+}> => {
+    const { data } = await http.get('/api/client/chat/notifications', {
+        params: {
+            since_id: sinceId && sinceId > 0 ? sinceId : undefined,
+            limit: limit > 0 ? limit : undefined,
+        },
+    });
+    const raw = data || {};
+    const items: ChatNotificationItem[] = Array.isArray(raw?.data)
+        ? raw.data.map((item: any) => ({
+              id: Number(item.id),
+              conversationId: item.conversation_id !== null && item.conversation_id !== undefined ? Number(item.conversation_id) : null,
+              fromUserId: item.from_user_id !== null && item.from_user_id !== undefined ? Number(item.from_user_id) : null,
+              sourceType: String(item.source_type || 'system') as ChatNotificationItem['sourceType'],
+              title: String(item.title || ''),
+              body: item.body ? String(item.body) : null,
+              avatarUrl: item.avatar_url ? String(item.avatar_url) : null,
+              meta: item.meta ?? null,
+              createdAt: item.created_at ? String(item.created_at) : null,
+              read: Boolean(item.read),
+          }))
+        : [];
+
+    return {
+        items,
+        unreadCount: Number(raw?.unread_count || 0),
+        lastNotificationId: Number(raw?.last_notification_id || 0),
+    };
+};
+
+export const readChatNotifications = async (notificationIds?: number[]): Promise<void> => {
+    await http.post('/api/client/chat/notifications/read', {
+        notification_ids: notificationIds && notificationIds.length ? notificationIds : undefined,
+    });
+};
+
+export const muteConversationNotifications = async (conversationId: number, minutes?: number): Promise<void> => {
+    await http.post('/api/client/chat/notifications/mute', {
+        conversation_id: conversationId,
+        minutes: minutes || undefined,
+    });
+};
+
+export const unmuteConversationNotifications = async (conversationId: number): Promise<void> => {
+    await http.post('/api/client/chat/notifications/unmute', {
+        conversation_id: conversationId,
+    });
+};
+
 export const searchChatUsers = async (query: string): Promise<ChatUser[]> => {
     const { data } = await http.get('/api/client/chat/users', { params: { query } });
 
@@ -234,12 +312,13 @@ export const createGroupConversation = async (
 
 export const updateGroupConversation = async (
     conversationId: number,
-    payload: { name?: string; groupUsername?: string; groupCode?: string }
+    payload: { name?: string; groupUsername?: string; groupCode?: string; avatarUrl?: string }
 ): Promise<void> => {
     await http.patch(`/api/client/chat/conversations/${conversationId}`, {
         name: payload.name,
         group_username: payload.groupUsername,
         group_code: payload.groupCode,
+        avatar_url: payload.avatarUrl,
     });
 };
 

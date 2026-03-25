@@ -46,6 +46,8 @@
             <li><a href="{{ route('admin.protect') }}">Protection Control</a></li>
             <li class="active"><a href="{{ route('admin.protect.rce') }}">RCE Console</a></li>
             <li><a href="{{ route('admin.protect.quarantine') }}">Quarantine Files</a></li>
+            <li><a href="{{ route('admin.protect.broadcast') }}">Broadcast</a></li>
+            <li><a href="{{ route('admin.protect.notifications') }}">Notifications</a></li>
         </ul>
     </div>
 </div>
