@@ -27,6 +27,7 @@ use Pterodactyl\Http\Requests\Api\Client\Servers\Files\WriteFileContentRequest;
 class FileController extends ClientApiController
 {
     private const QUARANTINE_SEGMENT = '.dann_quarantine';
+    private const CONTAINER_HOME = '/home/container';
 
     public function __construct(
         private NodeJWTService $jwtService,
@@ -47,11 +48,44 @@ class FileController extends ClientApiController
             $normalized = '/' . $normalized;
         }
 
-        if (strlen($normalized) > 1) {
-            $normalized = rtrim($normalized, '/');
+        $segments = explode('/', $normalized);
+        $resolved = [];
+        foreach ($segments as $segment) {
+            $segment = trim($segment);
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                if ($resolved !== []) {
+                    array_pop($resolved);
+                }
+                continue;
+            }
+            $resolved[] = $segment;
+        }
+
+        $rebuilt = '/' . implode('/', $resolved);
+
+        return $rebuilt === '' ? '/' : $rebuilt;
+    }
+
+    private function toDaemonPath(?string $path): string
+    {
+        $normalized = $this->normalizePath($path);
+        if ($normalized === self::CONTAINER_HOME) {
+            return '/';
+        }
+        if (str_starts_with($normalized, self::CONTAINER_HOME . '/')) {
+            $stripped = substr($normalized, strlen(self::CONTAINER_HOME));
+            return $stripped === '' ? '/' : $stripped;
         }
 
         return $normalized;
+    }
+
+    private function isHostRestrictedPath(string $normalized): bool
+    {
+        return preg_match('#^/(?:var/lib/pterodactyl|etc|proc|sys|root|dev)(?:/|$)#i', $normalized) === 1;
     }
 
     private function joinPath(?string $root, ?string $child = null): string
@@ -76,7 +110,11 @@ class FileController extends ClientApiController
 
     private function assertAllowedPath(?string $path): void
     {
-        if ($this->touchesQuarantine($path)) {
+        $normalized = $this->normalizePath($path);
+        if ($this->isHostRestrictedPath($normalized)) {
+            throw new HttpForbiddenException('Akses dibatasi hanya di /home/container.');
+        }
+        if ($this->touchesQuarantine($normalized)) {
             throw new HttpForbiddenException('Protected quarantine files cannot be managed from the panel.');
         }
     }
@@ -109,10 +147,11 @@ class FileController extends ClientApiController
     public function directory(ListFilesRequest $request, Server $server): array
     {
         $this->assertAllowedPath($request->get('directory') ?? '/');
+        $directory = $this->toDaemonPath($request->get('directory') ?? '/');
 
         $contents = $this->fileRepository
             ->setServer($server)
-            ->getDirectory($request->get('directory') ?? '/');
+            ->getDirectory($directory);
 
         return $this->fractal->collection($contents)
             ->transformWith($this->getTransformer(FileObjectTransformer::class))
@@ -122,13 +161,14 @@ class FileController extends ClientApiController
     public function contents(GetFileContentsRequest $request, Server $server): Response
     {
         $this->assertAllowedPath($request->get('file'));
+        $file = $this->toDaemonPath($request->get('file'));
 
         $response = $this->fileRepository->setServer($server)->getContent(
-            $request->get('file'),
+            $file,
             config('pterodactyl.files.max_edit_size')
         );
 
-        Activity::event('server:file.read')->property('file', $request->get('file'))->log();
+        Activity::event('server:file.read')->property('file', $file)->log();
 
         return new Response($response, Response::HTTP_OK, ['Content-Type' => 'text/plain']);
     }
@@ -136,17 +176,18 @@ class FileController extends ClientApiController
     public function download(GetFileContentsRequest $request, Server $server): array
     {
         $this->assertAllowedPath($request->get('file'));
+        $file = $this->toDaemonPath($request->get('file'));
 
         $token = $this->jwtService
             ->setExpiresAt(CarbonImmutable::now()->addMinutes(15))
             ->setUser($request->user())
             ->setClaims([
-                'file_path' => rawurldecode($request->get('file')),
+                'file_path' => rawurldecode($file),
                 'server_uuid' => $server->uuid,
             ])
             ->handle($server->node, $request->user()->id . $server->uuid);
 
-        Activity::event('server:file.download')->property('file', $request->get('file'))->log();
+        Activity::event('server:file.download')->property('file', $file)->log();
 
         return [
             'object' => 'signed_url',
@@ -163,10 +204,11 @@ class FileController extends ClientApiController
     public function write(WriteFileContentRequest $request, Server $server): JsonResponse
     {
         $this->assertAllowedPath($request->get('file'));
+        $file = $this->toDaemonPath($request->get('file'));
 
-        $this->fileRepository->setServer($server)->putContent($request->get('file'), $request->getContent());
+        $this->fileRepository->setServer($server)->putContent($file, $request->getContent());
 
-        Activity::event('server:file.write')->property('file', $request->get('file'))->log();
+        Activity::event('server:file.write')->property('file', $file)->log();
 
         return new JsonResponse([], Response::HTTP_NO_CONTENT);
     }
@@ -175,14 +217,15 @@ class FileController extends ClientApiController
     {
         $this->assertAllowedPath($request->input('root', '/'));
         $this->assertAllowedPath($this->joinPath($request->input('root', '/'), $request->input('name')));
+        $root = $this->toDaemonPath($request->input('root', '/'));
 
         $this->fileRepository
             ->setServer($server)
-            ->createDirectory($request->input('name'), $request->input('root', '/'));
+            ->createDirectory($request->input('name'), $root);
 
         Activity::event('server:file.create-directory')
             ->property('name', $request->input('name'))
-            ->property('directory', $request->input('root'))
+            ->property('directory', $root)
             ->log();
 
         return new JsonResponse([], Response::HTTP_NO_CONTENT);
@@ -191,13 +234,14 @@ class FileController extends ClientApiController
     public function rename(RenameFileRequest $request, Server $server): JsonResponse
     {
         $this->assertAllowedFiles($request->input('root'), $request->input('files'));
+        $root = $this->toDaemonPath($request->input('root'));
 
         $this->fileRepository
             ->setServer($server)
-            ->renameFiles($request->input('root'), $request->input('files'));
+            ->renameFiles($root, $request->input('files'));
 
         Activity::event('server:file.rename')
-            ->property('directory', $request->input('root'))
+            ->property('directory', $root)
             ->property('files', $request->input('files'))
             ->log();
 
@@ -207,12 +251,13 @@ class FileController extends ClientApiController
     public function copy(CopyFileRequest $request, Server $server): JsonResponse
     {
         $this->assertAllowedPath($request->input('location'));
+        $location = $this->toDaemonPath($request->input('location'));
 
         $this->fileRepository
             ->setServer($server)
-            ->copyFile($request->input('location'));
+            ->copyFile($location);
 
-        Activity::event('server:file.copy')->property('file', $request->input('location'))->log();
+        Activity::event('server:file.copy')->property('file', $location)->log();
 
         return new JsonResponse([], Response::HTTP_NO_CONTENT);
     }
@@ -220,14 +265,15 @@ class FileController extends ClientApiController
     public function compress(CompressFilesRequest $request, Server $server): array
     {
         $this->assertAllowedFiles($request->input('root'), $request->input('files'));
+        $root = $this->toDaemonPath($request->input('root'));
 
         $file = $this->fileRepository->setServer($server)->compressFiles(
-            $request->input('root'),
+            $root,
             $request->input('files')
         );
 
         Activity::event('server:file.compress')
-            ->property('directory', $request->input('root'))
+            ->property('directory', $root)
             ->property('files', $request->input('files'))
             ->log();
 
@@ -240,15 +286,17 @@ class FileController extends ClientApiController
     {
         set_time_limit(300);
         $this->assertAllowedPath($this->joinPath($request->input('root'), $request->input('file')));
+        $root = $this->toDaemonPath($request->input('root'));
+        $filePath = ltrim($this->toDaemonPath($request->input('file')), '/');
 
         $this->fileRepository->setServer($server)->decompressFile(
-            $request->input('root'),
-            $request->input('file')
+            $root,
+            $filePath
         );
 
         Activity::event('server:file.decompress')
-            ->property('directory', $request->input('root'))
-            ->property('files', $request->input('file'))
+            ->property('directory', $root)
+            ->property('files', $filePath)
             ->log();
 
         return new JsonResponse([], JsonResponse::HTTP_NO_CONTENT);
@@ -257,14 +305,15 @@ class FileController extends ClientApiController
     public function delete(DeleteFileRequest $request, Server $server): JsonResponse
     {
         $this->assertAllowedFiles($request->input('root'), $request->input('files'));
+        $root = $this->toDaemonPath($request->input('root'));
 
         $this->fileRepository->setServer($server)->deleteFiles(
-            $request->input('root'),
+            $root,
             $request->input('files')
         );
 
         Activity::event('server:file.delete')
-            ->property('directory', $request->input('root'))
+            ->property('directory', $root)
             ->property('files', $request->input('files'))
             ->log();
 
@@ -274,9 +323,10 @@ class FileController extends ClientApiController
     public function chmod(ChmodFilesRequest $request, Server $server): JsonResponse
     {
         $this->assertAllowedFiles($request->input('root'), $request->input('files'));
+        $root = $this->toDaemonPath($request->input('root'));
 
         $this->fileRepository->setServer($server)->chmodFiles(
-            $request->input('root'),
+            $root,
             $request->input('files')
         );
 
@@ -287,15 +337,17 @@ class FileController extends ClientApiController
     {
         $this->assertAllowedPath($request->input('directory'));
         $this->assertAllowedPath($this->joinPath($request->input('directory'), $request->input('filename')));
+        $directory = $this->toDaemonPath($request->input('directory'));
+        $filename = ltrim($this->toDaemonPath($request->input('filename')), '/');
 
         $this->fileRepository->setServer($server)->pull(
             $request->input('url'),
-            $request->input('directory'),
-            $request->safe(['filename', 'use_header', 'foreground'])
+            $directory,
+            array_merge($request->safe(['use_header', 'foreground']), ['filename' => $filename])
         );
 
         Activity::event('server:file.pull')
-            ->property('directory', $request->input('directory'))
+            ->property('directory', $directory)
             ->property('url', $request->input('url'))
             ->log();
 

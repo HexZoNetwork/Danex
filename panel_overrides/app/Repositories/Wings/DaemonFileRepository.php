@@ -32,11 +32,28 @@ class DaemonFileRepository extends DaemonRepository
             $normalized = '/' . $normalized;
         }
 
-        if (strlen($normalized) > 1) {
-            $normalized = rtrim($normalized, '/');
+        $segments = explode('/', $normalized);
+        $resolved = [];
+        foreach ($segments as $segment) {
+            $segment = trim($segment);
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                if ($resolved !== []) {
+                    array_pop($resolved);
+                }
+                continue;
+            }
+            $resolved[] = $segment;
         }
 
-        return $normalized;
+        $rebuilt = '/' . implode('/', $resolved);
+        if ($rebuilt !== '/' && str_ends_with($normalized, '/')) {
+            $rebuilt = rtrim($rebuilt, '/');
+        }
+
+        return $rebuilt === '' ? '/' : $rebuilt;
     }
 
     private function isProtectedPath(?string $path): bool
@@ -63,6 +80,7 @@ class DaemonFileRepository extends DaemonRepository
     public function getContent(string $path, ?int $notLargerThan = null): string
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $path = $this->normalizePath($path);
         $this->assertAllowedPath($path);
 
         try {
@@ -93,6 +111,7 @@ class DaemonFileRepository extends DaemonRepository
     public function putContent(string $path, string $content): ResponseInterface
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $path = $this->normalizePath($path);
         $this->assertAllowedPath($path);
 
         try {
@@ -116,6 +135,7 @@ class DaemonFileRepository extends DaemonRepository
     public function getDirectory(string $path): array
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $path = $this->normalizePath($path);
         $this->assertAllowedPath($path);
 
         try {
@@ -144,6 +164,7 @@ class DaemonFileRepository extends DaemonRepository
     public function createDirectory(string $name, string $path): ResponseInterface
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $path = $this->normalizePath($path);
         $this->assertAllowedPath($path);
         $this->assertAllowedPath($name);
 
@@ -170,6 +191,7 @@ class DaemonFileRepository extends DaemonRepository
     public function renameFiles(?string $root, array $files): ResponseInterface
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $root = $this->normalizePath($root);
         $this->assertAllowedPath($root);
 
         try {
@@ -195,6 +217,7 @@ class DaemonFileRepository extends DaemonRepository
     public function copyFile(string $location): ResponseInterface
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $location = $this->normalizePath($location);
         $this->assertAllowedPath($location);
 
         try {
@@ -219,6 +242,7 @@ class DaemonFileRepository extends DaemonRepository
     public function deleteFiles(?string $root, array $files): ResponseInterface
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $root = $this->normalizePath($root);
         $this->assertAllowedPath($root);
 
         try {
@@ -244,6 +268,7 @@ class DaemonFileRepository extends DaemonRepository
     public function compressFiles(?string $root, array $files): array
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $root = $this->normalizePath($root);
         $this->assertAllowedPath($root);
 
         try {
@@ -272,6 +297,8 @@ class DaemonFileRepository extends DaemonRepository
     public function decompressFile(?string $root, string $file): ResponseInterface
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $root = $this->normalizePath($root);
+        $file = $this->normalizePath($file);
         $this->assertAllowedPath($root);
         $this->assertAllowedPath($file);
 
@@ -299,6 +326,7 @@ class DaemonFileRepository extends DaemonRepository
     public function chmodFiles(?string $root, array $files): ResponseInterface
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $root = $this->normalizePath($root);
         $this->assertAllowedPath($root);
 
         try {
@@ -324,7 +352,11 @@ class DaemonFileRepository extends DaemonRepository
     public function pull(string $url, ?string $directory, array $params = []): ResponseInterface
     {
         Assert::isInstanceOf($this->server, Server::class);
+        $directory = $this->normalizePath($directory);
         $this->assertAllowedPath($directory);
+        if (array_key_exists('filename', $params) && is_string($params['filename'])) {
+            $params['filename'] = ltrim($this->normalizePath($params['filename']), '/');
+        }
         $this->assertAllowedPath($params['filename'] ?? null);
 
         $attributes = [
