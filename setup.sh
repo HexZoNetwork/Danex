@@ -1447,6 +1447,8 @@ for block in ("location = /auth/login",):
     )
     replacement = (
         f"{block} {{\n"
+        "    auth_request /__pteroprotect/challenge/check;\n"
+        "    error_page 401 = @pteroprotect_challenge_redirect;\n"
         f"    limit_conn pteroprotect_conn {auth_conn_limit};\n"
         "    limit_conn pteroprotect_auth_global_conn 100;\n"
         "    limit_req zone=pteroprotect_auth_global_req burst=30 nodelay;\n"
@@ -1469,6 +1471,8 @@ sanctum_pattern = re.compile(
 )
 sanctum_replacement = (
     "location = /sanctum/csrf-cookie {\n"
+    "    auth_request /__pteroprotect/challenge/check;\n"
+    "    error_page 401 = @pteroprotect_challenge_redirect;\n"
     f"    limit_conn pteroprotect_conn {auth_conn_limit};\n"
     "    limit_conn pteroprotect_auth_global_conn 100;\n"
     "    limit_req zone=pteroprotect_auth_global_req burst=30 nodelay;\n"
@@ -1646,6 +1650,8 @@ pattern = re.compile(
 )
 replacement = (
     "    location / {\n"
+    "        auth_request /__pteroprotect/challenge/check;\n"
+    "        error_page 401 = @pteroprotect_challenge_redirect;\n"
     "        limit_conn pteroprotect_global_conn 400;\n"
     "        limit_req zone=pteroprotect_global_req burst=120 nodelay;\n"
     f"        limit_conn pteroprotect_conn {conn_limit};\n"
