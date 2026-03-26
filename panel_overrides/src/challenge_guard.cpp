@@ -585,7 +585,7 @@ static bool probe_http_tls(const std::string& ip, int port) {
     return response_indicates_server_or_html(std::string(buf, buf + n));
 }
 
-static bool probe_client_http_server_banner(const std::string& ip) {
+[[maybe_unused]] static bool probe_client_http_server_banner(const std::string& ip) {
     if (!is_ipv4_literal(ip)) return false;
     if (probe_http_plain(ip, 80)) return true;
     if (probe_http_tls(ip, 443)) return true;
