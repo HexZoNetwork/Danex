@@ -1025,6 +1025,74 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
     backup_panel_override_targets "${INSTALL_DIR}/panel_overrides" "${PANEL_DIR}" "${PANEL_OVERRIDE_BACKUP_DIR}"
     copy_tree "${INSTALL_DIR}/panel_overrides" "${PANEL_DIR}"
 
+    # Reviactyl compatibility bridge:
+    # ensure known extra frontend deps and line-clamp plugin are present
+    # before dependency install/build is attempted.
+    if [[ -f "${PANEL_DIR}/package.json" ]] && command -v python3 >/dev/null 2>&1; then
+        python3 - "${PANEL_DIR}/package.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    pkg = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(0)
+
+deps = pkg.get("dependencies")
+if not isinstance(deps, dict):
+    deps = {}
+    pkg["dependencies"] = deps
+
+required = {
+    "react-icons": "^5.5.0",
+    "i18next-browser-languagedetector": "^8.2.0",
+    "md5": "^2.3.0",
+    "flag-icons": "^7.3.2",
+}
+changed = False
+for name, version in required.items():
+    if not deps.get(name):
+        deps[name] = version
+        changed = True
+
+if changed:
+    path.write_text(json.dumps(pkg, indent=4) + "\n")
+PY
+    fi
+
+    if [[ -f "${PANEL_DIR}/tailwind.config.js" ]] && command -v python3 >/dev/null 2>&1; then
+        python3 - "${PANEL_DIR}/tailwind.config.js" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+
+if "require('@tailwindcss/line-clamp')" in text:
+    raise SystemExit(0)
+
+marker = "require('@tailwindcss/forms')({\n            strategy: 'class',\n        }),"
+if marker in text:
+    text = text.replace(
+        marker,
+        marker + "\n        require('@tailwindcss/line-clamp'),",
+        1,
+    )
+else:
+    plugins_open = "plugins: ["
+    idx = text.find(plugins_open)
+    if idx != -1:
+        end_idx = text.find("]", idx)
+        if end_idx != -1:
+            insertion = "\n        require('@tailwindcss/line-clamp'),"
+            text = text[:end_idx] + insertion + text[end_idx:]
+
+path.write_text(text)
+PY
+    fi
+
     if command -v php >/dev/null 2>&1 && [[ -f "${PANEL_DIR}/artisan" ]]; then
         lint_php_tree "${INSTALL_DIR}/panel_overrides" "${PANEL_DIR}"
         if ! (cd "${PANEL_DIR}" && php artisan migrate --force); then
