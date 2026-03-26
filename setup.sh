@@ -12,6 +12,7 @@ fi
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-/pteroprotect}"
 PANEL_DIR="${PANEL_DIR:-/var/www/pterodactyl}"
+PANEL_ENV_FILE="${PANEL_DIR}/.env"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 NGINX_DIR="${NGINX_DIR:-/etc/nginx}"
 BACKUP_DIR="${PROJECT_DIR}/backups"
@@ -230,6 +231,37 @@ validate_json_config_file() {
         my $j = decode_json($raw);
         die "root must be object\n" if ref($j) ne "HASH";
     ' "${config_file}" >/dev/null 2>&1
+}
+
+panel_env_has_database_credentials() {
+    local env_file="${1:-${PANEL_ENV_FILE}}"
+    [[ -f "${env_file}" ]] || return 1
+
+    perl -e '
+        my ($file) = @ARGV;
+        open my $fh, "<", $file or exit 1;
+        my %need = map { $_ => 0 } qw(DB_HOST DB_DATABASE DB_USERNAME DB_PASSWORD);
+        while (my $line = <$fh>) {
+            chomp $line;
+            $line =~ s/\r$//;
+            next if $line =~ /^\s*#/;
+            next if $line !~ /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/;
+            my ($k, $v) = ($1, $2);
+            next if !exists $need{$k};
+            if ($v =~ /^"(.*)"$/ || $v =~ /^'\''(.*)'\''$/) {
+                $v = $1;
+            }
+            if ($k eq "DB_PASSWORD") {
+                $need{$k} = 1;
+            } else {
+                $need{$k} = 1 if defined $v && $v ne "";
+            }
+        }
+        for my $k (keys %need) {
+            exit 1 if !$need{$k};
+        }
+        exit 0;
+    ' "${env_file}" >/dev/null 2>&1
 }
 
 ensure_panel_runtime_dirs() {
@@ -608,6 +640,12 @@ elif [[ -f "${INSTALL_DIR}/config.json" ]]; then
     echo "[setup] config source: existing ${INSTALL_DIR}/config.json"
 fi
 
+if panel_env_has_database_credentials "${PANEL_ENV_FILE}"; then
+    echo "[setup] database source: ${PANEL_ENV_FILE} -> ${INSTALL_DIR}/config.json"
+else
+    warn "database credentials lengkap tidak ditemukan di ${PANEL_ENV_FILE}; fallback ke config.json/config.example.json."
+fi
+
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
     perl -MJSON::PP -e '
         my ($f, $env_file, $config_example_file)=@ARGV;
@@ -802,10 +840,11 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         print $out JSON::PP->new->ascii->pretty->canonical->encode($j);
     ' "${INSTALL_DIR}/config.json" "${PANEL_DIR}/.env" "${INSTALL_DIR}/config.example.json"
 
-    # Source of truth: config.json -> .env (auto sync every setup run).
-    # Keep DB_* and protection vars in env consistent with runtime config.
-    if [[ -f "${PANEL_DIR}/.env" ]]; then
-        python3 - "${INSTALL_DIR}/config.json" "${PANEL_DIR}/.env" <<'PY'
+    # Source of truth:
+    # - Database credentials: panel .env -> config.json
+    # - PTEROPROTECT_* vars: config.json -> panel .env
+    if [[ -f "${PANEL_ENV_FILE}" ]]; then
+        python3 - "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" <<'PY'
 import json
 import re
 import sys
@@ -849,21 +888,29 @@ def env_encode(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 updates = {}
+key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$")
+lines = env_path.read_text().splitlines()
 
 for k, v in net.items():
     updates[env_key_from_network(k)] = value_to_string(v)
 
-# Database settings are also synced from config.json to panel .env.
+# Panel DB_* stays authoritative. Only backfill missing keys from config.json.
 db = cfg.get("database") if isinstance(cfg, dict) else {}
 if not isinstance(db, dict):
     db = {}
-if "host" in db:
+existing_db_keys = {}
+for line in lines:
+    m = key_re.match(line)
+    if m:
+        existing_db_keys[m.group(1)] = m.group(2)
+
+if "host" in db and not existing_db_keys.get("DB_HOST", "").strip():
     updates["DB_HOST"] = value_to_string(db.get("host", ""))
-if "name" in db:
+if "name" in db and not existing_db_keys.get("DB_DATABASE", "").strip():
     updates["DB_DATABASE"] = value_to_string(db.get("name", ""))
-if "user" in db:
+if "user" in db and not existing_db_keys.get("DB_USERNAME", "").strip():
     updates["DB_USERNAME"] = value_to_string(db.get("user", ""))
-if "password" in db:
+if "password" in db and not existing_db_keys.get("DB_PASSWORD", "").strip():
     updates["DB_PASSWORD"] = value_to_string(db.get("password", ""))
 
 # Legacy compatibility aliases used in some stacks/scripts.
@@ -872,8 +919,6 @@ if "waf_challenge_secret" in net:
 if "unblock_portal_token" in net:
     updates["UNBLOCK_PORTAL_TOKEN"] = value_to_string(net.get("unblock_portal_token", ""))
 
-lines = env_path.read_text().splitlines()
-key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$")
 seen = set()
 out = []
 for line in lines:
