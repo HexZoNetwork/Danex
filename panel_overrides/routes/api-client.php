@@ -54,6 +54,11 @@ Route::prefix('/chat')->withoutMiddleware('throttle:api')->group(function () {
     Route::post('/upload', [Client\PublicChatController::class, 'upload'])->middleware('throttle:20,1');
 });
 
+Route::prefix('/danexcoin')->group(function () {
+    Route::get('/', [Client\DanexCoinController::class, 'index']);
+    Route::post('/spin', [Client\DanexCoinController::class, 'spin'])->middleware('throttle:240,1');
+});
+
 Route::prefix('/account')->middleware(AccountSubject::class)->group(function () {
     Route::prefix('/')->withoutMiddleware(RequireTwoFactorAuthentication::class)->group(function () {
         Route::get('/', [Client\AccountController::class, 'index'])->name('api:client.account');

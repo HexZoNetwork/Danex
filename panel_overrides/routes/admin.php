@@ -41,6 +41,11 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::delete('/revoke/{identifier}', [Admin\ApiController::class, 'delete'])->name('admin.api.delete');
     });
 
+    Route::group(['prefix' => 'management/danexcoin'], function () {
+        Route::get('/', [Admin\DanexCoinController::class, 'index'])->name('admin.management.danexcoin.index');
+        Route::post('/adjust', [Admin\DanexCoinController::class, 'adjust'])->name('admin.management.danexcoin.adjust');
+    });
+
     Route::group(['prefix' => 'locations'], function () {
         Route::get('/', [Admin\LocationController::class, 'index'])->name('admin.locations');
         Route::get('/view/{location:id}', [Admin\LocationController::class, 'view'])->name('admin.locations.view');

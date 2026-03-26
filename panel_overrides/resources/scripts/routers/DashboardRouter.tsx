@@ -3,6 +3,7 @@ import { NavLink, Route, Switch } from 'react-router-dom';
 import NavigationBar from '@/components/NavigationBar';
 import DashboardContainer from '@/components/dashboard/DashboardContainer';
 import PublicChatPage from '@/components/dashboard/PublicChatPage';
+import DanexCoinPage from '@/components/dashboard/DanexCoinPage';
 import NotificationsPage from '@/components/dashboard/NotificationsPage';
 import { NotFound } from '@/components/elements/ScreenBlock';
 import TransitionRouter from '@/TransitionRouter';
@@ -87,6 +88,9 @@ export default () => {
                         <NavLink to={'/chat'} exact>
                             Public Chat
                         </NavLink>
+                        <NavLink to={'/judi'} exact>
+                            Judi
+                        </NavLink>
                     </div>
                 </SubNavigation>
             )}
@@ -114,6 +118,9 @@ export default () => {
                         </Route>
                         <Route path={'/chat'} exact>
                             <PublicChatPage />
+                        </Route>
+                        <Route path={'/judi'} exact>
+                            <DanexCoinPage />
                         </Route>
                         <Route path={'/notifications'} exact>
                             <NotificationsPage />

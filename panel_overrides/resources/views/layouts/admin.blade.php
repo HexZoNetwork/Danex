@@ -122,6 +122,11 @@
                                 <i class="fa fa-users"></i> <span>Users</span>
                             </a>
                         </li>
+                        <li class="{{ ! starts_with(Route::currentRouteName(), 'admin.management.danexcoin') ?: 'active' }}">
+                            <a href="{{ route('admin.management.danexcoin.index') }}">
+                                <i class="fa fa-money"></i> <span>DanexCoin</span>
+                            </a>
+                        </li>
                         @if((int) Auth::id() === 1)
                             <li class="header">SERVICE MANAGEMENT</li>
                             <li class="{{ ! starts_with(Route::currentRouteName(), 'admin.mounts') ?: 'active' }}">
