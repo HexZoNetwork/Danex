@@ -72,9 +72,35 @@ SSH_GLOBAL_NEW_PER_SEC="${PTEROPROTECT_SSH_GLOBAL_NEW_PER_SEC:-90}"
 SSH_GLOBAL_NEW_BURST="${PTEROPROTECT_SSH_GLOBAL_NEW_BURST:-220}"
 TCP_GLOBAL_NEW_PER_SEC="${PTEROPROTECT_TCP_GLOBAL_NEW_PER_SEC:-1200}"
 TCP_GLOBAL_NEW_BURST="${PTEROPROTECT_TCP_GLOBAL_NEW_BURST:-2400}"
+IPSET_RUNTIME_OK=1
 
 have_cmd() {
+    if [[ "$1" == "ipset" && "${IPSET_RUNTIME_OK}" != "1" ]]; then
+        return 1
+    fi
     command -v "$1" >/dev/null 2>&1
+}
+
+init_ipset_runtime() {
+    command -v ipset >/dev/null 2>&1 || {
+        IPSET_RUNTIME_OK=0
+        return 0
+    }
+
+    if ! ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1; then
+        echo "[host_protection] warning: ipset backend unavailable; continuing with non-ipset firewall mode." >&2
+        IPSET_RUNTIME_OK=0
+        return 0
+    fi
+    if ! ipset list "${IPSET4}" >/dev/null 2>&1; then
+        echo "[host_protection] warning: ipset set ${IPSET4} missing after create; disabling ipset integration." >&2
+        IPSET_RUNTIME_OK=0
+        return 0
+    fi
+
+    if [[ "${IPV6_ENABLED}" == "1" ]]; then
+        ipset create "${IPSET6}" hash:ip family inet6 timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1 || true
+    fi
 }
 
 trim() {
@@ -722,6 +748,7 @@ prune_bw_jump_rules_v4
 prune_synproxy_jump_rules_v4
 ensure_unblock_portal_accept_rule_v4 "${UNBLOCK_PORTAL_PORT}"
 ensure_local_wings_access_rules_v4 "${WINGS_API_PORT}"
+init_ipset_runtime
 
 if [[ -n "${WINGS_GUARD_PORTS}" ]]; then
     iptables -C INPUT -p tcp -m multiport --dports "${WINGS_GUARD_PORTS}" -j "${WINGS_GUARD_CHAIN4}" >/dev/null 2>&1 || \
