@@ -23,6 +23,7 @@
       "dynamic_block_dry_run": false,
       "dynamic_block_enabled": true,
       "docker_strict_isolation_enabled": true,
+      "skip_frontend_build": false,
       "wings_disable_remote_download": true,
       "wings_enable_icc": false,
       "wings_ignore_panel_config_updates": true,

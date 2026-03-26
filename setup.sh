@@ -17,6 +17,19 @@ NGINX_DIR="${NGINX_DIR:-/etc/nginx}"
 BACKUP_DIR="${PROJECT_DIR}/backups"
 cd "${PROJECT_DIR}"
 
+log() {
+    echo "[setup] $*"
+}
+
+warn() {
+    echo "[setup] warning: $*" >&2
+}
+
+fail() {
+    echo "[setup] error: $*" >&2
+    exit 1
+}
+
 if ! command -v apt-get >/dev/null 2>&1; then
     echo "[setup] this installer currently supports Debian/Ubuntu systems with apt-get" >&2
     exit 1
@@ -203,6 +216,48 @@ read_network_setting() {
             print $value;
         }
     ' "${config_file}" "${key}" "${default_value}" 2>/dev/null || printf '%s' "${default_value}"
+}
+
+validate_json_config_file() {
+    local config_file="$1"
+    [[ -f "${config_file}" ]] || return 1
+
+    perl -MJSON::PP -e '
+        my ($f) = @ARGV;
+        open my $fh, "<", $f or die "open failed";
+        local $/;
+        my $raw = <$fh>;
+        my $j = decode_json($raw);
+        die "root must be object\n" if ref($j) ne "HASH";
+    ' "${config_file}" >/dev/null 2>&1
+}
+
+ensure_panel_runtime_dirs() {
+    local panel_dir="$1"
+    local owner_user="www-data"
+    local owner_group="www-data"
+    local d=""
+
+    [[ -d "${panel_dir}" ]] || return 0
+
+    for d in \
+        "${panel_dir}/storage/logs" \
+        "${panel_dir}/storage/framework/cache/data" \
+        "${panel_dir}/storage/framework/sessions" \
+        "${panel_dir}/storage/framework/views" \
+        "${panel_dir}/bootstrap/cache"; do
+        mkdir -p "${d}"
+    done
+
+    if id -u "${owner_user}" >/dev/null 2>&1; then
+        chown -R "${owner_user}:${owner_group}" \
+            "${panel_dir}/storage" \
+            "${panel_dir}/bootstrap/cache" >/dev/null 2>&1 || true
+    fi
+
+    find "${panel_dir}/storage" -type d -exec chmod 775 {} \; >/dev/null 2>&1 || true
+    find "${panel_dir}/storage" -type f -exec chmod 664 {} \; >/dev/null 2>&1 || true
+    chmod -R 775 "${panel_dir}/bootstrap/cache" >/dev/null 2>&1 || true
 }
 
 copy_tree() {
@@ -510,6 +565,16 @@ export NEEDRESTART_MODE=a
 export APT_LISTCHANGES_FRONTEND=none
 
 echo "[setup] non-interactive mode enabled (DEBIAN_FRONTEND=${DEBIAN_FRONTEND})..."
+
+if [[ -f "${PROJECT_DIR}/config.json" ]]; then
+    if ! validate_json_config_file "${PROJECT_DIR}/config.json"; then
+        fail "config.json tidak valid JSON. Perbaiki dulu sebelum setup."
+    fi
+elif [[ -f "${PROJECT_DIR}/config.example.json" ]]; then
+    warn "config.json belum ada, installer akan generate dari config.example.json."
+else
+    fail "config.json dan config.example.json tidak ditemukan."
+fi
 
 echo "[setup] refreshing apt cache..."
 apt_update_resilient
@@ -910,6 +975,7 @@ fi
 
 if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
     echo "[setup] applying bundled Pterodactyl overrides to ${PANEL_DIR}..."
+    ensure_panel_runtime_dirs "${PANEL_DIR}"
     PANEL_OVERRIDE_BACKUP_DIR="${BACKUP_DIR}/panel_overrides_$(date -u +%Y%m%d_%H%M%S)"
     backup_panel_override_targets "${INSTALL_DIR}/panel_overrides" "${PANEL_DIR}" "${PANEL_OVERRIDE_BACKUP_DIR}"
     copy_tree "${INSTALL_DIR}/panel_overrides" "${PANEL_DIR}"
@@ -923,9 +989,14 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
             echo "[setup] warning: artisan storage:link failed (symlink may already exist or permissions are insufficient)." >&2
         fi
         (cd "${PANEL_DIR}" && php artisan optimize:clear >/dev/null 2>&1 || true)
+        ensure_panel_runtime_dirs "${PANEL_DIR}"
     fi
 
     if [[ -f "${PANEL_DIR}/package.json" ]]; then
+        SKIP_FRONTEND_BUILD="$(read_network_setting skip_frontend_build false)"
+        if [[ "${SKIP_FRONTEND_BUILD}" == "true" || "${SKIP_FRONTEND_BUILD}" == "1" ]]; then
+            echo "[setup] skipping panel frontend build (network.skip_frontend_build=true)."
+        else
         echo "[setup] building panel frontend assets..."
         if ! command -v npx >/dev/null 2>&1 && ! command -v yarn >/dev/null 2>&1 && ! command -v yarnpkg >/dev/null 2>&1; then
             echo "[setup] installing node build tooling for panel assets..."
@@ -1068,6 +1139,7 @@ if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
             if (( PANEL_BUILD_OK == 0 )); then
                 echo "[setup] warning: frontend build failed after yarn/corepack/npm attempts." >&2
             fi
+        fi
         fi
     fi
 fi
