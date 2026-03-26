@@ -40,7 +40,7 @@ struct Settings {
     std::string bind = "127.0.0.1";
     int port = 18444;
     int ttl = 1800;
-    int pow_bits = 18;
+    int pow_bits = 14;
     std::string cookie_name = "pp_clearance";
     std::string secret;
     std::vector<std::string> trusted_hosts;
@@ -60,6 +60,8 @@ struct NonceRec {
     bool click_verified = false;
     bool math_verified = false;
     int math_fail_count = 0;
+    std::time_t click_bucket_sec = 0;
+    int click_bucket_count = 0;
     int pow_bits = 18;
     int min_connection_ms = 5000;
     std::time_t exp = 0;
@@ -89,6 +91,16 @@ static inline std::string trim(const std::string& in) {
     std::size_t e = in.size();
     while (e > b && std::isspace(static_cast<unsigned char>(in[e - 1]))) e--;
     return in.substr(b, e - b);
+}
+
+static bool ua_mobile_like(const std::string& ua) {
+    std::string l = ua;
+    std::transform(l.begin(), l.end(), l.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return l.find("mobile") != std::string::npos ||
+           l.find("android") != std::string::npos ||
+           l.find("iphone") != std::string::npos ||
+           l.find("ipad") != std::string::npos ||
+           l.find("ipod") != std::string::npos;
 }
 
 static std::string to_lower(std::string s) {
@@ -329,7 +341,7 @@ static Settings load_settings() {
             s.bind = json_get_string(net, "waf_challenge_bind", "127.0.0.1");
             s.port = std::max(1, std::min(65535, json_get_int(net, "waf_challenge_port", 18444)));
             s.ttl = std::max(60, std::min(86400, json_get_int(net, "waf_challenge_ttl_sec", 1800)));
-            s.pow_bits = std::max(8, std::min(24, json_get_int(net, "waf_pow_bits", 18)));
+            s.pow_bits = std::max(8, std::min(24, json_get_int(net, "waf_pow_bits", 14)));
             s.cookie_name = trim(json_get_string(net, "waf_challenge_cookie_name", "pp_clearance"));
             if (s.cookie_name.empty()) s.cookie_name = "pp_clearance";
             s.secret = trim(json_get_string(net, "waf_challenge_secret", ""));
@@ -770,7 +782,7 @@ static std::vector<int> generate_pattern_nodes(std::mt19937& gen) {
     std::uniform_int_distribution<int> tdis(0, static_cast<int>(templates.size() - 1));
     std::uniform_int_distribution<int> rdis(0, 3);
     std::uniform_int_distribution<int> fdis(0, 1);
-    std::uniform_int_distribution<int> len_dis(4, 5);
+    std::uniform_int_distribution<int> len_dis(5, 6);
     std::vector<int> out;
     const auto& base = templates[static_cast<std::size_t>(tdis(gen))];
     int rot = rdis(gen);
@@ -796,7 +808,7 @@ static std::vector<int> generate_pattern_nodes(std::mt19937& gen) {
         if (can_append(cand)) out.push_back(cand);
     }
 
-    if (out.size() < 4) out = {0, 1, 2, 5};
+    if (out.size() < 5) out = {0, 1, 2, 5, 8};
     return out;
 }
 
@@ -808,7 +820,7 @@ static bool pattern_pass(const json& pattern, const NonceRec& rec) {
 
     if (pattern.contains("clicked_nodes") && pattern["clicked_nodes"].is_array()) {
         const json& arr = pattern["clicked_nodes"];
-        if (arr.size() < expected.size() || arr.size() > expected.size() + 12) return false;
+        if (arr.size() < expected.size() || arr.size() > expected.size() + 8) return false;
         std::vector<int> got;
         got.reserve(arr.size());
         for (const auto& v : arr) {
@@ -816,6 +828,10 @@ static bool pattern_pass(const json& pattern, const NonceRec& rec) {
             int n = v.get<int>();
             if (n < 1 || n > 9) return false;
             got.push_back(n - 1);
+        }
+        for (std::size_t k = 1; k < got.size(); ++k) {
+            if (got[k] == got[k - 1]) return false;
+            if (k >= 2 && got[k] == got[k - 2]) return false; // reject A-B-A bounce (e.g. 5-6-5)
         }
         std::size_t i = 0;
         for (int v : got) {
@@ -891,6 +907,9 @@ static bool pattern_pass(const json& pattern, const NonceRec& rec) {
     }
     if (travel < 60.0) return false;
     if (visited.size() < expected.size()) return false;
+    for (std::size_t k = 2; k < visited.size(); ++k) {
+        if (visited[k] == visited[k - 2]) return false; // reject ambiguous A-B-A bounce from pointer trace
+    }
     std::size_t i = 0;
     for (int v : visited) {
         if (i < expected.size() && v == expected[i]) {
@@ -1253,17 +1272,107 @@ static void handle_client(int fd, std::string remote_ip) {
             return;
         }
 
+        std::map<std::string, std::string> nq = parse_query(req.query);
+        int hinted_hc = 0;
+        double hinted_dm = 0.0;
+        bool hinted_mobile = false;
+        {
+            auto it = nq.find("hc");
+            if (it != nq.end()) {
+                try { hinted_hc = std::stoi(trim(it->second)); } catch (...) { hinted_hc = 0; }
+            }
+            it = nq.find("dm");
+            if (it != nq.end()) {
+                try { hinted_dm = std::stod(trim(it->second)); } catch (...) { hinted_dm = 0.0; }
+            }
+            it = nq.find("m");
+            if (it != nq.end()) {
+                const std::string mv = to_lower(trim(it->second));
+                hinted_mobile = (mv == "1" || mv == "true" || mv == "yes" || mv == "y");
+            }
+        }
+        hinted_hc = std::max(0, std::min(64, hinted_hc));
+        if (hinted_dm < 0.0) hinted_dm = 0.0;
+        if (hinted_dm > 64.0) hinted_dm = 64.0;
+
+        int adaptive_pow_bits = s.pow_bits;
+        if (hinted_hc > 0) {
+            if (hinted_hc <= 2) adaptive_pow_bits -= 3;
+            else if (hinted_hc <= 4) adaptive_pow_bits -= 2;
+            else if (hinted_hc <= 6) adaptive_pow_bits -= 1;
+            else if (hinted_hc >= 12) adaptive_pow_bits += 1;
+        }
+        if (hinted_dm > 0.0 && hinted_dm <= 2.0) adaptive_pow_bits -= 1;
+        if (hinted_mobile) adaptive_pow_bits -= 1;
+        adaptive_pow_bits = std::max(8, std::min(24, adaptive_pow_bits));
+
+        int wait_min_ms = 8 * 1000;
+        int wait_max_ms = 20 * 1000;
+        if (hinted_hc > 0) {
+            if (hinted_hc <= 2) {
+                wait_min_ms = 4 * 1000;
+                wait_max_ms = 10 * 1000;
+            } else if (hinted_hc <= 4) {
+                wait_min_ms = 6 * 1000;
+                wait_max_ms = 14 * 1000;
+            } else if (hinted_hc >= 12) {
+                wait_min_ms = 10 * 1000;
+                wait_max_ms = 22 * 1000;
+            }
+        }
+        if (hinted_mobile) {
+            wait_min_ms = std::max(3 * 1000, wait_min_ms - 1500);
+            wait_max_ms = std::max(wait_min_ms + 1000, wait_max_ms - 2500);
+        }
+        int adaptive_pow_mem_mb = 48;
+        if (hinted_dm > 0.0) {
+            adaptive_pow_mem_mb = static_cast<int>(std::round(hinted_dm * 1024.0 * 0.10));
+        }
+        if (hinted_mobile) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 64);
+        else adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 192);
+        if (hinted_hc > 0 && hinted_hc <= 2) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 48);
+        adaptive_pow_mem_mb = std::max(8, adaptive_pow_mem_mb);
+        int adaptive_pow_cpu_level = 4;
+        if (hinted_hc > 0) {
+            if (hinted_hc <= 2) adaptive_pow_cpu_level = 2;
+            else if (hinted_hc <= 4) adaptive_pow_cpu_level = 3;
+            else if (hinted_hc <= 6) adaptive_pow_cpu_level = 4;
+            else if (hinted_hc <= 10) adaptive_pow_cpu_level = 5;
+            else adaptive_pow_cpu_level = 6;
+        }
+        if (hinted_mobile) adaptive_pow_cpu_level = std::max(2, adaptive_pow_cpu_level - 1);
+        adaptive_pow_cpu_level = std::max(1, std::min(8, adaptive_pow_cpu_level));
+
         std::random_device rd;
         std::mt19937 gen(rd());
-        std::uniform_int_distribution<int> num_a(12000, 98000);
-        std::uniform_int_distribution<int> num_b(12000, 98000);
-        std::uniform_int_distribution<int> num_c(1200, 9500);
+        std::uniform_int_distribution<int> num_a(250, 2800);
+        std::uniform_int_distribution<int> num_b(250, 2800);
+        std::uniform_int_distribution<int> num_c(120, 1800);
         std::uniform_int_distribution<int> opdis(0, 1);
-        std::uniform_int_distribution<int> wait_human_ms(5 * 60 * 1000, 6 * 60 * 1000);
-        int a = num_a(gen), b = num_b(gen), c = num_c(gen);
-        bool plus = opdis(gen) == 0;
-        long long ans = plus ? (static_cast<long long>(a) + static_cast<long long>(b) - c)
-                             : (static_cast<long long>(a) - static_cast<long long>(b) + c);
+        std::uniform_int_distribution<int> wait_human_ms(wait_min_ms, wait_max_ms);
+        int a = 0, b = 0, c = 0;
+        bool plus = true;
+        long long ans = 0;
+        bool picked = false;
+        for (int tries = 0; tries < 128; ++tries) {
+            a = num_a(gen);
+            b = num_b(gen);
+            c = num_c(gen);
+            plus = opdis(gen) == 0;
+            ans = plus ? (static_cast<long long>(a) + static_cast<long long>(b) - c)
+                       : (static_cast<long long>(a) - static_cast<long long>(b) + c);
+            if (ans >= 100 && ans <= 9999) {
+                picked = true;
+                break;
+            }
+        }
+        if (!picked) {
+            a = 1500;
+            b = 900;
+            c = 400;
+            plus = true;
+            ans = static_cast<long long>(a) + static_cast<long long>(b) - c; // 2000
+        }
         std::string nonce = random_nonce();
         NonceRec rec;
         std::vector<int> pattern_nodes = generate_pattern_nodes(gen);
@@ -1278,10 +1387,9 @@ static void handle_client(int fd, std::string remote_ip) {
             rec.connection_key = "conn_" + random_token(6);
             rec.pattern_key = "pat_" + random_token(6);
             rec.pow_salt = "pow_" + random_token(12);
-            rec.pow_bits = s.pow_bits;
+            rec.pow_bits = adaptive_pow_bits;
             rec.pattern_seq = join_ints_dash(pattern_nodes);
-            const bool client_server_like = probe_client_http_server_banner(ip);
-            rec.min_connection_ms = client_server_like ? (6 * 60 * 60 * 1000) : wait_human_ms(gen);
+            rec.min_connection_ms = wait_human_ms(gen);
             rec.issued_at = std::time(nullptr);
             // Keep nonce valid longer to reduce false invalidation on mobile/slow interaction.
             rec.exp = std::time(nullptr) + 3600;
@@ -1299,6 +1407,8 @@ static void handle_client(int fd, std::string remote_ip) {
         out["pattern_key"] = rec.pattern_key;
         out["pow_salt"] = rec.pow_salt;
         out["pow_bits"] = rec.pow_bits;
+        out["pow_mem_mb"] = adaptive_pow_mem_mb;
+        out["pow_cpu_level"] = adaptive_pow_cpu_level;
         out["connection_delay_ms"] = rec.min_connection_ms;
         send_response(fd, 200, "OK", out.dump(), {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
         close(fd);
@@ -1355,13 +1465,27 @@ static void handle_client(int fd, std::string remote_ip) {
         answer = normalize_numeric_answer(answer);
         const std::string expected_answer = normalize_numeric_answer(rec.ans);
         if (answer != expected_answer) {
+            int attempts_left = 0;
+            bool exceeded = false;
             std::lock_guard<std::mutex> lock(g_nonce_mu);
             auto it = g_nonce_map.find(nonce);
             if (it != g_nonce_map.end()) {
                 it->second.math_fail_count++;
-                if (it->second.math_fail_count >= 4) g_nonce_map.erase(it);
+                attempts_left = std::max(0, 5 - it->second.math_fail_count);
+                if (it->second.math_fail_count >= 5) {
+                    exceeded = true;
+                    g_nonce_map.erase(it);
+                }
             }
-            send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"answer_wrong\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            if (exceeded) {
+                send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"math_attempts_exceeded\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            } else {
+                json out = json::object();
+                out["ok"] = false;
+                out["error"] = "answer_wrong";
+                out["attempts_left"] = attempts_left;
+                send_response(fd, 401, "Unauthorized", out.dump(), {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            }
             close(fd);
             return;
         }
@@ -1404,7 +1528,9 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
+        const int click_rate_limit_per_sec = ua_mobile_like(ua) ? 30 : 10;
         bool ok = false;
+        bool rate_limited = false;
         {
             std::lock_guard<std::mutex> lock(g_nonce_mu);
             auto it = g_nonce_map.find(nonce);
@@ -1413,12 +1539,33 @@ static void handle_client(int fd, std::string remote_ip) {
                 it->second.ua == ua_fp &&
                 !it->second.click_key.empty() &&
                 click_value == it->second.click_key) {
-                // Mobile/CDN paths can temporarily shift edge IP between requests.
-                // Keep nonce bound to current IP once the click handshake is valid.
-                it->second.ip = ip;
-                it->second.click_verified = true;
-                ok = true;
+                // Once verified, ignore repeated taps so accidental spam cannot invalidate the nonce.
+                if (it->second.click_verified) {
+                    ok = true;
+                } else {
+                    const std::time_t now_sec = std::time(nullptr);
+                    if (it->second.click_bucket_sec != now_sec) {
+                        it->second.click_bucket_sec = now_sec;
+                        it->second.click_bucket_count = 0;
+                    }
+                    it->second.click_bucket_count++;
+                    if (it->second.click_bucket_count > click_rate_limit_per_sec) {
+                        // Soft rate-limit: keep nonce alive and let user retry next second.
+                        rate_limited = true;
+                    } else {
+                        // Mobile/CDN paths can temporarily shift edge IP between requests.
+                        // Keep nonce bound to current IP once the click handshake is valid.
+                        it->second.ip = ip;
+                        it->second.click_verified = true;
+                        ok = true;
+                    }
+                }
             }
+        }
+        if (rate_limited) {
+            send_response(fd, 429, "Too Many Requests", "{\"ok\":false,\"error\":\"click_rate_limited\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+            close(fd);
+            return;
         }
         if (!ok) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"click_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
@@ -1468,25 +1615,46 @@ static void handle_client(int fd, std::string remote_ip) {
             "button:hover{filter:brightness(1.07)}button:disabled{opacity:.66;cursor:not-allowed}"
             ".hint{margin-top:10px;color:var(--muted);font-size:12px}.status{margin-top:10px;color:#9fd2ff;min-height:18px;font-size:13px}.err{margin-top:6px;color:var(--err);min-height:18px;font-size:13px}"
             "@media (max-width:640px){.connbox{min-height:52vh}.row{flex-direction:column}button{width:100%}#human_btn{width:142px;min-height:30px;font-size:10px;padding:6px 8px}}"
+            ":root{--bg:#1f2933;--bg2:#263445;--card:#2f3b4d;--line:#42536b;--text:#e5edf7;--muted:#9fb0c7;--acc:#3b82f6;--err:#fca5a5}"
+            "body{background:linear-gradient(180deg,var(--bg),var(--bg2));font-family:'Segoe UI',Tahoma,sans-serif;padding:14px}"
+            ".card{width:min(760px,98vw);background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.22)}"
+            ".head{padding:12px 14px;border-bottom:1px solid var(--line)}.title{font-size:15px}.sub{font-size:12px}.dot{background:var(--acc);box-shadow:none}"
+            ".body{padding:14px}.tabs{margin:0 0 10px;gap:8px}.tab{padding:8px 10px;border-radius:7px;border-color:var(--line);background:#2d3a4d;color:var(--muted)}"
+            ".tab.on{background:#253347;border-color:#4d617d;color:var(--text)}"
+            ".big{background:transparent;border:0;padding:0}.connbox{min-height:260px;max-height:none;padding:10px 0 0 0;position:relative;display:block;overflow:hidden}"
+            ".human-wrap{position:absolute;left:14px;top:90px;display:block;margin:0;z-index:2}"
+            ".phase-ind{border-radius:999px;padding:4px 10px;border-color:#516581;background:#31435a;color:#dce8f7;letter-spacing:.3px}"
+            ".phase-ind.p1,.phase-ind.p2{border-color:#516581;background:#31435a;color:#dce8f7;box-shadow:none}"
+            ".q{font-size:14px;color:var(--muted);margin:0 0 8px}.qa{margin:0 0 10px;padding:12px;border-radius:7px;border:1px solid var(--line);background:#2a3648;color:var(--text)}"
+            ".pat{margin:0 0 10px;padding:10px;border-radius:7px;border:1px solid var(--line);background:#2a3648}"
+            ".row{gap:8px}.row input{min-width:0}input,button{height:40px;padding:9px 12px;border-radius:7px;border:1px solid var(--line);background:#2a3648;color:var(--text)}"
+            "input:focus{border-color:#5d8fd1;box-shadow:0 0 0 1px rgba(93,143,209,.35)}"
+            "button{background:var(--acc);border-color:var(--acc);min-width:110px}button.secondary{background:#2a3648;border-color:var(--line);color:#cfe0f5}"
+            "#human_btn{width:auto;min-width:160px;min-height:34px;padding:0 12px;letter-spacing:.1px;box-shadow:none}"
+            "button:hover{filter:brightness(1.03)}.hint{font-size:13px;color:var(--muted)}.status{color:#9fc5ff}.err{color:var(--err)}.timer{text-shadow:none;font-size:24px}"
+            "@media (max-width:640px){.card{width:100%}.body{padding:12px}.tab{padding:7px 8px}.q{font-size:13px}.row{flex-direction:column}button{width:100%}.connbox{min-height:200px;padding-top:8px}.human-wrap{top:76px}#human_btn{width:auto!important;min-width:120px;min-height:30px;font-size:10px;padding:0 8px}}"
             "</style></head><body><div class=\"card\">"
             "<div class=\"head\"><span class=\"dot\"></span><span class=\"title\">PteroProtect Verification</span><span class=\"sub\">30m clearance</span></div>"
             "<div class=\"body\"><div class=\"tabs\"><div class=\"tab on\" id=\"tab_conn\">Connection</div><div class=\"tab\" id=\"tab_chal\">Challenge</div></div>"
-            "<div class=\"pane on\" id=\"pane_conn\"><div class=\"big connbox\" id=\"connbox\"><p class=\"q\">Checking connection integrity...</p><div class=\"timer\" id=\"ctimer\">--</div><p class=\"q\">Klik tombol untuk buka challenge manual. Session tetap dikunci ke IP + User-Agent.</p><div class=\"human-wrap\" id=\"human_wrap\"><button id=\"human_btn\" type=\"button\">I am human, pass me</button></div></div></div>"
+            "<div class=\"pane on\" id=\"pane_conn\"><div class=\"big connbox\" id=\"connbox\"><p class=\"q\">Checking connection integrity...</p><div class=\"timer\" id=\"ctimer\">--</div><p class=\"q\">Klik tombol untuk buka challenge manual. Session tetap dikunci ke IP + User-Agent.</p><div class=\"human-wrap\" id=\"human_wrap\"><button id=\"human_btn\" type=\"button\" disabled>Preparing challenge...</button></div></div></div>"
             "<div class=\"pane\" id=\"pane_chal\"><div class=\"phase-ind p1\" id=\"phase_ind\">PHASE 1</div><p class=\"q\" id=\"phaseq\">Tahap 1: selesaikan math dulu.</p><p class=\"q\" id=\"phint\"></p>"
             "<p class=\"qa\" id=\"q\">Memuat challenge...</p><div class=\"pat\" id=\"patbox\"><canvas id=\"pc\" width=\"280\" height=\"280\"></canvas></div><div class=\"row\" id=\"ainput_wrap\"><input id=\"a\" placeholder=\"Masukkan jawaban\"/></div><div class=\"row\"><button id=\"b\">Continue</button><button id=\"rb\" type=\"button\" class=\"secondary\">Restart (3)</button></div>"
             "<div class=\"hint\">Tip: gunakan perangkat normal (mouse/touch/scroll) agar lolos validasi anti-bot.</div></div><div class=\"status\" id=\"s\"></div><div class=\"err\" id=\"e\"></div></div></div>"
-            "<script>let nonce=\"\",ak=\"\",hk=\"\",bk=\"\",ck=\"\",pk=\"\",powSalt=\"\",powHash=\"\";let powBits=18,powCounter=-1,powReady=false;let phase=1;let pseq=[];let clicked=[];let pTrace=[];let pStart=0;let pDir=0;let pActive=false;let ppx=null,ppy=null,pvdx=0,pvdy=0;let started=Date.now();let unlockAt=0;let waitTimer=null;let humanMoveTimer=null;let humanReady=false;let enteredChallenge=false;let clickVerified=false;let hardOpened=false;let uiLocked=false;let pm=0,pd=0,pdc=0,tm=0,sc=0,kc=0,px=null,py=null,pvx=0,pvy=0;let lastBX=-1,lastBY=-1;let humanPauseUntil=0;let phase2Hint='';let restartsLeft=3;"
+            "<script>let nonce=\"\",ak=\"\",hk=\"\",bk=\"\",ck=\"\",pk=\"\",powSalt=\"\",powHash=\"\";let powBits=14,powMemMb=48,powCpuLevel=4,powCounter=-1,powReady=false;let phase=1;let pseq=[];let clicked=[];let pTrace=[];let pStart=0;let pDir=0;let pActive=false;let ppx=null,ppy=null,pvdx=0,pvdy=0;let started=Date.now();let unlockAt=0;let waitTimer=null;let humanMoveTimer=null;let humanReady=false;let enteredChallenge=false;let clickVerified=false;let hardOpened=false;let uiLocked=false;let pm=0,pd=0,pdc=0,tm=0,sc=0,kc=0,px=null,py=null,pvx=0,pvy=0;let lastBX=-1,lastBY=-1;let humanPauseUntil=0;let phase2Hint='';let restartsLeft=3;let clickSamples=[];let clickResetBusy=false;let clickLastMark=0;let hardPenaltyUntil=0;let pendingHumanClick=false;const HARD_PENALTY_MS=9*60*60*1000;const CLICK_LIMIT_PER_SEC=(((navigator&&navigator.maxTouchPoints)||0)>=1||/android|iphone|ipad|ipod|mobile/i.test(String((navigator&&navigator.userAgent)||'')))?30:10;"
             "const elQ=document.getElementById('q'),elA=document.getElementById('a'),elB=document.getElementById('b'),elRB=document.getElementById('rb'),elS=document.getElementById('s'),elE=document.getElementById('e'),elCT=document.getElementById('ctimer'),elHB=document.getElementById('human_btn'),elCW=document.getElementById('connbox'),elHW=document.getElementById('human_wrap'),elPC=document.getElementById('pane_conn'),elPH=document.getElementById('pane_chal'),elTC=document.getElementById('tab_conn'),elTH=document.getElementById('tab_chal'),elPI=document.getElementById('phase_ind'),elPQ=document.getElementById('phaseq'),elPHint=document.getElementById('phint'),elPat=document.getElementById('patbox'),elInputWrap=document.getElementById('ainput_wrap'),pc=document.getElementById('pc'),ctx=pc.getContext('2d');"
             "function normAns(v){let s=String(v||'').trim();if(!s)return s;s=s.replace(/[−–—﹣－]/g,'-').replace(/[＋]/g,'+');const sign=(s[0]==='+'||s[0]==='-')?s[0]:'';if(sign)s=s.slice(1);s=s.replace(/[\\s,._'\\u00A0\\u202F]/g,'');return sign+s;}"
             "async function sha256Hex(text){const enc=new TextEncoder();const buf=await crypto.subtle.digest('SHA-256',enc.encode(text));const arr=new Uint8Array(buf);let out='';for(const b of arr){out+=b.toString(16).padStart(2,'0');}return out;}"
             "function hasLeadingZeroBits(hex,bits){if(bits<=0)return true;const n=Math.floor(bits/4),r=bits%4;for(let i=0;i<n;i++){if(hex[i]!=='0')return false;}if(r===0)return true;const v=parseInt(hex[n]||'f',16);if(Number.isNaN(v))return false;return v<(1<<(4-r));}"
-            "async function solvePow(nonce,salt,bits){if(!nonce||!salt)throw new Error('pow_invalid');const start=Date.now();let c=0;while(c<200000000){const h=await sha256Hex(nonce+'|'+salt+'|'+String(c));if(hasLeadingZeroBits(h,bits)){return{counter:c,hash:h,ms:Date.now()-start};}c++;if((c%200)===0)await new Promise(r=>setTimeout(r,0));}throw new Error('pow_timeout');}"
+            "async function solvePow(nonce,salt,bits,memMb,cpuLvl){if(!nonce||!salt)throw new Error('pow_invalid');const start=Date.now();const n=navigator||{};const hc=Math.max(1,Math.min(64,Number(n.hardwareConcurrency||2)));const mobile=((Number(n.maxTouchPoints||0)>0)||/android|iphone|ipad|ipod|mobile/i.test(String(n.userAgent||'')));const cpuLevel=Math.max(1,Math.min(8,Number(cpuLvl||4)));const baseBatch=(hc<=2?48:(hc<=4?84:(hc<=6?132:220)));const batch=mobile?Math.max(28,Math.floor(baseBatch*0.72)):baseBatch;const sleepBase=(hc<=2?8:(hc<=4?5:(hc<=6?2:1)));const sleepMs=Math.max(0,sleepBase-Math.floor(cpuLevel/2))+(mobile?1:0);let targetMb=Math.max(8,Math.min(mobile?64:192,Number(memMb||48)));let memBytes=Math.max(8*1024*1024,Math.floor(targetMb*1024*1024));let mem=null;while(memBytes>=8*1024*1024){try{mem=new Uint8Array(memBytes);break;}catch(_e){memBytes=Math.floor(memBytes/2);}}if(!mem)throw new Error('pow_mem_alloc_failed');const stride=4096;for(let i=0;i<mem.length;i+=stride){mem[i]=(i^bits)&255;}const touchPerIter=(hc<=2?2:(hc<=4?3:4))+cpuLevel;const cpuMixRounds=(cpuLevel*6)+(hc>=8?4:0);let mix=bits&255;let c=0;while(c<200000000){let idx=((c*1103515245)^(mix*2654435761))>>>0;if(mem.length>0){for(let t=0;t<touchPerIter;t++){idx=(idx+4099+((mix+13*t)&255))%mem.length;const v=mem[idx];mix=(mix+v+c+t)&255;mem[idx]=mix^((idx>>>5)&255);}for(let r=0;r<cpuMixRounds;r++){mix=(mix*33+r+c)&255;idx=(idx+mix+17+r)%mem.length;mem[idx]=(mem[idx]^mix^r)&255;}}const h=await sha256Hex(nonce+'|'+salt+'|'+String(c));if(hasLeadingZeroBits(h,bits)){return{counter:c,hash:h,ms:Date.now()-start,mem_mb:Math.floor(mem.length/1048576),cpu_level:cpuLevel};}c++;if((c%batch)===0){await new Promise(r=>setTimeout(r,sleepMs));}}throw new Error('pow_timeout');}"
             "function trackPointer(x,y){if(px!==null&&py!==null){const dx=x-px,dy=y-py;pd+=Math.hypot(dx,dy);pm++;if((pvx!==0||pvy!==0)&&((dx*pvx+dy*pvy)<-4))pdc++;pvx=dx;pvy=dy;}px=x;py=y;}"
             "window.addEventListener('mousemove',e=>trackPointer(e.clientX,e.clientY),{passive:true});"
             "window.addEventListener('touchmove',e=>{const t=e.touches&&e.touches[0];if(!t)return;tm++;trackPointer(t.clientX,t.clientY);},{passive:true});"
             "window.addEventListener('scroll',()=>{sc++;},{passive:true});"
             "window.addEventListener('keydown',()=>{kc++;});"
             "function behavior(){return{duration_ms:Date.now()-started,pointer_moves:pm,pointer_distance:Math.round(pd),pointer_dir_changes:pdc,touch_moves:tm,scroll_count:sc,key_count:kc};}"
+            "function resetToConnectionRateLimited(){if(clickResetBusy)return true;clickResetBusy=true;const now=Date.now();hardPenaltyUntil=Math.max(hardPenaltyUntil,now+HARD_PENALTY_MS);unlockAt=hardPenaltyUntil;clickSamples=[];clickVerified=false;uiLocked=false;hardOpened=false;enteredChallenge=false;humanReady=false;elHB.disabled=true;elHB.textContent='Penalty active';if(elHW)elHW.style.display='none';showConn();elS.textContent='Klik terlalu cepat (>'+String(CLICK_LIMIT_PER_SEC)+'/s). Hukuman 9 jam aktif.';updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,1000);clickResetBusy=false;return true;}"
+            "function registerChallengeClick(){const now=Date.now();if(now-clickLastMark<35)return false;clickLastMark=now;clickSamples.push(now);while(clickSamples.length&&now-clickSamples[0]>1000)clickSamples.shift();if(clickSamples.length>CLICK_LIMIT_PER_SEC){return resetToConnectionRateLimited();}return false;}"
+            "const registerGlobalClickWatch=()=>{const hit=()=>{registerChallengeClick();};window.addEventListener('pointerdown',hit,{capture:true,passive:true});window.addEventListener('mousedown',hit,{capture:true,passive:true});window.addEventListener('touchstart',hit,{capture:true,passive:true});window.addEventListener('click',hit,{capture:true,passive:true});document.addEventListener('click',hit,{capture:true,passive:true});};registerGlobalClickWatch();"
             "const nodes=[[20,20],[50,20],[80,20],[20,50],[50,50],[80,50],[20,80],[50,80],[80,80]];"
             "function randRGB(){const r=80+Math.floor(Math.random()*176),g=80+Math.floor(Math.random()*176),b=80+Math.floor(Math.random()*176);return'rgb('+r+','+g+','+b+')';}"
             "function segCross(a,b,c,d){const ccw=(p1,p2,p3)=>((p3[1]-p1[1])*(p2[0]-p1[0])>(p2[1]-p1[1])*(p3[0]-p1[0]));return(ccw(a,c,d)!==ccw(b,c,d))&&(ccw(a,b,c)!==ccw(a,b,d));}"
@@ -1498,29 +1666,31 @@ static void handle_client(int fd, std::string remote_ip) {
             "function patternPayload(){const dur=pStart?Date.now()-pStart:0;return{duration_ms:dur,dir_changes:pDir,trace:pTrace,clicked_nodes:clicked};}"
             "function connectionInfo(){const n=navigator||{};const s=screen||{};const tz=(Intl&&Intl.DateTimeFormat)?(Intl.DateTimeFormat().resolvedOptions().timeZone||''):'unknown';"
             "return{webdriver:!!n.webdriver,ua_len:String(n.userAgent||'').length,lang_len:String(n.language||'').length,tz_len:String(tz||'').length,max_touch_points:Number(n.maxTouchPoints||0),hardware_concurrency:Number(n.hardwareConcurrency||0),screen_w:Number(s.width||0),screen_h:Number(s.height||0),color_depth:Number(s.colorDepth||0)};}"
+            "function clientHintQuery(){const n=navigator||{};const hc=Math.max(0,Math.min(64,Number(n.hardwareConcurrency||0)));const dm=Math.max(0,Math.min(64,Number(n.deviceMemory||0)));const mobile=((Number(n.maxTouchPoints||0)>0)||/android|iphone|ipad|ipod|mobile/i.test(String(n.userAgent||'')))?1:0;return'?hc='+encodeURIComponent(String(hc))+'&dm='+encodeURIComponent(String(dm))+'&m='+String(mobile);}"
             "function showConn(){if(uiLocked||hardOpened||enteredChallenge){showChal();return;}elPC.classList.add('on');elPH.classList.remove('on');elTC.classList.add('on');elTH.classList.remove('on');}"
             "function showChal(){elPC.classList.remove('on');elPH.classList.add('on');elTC.classList.remove('on');elTH.classList.add('on');}"
             "function lockChallengeUI(){uiLocked=true;hardOpened=true;enteredChallenge=true;humanReady=true;showChal();}"
             "function setPhaseMath(){phase=1;elQ.style.display='';elInputWrap.style.display='';elPat.style.display='none';elA.value='';if(elPI){elPI.textContent='PHASE 1';elPI.className='phase-ind p1';}}"
             "function setPhasePattern(){phase=2;lockChallengeUI();elQ.style.display='';elQ.textContent='Ikuti urutan titik sesuai petunjuk, lalu tekan Continue.';elInputWrap.style.display='none';elPat.style.display='block';if(elPI){elPI.textContent='PHASE 2';elPI.className='phase-ind p2';}}"
-            "function randBtn(){if(!elHB||!elCW||!elHW)return;if(Date.now()<humanPauseUntil)return;const pad=14;const topMin=14;const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=12){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
+            "function randBtn(){if(!elHB||!elCW||!elHW)return;if(Date.now()<humanPauseUntil)return;const pad=14;const topMin=(elCW.clientWidth<640?76:90);const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=12){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
             "function fmtMs(ms){const t=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(t/60);const s=t%60;return String(m)+'m '+String(s).padStart(2,'0')+'s';}"
-            "function updateWait(){const ms=unlockAt-Date.now();if(ms<=0){elCT.textContent='OK';}else{elCT.textContent=fmtMs(ms);}if(uiLocked||hardOpened||enteredChallenge){showChal();elB.disabled=false;elS.textContent='Challenge opened. No cooldown for submit.';if(ms<=0&&waitTimer){clearInterval(waitTimer);waitTimer=null;}return;}if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elS.textContent='Connection check passed.';elB.disabled=false;return;}const label=fmtMs(ms);showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}"
-            "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},1100);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new',{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error(String(j.error||'challenge unavailable'));"
-            "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';powSalt=String(j.pow_salt||'');powBits=Math.max(8,Math.min(24,Number(j.pow_bits||18)));powCounter=-1;powHash='';powReady=false;clickVerified=false;setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;phase2Hint='';elPQ.textContent='Tahap 1: selesaikan math dulu.';elPHint.textContent='';drawPattern();elQ.textContent=j.question;restartsLeft=3;elRB.disabled=true;elRB.textContent='Restart ('+String(restartsLeft)+')';"
-            "elS.textContent='Running browser PoW...';const pow=await solvePow(nonce,powSalt,powBits);powCounter=pow.counter;powHash=pow.hash;powReady=true;elRB.disabled=false;elS.textContent='PoW passed in '+String(pow.ms)+'ms.';"
-            "const raw=Number(j.connection_delay_ms||0);const d=Math.min(21600000,Math.max(0,raw));const keepOpened=(uiLocked||hardOpened||clickVerified||enteredChallenge||humanReady||phase===2);started=Date.now();unlockAt=Date.now()+d;if(keepOpened){lockChallengeUI();elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();}else{humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';}updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,250);}"
-            "elHB.onclick=async()=>{try{if(!nonce||!hk){throw new Error('challenge unavailable');}const c={nonce:nonce,click:hk};const cr=await fetch('/__pteroprotect/challenge/click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});const cj=await cr.json();if(!cj.ok){throw new Error(cj.error||'click_invalid');}lockChallengeUI();clickVerified=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();updateWait();}catch(err){elE.textContent=String(err.message||err);}};"
-            "const pauseHumanBtn=(ms)=>{humanPauseUntil=Math.max(humanPauseUntil,Date.now()+ms);};elHB.addEventListener('pointerenter',()=>pauseHumanBtn(1400));elHB.addEventListener('pointerdown',()=>pauseHumanBtn(2200));elHB.addEventListener('touchstart',()=>pauseHumanBtn(2200),{passive:true});elHB.addEventListener('focus',()=>pauseHumanBtn(1800));window.addEventListener('resize',()=>{if(!humanReady)randBtn();});"
+            "function updateWait(){const now=Date.now();if(now<hardPenaltyUntil){if(elHW)elHW.style.display='none';}else{if(elHW)elHW.style.display='';}const ms=unlockAt-now;if(ms<=0){elCT.textContent='OK';}else{elCT.textContent=fmtMs(ms);}if(uiLocked||hardOpened||enteredChallenge){showChal();elB.disabled=!powReady;elS.textContent=powReady?'Challenge ready. Tap Continue.':'Preparing browser proof...';if(ms<=0&&waitTimer&&powReady){clearInterval(waitTimer);waitTimer=null;}return;}if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elS.textContent='Connection check passed.';elB.disabled=false;if(elHW){elHW.style.display='';elHB.disabled=false;elHB.textContent='I am human, pass me';}return;}const label=fmtMs(ms);showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}"
+            "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;clickSamples=[];if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=true;elHB.textContent='Preparing challenge...';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},900);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new'+clientHintQuery(),{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error(String(j.error||'challenge unavailable'));"
+            "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';powSalt=String(j.pow_salt||'');powBits=Math.max(8,Math.min(24,Number(j.pow_bits||14)));powMemMb=Math.max(8,Math.min(192,Number(j.pow_mem_mb||48)));powCpuLevel=Math.max(1,Math.min(8,Number(j.pow_cpu_level||4)));powCounter=-1;powHash='';powReady=false;clickVerified=!!(clickVerified||hardOpened||enteredChallenge||humanReady||uiLocked);setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;phase2Hint='';elPQ.textContent='Tahap 1: selesaikan math dulu.';elPHint.textContent='';drawPattern();elQ.textContent=j.question;elHB.disabled=false;elHB.textContent='I am human, pass me';if(pendingHumanClick){pendingHumanClick=false;setTimeout(()=>{elHB.click();},0);}restartsLeft=3;elRB.disabled=true;elRB.textContent='Restart ('+String(restartsLeft)+')';"
+            "elS.textContent='Running browser PoW (RAM '+String(powMemMb)+'MB, CPU L'+String(powCpuLevel)+')...';const pow=await solvePow(nonce,powSalt,powBits,powMemMb,powCpuLevel);powCounter=pow.counter;powHash=pow.hash;powReady=true;elRB.disabled=false;const usedMb=Number(pow.mem_mb||powMemMb);const usedCpu=Number(pow.cpu_level||powCpuLevel);elS.textContent='PoW passed in '+String(pow.ms)+'ms. RAM '+String(usedMb)+'MB, CPU L'+String(usedCpu)+'.';"
+            "const raw=Number(j.connection_delay_ms||0);const baseDelay=Math.min(21600000,Math.max(0,raw));const penaltyLeft=Math.max(0,hardPenaltyUntil-Date.now());const d=Math.max(baseDelay,penaltyLeft);const keepOpened=(uiLocked||hardOpened||clickVerified||enteredChallenge||humanReady||phase===2)&&penaltyLeft<=0;started=Date.now();unlockAt=Date.now()+d;if(keepOpened){lockChallengeUI();elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();}else{humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';if(penaltyLeft>0&&elHW)elHW.style.display='none';}updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,1000);}"
+            "elHB.onclick=async()=>{try{if(!nonce||!hk){pendingHumanClick=true;elHB.disabled=true;elHB.textContent='Preparing challenge...';elS.textContent='Preparing challenge...';return;}const c={nonce:nonce,click:hk};const cr=await fetch('/__pteroprotect/challenge/click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});const cj=await cr.json();if(!cj.ok){throw new Error(cj.error||'click_invalid');}lockChallengeUI();clickVerified=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();if(powReady){elA.focus();}updateWait();}catch(err){const msg=String(err.message||err);if(msg==='click_rate_limited'){resetToConnectionRateLimited();return;}elE.textContent=msg;}};"
+            "const pauseHumanBtn=(ms)=>{humanPauseUntil=Math.max(humanPauseUntil,Date.now()+ms);};elHB.addEventListener('pointerenter',()=>pauseHumanBtn(120));elHB.addEventListener('pointerdown',()=>pauseHumanBtn(120));elHB.addEventListener('touchstart',()=>pauseHumanBtn(120),{passive:true});elHB.addEventListener('focus',()=>pauseHumanBtn(120));window.addEventListener('resize',()=>{if(!humanReady)randBtn();});"
             "elA.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();elB.click();}});"
             "elRB.onclick=async()=>{if(restartsLeft<=0){elRB.disabled=true;return;}restartsLeft-=1;elRB.textContent='Restart ('+String(restartsLeft)+')';if(restartsLeft<=0)elRB.disabled=true;elE.textContent='';if(phase===1){elS.textContent='Math di-reset.';elA.value='';elA.focus();elB.disabled=!powReady;return;}if(phase===2){elS.textContent='Pattern di-reset.';clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;drawPattern();elB.disabled=!powReady;return;}elS.textContent='Challenge di-reset.';elB.disabled=!powReady;};"
-            "elB.onclick=async()=>{try{if(Date.now()<unlockAt&&!enteredChallenge){updateWait();return;}if(!powReady){elS.textContent='PoW masih diproses...';elB.disabled=false;return;}if(!clickVerified){throw new Error('click_required');}elE.textContent='';elB.disabled=true;"
-            "if(phase===1){const m={nonce:nonce};m[ak]=normAns(elA.value||'');const mr=await fetch('/__pteroprotect/challenge/verify-math',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)});const mj=await mr.json();if(!mj.ok)throw new Error(mj.error||'math_failed');setPhasePattern();pseq=Array.isArray(mj.pattern_points)?mj.pattern_points:[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 2: klik angka sesuai urutan.';phase2Hint=sanitizeHint(String(mj.pattern_hint||''));elPHint.textContent=phase2Hint;drawPattern();elB.disabled=false;return;}"
+            "elB.onclick=async()=>{try{if(Date.now()<unlockAt&&!enteredChallenge){updateWait();return;}if(!powReady){elS.textContent='Preparing browser proof...';elB.disabled=true;return;}if(!clickVerified){throw new Error('click_required');}elE.textContent='';elB.disabled=true;"
+            "if(phase===1){const m={nonce:nonce};m[ak]=normAns(elA.value||'');const mr=await fetch('/__pteroprotect/challenge/verify-math',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)});const mj=await mr.json();if(!mj.ok){if(mj.error==='answer_wrong'&&Number.isFinite(Number(mj.attempts_left))){elS.textContent='Salah. Sisa percobaan math: '+String(Math.max(0,Number(mj.attempts_left)));}throw new Error(mj.error||'math_failed');}setPhasePattern();pseq=Array.isArray(mj.pattern_points)?mj.pattern_points:[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 2: klik angka sesuai urutan.';phase2Hint=sanitizeHint(String(mj.pattern_hint||''));elPHint.textContent=phase2Hint;drawPattern();elB.disabled=false;return;}"
             "const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=normAns(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
             "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');location.href=j.redirect||'" + rd + "';}"
             "catch(err){const msg=String(err.message||err);elS.textContent='';elE.textContent=msg;if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
-            "async function cleanupOldChallengeCaches(){try{if(window.caches&&caches.keys){const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}if('serviceWorker' in navigator&&navigator.serviceWorker.getRegistrations){const regs=await navigator.serviceWorker.getRegistrations();await Promise.all(regs.filter(r=>String(r.scope||'').includes('/__pteroprotect/challenge/')).map(r=>r.unregister()));}}catch(_e){}}"
-            "cleanupOldChallengeCaches().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));});</script></body></html>";
+            "async function cleanupOldChallengeCaches(){try{if(window.caches&&caches.keys){const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}if('serviceWorker' in navigator&&navigator.serviceWorker.getRegistrations){const regs=await navigator.serviceWorker.getRegistrations();await Promise.all(regs.filter(r=>{const s=String(r.scope||'');return s===location.origin+'/'||s.includes('/__pteroprotect/challenge/');}).map(r=>r.unregister()));}}catch(_e){}}"
+            "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/__pteroprotect/challenge/'});}catch(_e){}}"
+            "cleanupOldChallengeCaches().finally(()=>registerChallengeSW().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));}));</script></body></html>";
         send_response(fd, 200, "OK", html, {{"Content-Type", "text/html; charset=utf-8"}}, head_only);
         close(fd);
         return;
@@ -1528,21 +1698,36 @@ static void handle_client(int fd, std::string remote_ip) {
 
     if (req.path == "/sw.js" && (req.method == "GET" || req.method == "HEAD")) {
         std::string js =
-            "const CACHE='pp-challenge-v12';"
-            "const PRECACHE=[];"
-            "self.addEventListener('install',e=>{e.waitUntil(self.skipWaiting());});"
-            "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});"
+            "const CACHE='pp-challenge-v19';"
+            "const PAGE='/__pteroprotect/challenge/page';"
+            "self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll([PAGE,'/__pteroprotect/challenge/sw.js'])).catch(()=>{}).then(()=>self.skipWaiting()));});"
+            "self.addEventListener('activate',e=>{e.waitUntil((async()=>{"
+            "const isRootScope=!!(self.registration&&self.registration.scope===self.location.origin+'/');"
+            "if(isRootScope){"
+            "try{const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}catch(_e){}"
+            "try{await self.registration.unregister();}catch(_e){}"
+            "try{const cls=await self.clients.matchAll({type:'window',includeUncontrolled:true});for(const c of cls){try{c.navigate(c.url);}catch(_e){}}}catch(_e){}"
+            "return;"
+            "}"
+            "try{const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')&&k!==CACHE).map(k=>caches.delete(k)));}catch(_e){}"
+            "await self.clients.claim();"
+            "})());});"
             "self.addEventListener('fetch',e=>{"
+            "if(e.request.method!=='GET')return;"
+            "const isRootScope=!!(self.registration&&self.registration.scope===self.location.origin+'/');"
+            "if(isRootScope)return;"
             "const u=new URL(e.request.url);"
             "if(u.pathname.startsWith('/__pteroprotect/challenge/new')||u.pathname.startsWith('/__pteroprotect/challenge/click')||u.pathname.startsWith('/__pteroprotect/challenge/verify-math')||u.pathname.startsWith('/__pteroprotect/challenge/solve')||u.pathname.startsWith('/__pteroprotect/challenge/check')){"
-            "e.respondWith(fetch(e.request));return;}"
+            "e.respondWith(fetch(e.request,{cache:'no-store'}));return;}"
+            "if(e.request.mode==='navigate'){"
+            "e.respondWith(fetch(e.request).then(r=>{const rc=r.clone();caches.open(CACHE).then(c=>c.put(PAGE,rc)).catch(()=>{});return r;}).catch(()=>caches.match(PAGE).then(r=>r||new Response('Offline. Retry when internet is back.',{status:503,headers:{'Content-Type':'text/plain; charset=utf-8'}}))));return;}"
             "if(u.pathname.startsWith('/__pteroprotect/challenge/')){"
-            "e.respondWith(fetch(e.request,{cache:'no-store'}).catch(()=>new Response('',{status:503,statusText:'Service Unavailable'})));"
+            "e.respondWith(caches.match(e.request).then(hit=>hit||fetch(e.request).then(r=>{const rc=r.clone();caches.open(CACHE).then(c=>c.put(e.request,rc)).catch(()=>{});return r;})).catch(()=>new Response('',{status:503,statusText:'Service Unavailable'})));"
             "}"
             "});";
         std::vector<std::pair<std::string, std::string>> headers = {
             {"Content-Type", "application/javascript; charset=utf-8"},
-            {"Service-Worker-Allowed", "/__pteroprotect/challenge/"}
+            {"Service-Worker-Allowed", "/"}
         };
         send_response(fd, 200, "OK", js, headers, head_only);
         close(fd);

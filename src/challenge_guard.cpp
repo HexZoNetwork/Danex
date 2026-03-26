@@ -1688,8 +1688,9 @@ static void handle_client(int fd, std::string remote_ip) {
             "const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=normAns(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
             "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');location.href=j.redirect||'" + rd + "';}"
             "catch(err){const msg=String(err.message||err);elS.textContent='';elE.textContent=msg;if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
-            "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/'});}catch(_e){}}"
-            "registerChallengeSW().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));});</script></body></html>";
+            "async function cleanupOldChallengeCaches(){try{if(window.caches&&caches.keys){const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}if('serviceWorker' in navigator&&navigator.serviceWorker.getRegistrations){const regs=await navigator.serviceWorker.getRegistrations();await Promise.all(regs.filter(r=>{const s=String(r.scope||'');return s===location.origin+'/'||s.includes('/__pteroprotect/challenge/');}).map(r=>r.unregister()));}}catch(_e){}}"
+            "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/__pteroprotect/challenge/'});}catch(_e){}}"
+            "cleanupOldChallengeCaches().finally(()=>registerChallengeSW().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));}));</script></body></html>";
         send_response(fd, 200, "OK", html, {{"Content-Type", "text/html; charset=utf-8"}}, head_only);
         close(fd);
         return;
@@ -1697,12 +1698,24 @@ static void handle_client(int fd, std::string remote_ip) {
 
     if (req.path == "/sw.js" && (req.method == "GET" || req.method == "HEAD")) {
         std::string js =
-            "const CACHE='pp-challenge-v17';"
+            "const CACHE='pp-challenge-v19';"
             "const PAGE='/__pteroprotect/challenge/page';"
             "self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll([PAGE,'/__pteroprotect/challenge/sw.js'])).catch(()=>{}).then(()=>self.skipWaiting()));});"
-            "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});"
+            "self.addEventListener('activate',e=>{e.waitUntil((async()=>{"
+            "const isRootScope=!!(self.registration&&self.registration.scope===self.location.origin+'/');"
+            "if(isRootScope){"
+            "try{const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}catch(_e){}"
+            "try{await self.registration.unregister();}catch(_e){}"
+            "try{const cls=await self.clients.matchAll({type:'window',includeUncontrolled:true});for(const c of cls){try{c.navigate(c.url);}catch(_e){}}}catch(_e){}"
+            "return;"
+            "}"
+            "try{const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')&&k!==CACHE).map(k=>caches.delete(k)));}catch(_e){}"
+            "await self.clients.claim();"
+            "})());});"
             "self.addEventListener('fetch',e=>{"
             "if(e.request.method!=='GET')return;"
+            "const isRootScope=!!(self.registration&&self.registration.scope===self.location.origin+'/');"
+            "if(isRootScope)return;"
             "const u=new URL(e.request.url);"
             "if(u.pathname.startsWith('/__pteroprotect/challenge/new')||u.pathname.startsWith('/__pteroprotect/challenge/click')||u.pathname.startsWith('/__pteroprotect/challenge/verify-math')||u.pathname.startsWith('/__pteroprotect/challenge/solve')||u.pathname.startsWith('/__pteroprotect/challenge/check')){"
             "e.respondWith(fetch(e.request,{cache:'no-store'}));return;}"

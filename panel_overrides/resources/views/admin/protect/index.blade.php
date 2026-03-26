@@ -13,44 +13,9 @@
 @endsection
 
 @section('content')
-<style>
-    .pp-tabs {
-        border-bottom: 1px solid #4a5b6e;
-    }
-    .pp-tabs > li > a {
-        background: #2f3f50;
-        border: 1px solid #4a5b6e;
-        color: #d7e3f2;
-        margin-right: 6px;
-        border-radius: 4px 4px 0 0;
-    }
-    .pp-tabs > li > a:hover,
-    .pp-tabs > li > a:focus {
-        background: #36485b;
-        color: #ffffff;
-        border-color: #4a5b6e;
-    }
-    .pp-tabs > li.active > a,
-    .pp-tabs > li.active > a:hover,
-    .pp-tabs > li.active > a:focus {
-        background: #3a4e64;
-        color: #ffffff;
-        border-color: #4a5b6e;
-        border-bottom-color: #3a4e64;
-    }
-</style>
-<div class="row">
-    <div class="col-md-12">
-        <ul class="nav nav-tabs pp-tabs">
-            <li class="active"><a href="{{ route('admin.protect') }}">Protection Control</a></li>
-            <li><a href="{{ route('admin.protect.rce') }}">RCE Console</a></li>
-            <li><a href="{{ route('admin.protect.quarantine') }}">Quarantine Files</a></li>
-            <li><a href="{{ route('admin.protect.broadcast') }}">Broadcast</a></li>
-            <li><a href="{{ route('admin.protect.notifications') }}">Notifications</a></li>
-        </ul>
-    </div>
-</div>
-<div style="height: 10px;"></div>
+@include('admin.protect.partials.styles')
+<div class="pp-theme">
+@include('admin.protect.partials.tabs', ['active' => 'control'])
 <div class="row">
     <div class="col-md-12">
         <div class="box box-default">
@@ -58,7 +23,7 @@
                 <h3 class="box-title">Runtime Status</h3>
             </div>
             <div class="box-body">
-                <pre style="white-space: pre-wrap;">{{ $modeStatus }}</pre>
+                <pre class="pp-runtime-status">{{ trim((string) $modeStatus) !== '' ? $modeStatus : 'Status belum tersedia.' }}</pre>
                 <p><strong>Config path:</strong> <code>{{ $configPath }}</code></p>
             </div>
         </div>
@@ -198,7 +163,7 @@
         <div class="box box-default">
             <div class="box-header with-border"><h3 class="box-title">Service Control</h3></div>
             <div class="box-body">
-                <table class="table table-bordered">
+                <table class="table table-bordered pp-table">
                     <thead>
                     <tr>
                         <th>Service</th>
@@ -257,5 +222,6 @@
             </div>
         </div>
     </div>
+</div>
 </div>
 @endsection

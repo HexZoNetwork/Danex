@@ -1,0 +1,62 @@
+{
+  "118.eb51a127.js": {
+    "src": "/assets/118.eb51a127.js",
+    "integrity": "sha384-4Z8GvaY1DzatXfQmNE8MlOkmQLjF+aX6/loBS9FPsV4nbXhU6z2Gngv+SNlNvPNF"
+  },
+  "147.e3137dc2.js": {
+    "src": "/assets/147.e3137dc2.js",
+    "integrity": "sha384-e2oYtsouBxn+LB14ttrB0zixHj3G7X3D9BbxarzEMzZADgGGGdVwJGbGFvAEdPk4"
+  },
+  "451.e109638d.js": {
+    "src": "/assets/451.e109638d.js",
+    "integrity": "sha384-2FeypJPhSi7HPe3yVe/Sj0NcmdAuprVd36G4pFuebrh5H4EREms1xZ1sBX5eN3Tm"
+  },
+  "568.4aaf1fd8.js": {
+    "src": "/assets/568.4aaf1fd8.js",
+    "integrity": "sha384-IneMST7QEK/3pyDFR26Vrhhq/SAUnb2jptYxtYWv4ZhjDlaGyolC15e3qlafzdte"
+  },
+  "799.e913f280.js": {
+    "src": "/assets/799.e913f280.js",
+    "integrity": "sha384-jSHLsNsMDrDW2P+wJpf6PrCgy1IRRhgI8z8Zcly+asujDCDVaI51pZQh8Y3u+kIo"
+  },
+  "921.814cbfbf.js": {
+    "src": "/assets/921.814cbfbf.js",
+    "integrity": "sha384-kydHE7w6Puh7vakMh3tmn/sA718kIEIfRWWR7FZb8Mrjh1a5aDAezXPc+KPv1+2X"
+  },
+  "925.e92e7919.js": {
+    "src": "/assets/925.e92e7919.js",
+    "integrity": "sha384-Dx+mHc7GYCfjEkvwiIAoJm2FzJFx/GNgASZGzE3lN9/K8nJxOdj2TQVmHae4UEro"
+  },
+  "931.f55681b4.js": {
+    "src": "/assets/931.f55681b4.js",
+    "integrity": "sha384-isLdtfGgrnewJJlBk17EDjszs1RcZxF0r+2iZ7vsQ/x7VVkX7f3TT6UvSW8BAujx"
+  },
+  "987.f747724b.js": {
+    "src": "/assets/987.f747724b.js",
+    "integrity": "sha384-GNRR+oh6wJkiY9wrI1ZnvvjCo1cSBVvAoDvTTYDx+DLTHg59uvZU/xd+erTqcwG4"
+  },
+  "auth.js": {
+    "src": "/assets/auth.86c58c1f.js",
+    "integrity": "sha384-jcivn11S7PnI9L5EolUBUjF0aONhbib+O7SjtKkziJa5Gi3rLmQAm3Cd95zwJRP+"
+  },
+  "dashboard.js": {
+    "src": "/assets/dashboard.a70ae421.js",
+    "integrity": "sha384-yuZjU8/GGLHBO1pAaB0YQHQcT7RPWbf0bFZE4aHHdM7QAgo2mxe+IXPRf0nZ1G71"
+  },
+  "ibm-plex-sans-latin-wght-normal.woff2": {
+    "src": "/assets/b33a81b76947ac354369.woff2",
+    "integrity": ""
+  },
+  "main.js": {
+    "src": "/assets/bundle.eb4bdf85.js",
+    "integrity": "sha384-NthaIXx0dqGbrhGPu2lA1nwsyCO7kVeP7uFRnttTDY5IFzTBU9a53R9l4s2L1YSZ"
+  },
+  "main.woff2": {
+    "src": "/assets/b33a81b76947ac354369.woff2",
+    "integrity": ""
+  },
+  "server.js": {
+    "src": "/assets/server.a52f314b.js",
+    "integrity": "sha384-ObB3l2qeLXH3G3801DjmDPx8McBe5wxP2Zc4qmsJig2eVwATht4d9U7rXUULR5Vo"
+  }
+}

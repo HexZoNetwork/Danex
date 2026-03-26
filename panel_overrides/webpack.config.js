@@ -118,15 +118,9 @@ module.exports = {
         sideEffects: false,
         runtimeChunk: false,
         removeEmptyChunks: true,
-        splitChunks: isProduction
-            ? {
-                  chunks: 'all',
-                  minSize: 20000,
-                  maxSize: 240000,
-                  automaticNameDelimiter: '.',
-                  enforceSizeThreshold: 300000,
-              }
-            : undefined,
+        // The panel template injects only the main entry script, so keep the
+        // bootstrap path in a single initial bundle to avoid blank-screen boots.
+        splitChunks: false,
         minimize: isProduction,
         minimizer: [
             new TerserPlugin({
