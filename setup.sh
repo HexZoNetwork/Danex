@@ -2067,6 +2067,11 @@ server {
         return 444;
     }
 
+    location @challenge_allow {
+        internal;
+        return 204;
+    }
+
     location @wings_upstream {
         proxy_pass http://pteroprotect_wings_pool;
         proxy_http_version 1.1;
@@ -2095,6 +2100,8 @@ server {
         proxy_set_header X-API-Key \$http_x_api_key;
         proxy_set_header Content-Length "";
         proxy_pass_request_body off;
+        proxy_intercept_errors on;
+        error_page 500 502 503 504 = @challenge_allow;
         proxy_connect_timeout 300ms;
         proxy_send_timeout 1s;
         proxy_read_timeout 1s;
