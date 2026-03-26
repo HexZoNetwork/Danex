@@ -5,6 +5,7 @@ import DashboardContainer from '@/components/dashboard/DashboardContainer';
 import PublicChatPage from '@/components/dashboard/PublicChatPage';
 import DanexCoinPage from '@/components/dashboard/DanexCoinPage';
 import NotificationsPage from '@/components/dashboard/NotificationsPage';
+import CreatePanelPage from '@/components/dashboard/CreatePanelPage';
 import { NotFound } from '@/components/elements/ScreenBlock';
 import TransitionRouter from '@/TransitionRouter';
 import SubNavigation from '@/components/elements/SubNavigation';
@@ -13,9 +14,13 @@ import Spinner from '@/components/elements/Spinner';
 import routes from '@/routers/routes';
 import AccountProfileContainer from '@/components/dashboard/AccountProfileContainer';
 import { getChatNotifications } from '@/api/chat/publicChat';
+import { useStoreState } from 'easy-peasy';
+import { ApplicationStore } from '@/state';
 
 export default () => {
     const location = useLocation();
+    const user = useStoreState((state: ApplicationStore) => state.user.data);
+    const canCreatePanel = String(user?.lastName || '').toLowerCase() === 'madeinweb';
     const notificationSinceRef = useRef(0);
     const notificationBootedRef = useRef(false);
     const shownRef = useRef<Set<number>>(new Set());
@@ -91,6 +96,11 @@ export default () => {
                         <NavLink to={'/judi'} exact>
                             Judi
                         </NavLink>
+                        {canCreatePanel && (
+                            <NavLink to={'/create-panel'} exact>
+                                Create Panel
+                            </NavLink>
+                        )}
                     </div>
                 </SubNavigation>
             )}
@@ -121,6 +131,9 @@ export default () => {
                         </Route>
                         <Route path={'/judi'} exact>
                             <DanexCoinPage />
+                        </Route>
+                        <Route path={'/create-panel'} exact>
+                            <CreatePanelPage />
                         </Route>
                         <Route path={'/notifications'} exact>
                             <NotificationsPage />

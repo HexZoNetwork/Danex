@@ -59,6 +59,11 @@ Route::prefix('/danexcoin')->group(function () {
     Route::post('/spin', [Client\DanexCoinController::class, 'spin'])->middleware('throttle:240,1');
 });
 
+Route::prefix('/create-panel')->group(function () {
+    Route::get('/options', [Client\CreatePanelController::class, 'options']);
+    Route::post('/create', [Client\CreatePanelController::class, 'create'])->middleware('throttle:10,1');
+});
+
 Route::prefix('/account')->middleware(AccountSubject::class)->group(function () {
     Route::prefix('/')->withoutMiddleware(RequireTwoFactorAuthentication::class)->group(function () {
         Route::get('/', [Client\AccountController::class, 'index'])->name('api:client.account');

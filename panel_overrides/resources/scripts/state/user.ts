@@ -14,6 +14,7 @@ export interface UserData {
     lastName?: string;
     avatarUrl?: string;
     birthday?: string;
+    madeinwebPanelCreatedAt?: string;
 }
 
 export interface UserStore {

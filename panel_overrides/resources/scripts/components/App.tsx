@@ -30,6 +30,7 @@ interface ExtendedWindow extends Window {
         name_last?: string;
         avatar_url?: string;
         birthday?: string;
+        madeinweb_panel_created_at?: string | null;
         root_admin: boolean;
         use_totp: boolean;
         language: string;
@@ -57,6 +58,7 @@ const App = () => {
             lastName: PterodactylUser.name_last || '',
             avatarUrl: PterodactylUser.avatar_url || '',
             birthday: PterodactylUser.birthday || '',
+            madeinwebPanelCreatedAt: PterodactylUser.madeinweb_panel_created_at || undefined,
         });
     }
 

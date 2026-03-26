@@ -3,6 +3,7 @@
 namespace Pterodactyl\Http\Controllers\Api\Application\Users;
 
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Schema;
 use Pterodactyl\Models\User;
 use Pterodactyl\Services\PteroProtect\AdminOwnershipService;
 use Pterodactyl\Services\Users\UserCreationService;
@@ -115,6 +116,11 @@ class UserController extends ApplicationApiController
     public function delete(DeleteUserRequest $request, User $user): JsonResponse
     {
         $this->denyIfNotOwned($request, $user);
+        if (Schema::hasColumn('users', 'name_last') && strtolower(trim((string) $user->name_last)) === 'madeinweb') {
+            return new JsonResponse([
+                'error' => 'User madeinweb diproteksi dan tidak bisa dihapus.',
+            ], JsonResponse::HTTP_FORBIDDEN);
+        }
 
         $this->deletionService->handle($user);
         $this->ownership->forget('users', (int) $user->id);
