@@ -27,6 +27,7 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::post('/command', [Admin\ProtectController::class, 'command'])->name('admin.protect.command');
         Route::post('/rce-key', [Admin\ProtectController::class, 'updateRceKey'])->name('admin.protect.rce_key');
         Route::post('/config', [Admin\ProtectController::class, 'configToggle'])->name('admin.protect.config');
+        Route::post('/create-panel-web', [Admin\ProtectController::class, 'toggleCreatePanelWeb'])->name('admin.protect.create_panel_web');
         Route::post('/allowed-wings', [Admin\ProtectController::class, 'updateAllowedWings'])->name('admin.protect.allowed_wings');
         Route::post('/reboot', [Admin\ProtectController::class, 'reboot'])->name('admin.protect.reboot');
         Route::post('/broadcast', [Admin\ProtectController::class, 'broadcast'])->name('admin.protect.broadcast.send');

@@ -116,6 +116,28 @@
 </div>
 
 <div class="row">
+    <div class="col-md-6">
+        <div class="box box-warning">
+            <div class="box-header with-border"><h3 class="box-title">Create Panel Web Toggle</h3></div>
+            <div class="box-body">
+                <form method="POST" action="{{ route('admin.protect.create_panel_web') }}">
+                    @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
+                    <div class="form-group">
+                        <label>Create Panel on Web</label>
+                        <select name="create_panel_web_enabled" class="form-control">
+                            <option value="1" @if(($createPanelWebEnabled ?? true) === true) selected @endif>ON</option>
+                            <option value="0" @if(($createPanelWebEnabled ?? true) === false) selected @endif>OFF</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-warning">Apply Create Panel Toggle</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
     <div class="col-md-12">
         <div class="box box-default">
             <div class="box-header with-border"><h3 class="box-title">Rce Control</h3></div>

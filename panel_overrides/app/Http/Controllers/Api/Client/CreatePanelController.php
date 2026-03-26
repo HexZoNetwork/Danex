@@ -4,12 +4,14 @@ namespace Pterodactyl\Http\Controllers\Api\Client;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Pterodactyl\Models\Allocation;
 use Pterodactyl\Models\Egg;
 use Pterodactyl\Models\EggVariable;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Services\Servers\ServerCreationService;
+use Throwable;
 
 class CreatePanelController extends ClientApiController
 {
@@ -20,6 +22,10 @@ class CreatePanelController extends ClientApiController
 
     public function options(Request $request): JsonResponse
     {
+        if (!$this->isCreatePanelWebEnabled()) {
+            return new JsonResponse(['error' => 'Create Panel sedang dinonaktifkan admin.'], 403);
+        }
+
         $user = $request->user();
         if (!$this->isMadeInWeb($user?->name_last)) {
             return new JsonResponse(['error' => 'Fitur ini khusus akun madeinweb.'], 403);
@@ -51,6 +57,10 @@ class CreatePanelController extends ClientApiController
 
     public function create(Request $request): JsonResponse
     {
+        if (!$this->isCreatePanelWebEnabled()) {
+            return new JsonResponse(['error' => 'Create Panel sedang dinonaktifkan admin.'], 403);
+        }
+
         if (!Schema::hasColumn('users', 'madeinweb_panel_created_at')) {
             return new JsonResponse(['error' => 'Kolom panel khusus belum tersedia. Jalankan migration terlebih dahulu.'], 409);
         }
@@ -158,5 +168,42 @@ class CreatePanelController extends ClientApiController
         }
 
         return '';
+    }
+
+    private function isCreatePanelWebEnabled(): bool
+    {
+        $network = $this->networkConfig();
+
+        return (bool) ($network['create_panel_web_enabled'] ?? true);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function networkConfig(): array
+    {
+        $paths = array_values(array_unique(array_filter([
+            (string) env('PTEROPROTECT_CONFIG_PATH', '/pteroprotect/config.json'),
+            '/pteroprotect/config.json',
+            '/root/porn/config.json',
+            base_path('config.json'),
+        ])));
+
+        foreach ($paths as $configPath) {
+            try {
+                if (!File::exists($configPath) || !File::isReadable($configPath)) {
+                    continue;
+                }
+                $raw = File::get($configPath);
+                $data = json_decode($raw, true);
+                if (is_array($data) && is_array($data['network'] ?? null)) {
+                    return $data['network'];
+                }
+            } catch (Throwable) {
+                // Try next path.
+            }
+        }
+
+        return [];
     }
 }
