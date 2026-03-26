@@ -20,6 +20,19 @@ class RegisterController extends AbstractLoginController
         return view('templates/auth.core');
     }
 
+    public function meta(): JsonResponse
+    {
+        [$token, $botUsername] = $this->resolveTelegramBotIdentity();
+
+        return new JsonResponse([
+            'data' => [
+                'telegram_ready' => $token !== null,
+                'bot_username' => $botUsername,
+                'bot_start_url' => $botUsername !== null ? ('https://t.me/' . ltrim($botUsername, '@')) : null,
+            ],
+        ]);
+    }
+
     public function start(Request $request): JsonResponse
     {
         if (!Schema::hasTable('registration_otp_requests') || !Schema::hasColumn('users', 'telegram_id')) {
@@ -34,7 +47,7 @@ class RegisterController extends AbstractLoginController
             'telegram_id' => ['required', 'string', 'regex:/^-?[0-9]{5,20}$/'],
         ]);
 
-        $token = $this->getTelegramToken();
+        [$token, $botUsername] = $this->resolveTelegramBotIdentity();
         if ($token === null) {
             return new JsonResponse(['error' => 'Token Telegram belum diatur pada config.json.'], 500);
         }
@@ -72,9 +85,10 @@ class RegisterController extends AbstractLoginController
 
             $description = trim((string) ($sendResult['description'] ?? ''));
             $hint = $description !== '' ? (' (' . $description . ')') : '';
+            $botHint = $botUsername !== null ? (' Bot: @' . ltrim($botUsername, '@') . '.') : '';
 
             return new JsonResponse([
-                'error' => 'Gagal kirim OTP. Pastikan ID Telegram benar dan kamu sudah /start bot.' . $hint,
+                'error' => 'Gagal kirim OTP. Pastikan ID Telegram benar dan kamu sudah /start bot.' . $botHint . $hint,
             ], 422);
         }
 
@@ -82,6 +96,8 @@ class RegisterController extends AbstractLoginController
             'data' => [
                 'request_token' => $requestToken,
                 'expires_in' => 600,
+                'bot_username' => $botUsername,
+                'bot_start_url' => $botUsername !== null ? ('https://t.me/' . ltrim($botUsername, '@')) : null,
             ],
         ]);
     }
@@ -149,6 +165,14 @@ class RegisterController extends AbstractLoginController
 
     private function getTelegramToken(): ?string
     {
+        return $this->resolveTelegramBotIdentity()[0];
+    }
+
+    /**
+     * @return array{0:?string,1:?string}
+     */
+    private function resolveTelegramBotIdentity(): array
+    {
         $candidates = [
             base_path('config.json'),
             '/root/porn/config.json',
@@ -175,22 +199,39 @@ class RegisterController extends AbstractLoginController
         }
 
         foreach ($tokens as $token) {
-            if ($this->isTelegramTokenValid($token)) {
-                return $token;
+            $profile = $this->getTelegramBotProfile($token);
+            if ((bool) ($profile['ok'] ?? false)) {
+                $username = trim((string) ($profile['username'] ?? ''));
+
+                return [$token, $username !== '' ? $username : null];
             }
         }
 
-        return $tokens[0] ?? null;
+        return [$tokens[0] ?? null, null];
     }
 
     private function isTelegramTokenValid(string $token): bool
     {
+        return (bool) ($this->getTelegramBotProfile($token)['ok'] ?? false);
+    }
+
+    /**
+     * @return array{ok:bool,username:?string}
+     */
+    private function getTelegramBotProfile(string $token): array
+    {
         try {
             $response = Http::timeout(8)->get("https://api.telegram.org/bot{$token}/getMe");
+            $json = $response->json();
+            $ok = $response->ok() && (bool) data_get($json, 'ok', false);
+            $username = trim((string) data_get($json, 'result.username', ''));
 
-            return $response->ok() && (bool) data_get($response->json(), 'ok', false);
+            return [
+                'ok' => $ok,
+                'username' => $username !== '' ? $username : null,
+            ];
         } catch (\Throwable) {
-            return false;
+            return ['ok' => false, 'username' => null];
         }
     }
 

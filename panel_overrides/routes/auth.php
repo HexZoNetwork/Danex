@@ -23,6 +23,8 @@ Route::get('/password/reset/{token}', [Auth\LoginController::class, 'index'])->n
 // recaptcha endpoints to slow down manual attack spammers even more. 🤷‍
 //
 // @see \Pterodactyl\Providers\RouteServiceProvider
+Route::get('/register/meta', [Auth\RegisterController::class, 'meta']);
+
 Route::middleware(['throttle:authentication'])->group(function () {
     // Login endpoints.
     Route::post('/login', [Auth\LoginController::class, 'login'])->middleware('recaptcha');

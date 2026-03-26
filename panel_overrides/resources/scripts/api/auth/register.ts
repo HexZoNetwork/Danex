@@ -11,6 +11,14 @@ export interface RegisterStartPayload {
 export interface RegisterStartResponse {
     requestToken: string;
     expiresIn: number;
+    botUsername: string;
+    botStartUrl: string;
+}
+
+export interface RegisterMetaResponse {
+    telegramReady: boolean;
+    botUsername: string;
+    botStartUrl: string;
 }
 
 export const startRegister = async (payload: RegisterStartPayload): Promise<RegisterStartResponse> => {
@@ -20,6 +28,18 @@ export const startRegister = async (payload: RegisterStartPayload): Promise<Regi
     return {
         requestToken: String(data?.data?.request_token || ''),
         expiresIn: Number(data?.data?.expires_in || 0),
+        botUsername: String(data?.data?.bot_username || ''),
+        botStartUrl: String(data?.data?.bot_start_url || ''),
+    };
+};
+
+export const getRegisterMeta = async (): Promise<RegisterMetaResponse> => {
+    const { data } = await http.get('/auth/register/meta');
+
+    return {
+        telegramReady: !!data?.data?.telegram_ready,
+        botUsername: String(data?.data?.bot_username || ''),
+        botStartUrl: String(data?.data?.bot_start_url || ''),
     };
 };
 

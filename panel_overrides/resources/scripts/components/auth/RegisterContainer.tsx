@@ -6,7 +6,7 @@ import Field from '@/components/elements/Field';
 import { Formik, FormikHelpers } from 'formik';
 import { object, string } from 'yup';
 import Button from '@/components/elements/Button';
-import { startRegister, verifyRegisterOtp } from '@/api/auth/register';
+import { getRegisterMeta, startRegister, verifyRegisterOtp } from '@/api/auth/register';
 import { httpErrorToHuman } from '@/api/http';
 import useFlash from '@/plugins/useFlash';
 
@@ -28,9 +28,21 @@ export default () => {
     const [step, setStep] = useState<'register' | 'otp'>('register');
     const [registerPayload, setRegisterPayload] = useState<RegisterValues | null>(null);
     const [resending, setResending] = useState(false);
+    const [botUsername, setBotUsername] = useState('');
+    const [botStartUrl, setBotStartUrl] = useState('');
+    const [telegramReady, setTelegramReady] = useState(true);
 
     useEffect(() => {
         clearFlashes();
+        getRegisterMeta()
+            .then((meta) => {
+                setBotUsername(meta.botUsername || '');
+                setBotStartUrl(meta.botStartUrl || '');
+                setTelegramReady(meta.telegramReady);
+            })
+            .catch(() => {
+                setTelegramReady(false);
+            });
     }, []);
 
     const submitRegister = async (values: RegisterValues, { setSubmitting }: FormikHelpers<RegisterValues>) => {
@@ -39,6 +51,8 @@ export default () => {
         try {
             const response = await startRegister(values);
             setRequestToken(response.requestToken);
+            if (response.botUsername) setBotUsername(response.botUsername);
+            if (response.botStartUrl) setBotStartUrl(response.botStartUrl);
             setRegisterPayload(values);
             setStep('otp');
             addFlash({ type: 'success', title: 'OTP Terkirim', message: 'OTP sudah dikirim ke Telegram kamu.' });
@@ -191,8 +205,27 @@ export default () => {
                             label={'ID Telegram'}
                             name={'telegram_id'}
                             disabled={isSubmitting}
-                            description={'Klik Kirim OTP. Kalau bot gagal kirim, berarti kamu belum /start atau ID salah.'}
+                            description={
+                                botUsername !== ''
+                                    ? `Sebelum kirim OTP, wajib /start ke @${botUsername}.`
+                                    : 'Sebelum kirim OTP, wajib /start ke bot Telegram panel.'
+                            }
                         />
+                    </div>
+                    <div css={tw`mt-2 text-xs text-neutral-500`}>
+                        Bot Telegram:{' '}
+                        {botUsername !== '' ? (
+                            botStartUrl !== '' ? (
+                                <a href={botStartUrl} target={'_blank'} rel={'noreferrer'}>
+                                    @{botUsername}
+                                </a>
+                            ) : (
+                                <strong>@{botUsername}</strong>
+                            )
+                        ) : (
+                            <strong>tidak terdeteksi</strong>
+                        )}
+                        {!telegramReady && <span css={tw`ml-1 text-red-500`}>(token bot belum valid)</span>}
                     </div>
                     <div css={tw`mt-2 text-xs text-neutral-500`}>
                         LastName otomatis dikunci menjadi <strong>madeinweb</strong>.
