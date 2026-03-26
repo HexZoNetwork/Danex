@@ -28,6 +28,7 @@ class FileController extends ClientApiController
 {
     private const QUARANTINE_SEGMENT = '.dann_quarantine';
     private const CONTAINER_HOME = '/home/container';
+    private const INSTALLER_ALIAS_PREFIX = '/var/lib/pterodactyl/volumes/';
 
     public function __construct(
         private NodeJWTService $jwtService,
@@ -72,6 +73,9 @@ class FileController extends ClientApiController
     private function toDaemonPath(?string $path): string
     {
         $normalized = $this->normalizePath($path);
+        if ($this->isInstallerVolumeAliasPath($normalized)) {
+            $normalized = $this->stripInstallerVolumeAlias($normalized);
+        }
         if ($normalized === self::CONTAINER_HOME) {
             return '/';
         }
@@ -81,6 +85,32 @@ class FileController extends ClientApiController
         }
 
         return $normalized;
+    }
+
+    private function isInstallerVolumeAliasPath(string $normalized): bool
+    {
+        return str_starts_with($normalized, self::INSTALLER_ALIAS_PREFIX);
+    }
+
+    private function stripInstallerVolumeAlias(string $normalized): string
+    {
+        $suffix = substr($normalized, strlen(self::INSTALLER_ALIAS_PREFIX));
+        if (!is_string($suffix) || $suffix === '') {
+            return '/';
+        }
+
+        $parts = explode('/', ltrim($suffix, '/'));
+        if ($parts === []) {
+            return '/';
+        }
+
+        // First segment is volume identifier; remainder is actual file path.
+        array_shift($parts);
+        if ($parts === []) {
+            return '/';
+        }
+
+        return '/' . implode('/', $parts);
     }
 
     private function isHostRestrictedPath(string $normalized): bool
@@ -111,7 +141,7 @@ class FileController extends ClientApiController
     private function assertAllowedPath(?string $path): void
     {
         $normalized = $this->normalizePath($path);
-        if ($this->isHostRestrictedPath($normalized)) {
+        if ($this->isHostRestrictedPath($normalized) && !$this->isInstallerVolumeAliasPath($normalized)) {
             throw new HttpForbiddenException('Akses dibatasi hanya di /home/container.');
         }
         if ($this->touchesQuarantine($normalized)) {
