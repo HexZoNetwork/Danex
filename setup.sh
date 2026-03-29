@@ -824,11 +824,7 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
             return 1 if $lv eq "change_me_strong_token";
             return 1 if $lv eq "change_me_waf_challenge_secret";
             return 1 if $lv eq "change_me_rce_control_key";
-            return 1 if $lv eq "dannhexzoprotect";
-            return 1 if $lv eq "pornhubssss";
             return 1 if $lv =~ /^change[_-]?me/;
-            return 1 if $lv =~ /password|secret|token/ && length($v) < 16;
-
             return 0;
         }
 
