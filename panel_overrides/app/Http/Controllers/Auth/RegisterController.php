@@ -23,15 +23,19 @@ class RegisterController extends AbstractLoginController
     public function meta(): JsonResponse
     {
         [$token, $botUsername] = $this->resolveTelegramBotIdentity();
+        $requiredChannels = array_slice($this->getRequiredJoinChannels(), 0, 1);
 
-        return new JsonResponse([
+        return (new JsonResponse([
             'data' => [
                 'telegram_ready' => $token !== null,
                 'bot_username' => $botUsername,
                 'bot_start_url' => $botUsername !== null ? ('https://t.me/' . ltrim($botUsername, '@')) : null,
-                'required_channels' => $this->getRequiredJoinChannels(),
+                'required_channels' => $requiredChannels,
             ],
-        ]);
+        ]))
+            ->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+            ->header('Pragma', 'no-cache')
+            ->header('Expires', '0');
     }
 
     public function start(Request $request): JsonResponse
