@@ -8,7 +8,7 @@ backups/
 dann_guard
 challenge_guard
 installer/danex
-
+.codex
 # Python cache
 __pycache__/
 *.pyc
