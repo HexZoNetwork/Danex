@@ -992,12 +992,19 @@ std::string build_alert(const std::string& abuse_type,
 // ResourceMonitor
 // ─────────────────────────────────────────────────────────────────────────────
 ResourceMonitor::ResourceMonitor()
-    : state_file(get_guard_home_for_monitor() + "/runtime/resource_monitor_state.json"),
-      offline_mode(false), cpu_threshold_pct(90), ram_threshold_pct(90),
-      check_interval(10), running(false), server_cache_time(0),
+    : ptlc_url(),
+      api_key(),
+      state_file(get_guard_home_for_monitor() + "/runtime/resource_monitor_state.json"),
+      offline_mode(false),
+      cpu_threshold_pct(90),
+      ram_threshold_pct(90),
+      check_interval(10),
+      running(false),
       bandwidth_in_limit_bytes(DEFAULT_BANDWIDTH_LIMIT_BYTES),
       bandwidth_out_limit_bytes(DEFAULT_BANDWIDTH_LIMIT_BYTES),
-      bandwidth_window_sec(DEFAULT_BANDWIDTH_WINDOW_SEC) {}
+      bandwidth_window_sec(DEFAULT_BANDWIDTH_WINDOW_SEC),
+      server_cache(),
+      server_cache_time(0) {}
 
 ResourceMonitor::~ResourceMonitor() { stop(); }
 

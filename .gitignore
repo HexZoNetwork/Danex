@@ -1,6 +1,7 @@
 # Build artifacts
 obj/
 release/
+net.tar
 backups/
 *.o
 .gitignore

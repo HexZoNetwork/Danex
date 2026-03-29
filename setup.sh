@@ -866,8 +866,9 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         }
         my $traffic_profile = "";
         if (defined($j->{network}{traffic_profile})) {
-            $traffic_profile = lc(trim("$j->{network}{traffic_profile}"));
+            $traffic_profile = lc("$j->{network}{traffic_profile}");
         }
+        $traffic_profile =~ s/^\s+|\s+$//g;
         $traffic_profile =~ s/_/-/g;
         $traffic_profile =~ s/\s+//g;
         if ($traffic_profile =~ /^(api|api-heavy|api-hosting|apihosting)$/) {

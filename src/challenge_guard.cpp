@@ -1294,6 +1294,11 @@ static void handle_client(int fd, std::string remote_ip) {
         hinted_hc = std::max(0, std::min(64, hinted_hc));
         if (hinted_dm < 0.0) hinted_dm = 0.0;
         if (hinted_dm > 64.0) hinted_dm = 64.0;
+        const bool ua_mobile = ua_mobile_like(ua);
+        if (hinted_mobile && !ua_mobile) hinted_mobile = false;
+        if (!hinted_mobile && ua_mobile) hinted_mobile = true;
+        const bool suspicious_low_power_hint = (!ua_mobile) &&
+            ((hinted_hc > 0 && hinted_hc <= 2) || (hinted_dm > 0.0 && hinted_dm <= 2.0));
 
         int adaptive_pow_bits = s.pow_bits;
         if (hinted_hc > 0) {
@@ -1304,7 +1309,9 @@ static void handle_client(int fd, std::string remote_ip) {
         }
         if (hinted_dm > 0.0 && hinted_dm <= 2.0) adaptive_pow_bits -= 1;
         if (hinted_mobile) adaptive_pow_bits -= 1;
-        adaptive_pow_bits = std::max(8, std::min(24, adaptive_pow_bits));
+        if (suspicious_low_power_hint) adaptive_pow_bits += 2;
+        const int min_pow_bits = s.strict_mode ? std::max(12, s.pow_bits - 1) : 8;
+        adaptive_pow_bits = std::max(min_pow_bits, std::min(24, adaptive_pow_bits));
 
         int wait_min_ms = 8 * 1000;
         int wait_max_ms = 20 * 1000;
@@ -1331,6 +1338,8 @@ static void handle_client(int fd, std::string remote_ip) {
         if (hinted_mobile) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 64);
         else adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 192);
         if (hinted_hc > 0 && hinted_hc <= 2) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 48);
+        if (suspicious_low_power_hint) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, 96);
+        if (s.strict_mode) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, hinted_mobile ? 32 : 64);
         adaptive_pow_mem_mb = std::max(8, adaptive_pow_mem_mb);
         int adaptive_pow_cpu_level = 4;
         if (hinted_hc > 0) {
@@ -1341,6 +1350,8 @@ static void handle_client(int fd, std::string remote_ip) {
             else adaptive_pow_cpu_level = 6;
         }
         if (hinted_mobile) adaptive_pow_cpu_level = std::max(2, adaptive_pow_cpu_level - 1);
+        if (suspicious_low_power_hint) adaptive_pow_cpu_level = std::max(adaptive_pow_cpu_level, 5);
+        if (s.strict_mode) adaptive_pow_cpu_level = std::max(adaptive_pow_cpu_level, hinted_mobile ? 3 : 4);
         adaptive_pow_cpu_level = std::max(1, std::min(8, adaptive_pow_cpu_level));
 
         std::random_device rd;

@@ -35,6 +35,11 @@ class PteroProtectWaf
             return $this->blockedResponse($request, 403, 'Blocked by PteroProtect WAF.');
         }
 
+        if ($this->isLikelyHeadlessStealth($request, $userAgent, $category, $config)) {
+            $this->logDecision($config, 'deny', 'headless-stealth', $ip, $path, $userAgent);
+            return $this->blockedResponse($request, 403, 'Automated browser traffic is not allowed.');
+        }
+
         if ($this->shouldBypassRequest($request, $category, $path)) {
             return $next($request);
         }
@@ -64,6 +69,11 @@ class PteroProtectWaf
         if ($this->isRateLimited("pteroprotect:waf:global:{$category}", $globalLimit, $decay)) {
             $this->logDecision($config, 'deny', "global:{$category}:{$mode}", $ip, $path, $userAgent);
             return $this->blockedResponse($request, 429, 'Server is under heavy load.');
+        }
+
+        if ($this->isRateLimitedByFingerprintCluster($request, $category, $lockdown, $mode, $config, $decay)) {
+            $this->logDecision($config, 'deny', "fingerprint-cluster:{$category}:{$mode}", $ip, $path, $userAgent);
+            return $this->blockedResponse($request, 429, 'Too many similar automated requests detected.');
         }
 
         if ($this->isRateLimitedByClearance($request, $category, $lockdown, $mode, $config, $decay)) {
@@ -277,6 +287,130 @@ class PteroProtectWaf
         return max(1, (int) ceil($limit * $multiplier));
     }
 
+    private function isLikelyHeadlessStealth(Request $request, string $userAgent, string $category, array $config): bool
+    {
+        if ($category !== 'web' && $category !== 'api' && $category !== 'resource' && $category !== 'websocket') {
+            return false;
+        }
+
+        if (!($config['block_headless_stealth'] ?? true)) {
+            return false;
+        }
+
+        $score = 0;
+        $ua = strtolower($userAgent);
+        $secChUa = strtolower(trim((string) $request->header('sec-ch-ua', '')));
+        $acceptLanguage = trim((string) $request->header('accept-language', ''));
+        $accept = trim((string) $request->header('accept', ''));
+
+        foreach (['headlesschrome', 'phantomjs', 'selenium', 'playwright', 'puppeteer', 'cypress'] as $needle) {
+            if (str_contains($ua, $needle)) {
+                $score += 3;
+                break;
+            }
+        }
+
+        if (str_contains($secChUa, 'headless')) {
+            $score += 3;
+        }
+
+        $looksBrowser = str_contains($ua, 'mozilla/') || str_contains($ua, 'applewebkit/') || str_contains($ua, 'gecko/');
+        if ($looksBrowser && $acceptLanguage === '') {
+            $score += 1;
+        }
+        if ($looksBrowser && $accept === '') {
+            $score += 1;
+        }
+        if ($secChUa !== '' && !$looksBrowser) {
+            $score += 2;
+        }
+
+        return $score >= 3;
+    }
+
+    private function isRateLimitedByFingerprintCluster(
+        Request $request,
+        string $category,
+        bool $lockdown,
+        string $mode,
+        array $config,
+        int $decay
+    ): bool {
+        if ($category !== 'api' && $category !== 'resource' && $category !== 'websocket') {
+            return false;
+        }
+
+        if (!($config['fingerprint_cluster_limit_enabled'] ?? true)) {
+            return false;
+        }
+
+        $limit = $this->fingerprintClusterLimitForCategory($category, $lockdown, $mode, $config);
+        if ($limit <= 0) {
+            return false;
+        }
+
+        $path = $this->normalizePathForFingerprint(ltrim((string) $request->path(), '/'));
+        $ua = strtolower(trim((string) $request->userAgent()));
+        $acceptLanguage = strtolower(trim((string) $request->header('accept-language', '')));
+        $acceptEncoding = strtolower(trim((string) $request->header('accept-encoding', '')));
+        $secChUa = strtolower(trim((string) $request->header('sec-ch-ua', '')));
+        $secChUaPlatform = strtolower(trim((string) $request->header('sec-ch-ua-platform', '')));
+        $secFetchSite = strtolower(trim((string) $request->header('sec-fetch-site', '')));
+        $secFetchMode = strtolower(trim((string) $request->header('sec-fetch-mode', '')));
+        $dnt = trim((string) $request->header('dnt', ''));
+        $upgrade = trim((string) $request->header('upgrade-insecure-requests', ''));
+        $method = strtoupper($request->method());
+
+        $fingerprintData = implode('|', [
+            $method,
+            $path,
+            $ua,
+            $acceptLanguage,
+            $acceptEncoding,
+            $secChUa,
+            $secChUaPlatform,
+            $secFetchSite,
+            $secFetchMode,
+            $dnt,
+            $upgrade,
+        ]);
+        $fp = hash('sha256', $fingerprintData);
+
+        return $this->isRateLimited("pteroprotect:waf:fpcluster:{$category}:{$fp}", $limit, $decay);
+    }
+
+    private function fingerprintClusterLimitForCategory(string $category, bool $lockdown, string $mode, array $config): int
+    {
+        $limit = match ($category) {
+            'resource' => (int) ($lockdown
+                ? ($config['lockdown_resource_fingerprint_cluster_limit'] ?? 60)
+                : ($config['resource_fingerprint_cluster_limit'] ?? 120)),
+            'api' => (int) ($lockdown
+                ? ($config['lockdown_api_fingerprint_cluster_limit'] ?? 80)
+                : ($config['api_fingerprint_cluster_limit'] ?? 160)),
+            'websocket' => (int) ($lockdown
+                ? ($config['lockdown_websocket_fingerprint_cluster_limit'] ?? 120)
+                : ($config['websocket_fingerprint_cluster_limit'] ?? 320)),
+            default => 0,
+        };
+
+        $multiplier = $this->modeMultiplier($mode, $config);
+        return max(1, (int) ceil($limit * $multiplier));
+    }
+
+    private function normalizePathForFingerprint(string $path): string
+    {
+        $norm = strtolower(trim($path));
+        if ($norm === '') {
+            return '/';
+        }
+
+        $norm = preg_replace('#[0-9a-f]{8,}#i', '{id}', $norm) ?? $norm;
+        $norm = preg_replace('#\b\d{3,}\b#', '{n}', $norm) ?? $norm;
+
+        return $norm;
+    }
+
     private function isSuspiciousRequest(
         Request $request,
         array $config,
@@ -286,6 +420,14 @@ class PteroProtectWaf
         int $contentLength
     ): bool {
         $fullTarget = $path . ($queryString !== '' ? '?' . $queryString : '');
+
+        if (($config['block_client_ip_spoof_headers'] ?? true) && $this->hasClientIpSpoofHeaders($request)) {
+            return true;
+        }
+
+        if (($config['block_malformed_host_header'] ?? true) && $this->hasMalformedHostHeader($request)) {
+            return true;
+        }
 
         if (($config['block_empty_agent_on_api'] ?? false) && $userAgent === '' && preg_match('#^api/(client|application)(?:/|$)#i', $path) === 1) {
             return true;
@@ -307,7 +449,79 @@ class PteroProtectWaf
             return true;
         }
 
+        if (($config['block_query_pipe_equals_pattern'] ?? true) && str_contains($queryString, '|=')) {
+            return true;
+        }
+
+        $maxQueryPairs = (int) ($config['max_query_pairs'] ?? 30);
+        if ($maxQueryPairs > 0 && $queryString !== '' && substr_count($queryString, '&') + 1 > $maxQueryPairs) {
+            return true;
+        }
+
         return $contentLength > (int) ($config['max_content_length'] ?? 1048576);
+    }
+
+    private function hasClientIpSpoofHeaders(Request $request): bool
+    {
+        $spoofHeaders = [
+            'x-forwarded-for',
+            'x-real-ip',
+            'x-client-ip',
+            'true-client-ip',
+            'cf-connecting-ip',
+            'forwarded',
+        ];
+
+        $seen = 0;
+        foreach ($spoofHeaders as $header) {
+            $value = trim((string) $request->header($header, ''));
+            if ($value !== '') {
+                $seen++;
+            }
+        }
+
+        if ($seen === 0) {
+            return false;
+        }
+
+        // Multiple forwarding headers from an untrusted client are almost always spoof attempts.
+        if ($seen >= 2) {
+            return true;
+        }
+
+        $xff = trim((string) $request->header('x-forwarded-for', ''));
+        if ($xff !== '') {
+            // Block chained XFF values and obvious invalid characters.
+            if (str_contains($xff, ',') || preg_match('/[^0-9a-fA-F:\.\s]/', $xff) === 1) {
+                return true;
+            }
+        }
+
+        $forwarded = trim((string) $request->header('forwarded', ''));
+        if ($forwarded !== '' && preg_match('/for=.*,/', strtolower($forwarded)) === 1) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function hasMalformedHostHeader(Request $request): bool
+    {
+        $host = trim((string) $request->header('Host', ''));
+        if ($host === '') {
+            return false;
+        }
+
+        if (str_contains($host, ',') || str_contains($host, ' ') || str_contains($host, "\t")) {
+            return true;
+        }
+
+        if (str_ends_with($host, '.')) {
+            return true;
+        }
+
+        // Reject duplicated dots and obvious host header corruption.
+        return str_contains($host, '..');
     }
 
     private function shouldBlockDuringLockdown(string $path, array $config): bool

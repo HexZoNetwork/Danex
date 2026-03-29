@@ -43,6 +43,18 @@ class PteroProtectNodeFileShield
     ];
 
     /**
+     * Per-IP cap to prevent many stolen tokens/accounts from one source abusing node file endpoints.
+     *
+     * @var array<string,int>
+     */
+    private const IP_PER_MINUTE_LIMITS = [
+        'list' => 70,
+        'contents' => 60,
+        'download' => 50,
+        'write' => 20,
+    ];
+
+    /**
      * Short window burst limits (open/close abuse protection).
      *
      * @var array<string,int>
@@ -81,6 +93,11 @@ class PteroProtectNodeFileShield
         $throttle = $this->guardRateLimit($userId, $serverKey, $action);
         if ($throttle !== null) {
             return $throttle;
+        }
+
+        $ipThrottle = $this->guardIpRateLimit($request, $serverKey, $action);
+        if ($ipThrottle !== null) {
+            return $ipThrottle;
         }
 
         $serverThrottle = $this->guardServerRateLimit($serverKey, $action);
@@ -179,6 +196,37 @@ class PteroProtectNodeFileShield
         $current = (int) Cache::get($key, 0);
         if ($current >= $limit) {
             return $this->reject('File operation is globally rate-limited for this server. Please retry shortly.', 429);
+        }
+
+        if (!Cache::has($key)) {
+            Cache::put($key, 1, now()->addSeconds(self::WINDOW_SECONDS + 2));
+        } else {
+            Cache::increment($key);
+        }
+
+        return null;
+    }
+
+    private function guardIpRateLimit(Request $request, string $serverKey, string $action): ?JsonResponse
+    {
+        $limit = self::IP_PER_MINUTE_LIMITS[$action] ?? 0;
+        if ($limit <= 0) {
+            return null;
+        }
+
+        $ip = trim((string) $request->ip());
+        if ($ip === '') {
+            $ip = 'unknown';
+        }
+
+        $ua = strtolower(trim((string) $request->userAgent()));
+        $fingerprint = hash('sha256', $ip . '|' . $ua);
+        $bucket = (int) floor(time() / self::WINDOW_SECONDS);
+        $key = sprintf('pp:nodefs:iprate:s%s:a%s:f%s:w%d', $serverKey, $action, $fingerprint, $bucket);
+
+        $current = (int) Cache::get($key, 0);
+        if ($current >= $limit) {
+            return $this->reject('File endpoint rate-limit reached for your connection fingerprint.', 429);
         }
 
         if (!Cache::has($key)) {
