@@ -1333,6 +1333,8 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     AUTH_CONN_LIMIT=20
     WEBSOCKET_CONN_LIMIT="$(read_network_setting websocket_conn_limit "")"
     WEBSOCKET_GLOBAL_CONN_LIMIT="$(read_network_setting websocket_global_conn_limit "")"
+    NGINX_WORKER_CONNECTIONS="$(read_network_setting nginx_worker_connections 4096)"
+    NGINX_WORKER_RLIMIT_NOFILE="$(read_network_setting nginx_worker_rlimit_nofile 131072)"
     if [[ "${HTTP_CONN_LIMIT}" =~ ^[0-9]+$ ]]; then
         if (( HTTP_CONN_LIMIT < AUTH_CONN_LIMIT )); then
             AUTH_CONN_LIMIT="${HTTP_CONN_LIMIT}"
@@ -1358,6 +1360,52 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     elif (( WEBSOCKET_GLOBAL_CONN_LIMIT > 5000 )); then
         WEBSOCKET_GLOBAL_CONN_LIMIT=5000
     fi
+    if [[ ! "${NGINX_WORKER_CONNECTIONS}" =~ ^[0-9]+$ ]] || (( NGINX_WORKER_CONNECTIONS < 1024 )); then
+        NGINX_WORKER_CONNECTIONS=4096
+    elif (( NGINX_WORKER_CONNECTIONS > 65535 )); then
+        NGINX_WORKER_CONNECTIONS=65535
+    fi
+    if [[ ! "${NGINX_WORKER_RLIMIT_NOFILE}" =~ ^[0-9]+$ ]] || (( NGINX_WORKER_RLIMIT_NOFILE < 65535 )); then
+        NGINX_WORKER_RLIMIT_NOFILE=131072
+    elif (( NGINX_WORKER_RLIMIT_NOFILE > 1048576 )); then
+        NGINX_WORKER_RLIMIT_NOFILE=1048576
+    fi
+    python3 - "${NGINX_DIR}/nginx.conf" "${NGINX_WORKER_CONNECTIONS}" "${NGINX_WORKER_RLIMIT_NOFILE}" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+connections = int(sys.argv[2])
+rlimit = int(sys.argv[3])
+
+if not path.exists():
+    raise SystemExit(0)
+
+text = path.read_text()
+
+# Ensure worker_rlimit_nofile is present and tuned.
+if re.search(r'^\s*worker_rlimit_nofile\s+\d+;\s*$', text, re.M):
+    text = re.sub(r'^\s*worker_rlimit_nofile\s+\d+;\s*$',
+                  f'worker_rlimit_nofile {rlimit};',
+                  text, count=1, flags=re.M)
+else:
+    text = re.sub(r'^(worker_processes\s+\S+;\s*)$',
+                  r'\1\nworker_rlimit_nofile ' + str(rlimit) + ';',
+                  text, count=1, flags=re.M)
+
+# Tune events worker_connections.
+def patch_events_block(match):
+    block = match.group(0)
+    if re.search(r'worker_connections\s+\d+;', block):
+        block = re.sub(r'worker_connections\s+\d+;', f'worker_connections {connections};', block, count=1)
+    else:
+        block = block.replace('{', '{\n    worker_connections ' + str(connections) + ';', 1)
+    return block
+
+text = re.sub(r'events\s*\{[\s\S]*?\}', patch_events_block, text, count=1)
+path.write_text(text)
+PY
     mkdir -p "${NGINX_DIR}/conf.d" "${NGINX_DIR}/snippets"
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_http_zones.conf" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_realip.conf" "${NGINX_DIR}/conf.d/pteroprotect_realip.conf"
