@@ -43,9 +43,11 @@ class DanexCoinController extends ClientApiController
             'balance' => $this->asDecimal($user->danex_coin ?? 0),
             'currency' => 'DanexCoin',
             'rules' => [
-                'jackpot' => '777 = x2 payout',
-                'triple' => '3 simbol sama selain 7 = x1.5 payout',
-                'miss' => '2 simbol sama atau tidak ada yang sama = zonk',
+                'jackpot' => '777 = bet kembali + bonus x2',
+                'triple' => '3 simbol sama selain 7 = bet kembali + bonus x1.5',
+                'double' => '2 simbol sama = bet kembali + bonus x0.25',
+                'miss' => 'Tidak ada simbol sama = zonk',
+                'auto_adjust' => 'Jika bet melebihi saldo, sistem otomatis pakai sisa saldo.',
             ],
             'history' => $rows->map(function ($row) {
                 $createdAt = null;
@@ -82,20 +84,24 @@ class DanexCoinController extends ClientApiController
             'bet' => ['required', 'numeric', 'min:1', 'max:100000000'],
         ]);
 
-        $bet = round((float) $validated['bet'], 2);
-        if ($bet <= 0) {
+        $requestedBet = round((float) $validated['bet'], 2);
+        if ($requestedBet <= 0) {
             return new JsonResponse(['error' => 'Bet harus lebih dari 0.'], 422);
         }
 
         $userId = (int) $request->user()->id;
-        $result = DB::transaction(function () use ($userId, $bet) {
+        $result = DB::transaction(function () use ($userId, $requestedBet) {
             $locked = DB::table('users')
                 ->where('id', $userId)
                 ->lockForUpdate()
                 ->first(['id', 'danex_coin']);
 
             $balanceBefore = round((float) ($locked->danex_coin ?? 0), 2);
-            if ($balanceBefore < $bet) {
+            if ($balanceBefore <= 0) {
+                return null;
+            }
+            $bet = round(min($requestedBet, $balanceBefore), 2);
+            if ($bet <= 0) {
                 return null;
             }
 
@@ -114,7 +120,9 @@ class DanexCoinController extends ClientApiController
                 $reels[1] === $reels[2]
             );
             $multiplier = $isJackpot ? 2.0 : ($isTriple ? 1.5 : ($isDouble ? 0.25 : 0.0));
-            $payout = round($bet * $multiplier, 2);
+            $wagerReturn = $multiplier > 0 ? $bet : 0.0;
+            $bonus = round($bet * $multiplier, 2);
+            $payout = round($wagerReturn + $bonus, 2);
             $balanceAfter = round($balanceBefore - $bet + $payout, 2);
 
             DB::table('users')
@@ -138,6 +146,7 @@ class DanexCoinController extends ClientApiController
             return [
                 'id' => (int) $logId,
                 'bet' => $this->asDecimal($bet),
+                'requested_bet' => $this->asDecimal($requestedBet),
                 'reels' => $reels,
                 'multiplier' => $this->asDecimal($multiplier),
                 'payout' => $this->asDecimal($payout),

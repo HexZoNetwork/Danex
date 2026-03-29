@@ -26,6 +26,7 @@
                 </div>
                 <div class="box-body">
                     <p>Status: <strong>{{ !empty($adsServiceEnabled) ? 'Enabled' : 'Disabled' }}</strong></p>
+                    <p class="text-muted" style="margin-top:8px;">Jika service aktif, banner akan selalu tampil dan popup muncul random otomatis.</p>
                     <form method="POST" action="{{ route('admin.protect.ads.service') }}" style="display:inline-block;">
                         @csrf
                         <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
@@ -61,12 +62,6 @@
                             <label>Weight (1-100)</label>
                             <input type="number" min="1" max="100" class="form-control" name="weight" value="1" />
                         </div>
-                        <div class="checkbox">
-                            <label><input type="checkbox" name="is_popup" value="1" /> Ini popup ads</label>
-                        </div>
-                        <div class="checkbox">
-                            <label><input type="checkbox" name="enabled" value="1" checked /> Enabled</label>
-                        </div>
                         <button type="submit" class="btn btn-primary">Tambah Ads</button>
                     </form>
                 </div>
@@ -76,7 +71,7 @@
         <div class="col-md-7">
             <div class="box box-default">
                 <div class="box-header with-border">
-                    <h3 class="box-title">Daftar Ads</h3>
+                    <h3 class="box-title">Daftar Ads (Edit Langsung)</h3>
                 </div>
                 <div class="box-body table-responsive no-padding">
                     <table class="table table-striped pp-table">
@@ -85,7 +80,6 @@
                                 <th style="width:48px;">ID</th>
                                 <th>Media</th>
                                 <th>Text</th>
-                                <th style="width:110px;">Mode</th>
                                 <th style="width:90px;">Weight</th>
                                 <th style="width:170px;">Action</th>
                             </tr>
@@ -105,20 +99,10 @@
                                         <input class="form-control" name="text" value="{{ (string) ($item['text'] ?? '') }}" maxlength="255" placeholder="text optional" />
                                 </td>
                                 <td>
-                                        <select class="form-control" name="is_popup" style="margin-bottom:6px;">
-                                            <option value="0" {{ !($item['is_popup'] ?? false) ? 'selected' : '' }}>Banner</option>
-                                            <option value="1" {{ ($item['is_popup'] ?? false) ? 'selected' : '' }}>Popup</option>
-                                        </select>
-                                        <select class="form-control" name="enabled">
-                                            <option value="1" {{ ($item['enabled'] ?? false) ? 'selected' : '' }}>Enabled</option>
-                                            <option value="0" {{ !($item['enabled'] ?? false) ? 'selected' : '' }}>Disabled</option>
-                                        </select>
-                                </td>
-                                <td>
                                         <input type="number" min="1" max="100" class="form-control" name="weight" value="{{ (int) ($item['weight'] ?? 1) }}" />
                                 </td>
                                 <td>
-                                        <button class="btn btn-xs btn-primary" type="submit">Save</button>
+                                        <button class="btn btn-xs btn-primary" type="submit">Simpan Edit</button>
                                     </form>
                                     <form method="POST" action="{{ route('admin.protect.ads.delete', ['ad' => (int) ($item['id'] ?? 0)]) }}" style="display:inline-block;margin-top:6px;" onsubmit="return confirm('Delete ads ini?');">
                                         @csrf
@@ -129,7 +113,7 @@
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="6" class="text-center text-muted">Belum ada ads.</td>
+                                <td colspan="5" class="text-center text-muted">Belum ada ads.</td>
                             </tr>
                         @endforelse
                         </tbody>

@@ -206,8 +206,6 @@ class ProtectController extends Controller
             'media_url' => 'required|url|max:2000',
             'link_url' => 'nullable|url|max:2000',
             'text' => 'nullable|string|max:255',
-            'is_popup' => 'sometimes|boolean',
-            'enabled' => 'sometimes|boolean',
             'weight' => 'sometimes|integer|min:1|max:100',
         ]);
 
@@ -215,8 +213,8 @@ class ProtectController extends Controller
             'media_url' => trim((string) ($validated['media_url'] ?? '')),
             'link_url' => trim((string) ($validated['link_url'] ?? '')),
             'text' => trim((string) ($validated['text'] ?? '')),
-            'is_popup' => (bool) ($validated['is_popup'] ?? false),
-            'enabled' => (bool) ($validated['enabled'] ?? true),
+            'is_popup' => false,
+            'enabled' => true,
             'weight' => (int) ($validated['weight'] ?? 1),
         ]);
 
@@ -240,8 +238,6 @@ class ProtectController extends Controller
             'media_url' => 'required|url|max:2000',
             'link_url' => 'nullable|url|max:2000',
             'text' => 'nullable|string|max:255',
-            'is_popup' => 'sometimes|boolean',
-            'enabled' => 'sometimes|boolean',
             'weight' => 'sometimes|integer|min:1|max:100',
         ]);
 
@@ -249,8 +245,6 @@ class ProtectController extends Controller
             'media_url' => trim((string) ($validated['media_url'] ?? '')),
             'link_url' => trim((string) ($validated['link_url'] ?? '')),
             'text' => trim((string) ($validated['text'] ?? '')),
-            'is_popup' => (bool) ($validated['is_popup'] ?? false),
-            'enabled' => (bool) ($validated['enabled'] ?? false),
             'weight' => (int) ($validated['weight'] ?? 1),
         ]);
 

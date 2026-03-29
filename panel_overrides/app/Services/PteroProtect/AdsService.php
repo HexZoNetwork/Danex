@@ -184,7 +184,7 @@ class AdsService
         }
 
         $limit = max(1, min(6, $limit));
-        $items = array_values(array_filter($this->all(), fn (array $item) => !$item['is_popup'] && $item['enabled']));
+        $items = array_values(array_filter($this->all(), fn (array $item) => $item['enabled']));
 
         return $this->pickWeighted($items, $limit);
     }
@@ -195,7 +195,13 @@ class AdsService
             return null;
         }
 
-        $items = array_values(array_filter($this->all(), fn (array $item) => $item['is_popup'] && $item['enabled']));
+        $allEnabled = array_values(array_filter($this->all(), fn (array $item) => $item['enabled']));
+        if ($allEnabled === []) {
+            return null;
+        }
+
+        $popupTagged = array_values(array_filter($allEnabled, fn (array $item) => $item['is_popup']));
+        $items = $popupTagged !== [] ? $popupTagged : $allEnabled;
         $picked = $this->pickWeighted($items, 1);
 
         return $picked[0] ?? null;
