@@ -231,6 +231,34 @@ class RegisterController extends AbstractLoginController
     private function getRequiredJoinChannels(): array
     {
         $channels = [];
+
+        $envRaw = [
+            trim((string) env('TELEGRAM_REQUIRED_CHANNELS', '')),
+            trim((string) env('PTEROPROTECT_TELEGRAM_REQUIRED_CHANNELS', '')),
+            trim((string) env('TELEGRAM_CHANNEL', '')),
+            trim((string) env('TELEGRAM_REPORT_CHANNEL', '')),
+        ];
+
+        foreach ($envRaw as $value) {
+            if ($value === '') {
+                continue;
+            }
+
+            $parts = preg_split('/[\s,]+/', $value) ?: [];
+            foreach ($parts as $part) {
+                $channel = trim((string) $part);
+                if ($channel === '') {
+                    continue;
+                }
+                if ($channel[0] !== '@') {
+                    $channel = '@' . ltrim($channel, '@');
+                }
+                if (!in_array($channel, $channels, true)) {
+                    $channels[] = $channel;
+                }
+            }
+        }
+
         foreach ($this->getConfigJsonCandidates() as $path) {
             $decoded = $this->readJsonFile($path);
             if (!is_array($decoded)) {

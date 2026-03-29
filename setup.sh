@@ -968,6 +968,35 @@ if "token" in tg and str(tg.get("token", "")).strip():
     updates["TELEGRAM_BOT_TOKEN"] = token
     updates["PTEROPROTECT_TELEGRAM_TOKEN"] = token
 
+required_channels = []
+for key in ("channel", "report_channel"):
+    if key not in tg:
+        continue
+    raw = str(tg.get(key, "")).strip()
+    if not raw:
+        continue
+    if not raw.startswith("@"):
+        raw = "@" + raw.lstrip("@")
+    if raw not in required_channels:
+        required_channels.append(raw)
+
+if "channel" in tg and str(tg.get("channel", "")).strip():
+    ch = str(tg.get("channel", "")).strip()
+    if not ch.startswith("@"):
+        ch = "@" + ch.lstrip("@")
+    updates["TELEGRAM_CHANNEL"] = value_to_string(ch)
+
+if "report_channel" in tg and str(tg.get("report_channel", "")).strip():
+    rch = str(tg.get("report_channel", "")).strip()
+    if not rch.startswith("@"):
+        rch = "@" + rch.lstrip("@")
+    updates["TELEGRAM_REPORT_CHANNEL"] = value_to_string(rch)
+
+if required_channels:
+    joined = ",".join(required_channels)
+    updates["TELEGRAM_REQUIRED_CHANNELS"] = value_to_string(joined)
+    updates["PTEROPROTECT_TELEGRAM_REQUIRED_CHANNELS"] = value_to_string(joined)
+
 seen = set()
 out = []
 for line in lines:
