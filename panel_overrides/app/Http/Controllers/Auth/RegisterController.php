@@ -29,6 +29,7 @@ class RegisterController extends AbstractLoginController
                 'telegram_ready' => $token !== null,
                 'bot_username' => $botUsername,
                 'bot_start_url' => $botUsername !== null ? ('https://t.me/' . ltrim($botUsername, '@')) : null,
+                'required_channels' => $this->getRequiredJoinChannels(),
             ],
         ]);
     }
@@ -53,6 +54,15 @@ class RegisterController extends AbstractLoginController
         }
 
         $telegramId = trim((string) $validated['telegram_id']);
+        $requiredChannels = $this->getRequiredJoinChannels();
+        $joinCheck = $this->validateRequiredChannelMembership($token, $telegramId, $requiredChannels);
+        if (!(bool) ($joinCheck['ok'] ?? false)) {
+            $missing = is_array($joinCheck['missing'] ?? null) ? $joinCheck['missing'] : [];
+
+            return new JsonResponse([
+                'error' => $this->buildJoinRetryErrorMessage($requiredChannels, $missing),
+            ], 422);
+        }
 
         $otp = (string) random_int(100000, 999999);
         $requestToken = Str::lower(Str::random(48));
@@ -178,12 +188,7 @@ class RegisterController extends AbstractLoginController
             trim((string) env('PTEROPROTECT_TELEGRAM_TOKEN', '')),
             trim((string) env('TELEGRAM_TOKEN', '')),
         ];
-        $candidates = [
-            base_path('config.json'),
-            '/pteroprotect/config.json',
-            '/root/Danex/config.json',
-            '/root/porn/config.json',
-        ];
+        $candidates = $this->getConfigJsonCandidates();
 
         $tokens = [];
         foreach ($envCandidates as $token) {
@@ -192,18 +197,10 @@ class RegisterController extends AbstractLoginController
             }
         }
         foreach ($candidates as $path) {
-            if (!is_file($path)) {
-                continue;
-            }
-            $raw = @file_get_contents($path);
-            if (!is_string($raw) || trim($raw) === '') {
-                continue;
-            }
-            $decoded = json_decode($raw, true);
+            $decoded = $this->readJsonFile($path);
             if (!is_array($decoded)) {
                 continue;
             }
-
             $token = trim((string) data_get($decoded, 'telegram.token', ''));
             if ($token !== '' && !in_array($token, $tokens, true)) {
                 $tokens[] = $token;
@@ -226,6 +223,135 @@ class RegisterController extends AbstractLoginController
     private function isTelegramTokenValid(string $token): bool
     {
         return (bool) ($this->getTelegramBotProfile($token)['ok'] ?? false);
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function getRequiredJoinChannels(): array
+    {
+        $channels = [];
+        foreach ($this->getConfigJsonCandidates() as $path) {
+            $decoded = $this->readJsonFile($path);
+            if (!is_array($decoded)) {
+                continue;
+            }
+
+            foreach (['telegram.channel', 'telegram.report_channel'] as $key) {
+                $value = trim((string) data_get($decoded, $key, ''));
+                if ($value === '') {
+                    continue;
+                }
+                if ($value[0] !== '@') {
+                    $value = '@' . ltrim($value, '@');
+                }
+                if (!in_array($value, $channels, true)) {
+                    $channels[] = $value;
+                }
+            }
+        }
+
+        return $channels;
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function getConfigJsonCandidates(): array
+    {
+        return [
+            base_path('config.json'),
+            '/pteroprotect/config.json',
+            '/root/Danex/config.json',
+            '/root/porn/config.json',
+        ];
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    private function readJsonFile(string $path): ?array
+    {
+        if (!is_file($path)) {
+            return null;
+        }
+
+        $raw = @file_get_contents($path);
+        if (!is_string($raw) || trim($raw) === '') {
+            return null;
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * @param array<int,string> $channels
+     * @return array{ok:bool,missing:array<int,string>}
+     */
+    private function validateRequiredChannelMembership(string $token, string $telegramId, array $channels): array
+    {
+        $missing = [];
+        foreach ($channels as $channel) {
+            $membership = $this->getTelegramChannelMembership($token, $channel, $telegramId);
+            if (!(bool) ($membership['is_member'] ?? false)) {
+                $missing[] = $channel;
+            }
+        }
+
+        return [
+            'ok' => count($missing) === 0,
+            'missing' => $missing,
+        ];
+    }
+
+    /**
+     * @return array{ok:bool,is_member:bool,status:?string,description:?string}
+     */
+    private function getTelegramChannelMembership(string $token, string $channel, string $telegramId): array
+    {
+        try {
+            $response = Http::asForm()
+                ->timeout(10)
+                ->post("https://api.telegram.org/bot{$token}/getChatMember", [
+                    'chat_id' => $channel,
+                    'user_id' => $telegramId,
+                ]);
+
+            $json = $response->json();
+            $ok = $response->ok() && (bool) data_get($json, 'ok', false);
+            $status = trim((string) data_get($json, 'result.status', ''));
+            $isMemberFlag = (bool) data_get($json, 'result.is_member', false);
+            $description = trim((string) data_get($json, 'description', ''));
+
+            $isMember = in_array($status, ['member', 'administrator', 'creator'], true)
+                || ($status === 'restricted' && $isMemberFlag);
+
+            return [
+                'ok' => $ok,
+                'is_member' => $ok ? $isMember : false,
+                'status' => $status !== '' ? $status : null,
+                'description' => $description !== '' ? $description : null,
+            ];
+        } catch (\Throwable) {
+            return ['ok' => false, 'is_member' => false, 'status' => null, 'description' => 'network error'];
+        }
+    }
+
+    /**
+     * @param array<int,string> $requiredChannels
+     * @param array<int,string> $missingChannels
+     */
+    private function buildJoinRetryErrorMessage(array $requiredChannels, array $missingChannels): string
+    {
+        $targets = count($missingChannels) > 0 ? $missingChannels : $requiredChannels;
+        $channelText = implode(' dan ', $targets);
+
+        return "Wajib join {$channelText} dulu, lalu retry pendaftaran.";
     }
 
     /**

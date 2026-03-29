@@ -19,6 +19,7 @@ export interface RegisterMetaResponse {
     telegramReady: boolean;
     botUsername: string;
     botStartUrl: string;
+    requiredChannels: string[];
 }
 
 export const startRegister = async (payload: RegisterStartPayload): Promise<RegisterStartResponse> => {
@@ -40,6 +41,9 @@ export const getRegisterMeta = async (): Promise<RegisterMetaResponse> => {
         telegramReady: !!data?.data?.telegram_ready,
         botUsername: String(data?.data?.bot_username || ''),
         botStartUrl: String(data?.data?.bot_start_url || ''),
+        requiredChannels: Array.isArray(data?.data?.required_channels)
+            ? data.data.required_channels.map((v: unknown) => String(v || '')).filter((v: string) => v !== '')
+            : [],
     };
 };
 

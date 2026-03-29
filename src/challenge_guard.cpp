@@ -674,7 +674,8 @@ static bool ua_declared_browser(const std::string& ua) {
     const std::string low = to_lower(ua);
     static const std::vector<std::string> blocked = {
         "curl/", "wget/", "python-requests", "go-http-client", "okhttp", "libwww-perl",
-        "java/", "aiohttp", "httpclient", "axios/", "node-fetch", "scrapy", "postmanruntime"
+        "java/", "aiohttp", "httpclient", "axios/", "node-fetch", "scrapy", "postmanruntime",
+        "headless", "headlesschrome", "puppeteer", "playwright", "selenium", "phantomjs"
     };
     for (const auto& bad : blocked) {
         if (low.find(bad) != std::string::npos) return false;
@@ -1309,7 +1310,7 @@ static void handle_client(int fd, std::string remote_ip) {
         }
         if (hinted_dm > 0.0 && hinted_dm <= 2.0) adaptive_pow_bits -= 1;
         if (hinted_mobile) adaptive_pow_bits -= 1;
-        if (suspicious_low_power_hint) adaptive_pow_bits += 2;
+        if (suspicious_low_power_hint) adaptive_pow_bits = std::max(adaptive_pow_bits + 2, s.pow_bits + 1);
         const int min_pow_bits = s.strict_mode ? std::max(12, s.pow_bits - 1) : 8;
         adaptive_pow_bits = std::max(min_pow_bits, std::min(24, adaptive_pow_bits));
 
@@ -1338,7 +1339,7 @@ static void handle_client(int fd, std::string remote_ip) {
         if (hinted_mobile) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 64);
         else adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 192);
         if (hinted_hc > 0 && hinted_hc <= 2) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 48);
-        if (suspicious_low_power_hint) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, 96);
+        if (suspicious_low_power_hint) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, 128);
         if (s.strict_mode) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, hinted_mobile ? 32 : 64);
         adaptive_pow_mem_mb = std::max(8, adaptive_pow_mem_mb);
         int adaptive_pow_cpu_level = 4;

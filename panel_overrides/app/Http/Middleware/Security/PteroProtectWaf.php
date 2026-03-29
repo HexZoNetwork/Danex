@@ -336,7 +336,7 @@ class PteroProtectWaf
         array $config,
         int $decay
     ): bool {
-        if ($category !== 'api' && $category !== 'resource' && $category !== 'websocket') {
+        if ($category !== 'api' && $category !== 'resource' && $category !== 'websocket' && $category !== 'web') {
             return false;
         }
 
@@ -391,6 +391,9 @@ class PteroProtectWaf
             'websocket' => (int) ($lockdown
                 ? ($config['lockdown_websocket_fingerprint_cluster_limit'] ?? 120)
                 : ($config['websocket_fingerprint_cluster_limit'] ?? 320)),
+            'web' => (int) ($lockdown
+                ? ($config['lockdown_web_fingerprint_cluster_limit'] ?? 90)
+                : ($config['web_fingerprint_cluster_limit'] ?? 180)),
             default => 0,
         };
 

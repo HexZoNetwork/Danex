@@ -1053,6 +1053,9 @@ fi
 if [[ -f "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh"
 fi
+if [[ -f "${INSTALL_DIR}/scripts/smoke_l7_defense.sh" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/smoke_l7_defense.sh"
+fi
 
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect.service" ]]; then
     echo "[setup] installing systemd service..."

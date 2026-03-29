@@ -31,6 +31,7 @@ export default () => {
     const [botUsername, setBotUsername] = useState('');
     const [botStartUrl, setBotStartUrl] = useState('');
     const [telegramReady, setTelegramReady] = useState(true);
+    const [requiredChannels, setRequiredChannels] = useState<string[]>([]);
 
     useEffect(() => {
         clearFlashes();
@@ -39,6 +40,9 @@ export default () => {
                 setBotUsername(meta.botUsername || '');
                 setBotStartUrl(meta.botStartUrl || '');
                 setTelegramReady(meta.telegramReady);
+                if (meta.requiredChannels.length > 0) {
+                    setRequiredChannels(meta.requiredChannels);
+                }
             })
             .catch(() => {
                 setTelegramReady(false);
@@ -227,6 +231,20 @@ export default () => {
                         )}
                         {!telegramReady && <span css={tw`ml-1 text-red-500`}>(token bot belum valid)</span>}
                     </div>
+                    {requiredChannels.length > 0 && (
+                        <div css={tw`mt-2 text-xs text-neutral-500`}>
+                            Wajib join channel:{' '}
+                            {requiredChannels.map((channel, index) => (
+                                <React.Fragment key={channel}>
+                                    {index > 0 && ', '}
+                                    <a href={`https://t.me/${channel.replace(/^@/, '')}`} target={'_blank'} rel={'noreferrer'}>
+                                        {channel}
+                                    </a>
+                                </React.Fragment>
+                            ))}{' '}
+                            lalu retry kalau belum bisa lanjut.
+                        </div>
+                    )}
                     <div css={tw`mt-2 text-xs text-neutral-500`}>
                         LastName otomatis dikunci menjadi <strong>madeinweb</strong>.
                     </div>
