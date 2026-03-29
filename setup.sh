@@ -1057,6 +1057,81 @@ if [[ -f "${INSTALL_DIR}/scripts/smoke_l7_defense.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/smoke_l7_defense.sh"
 fi
 
+# PHP-FPM capacity hardening for high-traffic/attack windows.
+PHP_FPM_POOL_CONF=""
+for _pool in /etc/php/8.3/fpm/pool.d/www.conf /etc/php/8.2/fpm/pool.d/www.conf /etc/php/8.1/fpm/pool.d/www.conf; do
+    if [[ -f "${_pool}" ]]; then
+        PHP_FPM_POOL_CONF="${_pool}"
+        break
+    fi
+done
+if [[ -n "${PHP_FPM_POOL_CONF}" ]]; then
+    PHP_FPM_MAX_CHILDREN="$(read_network_setting php_fpm_max_children 40)"
+    PHP_FPM_START_SERVERS="$(read_network_setting php_fpm_start_servers 8)"
+    PHP_FPM_MIN_SPARE="$(read_network_setting php_fpm_min_spare_servers 4)"
+    PHP_FPM_MAX_SPARE="$(read_network_setting php_fpm_max_spare_servers 16)"
+    PHP_FPM_MAX_REQUESTS="$(read_network_setting php_fpm_max_requests 800)"
+
+    [[ "${PHP_FPM_MAX_CHILDREN}" =~ ^[0-9]+$ ]] || PHP_FPM_MAX_CHILDREN=40
+    [[ "${PHP_FPM_START_SERVERS}" =~ ^[0-9]+$ ]] || PHP_FPM_START_SERVERS=8
+    [[ "${PHP_FPM_MIN_SPARE}" =~ ^[0-9]+$ ]] || PHP_FPM_MIN_SPARE=4
+    [[ "${PHP_FPM_MAX_SPARE}" =~ ^[0-9]+$ ]] || PHP_FPM_MAX_SPARE=16
+    [[ "${PHP_FPM_MAX_REQUESTS}" =~ ^[0-9]+$ ]] || PHP_FPM_MAX_REQUESTS=800
+
+    if (( PHP_FPM_MAX_CHILDREN < 10 )); then PHP_FPM_MAX_CHILDREN=10; fi
+    if (( PHP_FPM_MAX_CHILDREN > 512 )); then PHP_FPM_MAX_CHILDREN=512; fi
+    if (( PHP_FPM_START_SERVERS < 2 )); then PHP_FPM_START_SERVERS=2; fi
+    if (( PHP_FPM_MIN_SPARE < 1 )); then PHP_FPM_MIN_SPARE=1; fi
+    if (( PHP_FPM_MAX_SPARE < PHP_FPM_MIN_SPARE )); then PHP_FPM_MAX_SPARE=$((PHP_FPM_MIN_SPARE + 4)); fi
+    if (( PHP_FPM_START_SERVERS > PHP_FPM_MAX_CHILDREN )); then PHP_FPM_START_SERVERS="${PHP_FPM_MAX_CHILDREN}"; fi
+    if (( PHP_FPM_MAX_SPARE > PHP_FPM_MAX_CHILDREN )); then PHP_FPM_MAX_SPARE="${PHP_FPM_MAX_CHILDREN}"; fi
+    if (( PHP_FPM_MAX_REQUESTS < 200 )); then PHP_FPM_MAX_REQUESTS=200; fi
+    if (( PHP_FPM_MAX_REQUESTS > 5000 )); then PHP_FPM_MAX_REQUESTS=5000; fi
+
+    cp -a "${PHP_FPM_POOL_CONF}" "${PHP_FPM_POOL_CONF}.bak.$(date -u +%Y%m%d%H%M%S)"
+    sed -ri "s/^pm\\.max_children\\s*=.*/pm.max_children = ${PHP_FPM_MAX_CHILDREN}/" "${PHP_FPM_POOL_CONF}"
+    sed -ri "s/^pm\\.start_servers\\s*=.*/pm.start_servers = ${PHP_FPM_START_SERVERS}/" "${PHP_FPM_POOL_CONF}"
+    sed -ri "s/^pm\\.min_spare_servers\\s*=.*/pm.min_spare_servers = ${PHP_FPM_MIN_SPARE}/" "${PHP_FPM_POOL_CONF}"
+    sed -ri "s/^pm\\.max_spare_servers\\s*=.*/pm.max_spare_servers = ${PHP_FPM_MAX_SPARE}/" "${PHP_FPM_POOL_CONF}"
+    if rg -n '^pm\.max_requests\s*=' "${PHP_FPM_POOL_CONF}" >/dev/null 2>&1; then
+        sed -ri "s/^pm\\.max_requests\\s*=.*/pm.max_requests = ${PHP_FPM_MAX_REQUESTS}/" "${PHP_FPM_POOL_CONF}"
+    else
+        printf '\npm.max_requests = %s\n' "${PHP_FPM_MAX_REQUESTS}" >> "${PHP_FPM_POOL_CONF}"
+    fi
+fi
+
+# SQL surface hardening: when panel uses local DB host, never expose 3306 publicly.
+PANEL_DB_HOST_EFFECTIVE="$(awk -F= '/^DB_HOST=/{print $2}' "${PANEL_ENV_FILE}" 2>/dev/null | tail -n1 | tr -d '"' | tr -d "'" | tr -d '[:space:]')"
+if [[ -n "${PANEL_DB_HOST_EFFECTIVE}" ]]; then
+    PANEL_DB_HOST_LC="$(printf '%s' "${PANEL_DB_HOST_EFFECTIVE}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${PANEL_DB_HOST_LC}" == "127.0.0.1" || "${PANEL_DB_HOST_LC}" == "localhost" || "${PANEL_DB_HOST_LC}" == "::1" ]]; then
+        echo "[setup] hardening local MariaDB exposure (bind localhost + block public 3306)..."
+        MYSQL_SERVER_CNF="/etc/mysql/mariadb.conf.d/50-server.cnf"
+        if [[ -f "${MYSQL_SERVER_CNF}" ]]; then
+            cp -a "${MYSQL_SERVER_CNF}" "${MYSQL_SERVER_CNF}.bak.$(date -u +%Y%m%d%H%M%S)"
+            if rg -n '^\s*bind-address\s*=' "${MYSQL_SERVER_CNF}" >/dev/null 2>&1; then
+                sed -ri 's/^\s*bind-address\s*=.*/bind-address            = 127.0.0.1/' "${MYSQL_SERVER_CNF}"
+            else
+                printf '\n[mysqld]\nbind-address            = 127.0.0.1\n' >> "${MYSQL_SERVER_CNF}"
+            fi
+        fi
+        cat > /etc/mysql/mariadb.conf.d/99-pteroprotect-hardening.cnf <<'EOF'
+[mysqld]
+local_infile=0
+skip_name_resolve=1
+EOF
+        systemctl restart mariadb >/dev/null 2>&1 || true
+        if command -v ufw >/dev/null 2>&1; then
+            ufw --force delete allow 3306 >/dev/null 2>&1 || true
+            ufw --force delete allow 3306/tcp >/dev/null 2>&1 || true
+            ufw --force delete allow mysql >/dev/null 2>&1 || true
+            ufw --force deny 3306/tcp >/dev/null 2>&1 || true
+        fi
+        iptables -C INPUT -p tcp --dport 3306 ! -s 127.0.0.1 -j DROP 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 3306 ! -s 127.0.0.1 -j DROP
+        ip6tables -C INPUT -p tcp --dport 3306 ! -s ::1 -j DROP 2>/dev/null || ip6tables -I INPUT 1 -p tcp --dport 3306 ! -s ::1 -j DROP
+    fi
+fi
+
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect.service" ]]; then
     echo "[setup] installing systemd service..."
     install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect.service" "${SYSTEMD_DIR}/pteroprotect.service"
