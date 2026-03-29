@@ -20,7 +20,7 @@ use Pterodactyl\Http\Middleware\Api\Client\Server\AuthenticateServerAccess;
 Route::get('/', [Client\ClientController::class, 'index'])->name('api:client.index');
 Route::get('/permissions', [Client\ClientController::class, 'permissions']);
 Route::get('/ads', [Client\AdsController::class, 'index']);
-Route::prefix('/chat')->withoutMiddleware('throttle:api')->group(function () {
+Route::prefix('/chat')->group(function () {
     Route::get('/conversations', [Client\PublicChatController::class, 'conversations']);
     Route::get('/users', [Client\PublicChatController::class, 'searchUsers'])->middleware('throttle:60,1');
     Route::post('/conversations/private', [Client\PublicChatController::class, 'createPrivate'])->middleware('throttle:30,1');

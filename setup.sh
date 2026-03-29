@@ -806,6 +806,32 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
             }
         }
 
+        sub random_alnum {
+            my ($len) = @_;
+            $len = 32 if !defined($len) || $len !~ /^\d+$/ || $len < 1;
+            my @chars = ("A".."Z", "a".."z", "0".."9");
+            return join("", map { $chars[int(rand(@chars))] } 1..$len);
+        }
+
+        sub needs_secret_rotation {
+            my ($value) = @_;
+            return 1 if !defined($value);
+            my $v = "$value";
+            $v =~ s/^\s+|\s+$//g;
+            return 1 if $v eq "";
+
+            my $lv = lc($v);
+            return 1 if $lv eq "change_me_strong_token";
+            return 1 if $lv eq "change_me_waf_challenge_secret";
+            return 1 if $lv eq "change_me_rce_control_key";
+            return 1 if $lv eq "dannhexzoprotect";
+            return 1 if $lv eq "pornhubssss";
+            return 1 if $lv =~ /^change[_-]?me/;
+            return 1 if $lv =~ /password|secret|token/ && length($v) < 16;
+
+            return 0;
+        }
+
         my $ports = $j->{network}{public_tcp_ports};
         $ports = "80,443,8080,18443" if !defined($ports) || $ports eq "";
         my %seen = map { $_ => 1 } grep { $_ =~ /^\d+$/ } split(/,/, $ports);
@@ -820,20 +846,14 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network}{waf_pow_bits} = 18 if !defined($j->{network}{waf_pow_bits}) || $j->{network}{waf_pow_bits} !~ /^\d+$/;
         $j->{network}{waf_pow_bits} = 8 if $j->{network}{waf_pow_bits} < 8;
         $j->{network}{waf_pow_bits} = 24 if $j->{network}{waf_pow_bits} > 24;
-        if (!defined($j->{network}{unblock_portal_token}) || $j->{network}{unblock_portal_token} eq "" || $j->{network}{unblock_portal_token} eq "CHANGE_ME_STRONG_TOKEN") {
-            my @chars = ("A".."Z", "a".."z", "0".."9");
-            my $tok = join("", map { $chars[int(rand(@chars))] } 1..48);
-            $j->{network}{unblock_portal_token} = $tok;
+        if (needs_secret_rotation($j->{network}{unblock_portal_token})) {
+            $j->{network}{unblock_portal_token} = random_alnum(48);
         }
-        if (!defined($j->{network}{waf_challenge_secret}) || $j->{network}{waf_challenge_secret} eq "" || $j->{network}{waf_challenge_secret} eq "CHANGE_ME_WAF_CHALLENGE_SECRET") {
-            my @chars = ("A".."Z", "a".."z", "0".."9");
-            my $sec = join("", map { $chars[int(rand(@chars))] } 1..48);
-            $j->{network}{waf_challenge_secret} = $sec;
+        if (needs_secret_rotation($j->{network}{waf_challenge_secret})) {
+            $j->{network}{waf_challenge_secret} = random_alnum(48);
         }
-        if (!defined($j->{network}{rce_control_key}) || $j->{network}{rce_control_key} eq "" || $j->{network}{rce_control_key} eq "CHANGE_ME_RCE_CONTROL_KEY") {
-            my @chars = ("A".."Z", "a".."z", "0".."9");
-            my $k = join("", map { $chars[int(rand(@chars))] } 1..40);
-            $j->{network}{rce_control_key} = $k;
+        if (needs_secret_rotation($j->{network}{rce_control_key})) {
+            $j->{network}{rce_control_key} = random_alnum(40);
         }
 
         open my $out, ">", $f or die;
@@ -974,7 +994,12 @@ if [[ -f "${INSTALL_DIR}/challenge_guard" ]]; then
     chmod 755 "${INSTALL_DIR}/challenge_guard"
 fi
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
+    chown root:root "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
     chmod 600 "${INSTALL_DIR}/config.json"
+fi
+if [[ -f "${PROJECT_DIR}/config.json" ]]; then
+    chown root:root "${PROJECT_DIR}/config.json" >/dev/null 2>&1 || true
+    chmod 600 "${PROJECT_DIR}/config.json"
 fi
 if [[ -f "${INSTALL_DIR}/config.example.json" ]]; then
     chmod 644 "${INSTALL_DIR}/config.example.json"
