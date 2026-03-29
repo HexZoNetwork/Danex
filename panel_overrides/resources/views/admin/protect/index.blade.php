@@ -97,6 +97,19 @@
                     </div>
                     <button type="submit" class="btn btn-warning">Apply Create Panel Toggle</button>
                 </form>
+                <hr>
+                <form method="POST" action="{{ route('admin.protect.create_panel_auto_suspend') }}">
+                    @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
+                    <div class="form-group">
+                        <label>Create Panel Auto Suspend</label>
+                        <select name="create_panel_auto_suspend_enabled" class="form-control">
+                            <option value="1" @if(($createPanelAutoSuspendEnabled ?? false) === true) selected @endif>ON</option>
+                            <option value="0" @if(($createPanelAutoSuspendEnabled ?? false) === false) selected @endif>OFF</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-warning">Apply Auto Suspend Toggle</button>
+                </form>
             </div>
         </div>
     </div>

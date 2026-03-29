@@ -75,7 +75,9 @@ Route::prefix('/account')->middleware(AccountSubject::class)->group(function () 
 
     Route::put('/email', [Client\AccountController::class, 'updateEmail'])->name('api:client.account.update-email');
     Route::put('/profile', [Client\AccountController::class, 'updateProfile'])->name('api:client.account.update-profile');
-    Route::post('/profile/avatar', [Client\AccountController::class, 'uploadAvatar'])->name('api:client.account.upload-avatar');
+    Route::post('/profile/avatar', [Client\AccountController::class, 'uploadAvatar'])
+        ->middleware('pteroprotect.avatar-upload')
+        ->name('api:client.account.upload-avatar');
     Route::put('/password', [Client\AccountController::class, 'updatePassword'])->name('api:client.account.update-password');
 
     Route::get('/activity', Client\ActivityLogController::class)->name('api:client.account.activity');
@@ -125,7 +127,7 @@ Route::group([
         Route::delete('/{database}', [Client\Servers\DatabaseController::class, 'delete']);
     });
 
-    Route::group(['prefix' => '/files'], function () {
+    Route::group(['prefix' => '/files', 'middleware' => ['pteroprotect.nodefs']], function () {
         Route::get('/list', [Client\Servers\FileController::class, 'directory']);
         Route::get('/contents', [Client\Servers\FileController::class, 'contents']);
         Route::get('/download', [Client\Servers\FileController::class, 'download']);

@@ -1428,7 +1428,12 @@ export default () => {
     const handleIncomingCallSignal = async (signal: any) => {
         if (!activeConversationId || !signal || !signal.type) return;
         const fromUserId = Number(signal.fromUserId || 0);
-        if (!fromUserId || fromUserId === selfUserId) return;
+        if (!fromUserId) return;
+        const fromMemberById = activeConversation?.members.find((m) => m.id === fromUserId) || null;
+        const isSelfSignal =
+            fromUserId === selfUserId ||
+            (fromMemberById && String(fromMemberById.username || '').toLowerCase() === selfUsername.toLowerCase());
+        if (isSelfSignal) return;
 
         try {
             if (signal.type === 'join') {
@@ -1449,7 +1454,7 @@ export default () => {
                     });
                     return;
                 }
-                const fromMember = activeConversation.members.find((m) => m.id === fromUserId);
+                const fromMember = fromMemberById || activeConversation.members.find((m) => m.id === fromUserId);
                 const fromName = fromMember?.displayName || fromMember?.username || `User ${fromUserId}`;
                 setIncomingCallPrompt({
                     fromUserId,
@@ -1577,6 +1582,7 @@ export default () => {
 
     const activeDmPeer = (): ChatUser | null => {
         if (!activeConversation || activeConversation.type !== 'private') return null;
+        if (!selfUsername.trim()) return null;
 
         const me = selfUsername.toLowerCase();
         return activeConversation.members.find((m) => String(m.username || '').toLowerCase() !== me) || null;
@@ -1623,7 +1629,8 @@ export default () => {
     const startDirectCallInvite = async () => {
         if (!activeConversationId) return;
         const peer = activeDmPeer();
-        if (!peer) return;
+        if (!peer || Number(peer.id || 0) <= 0) return;
+        if (selfUserId > 0 && Number(peer.id) === selfUserId) return;
 
         setCallLoading(true);
         try {

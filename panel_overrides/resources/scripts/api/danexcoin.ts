@@ -18,6 +18,8 @@ export interface DanexCoinState {
     rules: {
         jackpot: string;
         triple: string;
+        double?: string;
+        auto_adjust?: string;
         miss: string;
     };
     history: DanexCoinSpinLog[];
@@ -26,6 +28,7 @@ export interface DanexCoinState {
 export interface DanexCoinSpinResult {
     id: number;
     bet: string;
+    requested_bet?: string;
     reels: [string, string, string];
     multiplier: string;
     payout: string;

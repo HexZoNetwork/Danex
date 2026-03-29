@@ -11,11 +11,15 @@ use Pterodactyl\Models\Egg;
 use Pterodactyl\Models\EggVariable;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Services\Servers\ServerCreationService;
+use Pterodactyl\Services\Servers\SuspensionService;
 use Throwable;
 
 class CreatePanelController extends ClientApiController
 {
-    public function __construct(private ServerCreationService $serverCreationService)
+    public function __construct(
+        private ServerCreationService $serverCreationService,
+        private SuspensionService $suspensionService
+    )
     {
         parent::__construct();
     }
@@ -46,6 +50,7 @@ class CreatePanelController extends ClientApiController
 
         return new JsonResponse([
             'created' => $isLocked,
+            'auto_suspend_enabled' => $this->isCreatePanelAutoSuspendEnabled(),
             'eggs' => $eggs,
             'ram_options' => [1024, 2048, 4096, 8192, 16384, 32768],
             'fixed' => [
@@ -131,6 +136,16 @@ class CreatePanelController extends ClientApiController
             'start_on_completion' => true,
         ]);
 
+        $autoSuspended = false;
+        if ($this->isCreatePanelAutoSuspendEnabled()) {
+            try {
+                $this->suspensionService->toggle($server, SuspensionService::ACTION_SUSPEND);
+                $autoSuspended = true;
+            } catch (Throwable $exception) {
+                report($exception);
+            }
+        }
+
         $user->forceFill([
             'madeinweb_panel_created_at' => now(),
         ])->saveOrFail();
@@ -140,6 +155,7 @@ class CreatePanelController extends ClientApiController
                 'server_id' => (int) $server->id,
                 'server_uuid' => (string) $server->uuid,
                 'server_identifier' => (string) $server->uuidShort,
+                'auto_suspended' => $autoSuspended,
             ],
         ], 201);
     }
@@ -175,6 +191,13 @@ class CreatePanelController extends ClientApiController
         $network = $this->networkConfig();
 
         return (bool) ($network['create_panel_web_enabled'] ?? true);
+    }
+
+    private function isCreatePanelAutoSuspendEnabled(): bool
+    {
+        $network = $this->networkConfig();
+
+        return (bool) ($network['create_panel_auto_suspend_enabled'] ?? false);
     }
 
     /**

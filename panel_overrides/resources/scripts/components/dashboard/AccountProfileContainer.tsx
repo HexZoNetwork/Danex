@@ -78,6 +78,7 @@ export default () => {
 
     const [loading, setLoading] = useState(true);
     const [avatarUploading, setAvatarUploading] = useState(false);
+    const avatarUploadLockRef = useRef(false);
     const [avatarBroken, setAvatarBroken] = useState(false);
     const [avatarDragging, setAvatarDragging] = useState(false);
     const avatarInputRef = useRef<HTMLInputElement>(null);
@@ -187,8 +188,10 @@ export default () => {
 
     const handleAvatarUpload = async (file?: File) => {
         if (!file) return;
+        if (avatarUploadLockRef.current) return;
 
         if (!file.type.startsWith('image/')) {
+            clearFlashes('account:profile');
             addFlash({
                 key: 'account:profile',
                 type: 'error',
@@ -199,7 +202,9 @@ export default () => {
         }
 
         try {
+            avatarUploadLockRef.current = true;
             setAvatarUploading(true);
+            clearFlashes('account:profile');
             const avatarUrl = await uploadAccountAvatar(file);
             if (!avatarUrl) {
                 throw new Error('Upload gagal.');
@@ -208,12 +213,14 @@ export default () => {
             setInitialValues((current) => ({ ...current, avatar_url: avatarUrl }));
             setAvatarBroken(false);
             updateUserData({ avatarUrl });
+            clearFlashes('account:profile');
             addFlash({
                 key: 'account:profile',
                 type: 'success',
                 message: 'Avatar uploaded successfully.',
             });
         } catch (error) {
+            clearFlashes('account:profile');
             addFlash({
                 key: 'account:profile',
                 type: 'error',
@@ -221,6 +228,7 @@ export default () => {
                 message: httpErrorToHuman(error),
             });
         } finally {
+            avatarUploadLockRef.current = false;
             setAvatarUploading(false);
         }
     };

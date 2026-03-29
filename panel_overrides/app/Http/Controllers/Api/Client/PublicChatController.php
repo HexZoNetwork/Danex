@@ -1005,6 +1005,9 @@ class PublicChatController extends ClientApiController
 
         $this->upsertCallParticipant((int) $session->id, (int) $user->id);
         $toUserId = isset($validated['to_user_id']) ? (int) $validated['to_user_id'] : null;
+        if ($toUserId !== null && $toUserId === (int) $user->id) {
+            return new JsonResponse(['error' => 'Signal target cannot be yourself.'], 422);
+        }
         if ($toUserId !== null && !$this->isConversationMember($conversation, $toUserId)) {
             return new JsonResponse(['error' => 'Signal target is not in this conversation.'], 422);
         }

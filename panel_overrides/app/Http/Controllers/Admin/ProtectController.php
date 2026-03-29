@@ -63,6 +63,7 @@ class ProtectController extends Controller
             'configPath' => (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH),
             'allowedWingsHostsText' => implode("\n", $this->trustedHostsAllowlist()),
             'createPanelWebEnabled' => $this->createPanelWebEnabled(),
+            'createPanelAutoSuspendEnabled' => $this->createPanelAutoSuspendEnabled(),
             'postProtectToken' => $this->expectedToken(),
             'verifiedUntil' => (int) $request->session()->get(self::VERIFY_SESSION_KEY, 0),
             'rceKeyConfigured' => $this->rceKey() !== '',
@@ -695,6 +696,36 @@ class ProtectController extends Controller
         File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
 
         $this->alert->success('Create Panel on web is now ' . ($enabled ? 'enabled' : 'disabled') . '.')->flash();
+        return redirect()->route('admin.protect');
+    }
+
+    public function toggleCreatePanelAutoSuspend(Request $request): RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $enabled = filter_var($request->input('create_panel_auto_suspend_enabled', '0'), FILTER_VALIDATE_BOOLEAN);
+        $configPath = (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
+
+        if (!File::exists($configPath) || !File::isWritable($configPath) || !File::isReadable($configPath)) {
+            $this->alert->danger('Cannot write config.json from panel user. Grant write permission or use root CLI.')->flash();
+            return redirect()->route('admin.protect');
+        }
+
+        $raw = File::get($configPath);
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            $this->alert->danger('config.json is invalid.')->flash();
+            return redirect()->route('admin.protect');
+        }
+
+        $data['network'] = is_array($data['network'] ?? null) ? $data['network'] : [];
+        $data['network']['create_panel_auto_suspend_enabled'] = $enabled;
+        File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+
+        $this->alert->success('Create Panel auto suspend is now ' . ($enabled ? 'enabled' : 'disabled') . '.')->flash();
         return redirect()->route('admin.protect');
     }
 
@@ -1447,6 +1478,11 @@ class ProtectController extends Controller
     private function createPanelWebEnabled(): bool
     {
         return (bool) ($this->networkConfig()['create_panel_web_enabled'] ?? true);
+    }
+
+    private function createPanelAutoSuspendEnabled(): bool
+    {
+        return (bool) ($this->networkConfig()['create_panel_auto_suspend_enabled'] ?? false);
     }
 
     /**

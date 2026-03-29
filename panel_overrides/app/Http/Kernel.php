@@ -36,6 +36,8 @@ use Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance;
 use Pterodactyl\Http\Middleware\Api\Application\AuthenticateApplicationUser;
 use Pterodactyl\Http\Middleware\Security\PteroProtectWaf;
 use Pterodactyl\Http\Middleware\Security\PteroProtectRestrictedApplicationApi;
+use Pterodactyl\Http\Middleware\Security\PteroProtectNodeFileShield;
+use Pterodactyl\Http\Middleware\Security\PteroProtectAvatarUploadRateLimit;
 
 class Kernel extends HttpKernel
 {
@@ -98,5 +100,7 @@ class Kernel extends HttpKernel
         'bindings' => SubstituteBindings::class,
         'recaptcha' => VerifyReCaptcha::class,
         'node.maintenance' => MaintenanceMiddleware::class,
+        'pteroprotect.nodefs' => PteroProtectNodeFileShield::class,
+        'pteroprotect.avatar-upload' => PteroProtectAvatarUploadRateLimit::class,
     ];
 }
