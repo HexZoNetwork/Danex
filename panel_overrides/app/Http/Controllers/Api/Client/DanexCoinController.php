@@ -4,6 +4,7 @@ namespace Pterodactyl\Http\Controllers\Api\Client;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use DateTimeInterface;
@@ -90,75 +91,86 @@ class DanexCoinController extends ClientApiController
         }
 
         $userId = (int) $request->user()->id;
-        $result = DB::transaction(function () use ($userId, $requestedBet) {
-            $locked = DB::table('users')
-                ->where('id', $userId)
-                ->lockForUpdate()
-                ->first(['id', 'danex_coin']);
+        $spinLockKey = "danexcoin:spin:lock:{$userId}";
+        if (!Cache::add($spinLockKey, 1, now()->addSeconds(4))) {
+            return new JsonResponse([
+                'error' => 'Terlalu cepat spin. Tunggu sebentar lalu coba lagi.',
+            ], 429);
+        }
 
-            $balanceBefore = round((float) ($locked->danex_coin ?? 0), 2);
-            if ($balanceBefore <= 0) {
-                return null;
-            }
-            $bet = round(min($requestedBet, $balanceBefore), 2);
-            if ($bet <= 0) {
-                return null;
-            }
+        try {
+            $result = DB::transaction(function () use ($userId, $requestedBet) {
+                $locked = DB::table('users')
+                    ->where('id', $userId)
+                    ->lockForUpdate()
+                    ->first(['id', 'danex_coin']);
 
-            $activeUsers = (int) DB::table('danexcoin_spin_logs')
-                ->where('created_at', '>=', now()->subMinutes(5))
-                ->distinct('user_id')
-                ->count('user_id');
-            $winRate = $this->resolveWinRate($bet, $activeUsers);
-            $reels = $this->rollReels($winRate);
+                $balanceBefore = round((float) ($locked->danex_coin ?? 0), 2);
+                if ($balanceBefore <= 0) {
+                    return null;
+                }
+                $bet = round(min($requestedBet, $balanceBefore), 2);
+                if ($bet <= 0) {
+                    return null;
+                }
 
-            $isJackpot = $reels[0] === '7' && $reels[1] === '7' && $reels[2] === '7';
-            $isTriple = $reels[0] === $reels[1] && $reels[1] === $reels[2];
-            $isDouble = !$isTriple && (
-                $reels[0] === $reels[1] ||
-                $reels[0] === $reels[2] ||
-                $reels[1] === $reels[2]
-            );
-            $multiplier = $isJackpot ? 2.0 : ($isTriple ? 1.5 : ($isDouble ? 0.25 : 0.0));
-            $wagerReturn = $multiplier > 0 ? $bet : 0.0;
-            $bonus = round($bet * $multiplier, 2);
-            $payout = round($wagerReturn + $bonus, 2);
-            $balanceAfter = round($balanceBefore - $bet + $payout, 2);
+                $activeUsers = (int) DB::table('danexcoin_spin_logs')
+                    ->where('created_at', '>=', now()->subMinutes(5))
+                    ->distinct('user_id')
+                    ->count('user_id');
+                $winRate = $this->resolveWinRate($bet, $activeUsers);
+                $reels = $this->rollReels($winRate);
 
-            DB::table('users')
-                ->where('id', $userId)
-                ->update(['danex_coin' => $balanceAfter]);
+                $isJackpot = $reels[0] === '7' && $reels[1] === '7' && $reels[2] === '7';
+                $isTriple = $reels[0] === $reels[1] && $reels[1] === $reels[2];
+                $isDouble = !$isTriple && (
+                    $reels[0] === $reels[1] ||
+                    $reels[0] === $reels[2] ||
+                    $reels[1] === $reels[2]
+                );
+                $multiplier = $isJackpot ? 2.0 : ($isTriple ? 1.5 : ($isDouble ? 0.25 : 0.0));
+                $wagerReturn = $multiplier > 0 ? $bet : 0.0;
+                $bonus = round($bet * $multiplier, 2);
+                $payout = round($wagerReturn + $bonus, 2);
+                $balanceAfter = round($balanceBefore - $bet + $payout, 2);
 
-            $logId = DB::table('danexcoin_spin_logs')->insertGetId([
-                'user_id' => $userId,
-                'bet' => $bet,
-                'reel_1' => $reels[0],
-                'reel_2' => $reels[1],
-                'reel_3' => $reels[2],
-                'multiplier' => $multiplier,
-                'payout' => $payout,
-                'balance_before' => $balanceBefore,
-                'balance_after' => $balanceAfter,
-                'is_jackpot' => $isJackpot,
-                'created_at' => now(),
-            ]);
+                DB::table('users')
+                    ->where('id', $userId)
+                    ->update(['danex_coin' => $balanceAfter]);
 
-            return [
-                'id' => (int) $logId,
-                'bet' => $this->asDecimal($bet),
-                'requested_bet' => $this->asDecimal($requestedBet),
-                'reels' => $reels,
-                'multiplier' => $this->asDecimal($multiplier),
-                'payout' => $this->asDecimal($payout),
-                'balance_before' => $this->asDecimal($balanceBefore),
-                'balance_after' => $this->asDecimal($balanceAfter),
-                'is_jackpot' => $isJackpot,
-            ];
-        });
+                $logId = DB::table('danexcoin_spin_logs')->insertGetId([
+                    'user_id' => $userId,
+                    'bet' => $bet,
+                    'reel_1' => $reels[0],
+                    'reel_2' => $reels[1],
+                    'reel_3' => $reels[2],
+                    'multiplier' => $multiplier,
+                    'payout' => $payout,
+                    'balance_before' => $balanceBefore,
+                    'balance_after' => $balanceAfter,
+                    'is_jackpot' => $isJackpot,
+                    'created_at' => now(),
+                ]);
+
+                return [
+                    'id' => (int) $logId,
+                    'bet' => $this->asDecimal($bet),
+                    'requested_bet' => $this->asDecimal($requestedBet),
+                    'reels' => $reels,
+                    'multiplier' => $this->asDecimal($multiplier),
+                    'payout' => $this->asDecimal($payout),
+                    'balance_before' => $this->asDecimal($balanceBefore),
+                    'balance_after' => $this->asDecimal($balanceAfter),
+                    'is_jackpot' => $isJackpot,
+                ];
+            });
+        } finally {
+            Cache::forget($spinLockKey);
+        }
 
         if ($result === null) {
             return new JsonResponse([
-                'error' => 'DanexCoin tidak cukup untuk bet tersebut.',
+                'error' => 'DanexCoin kamu kosong.',
             ], 422);
         }
 

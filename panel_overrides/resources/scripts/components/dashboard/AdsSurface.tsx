@@ -82,7 +82,7 @@ export default () => {
         };
 
         const scheduleAdsRefresh = () => {
-            const delay = randomBetween(45_000, 95_000);
+            const delay = randomBetween(120_000, 240_000);
             adsTimer = window.setTimeout(async () => {
                 await load();
                 if (!cancelled) {
@@ -92,7 +92,7 @@ export default () => {
         };
 
         const schedulePopupSpawn = () => {
-            const delay = randomBetween(70_000, 220_000);
+            const delay = randomBetween(150_000, 360_000);
             popupTimer = window.setTimeout(() => {
                 if (cancelled) {
                     return;
@@ -102,8 +102,8 @@ export default () => {
                 if (serviceEnabledRef.current && popupCandidate && !popupOpenRef.current) {
                     const now = Date.now();
                     const lastShown = Number(window.localStorage.getItem('ads.popup.last_shown') || '0');
-                    const cooldownMs = 120_000;
-                    if (now - lastShown >= cooldownMs && Math.random() <= 0.55) {
+                    const cooldownMs = 180_000;
+                    if (now - lastShown >= cooldownMs && Math.random() <= 0.45) {
                         setPopup(popupCandidate);
                         setPopupOpen(true);
                         window.localStorage.setItem('ads.popup.last_shown', String(now));

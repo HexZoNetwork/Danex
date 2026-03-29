@@ -340,7 +340,7 @@ export default () => {
     const location = useLocation();
     const { clearFlashes, clearAndAddHttpError, addFlash } = useFlash();
     const selfUsername = useStoreState((state) => state.user.data?.username || '');
-    const selfUserId = Number(useStoreState((state) => state.user.data?.id || 0));
+    const selfUserIdFromWindow = typeof window !== 'undefined' ? Number((window as any)?.PterodactylUser?.id || 0) : 0;
 
     const [conversations, setConversations] = useState<ChatConversation[]>([]);
     const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
@@ -444,6 +444,21 @@ export default () => {
         () => conversations.find((item) => item.id === activeConversationId) || null,
         [conversations, activeConversationId]
     );
+    const selfUserId = useMemo(() => {
+        if (selfUserIdFromWindow > 0) return selfUserIdFromWindow;
+        const me = selfUsername.toLowerCase();
+        if (!me) return 0;
+
+        const search = activeConversation ? [activeConversation, ...conversations] : conversations;
+        for (const conversation of search) {
+            const found = (conversation.members || []).find((member) => String(member.username || '').toLowerCase() === me);
+            if (found?.id && Number(found.id) > 0) {
+                return Number(found.id);
+            }
+        }
+
+        return 0;
+    }, [selfUserIdFromWindow, selfUsername, activeConversation, conversations]);
     const myGroupRole = useMemo(() => {
         if (!activeConversation) return null;
         const me = activeConversation.members.find((m) => m.username.toLowerCase() === selfUsername.toLowerCase());
@@ -1563,7 +1578,8 @@ export default () => {
     const activeDmPeer = (): ChatUser | null => {
         if (!activeConversation || activeConversation.type !== 'private') return null;
 
-        return activeConversation.members.find((m) => m.id !== selfUserId) || null;
+        const me = selfUsername.toLowerCase();
+        return activeConversation.members.find((m) => String(m.username || '').toLowerCase() !== me) || null;
     };
 
     const notifyIncomingCall = (fromName: string) => {

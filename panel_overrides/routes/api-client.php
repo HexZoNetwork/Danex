@@ -57,7 +57,7 @@ Route::prefix('/chat')->withoutMiddleware('throttle:api')->group(function () {
 
 Route::prefix('/danexcoin')->group(function () {
     Route::get('/', [Client\DanexCoinController::class, 'index']);
-    Route::post('/spin', [Client\DanexCoinController::class, 'spin'])->middleware('throttle:240,1');
+    Route::post('/spin', [Client\DanexCoinController::class, 'spin'])->middleware('throttle:45,1');
 });
 
 Route::prefix('/create-panel')->group(function () {
