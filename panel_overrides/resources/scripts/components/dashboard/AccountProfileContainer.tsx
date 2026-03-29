@@ -79,6 +79,7 @@ export default () => {
     const [loading, setLoading] = useState(true);
     const [avatarUploading, setAvatarUploading] = useState(false);
     const [avatarBroken, setAvatarBroken] = useState(false);
+    const [avatarDragging, setAvatarDragging] = useState(false);
     const avatarInputRef = useRef<HTMLInputElement>(null);
     const [initialValues, setInitialValues] = useState<Values>({
         username: user?.username || '',
@@ -231,20 +232,35 @@ export default () => {
             <Layout>
                 <ProfileHeader>
                     <ProfileTop>
-                        <AvatarWrap>
-                            {initialValues.avatar_url && !avatarBroken ? (
-                                <img
-                                    src={initialValues.avatar_url}
-                                    alt={'Profile avatar'}
-                                    css={tw`w-full h-full object-cover`}
-                                    onError={() => {
-                                        setAvatarBroken(true);
-                                    }}
-                                />
-                            ) : (
-                                <AvatarFallback>{(initialValues.username || 'U').charAt(0).toUpperCase()}</AvatarFallback>
-                            )}
-                        </AvatarWrap>
+                        <div
+                            css={[tw`rounded-lg p-2 transition`, avatarDragging ? tw`ring-2 ring-cyan-500 bg-neutral-900/40` : undefined]}
+                            onDragOver={(event) => {
+                                event.preventDefault();
+                                if (!avatarDragging) setAvatarDragging(true);
+                            }}
+                            onDragLeave={() => setAvatarDragging(false)}
+                            onDrop={(event) => {
+                                event.preventDefault();
+                                setAvatarDragging(false);
+                                handleAvatarUpload(event.dataTransfer?.files?.[0]);
+                            }}
+                        >
+                            <AvatarWrap>
+                                {initialValues.avatar_url && !avatarBroken ? (
+                                    <img
+                                        src={initialValues.avatar_url}
+                                        alt={'Profile avatar'}
+                                        css={tw`w-full h-full object-cover`}
+                                        onError={() => {
+                                            setAvatarBroken(true);
+                                        }}
+                                    />
+                                ) : (
+                                    <AvatarFallback>{(initialValues.username || 'U').charAt(0).toUpperCase()}</AvatarFallback>
+                                )}
+                            </AvatarWrap>
+                            <p css={tw`text-center text-xs text-neutral-400 mt-2`}>Drag image ke avatar untuk upload cepat.</p>
+                        </div>
                         <p css={tw`text-center text-lg text-neutral-100 font-semibold mt-4 break-words`}>
                             {`${initialValues.name_first} ${initialValues.name_last}`.trim() || initialValues.username || 'User'}
                         </p>

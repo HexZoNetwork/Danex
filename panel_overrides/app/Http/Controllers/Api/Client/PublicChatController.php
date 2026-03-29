@@ -921,21 +921,28 @@ class PublicChatController extends ClientApiController
             'conversation_id' => 'required|integer|min:1',
         ]);
         $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
-        $session = $this->activeCallSession((int) $conversation->id);
-        if (!$session) {
+        $sessions = DB::table('chat_call_sessions')
+            ->where('conversation_id', (int) $conversation->id)
+            ->whereNull('ended_at')
+            ->orderByDesc('id')
+            ->get(['id']);
+        if ($sessions->isEmpty()) {
             return new JsonResponse(['ok' => true]);
         }
 
-        DB::table('chat_call_participants')
-            ->where('call_session_id', (int) $session->id)
-            ->where('user_id', (int) $user->id)
-            ->update([
-                'left_at' => now(),
-                'updated_at' => now(),
-                'speaking_level' => 0,
-            ]);
-        $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'leave', ['user_id' => (int) $user->id]);
-        $this->endSessionIfNoParticipants((int) $session->id, (int) $conversation->id, (int) $user->id);
+        foreach ($sessions as $session) {
+            DB::table('chat_call_participants')
+                ->where('call_session_id', (int) $session->id)
+                ->where('user_id', (int) $user->id)
+                ->whereNull('left_at')
+                ->update([
+                    'left_at' => now(),
+                    'updated_at' => now(),
+                    'speaking_level' => 0,
+                ]);
+            $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'leave', ['user_id' => (int) $user->id]);
+            $this->endSessionIfNoParticipants((int) $session->id, (int) $conversation->id, (int) $user->id);
+        }
 
         return new JsonResponse(['ok' => true]);
     }
@@ -1504,11 +1511,31 @@ class PublicChatController extends ClientApiController
             return null;
         }
 
-        return DB::table('chat_call_sessions')
+        $sessions = DB::table('chat_call_sessions')
             ->where('conversation_id', $conversationId)
             ->whereNull('ended_at')
             ->orderByDesc('id')
-            ->first();
+            ->get(['id', 'conversation_id', 'started_by', 'created_at', 'updated_at', 'ended_at']);
+
+        foreach ($sessions as $session) {
+            $activeParticipants = DB::table('chat_call_participants')
+                ->where('call_session_id', (int) $session->id)
+                ->whereNull('left_at')
+                ->count();
+            if ($activeParticipants > 0) {
+                return $session;
+            }
+
+            DB::table('chat_call_sessions')
+                ->where('id', (int) $session->id)
+                ->whereNull('ended_at')
+                ->update([
+                    'ended_at' => now(),
+                    'updated_at' => now(),
+                ]);
+        }
+
+        return null;
     }
 
     private function callPayload(int $sessionId): ?array

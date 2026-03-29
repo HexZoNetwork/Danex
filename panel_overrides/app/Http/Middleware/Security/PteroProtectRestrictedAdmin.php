@@ -44,10 +44,13 @@ class PteroProtectRestrictedAdmin
                 }
             }
 
-            $targetUser = $request->route('user');
+            $targetUser = $this->resolveUserTarget($request, $path);
             if ($targetUser instanceof User) {
                 if ((int) $targetUser->id === 1) {
                     throw new AccessDeniedHttpException('Primary admin account cannot be modified.');
+                }
+                if ((int) $targetUser->id === (int) $user->id) {
+                    return $next($request);
                 }
                 if (!$this->ownership->isOwnedBy('users', (int) $targetUser->id, (int) $user->id)) {
                     throw new AccessDeniedHttpException('You do not own this user resource.');
@@ -68,9 +71,15 @@ class PteroProtectRestrictedAdmin
                 if ($ownerId <= 0) {
                     throw new AccessDeniedHttpException('Invalid server owner.');
                 }
+                $allowedOwnerIds = $this->ownership->ownedIdsFor('users', (int) $user->id);
+                $allowedOwnerIds[] = (int) $user->id;
+                $allowedOwnerIds = array_values(array_unique(array_map('intval', $allowedOwnerIds)));
+                if (!in_array($ownerId, $allowedOwnerIds, true)) {
+                    throw new AccessDeniedHttpException('You can only assign server owner to your own managed users.');
+                }
             }
 
-            $targetServer = $request->route('server');
+            $targetServer = $this->resolveServerTarget($request, $path);
             if ($targetServer instanceof Server) {
                 if ((int) $targetServer->owner_id === 1) {
                     throw new AccessDeniedHttpException('Primary admin resources cannot be modified.');
@@ -82,5 +91,33 @@ class PteroProtectRestrictedAdmin
         }
 
         return $next($request);
+    }
+
+    private function resolveUserTarget(Request $request, string $path): ?User
+    {
+        $routeValue = $request->route('user');
+        if ($routeValue instanceof User) {
+            return $routeValue;
+        }
+
+        if (preg_match('#^admin/users/view/(\d+)$#i', $path, $matches) === 1) {
+            return User::query()->find((int) $matches[1]);
+        }
+
+        return null;
+    }
+
+    private function resolveServerTarget(Request $request, string $path): ?Server
+    {
+        $routeValue = $request->route('server');
+        if ($routeValue instanceof Server) {
+            return $routeValue;
+        }
+
+        if (preg_match('#^admin/servers/view/(\d+)(?:/|$)#i', $path, $matches) === 1) {
+            return Server::query()->find((int) $matches[1]);
+        }
+
+        return null;
     }
 }

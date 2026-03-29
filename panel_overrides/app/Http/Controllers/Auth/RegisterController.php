@@ -49,7 +49,7 @@ class RegisterController extends AbstractLoginController
 
         [$token, $botUsername] = $this->resolveTelegramBotIdentity();
         if ($token === null) {
-            return new JsonResponse(['error' => 'Token Telegram belum diatur pada config.json.'], 500);
+            return new JsonResponse(['error' => 'Token Telegram belum tersedia. Pastikan setup sinkron ke .env (TELEGRAM_BOT_TOKEN) atau isi telegram.token di config.json.'], 500);
         }
 
         $telegramId = trim((string) $validated['telegram_id']);
@@ -173,12 +173,24 @@ class RegisterController extends AbstractLoginController
      */
     private function resolveTelegramBotIdentity(): array
     {
+        $envCandidates = [
+            trim((string) env('TELEGRAM_BOT_TOKEN', '')),
+            trim((string) env('PTEROPROTECT_TELEGRAM_TOKEN', '')),
+            trim((string) env('TELEGRAM_TOKEN', '')),
+        ];
         $candidates = [
             base_path('config.json'),
+            '/pteroprotect/config.json',
+            '/root/Danex/config.json',
             '/root/porn/config.json',
         ];
 
         $tokens = [];
+        foreach ($envCandidates as $token) {
+            if ($token !== '' && !in_array($token, $tokens, true)) {
+                $tokens[] = $token;
+            }
+        }
         foreach ($candidates as $path) {
             if (!is_file($path)) {
                 continue;
@@ -207,6 +219,7 @@ class RegisterController extends AbstractLoginController
             }
         }
 
+        // Keep token usable even if Telegram API cannot be reached right now.
         return [$tokens[0] ?? null, null];
     }
 

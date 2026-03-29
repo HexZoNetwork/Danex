@@ -12,6 +12,7 @@ use Illuminate\View\View;
 use Prologue\Alerts\AlertsMessageBag;
 use Pterodactyl\Http\Controllers\Controller;
 use Pterodactyl\Models\Server;
+use Pterodactyl\Services\PteroProtect\AdsService;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\Process\Process;
@@ -24,7 +25,7 @@ class ProtectController extends Controller
     private const RCE_SESSION_KEY = 'pteroprotect_rce_verified_until';
     private const RCE_TTL_SEC = 1800;
 
-    public function __construct(private AlertsMessageBag $alert)
+    public function __construct(private AlertsMessageBag $alert, private AdsService $ads)
     {
     }
 
@@ -163,6 +164,119 @@ class ProtectController extends Controller
         return view('admin.protect.notifications', [
             'history' => $history,
         ]);
+    }
+
+    public function adsIndex(Request $request): View|RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        return view('admin.protect.ads', [
+            'postProtectToken' => $this->expectedToken(),
+            'adsItems' => $this->ads->all(),
+            'adsServiceEnabled' => $this->ads->serviceEnabled(),
+        ]);
+    }
+
+    public function adsService(Request $request): RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $enabled = filter_var($request->input('enabled', '1'), FILTER_VALIDATE_BOOLEAN);
+        $this->ads->setServiceEnabled($enabled);
+
+        $this->alert->success('Ads service ' . ($enabled ? 'enabled' : 'disabled') . '.')->flash();
+
+        return redirect()->route('admin.protect.ads');
+    }
+
+    public function adsStore(Request $request): RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $validated = $request->validate([
+            'media_url' => 'required|url|max:2000',
+            'link_url' => 'nullable|url|max:2000',
+            'text' => 'nullable|string|max:255',
+            'is_popup' => 'sometimes|boolean',
+            'enabled' => 'sometimes|boolean',
+            'weight' => 'sometimes|integer|min:1|max:100',
+        ]);
+
+        $item = $this->ads->create([
+            'media_url' => trim((string) ($validated['media_url'] ?? '')),
+            'link_url' => trim((string) ($validated['link_url'] ?? '')),
+            'text' => trim((string) ($validated['text'] ?? '')),
+            'is_popup' => (bool) ($validated['is_popup'] ?? false),
+            'enabled' => (bool) ($validated['enabled'] ?? true),
+            'weight' => (int) ($validated['weight'] ?? 1),
+        ]);
+
+        if ($item === []) {
+            $this->alert->danger('Failed to create ads item. Check media URL format.')->flash();
+        } else {
+            $this->alert->success('Ads item created.')->flash();
+        }
+
+        return redirect()->route('admin.protect.ads');
+    }
+
+    public function adsUpdate(Request $request, int $ad): RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $validated = $request->validate([
+            'media_url' => 'required|url|max:2000',
+            'link_url' => 'nullable|url|max:2000',
+            'text' => 'nullable|string|max:255',
+            'is_popup' => 'sometimes|boolean',
+            'enabled' => 'sometimes|boolean',
+            'weight' => 'sometimes|integer|min:1|max:100',
+        ]);
+
+        $updated = $this->ads->update($ad, [
+            'media_url' => trim((string) ($validated['media_url'] ?? '')),
+            'link_url' => trim((string) ($validated['link_url'] ?? '')),
+            'text' => trim((string) ($validated['text'] ?? '')),
+            'is_popup' => (bool) ($validated['is_popup'] ?? false),
+            'enabled' => (bool) ($validated['enabled'] ?? false),
+            'weight' => (int) ($validated['weight'] ?? 1),
+        ]);
+
+        if (!$updated) {
+            $this->alert->danger('Ads item not found or invalid.')->flash();
+        } else {
+            $this->alert->success('Ads item updated.')->flash();
+        }
+
+        return redirect()->route('admin.protect.ads');
+    }
+
+    public function adsDelete(Request $request, int $ad): RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        if ($this->ads->delete($ad)) {
+            $this->alert->success('Ads item deleted.')->flash();
+        } else {
+            $this->alert->danger('Ads item not found.')->flash();
+        }
+
+        return redirect()->route('admin.protect.ads');
     }
 
     public function broadcast(Request $request): RedirectResponse
@@ -765,7 +879,20 @@ class ProtectController extends Controller
             // Ignore permission/read errors and fallback to env token.
         }
 
-        return $this->normalizeSecret((string) env('PTEROPROTECT_ADMIN_PROTECT_TOKEN', ''));
+        $envCandidates = [
+            (string) env('PTEROPROTECT_ADMIN_PROTECT_TOKEN', ''),
+            (string) env('PTEROPROTECT_UNBLOCK_PORTAL_TOKEN', ''),
+            (string) env('UNBLOCK_PORTAL_TOKEN', ''),
+        ];
+
+        foreach ($envCandidates as $value) {
+            $candidate = $this->normalizeSecret($value);
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return '';
     }
 
     private function rceKey(): string

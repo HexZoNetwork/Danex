@@ -156,11 +156,8 @@ class UserController extends Controller
     public function json(Request $request): Model|Collection
     {
         $query = User::query();
-        $isServerOwnerLookup = $request->query('scope') === 'server_owner';
-
-        if ($isServerOwnerLookup && (int) $request->user()->id !== 1) {
-            // Delegated admins can assign server ownership to any non-primary user.
-            $query->where('id', '!=', 1);
+        if ((int) $request->user()->id === 1) {
+            // primary admin keeps full access.
         } else {
             $owned = $request->attributes->get('pteroprotect_owned_user_ids');
             if (!is_array($owned)) {

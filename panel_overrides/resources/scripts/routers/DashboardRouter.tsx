@@ -6,6 +6,7 @@ import PublicChatPage from '@/components/dashboard/PublicChatPage';
 import DanexCoinPage from '@/components/dashboard/DanexCoinPage';
 import NotificationsPage from '@/components/dashboard/NotificationsPage';
 import CreatePanelPage from '@/components/dashboard/CreatePanelPage';
+import AdsSurface from '@/components/dashboard/AdsSurface';
 import { NotFound } from '@/components/elements/ScreenBlock';
 import TransitionRouter from '@/TransitionRouter';
 import SubNavigation from '@/components/elements/SubNavigation';
@@ -120,6 +121,7 @@ export default () => {
                     </div>
                 </SubNavigation>
             )}
+            <AdsSurface />
             <TransitionRouter>
                 <React.Suspense fallback={<Spinner centered />}>
                     <Switch location={location}>

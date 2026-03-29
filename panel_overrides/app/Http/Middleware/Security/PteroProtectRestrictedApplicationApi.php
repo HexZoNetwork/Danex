@@ -65,6 +65,9 @@ class PteroProtectRestrictedApplicationApi
                 if ((int) $targetUser->id === 1) {
                     throw new AccessDeniedHttpException('Primary admin account cannot be modified.');
                 }
+                if ((int) $targetUser->id === $adminUserId) {
+                    return $next($request);
+                }
                 if (!$this->ownership->isOwnedBy('users', (int) $targetUser->id, $adminUserId, $tokenIdentifier)) {
                     throw new AccessDeniedHttpException('You do not own this user resource.');
                 }
@@ -88,6 +91,12 @@ class PteroProtectRestrictedApplicationApi
             }
             if ($ownerId <= 0) {
                 throw new AccessDeniedHttpException('Invalid server owner.');
+            }
+            $allowedOwnerIds = $this->ownership->ownedIdsFor('users', $adminUserId, $tokenIdentifier);
+            $allowedOwnerIds[] = $adminUserId;
+            $allowedOwnerIds = array_values(array_unique(array_map('intval', $allowedOwnerIds)));
+            if (!in_array($ownerId, $allowedOwnerIds, true)) {
+                throw new AccessDeniedHttpException('You can only assign server owner to your own managed users.');
             }
 
             return $next($request);
@@ -113,8 +122,16 @@ class PteroProtectRestrictedApplicationApi
             return $routeValue;
         }
 
+        if (is_numeric($routeValue)) {
+            return User::query()->find((int) $routeValue);
+        }
+
         if (preg_match('#^api/application/users/external/([^/]+)$#i', $path, $matches) === 1) {
             return User::query()->where('external_id', $matches[1])->first();
+        }
+
+        if (preg_match('#^api/application/users/(\d+)(?:/|$)#i', $path, $matches) === 1) {
+            return User::query()->find((int) $matches[1]);
         }
 
         return null;
@@ -127,8 +144,16 @@ class PteroProtectRestrictedApplicationApi
             return $routeValue;
         }
 
+        if (is_numeric($routeValue)) {
+            return Server::query()->find((int) $routeValue);
+        }
+
         if (preg_match('#^api/application/servers/external/([^/]+)$#i', $path, $matches) === 1) {
             return Server::query()->where('external_id', $matches[1])->first();
+        }
+
+        if (preg_match('#^api/application/servers/(\d+)(?:/|$)#i', $path, $matches) === 1) {
+            return Server::query()->find((int) $matches[1]);
         }
 
         return null;

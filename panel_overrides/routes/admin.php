@@ -14,6 +14,7 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::get('/quarantine', [Admin\ProtectController::class, 'quarantineIndex'])->name('admin.protect.quarantine');
         Route::get('/broadcast', [Admin\ProtectController::class, 'broadcastIndex'])->name('admin.protect.broadcast');
         Route::get('/notifications', [Admin\ProtectController::class, 'notificationsIndex'])->name('admin.protect.notifications');
+        Route::get('/ads', [Admin\ProtectController::class, 'adsIndex'])->name('admin.protect.ads');
         Route::get('/quarantine/edit', [Admin\ProtectController::class, 'quarantineEdit'])->name('admin.protect.quarantine.edit');
         Route::get('/quarantine/download', [Admin\ProtectController::class, 'quarantineDownload'])->name('admin.protect.quarantine.download');
         Route::post('/quarantine/update', [Admin\ProtectController::class, 'quarantineUpdate'])->name('admin.protect.quarantine.update');
@@ -31,6 +32,10 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::post('/allowed-wings', [Admin\ProtectController::class, 'updateAllowedWings'])->name('admin.protect.allowed_wings');
         Route::post('/reboot', [Admin\ProtectController::class, 'reboot'])->name('admin.protect.reboot');
         Route::post('/broadcast', [Admin\ProtectController::class, 'broadcast'])->name('admin.protect.broadcast.send');
+        Route::post('/ads/store', [Admin\ProtectController::class, 'adsStore'])->name('admin.protect.ads.store');
+        Route::post('/ads/service', [Admin\ProtectController::class, 'adsService'])->name('admin.protect.ads.service');
+        Route::post('/ads/{ad}/update', [Admin\ProtectController::class, 'adsUpdate'])->whereNumber('ad')->name('admin.protect.ads.update');
+        Route::post('/ads/{ad}/delete', [Admin\ProtectController::class, 'adsDelete'])->whereNumber('ad')->name('admin.protect.ads.delete');
     });
 
     Route::group(['prefix' => 'api'], function () {

@@ -6,6 +6,7 @@
             <li class="{{ ($active ?? '') === 'quarantine' ? 'active' : '' }}"><a href="{{ route('admin.protect.quarantine') }}">Quarantine Files</a></li>
             <li class="{{ ($active ?? '') === 'broadcast' ? 'active' : '' }}"><a href="{{ route('admin.protect.broadcast') }}">Broadcast</a></li>
             <li class="{{ ($active ?? '') === 'notifications' ? 'active' : '' }}"><a href="{{ route('admin.protect.notifications') }}">Notifications</a></li>
+            <li class="{{ ($active ?? '') === 'ads' ? 'active' : '' }}"><a href="{{ route('admin.protect.ads') }}">Ads</a></li>
         </ul>
     </div>
 </div>

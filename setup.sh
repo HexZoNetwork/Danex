@@ -838,11 +838,11 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
 
         open my $out, ">", $f or die;
         print $out JSON::PP->new->ascii->pretty->canonical->encode($j);
-    ' "${INSTALL_DIR}/config.json" "${PANEL_DIR}/.env" "${INSTALL_DIR}/config.example.json"
+    ' "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" "${INSTALL_DIR}/config.example.json"
 
-    # Source of truth:
-    # - Database credentials: panel .env -> config.json
-    # - PTEROPROTECT_* vars: config.json -> panel .env
+    # Source of truth flow (two-way, ordered):
+    # 1) panel .env -> config.json (database keys)
+    # 2) config.json -> panel .env (PTEROPROTECT_* and DB keys)
     if [[ -f "${PANEL_ENV_FILE}" ]]; then
         python3 - "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" <<'PY'
 import json
@@ -863,6 +863,9 @@ except Exception:
 net = cfg.get("network") if isinstance(cfg, dict) else {}
 if not isinstance(net, dict):
     net = {}
+tg = cfg.get("telegram") if isinstance(cfg, dict) else {}
+if not isinstance(tg, dict):
+    tg = {}
 
 def env_key_from_network(k: str) -> str:
     key = re.sub(r"[^A-Za-z0-9]", "_", str(k)).upper()
@@ -894,23 +897,18 @@ lines = env_path.read_text().splitlines()
 for k, v in net.items():
     updates[env_key_from_network(k)] = value_to_string(v)
 
-# Panel DB_* stays authoritative. Only backfill missing keys from config.json.
+# After step (1), config.json already follows panel .env for DB values.
+# Apply DB keys back to .env unconditionally so runtime env is fully consistent.
 db = cfg.get("database") if isinstance(cfg, dict) else {}
 if not isinstance(db, dict):
     db = {}
-existing_db_keys = {}
-for line in lines:
-    m = key_re.match(line)
-    if m:
-        existing_db_keys[m.group(1)] = m.group(2)
-
-if "host" in db and not existing_db_keys.get("DB_HOST", "").strip():
+if "host" in db:
     updates["DB_HOST"] = value_to_string(db.get("host", ""))
-if "name" in db and not existing_db_keys.get("DB_DATABASE", "").strip():
+if "name" in db:
     updates["DB_DATABASE"] = value_to_string(db.get("name", ""))
-if "user" in db and not existing_db_keys.get("DB_USERNAME", "").strip():
+if "user" in db:
     updates["DB_USERNAME"] = value_to_string(db.get("user", ""))
-if "password" in db and not existing_db_keys.get("DB_PASSWORD", "").strip():
+if "password" in db:
     updates["DB_PASSWORD"] = value_to_string(db.get("password", ""))
 
 # Legacy compatibility aliases used in some stacks/scripts.
@@ -918,6 +916,10 @@ if "waf_challenge_secret" in net:
     updates["WAF_CHALLENGE_SECRET"] = value_to_string(net.get("waf_challenge_secret", ""))
 if "unblock_portal_token" in net:
     updates["UNBLOCK_PORTAL_TOKEN"] = value_to_string(net.get("unblock_portal_token", ""))
+if "token" in tg and str(tg.get("token", "")).strip():
+    token = value_to_string(str(tg.get("token", "")).strip())
+    updates["TELEGRAM_BOT_TOKEN"] = token
+    updates["PTEROPROTECT_TELEGRAM_TOKEN"] = token
 
 seen = set()
 out = []

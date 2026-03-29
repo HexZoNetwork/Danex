@@ -148,6 +148,9 @@ class UserController extends ApplicationApiController
         if ((int) $user->id === 1) {
             throw new AccessDeniedHttpException('Primary admin account cannot be modified.');
         }
+        if ((int) $request->user()->id === (int) $user->id) {
+            return;
+        }
         if (!$this->ownership->isOwnedBy('users', (int) $user->id, (int) $request->user()->id, $this->tokenIdentifier($request))) {
             throw new AccessDeniedHttpException('You do not own this user resource.');
         }
