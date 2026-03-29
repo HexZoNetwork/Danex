@@ -279,7 +279,16 @@ class RegisterController extends AbstractLoginController
             }
         }
 
-        return $channels;
+        if (count($channels) <= 1) {
+            return $channels;
+        }
+
+        // Show/require exactly one channel at a time, rotated every 10 minutes.
+        $bucket = (int) floor(time() / 600);
+        $seed = (string) config('app.key', 'pteroprotect') . '|' . (string) $bucket;
+        $idx = (int) (abs(crc32($seed)) % count($channels));
+
+        return [$channels[$idx]];
     }
 
     /**

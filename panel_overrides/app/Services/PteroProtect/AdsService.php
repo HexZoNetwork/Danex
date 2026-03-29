@@ -291,18 +291,31 @@ class AdsService
 
     private function isSafeHttpUrl(string $value): bool
     {
+        $value = trim($value);
         if ($value === '') {
             return false;
         }
 
-        $validated = filter_var($value, FILTER_VALIDATE_URL);
-        if (!is_string($validated) || $validated === '') {
+        if (preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
             return false;
         }
 
-        $scheme = strtolower((string) parse_url($validated, PHP_URL_SCHEME));
+        $parts = parse_url($value);
+        if (!is_array($parts)) {
+            return false;
+        }
 
-        return in_array($scheme, ['http', 'https'], true);
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            return false;
+        }
+
+        $host = trim((string) ($parts['host'] ?? ''));
+        if ($host === '') {
+            return false;
+        }
+
+        return true;
     }
 
     private function ensureStoreExists(): void

@@ -204,8 +204,8 @@ class ProtectController extends Controller
         }
 
         $validated = $request->validate([
-            'media_url' => 'required|url|max:2000',
-            'link_url' => 'nullable|url|max:2000',
+            'media_url' => 'required|string|max:2000',
+            'link_url' => 'nullable|string|max:2000',
             'text' => 'nullable|string|max:255',
             'weight' => 'sometimes|integer|min:1|max:100',
         ]);
@@ -236,8 +236,8 @@ class ProtectController extends Controller
         }
 
         $validated = $request->validate([
-            'media_url' => 'required|url|max:2000',
-            'link_url' => 'nullable|url|max:2000',
+            'media_url' => 'required|string|max:2000',
+            'link_url' => 'nullable|string|max:2000',
             'text' => 'nullable|string|max:255',
             'weight' => 'sometimes|integer|min:1|max:100',
         ]);
