@@ -53,6 +53,13 @@ private:
     std::map<std::string, double> cpu_ema;
     std::map<std::string, double> ram_ema;
     std::map<std::string, double> net_ema;
+    std::map<std::string, long long> bw_window_base_rx;
+    std::map<std::string, long long> bw_window_base_tx;
+    std::map<std::string, time_t> bw_window_start;
+
+    long long bandwidth_in_limit_bytes;
+    long long bandwidth_out_limit_bytes;
+    int bandwidth_window_sec;
 
     // Cached server list (refreshed every 5 minutes)
     std::vector<PtlcServerEntry> server_cache;

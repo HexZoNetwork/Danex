@@ -194,7 +194,10 @@
       "monitor_tcp_ports": "22,80,443,8080,2022",
       "input_guard_all_udp_enabled": true,
       "input_guard_all_udp_per_ip_per_sec": 150,
-      "input_guard_all_udp_burst": 300
+      "input_guard_all_udp_burst": 300,
+      "server_inbound_limit_gib": 20,
+      "server_outbound_limit_gib": 20,
+      "server_bandwidth_window_sec": 10800
    },
    "paths": {
       "volumes": "/var/lib/pterodactyl/volumes"

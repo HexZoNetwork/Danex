@@ -39,7 +39,8 @@ static const double UNLIMITED_CPU_WARN_ABS = 150.0;
 static const double UNLIMITED_CPU_HARD_ABS = 150.0;
 static const long long UNLIMITED_RAM_WARN_BYTES = 4LL * 1024 * 1024 * 1024;
 static const long long UNLIMITED_RAM_HARD_BYTES = 8LL * 1024 * 1024 * 1024;
-static const long long BANDWIDTH_LIMIT_BYTES = 5LL * 1024 * 1024 * 1024; // 5GB in and 5GB out per server
+static const long long DEFAULT_BANDWIDTH_LIMIT_BYTES = 20LL * 1024 * 1024 * 1024; // 20GiB in and 20GiB out
+static const int DEFAULT_BANDWIDTH_WINDOW_SEC = 3 * 60 * 60; // 3 hours
 static const int MAX_RESTART_BEFORE_SUSPEND = 5;
 static const int IPTABLES_BLOCK_CONN_THRESHOLD = 120;
 static const int NET_WARNING_CONN_THRESHOLD = 250;
@@ -138,6 +139,18 @@ std::string trim_copy(const std::string& s) {
     if (a == std::string::npos) return "";
     size_t b = s.find_last_not_of(" \n\r\t");
     return s.substr(a, b - a + 1);
+}
+
+long long parse_env_ll(const char* key, long long fallback) {
+    const char* raw = std::getenv(key);
+    if (!raw || *raw == '\0') return fallback;
+    try {
+        std::string value = trim_copy(raw);
+        if (value.empty()) return fallback;
+        return std::stoll(value);
+    } catch (...) {
+        return fallback;
+    }
 }
 
 std::string to_lower_copy_res(std::string s) {
@@ -981,7 +994,10 @@ std::string build_alert(const std::string& abuse_type,
 ResourceMonitor::ResourceMonitor()
     : state_file(get_guard_home_for_monitor() + "/runtime/resource_monitor_state.json"),
       offline_mode(false), cpu_threshold_pct(90), ram_threshold_pct(90),
-      check_interval(10), running(false), server_cache_time(0) {}
+      check_interval(10), running(false), server_cache_time(0),
+      bandwidth_in_limit_bytes(DEFAULT_BANDWIDTH_LIMIT_BYTES),
+      bandwidth_out_limit_bytes(DEFAULT_BANDWIDTH_LIMIT_BYTES),
+      bandwidth_window_sec(DEFAULT_BANDWIDTH_WINDOW_SEC) {}
 
 ResourceMonitor::~ResourceMonitor() { stop(); }
 
@@ -992,6 +1008,19 @@ void ResourceMonitor::init(const std::string& url, const std::string& key,
     cpu_threshold_pct = (cpu_pct > 0 && cpu_pct <= 100) ? cpu_pct : 90;
     ram_threshold_pct = (ram_pct > 0 && ram_pct <= 100) ? ram_pct : 90;
     check_interval    = (interval > 0) ? interval : 10;
+
+    // Bandwidth quota per server, default: 20 GiB inbound + 20 GiB outbound per 3 hours.
+    long long in_gib = parse_env_ll("PTEROPROTECT_SERVER_INBOUND_LIMIT_GIB", 20);
+    long long out_gib = parse_env_ll("PTEROPROTECT_SERVER_OUTBOUND_LIMIT_GIB", 20);
+    long long window_sec = parse_env_ll("PTEROPROTECT_SERVER_BANDWIDTH_WINDOW_SEC", DEFAULT_BANDWIDTH_WINDOW_SEC);
+
+    if (in_gib < 1) in_gib = 20;
+    if (out_gib < 1) out_gib = 20;
+    if (window_sec < 300) window_sec = DEFAULT_BANDWIDTH_WINDOW_SEC;
+
+    bandwidth_in_limit_bytes = in_gib * 1024LL * 1024LL * 1024LL;
+    bandwidth_out_limit_bytes = out_gib * 1024LL * 1024LL * 1024LL;
+    bandwidth_window_sec = static_cast<int>(window_sec);
 }
 
 void ResourceMonitor::start() {
@@ -1008,6 +1037,12 @@ void ResourceMonitor::start() {
     else
         logger.info("✅ Resource monitor started (CPU≥" + std::to_string(cpu_threshold_pct) +
                     "% RAM≥" + std::to_string(ram_threshold_pct) + "%)");
+
+    logger.info("📶 Bandwidth quota: inbound=" +
+                std::to_string(bandwidth_in_limit_bytes / (1024LL * 1024LL * 1024LL)) + "GiB"
+                " outbound=" +
+                std::to_string(bandwidth_out_limit_bytes / (1024LL * 1024LL * 1024LL)) + "GiB"
+                " window=" + std::to_string(bandwidth_window_sec) + "s per server");
 }
 
 void ResourceMonitor::stop() {
@@ -1243,6 +1278,9 @@ void ResourceMonitor::load_state() {
         cpu_ema.clear();
         ram_ema.clear();
         net_ema.clear();
+        bw_window_base_rx.clear();
+        bw_window_base_tx.clear();
+        bw_window_start.clear();
 
         if (j.contains("restart_count")) restart_count = j["restart_count"].get<std::map<std::string, int> >();
         if (j.contains("resource_strikes")) resource_strikes = j["resource_strikes"].get<std::map<std::string, int> >();
@@ -1252,6 +1290,9 @@ void ResourceMonitor::load_state() {
         if (j.contains("cpu_ema")) cpu_ema = j["cpu_ema"].get<std::map<std::string, double> >();
         if (j.contains("ram_ema")) ram_ema = j["ram_ema"].get<std::map<std::string, double> >();
         if (j.contains("net_ema")) net_ema = j["net_ema"].get<std::map<std::string, double> >();
+        if (j.contains("bw_window_base_rx")) bw_window_base_rx = j["bw_window_base_rx"].get<std::map<std::string, long long> >();
+        if (j.contains("bw_window_base_tx")) bw_window_base_tx = j["bw_window_base_tx"].get<std::map<std::string, long long> >();
+        if (j.contains("bw_window_start")) bw_window_start = j["bw_window_start"].get<std::map<std::string, time_t> >();
     } catch (...) {
         logger.warn("Resource monitor state load failed, starting with fresh in-memory state");
     }
@@ -1269,6 +1310,9 @@ void ResourceMonitor::save_state() {
         j["cpu_ema"] = cpu_ema;
         j["ram_ema"] = ram_ema;
         j["net_ema"] = net_ema;
+        j["bw_window_base_rx"] = bw_window_base_rx;
+        j["bw_window_base_tx"] = bw_window_base_tx;
+        j["bw_window_start"] = bw_window_start;
     }
 
     std::ofstream file(state_file);
@@ -1368,8 +1412,44 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         ? (ram_pct_used >= HARD_THRESHOLD)
         : (snap.mem_bytes >= effective_mem_limit_bytes);
 
-    bool bw_in_over  = (snap.net_rx_bytes > 0 && snap.net_rx_bytes >= BANDWIDTH_LIMIT_BYTES);
-    bool bw_out_over = (snap.net_tx_bytes > 0 && snap.net_tx_bytes >= BANDWIDTH_LIMIT_BYTES);
+    time_t now = time(nullptr);
+    long long bw_rx_window_bytes = 0;
+    long long bw_tx_window_bytes = 0;
+    int bw_window_age_sec = 0;
+    bool bw_window_reset = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex);
+        time_t& window_start = bw_window_start[srv.uuid];
+        long long& base_rx = bw_window_base_rx[srv.uuid];
+        long long& base_tx = bw_window_base_tx[srv.uuid];
+
+        if (window_start <= 0) {
+            window_start = now;
+            base_rx = snap.net_rx_bytes;
+            base_tx = snap.net_tx_bytes;
+        }
+
+        if (bandwidth_window_sec > 0 && (now - window_start) >= bandwidth_window_sec) {
+            window_start = now;
+            base_rx = snap.net_rx_bytes;
+            base_tx = snap.net_tx_bytes;
+            bw_window_reset = true;
+        }
+
+        if (snap.net_rx_bytes < base_rx || snap.net_tx_bytes < base_tx) {
+            window_start = now;
+            base_rx = snap.net_rx_bytes;
+            base_tx = snap.net_tx_bytes;
+            bw_window_reset = true;
+        }
+
+        bw_rx_window_bytes = std::max(0LL, snap.net_rx_bytes - base_rx);
+        bw_tx_window_bytes = std::max(0LL, snap.net_tx_bytes - base_tx);
+        bw_window_age_sec = static_cast<int>(std::max<time_t>(0, now - window_start));
+    }
+
+    bool bw_in_over  = bandwidth_in_limit_bytes > 0 && bw_rx_window_bytes >= bandwidth_in_limit_bytes;
+    bool bw_out_over = bandwidth_out_limit_bytes > 0 && bw_tx_window_bytes >= bandwidth_out_limit_bytes;
     bool bw_trigger  = bw_in_over || bw_out_over;
 
     ServerInfo db_info = db.get_server_info(srv.uuid);
@@ -1389,7 +1469,6 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         last_activity_log_id[srv.uuid] = activity_abuse.last_id;
     }
 
-    time_t now = time(nullptr);
     time_t last_act = 0;
     {
         std::lock_guard<std::mutex> lock(state_mutex);
@@ -1646,10 +1725,14 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     }
     if (bw_trigger) {
         if (!det.str().empty()) det << " | ";
-        const long long rx_mb = snap.net_rx_bytes / (1024LL * 1024);
-        const long long tx_mb = snap.net_tx_bytes / (1024LL * 1024);
-        const long long lim_mb = BANDWIDTH_LIMIT_BYTES / (1024LL * 1024);
-        det << "BW in=" << rx_mb << "MB/" << lim_mb << "MB out=" << tx_mb << "MB/" << lim_mb << "MB";
+        const long long rx_mb = bw_rx_window_bytes / (1024LL * 1024);
+        const long long tx_mb = bw_tx_window_bytes / (1024LL * 1024);
+        const long long lim_in_mb = bandwidth_in_limit_bytes / (1024LL * 1024);
+        const long long lim_out_mb = bandwidth_out_limit_bytes / (1024LL * 1024);
+        det << "BW window=" << bw_window_age_sec << "s/" << bandwidth_window_sec
+            << "s in=" << rx_mb << "MB/" << lim_in_mb
+            << "MB out=" << tx_mb << "MB/" << lim_out_mb << "MB";
+        if (bw_window_reset) det << " reset=yes";
     }
     if ((cpu_trigger || ram_trigger) && net_trigger) det << " | ";
     if (net_trigger || net_warning || self_ddos) {

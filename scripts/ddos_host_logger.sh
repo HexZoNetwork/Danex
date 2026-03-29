@@ -2007,6 +2007,49 @@ while true; do
     MAX_BLACKHOLE_TTL_SEC="$(clamp_min_int "$(read_network_setting max_blackhole_ttl_sec 86400)" 60)"
 
     case "${TRAFFIC_PROFILE}" in
+        bot|bot-shield|botshield|anti-bot|antibot|under-attack|underattack|ddos|ddos-bot)
+            # Bot-shield profile: tighten detection and block reaction for ongoing HTTP/API flood.
+            if (( BLOCK_TTL < 1200 )); then
+                BLOCK_TTL=1200
+            fi
+            SYN_RECV_GLOBAL_THRESHOLD=$(( SYN_RECV_GLOBAL_THRESHOLD * 65 / 100 ))
+            SYN_RECV_PER_IP_THRESHOLD=$(( SYN_RECV_PER_IP_THRESHOLD * 60 / 100 ))
+            ESTABLISHED_PER_IP_THRESHOLD=$(( ESTABLISHED_PER_IP_THRESHOLD * 70 / 100 ))
+            HTTP_ACCESS_PER_WINDOW_THRESHOLD=$(( HTTP_ACCESS_PER_WINDOW_THRESHOLD * 55 / 100 ))
+
+            MODE_AGGRESSIVE_SYN_RECV_THRESHOLD=$(( MODE_AGGRESSIVE_SYN_RECV_THRESHOLD * 60 / 100 ))
+            MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD=$(( MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD * 65 / 100 ))
+            MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD=$(( MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD * 55 / 100 ))
+            MODE_EMERGENCY_SYN_RECV_THRESHOLD=$(( MODE_EMERGENCY_SYN_RECV_THRESHOLD * 65 / 100 ))
+            MODE_EMERGENCY_ESTABLISHED_THRESHOLD=$(( MODE_EMERGENCY_ESTABLISHED_THRESHOLD * 70 / 100 ))
+            MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD=$(( MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD * 60 / 100 ))
+
+            SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD=$(( SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD * 65 / 100 ))
+            SERVICE_ACTIVITY_EMERGENCY_THRESHOLD=$(( SERVICE_ACTIVITY_EMERGENCY_THRESHOLD * 70 / 100 ))
+            SERVICE_ACTIVITY_DELTA_AGGRESSIVE=$(( SERVICE_ACTIVITY_DELTA_AGGRESSIVE * 65 / 100 ))
+            SERVICE_ACTIVITY_DELTA_EMERGENCY=$(( SERVICE_ACTIVITY_DELTA_EMERGENCY * 70 / 100 ))
+
+            GLOBAL_NEW_PER_SEC=$(( GLOBAL_NEW_PER_SEC * 70 / 100 ))
+            GLOBAL_NEW_BURST=$(( GLOBAL_NEW_BURST * 70 / 100 ))
+            SELF_DDOS_RATE_LIMIT_RPS=$(( SELF_DDOS_RATE_LIMIT_RPS * 70 / 100 ))
+            SELF_DDOS_RATE_LIMIT_BURST=$(( SELF_DDOS_RATE_LIMIT_BURST * 70 / 100 ))
+
+            if (( OVERLOAD_FAST_BAN_FACTOR_PCT > 55 )); then
+                OVERLOAD_FAST_BAN_FACTOR_PCT=55
+            fi
+            if (( OVERLOAD_FAST_BAN_BOT_FACTOR_PCT > 35 )); then
+                OVERLOAD_FAST_BAN_BOT_FACTOR_PCT=35
+            fi
+
+            if (( SYN_RECV_GLOBAL_THRESHOLD < 20 )); then SYN_RECV_GLOBAL_THRESHOLD=20; fi
+            if (( SYN_RECV_PER_IP_THRESHOLD < 6 )); then SYN_RECV_PER_IP_THRESHOLD=6; fi
+            if (( ESTABLISHED_PER_IP_THRESHOLD < 20 )); then ESTABLISHED_PER_IP_THRESHOLD=20; fi
+            if (( HTTP_ACCESS_PER_WINDOW_THRESHOLD < 24 )); then HTTP_ACCESS_PER_WINDOW_THRESHOLD=24; fi
+            if (( GLOBAL_NEW_PER_SEC < 120 )); then GLOBAL_NEW_PER_SEC=120; fi
+            if (( GLOBAL_NEW_BURST < 240 )); then GLOBAL_NEW_BURST=240; fi
+            if (( SELF_DDOS_RATE_LIMIT_RPS < 3 )); then SELF_DDOS_RATE_LIMIT_RPS=3; fi
+            if (( SELF_DDOS_RATE_LIMIT_BURST < 6 )); then SELF_DDOS_RATE_LIMIT_BURST=6; fi
+            ;;
         api|api-heavy|api_hosting)
             # API-heavy host: keep protection on, but avoid false aggressive mode from legitimate API/ws pulses.
             HTTP_ACCESS_PER_WINDOW_THRESHOLD=$(( HTTP_ACCESS_PER_WINDOW_THRESHOLD * 3 ))

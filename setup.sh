@@ -855,6 +855,32 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         if (needs_secret_rotation($j->{network}{rce_control_key})) {
             $j->{network}{rce_control_key} = random_alnum(40);
         }
+        if (!defined($j->{network}{server_inbound_limit_gib}) || $j->{network}{server_inbound_limit_gib} !~ /^\d+$/ || $j->{network}{server_inbound_limit_gib} < 1) {
+            $j->{network}{server_inbound_limit_gib} = 20;
+        }
+        if (!defined($j->{network}{server_outbound_limit_gib}) || $j->{network}{server_outbound_limit_gib} !~ /^\d+$/ || $j->{network}{server_outbound_limit_gib} < 1) {
+            $j->{network}{server_outbound_limit_gib} = 20;
+        }
+        if (!defined($j->{network}{server_bandwidth_window_sec}) || $j->{network}{server_bandwidth_window_sec} !~ /^\d+$/ || $j->{network}{server_bandwidth_window_sec} < 300) {
+            $j->{network}{server_bandwidth_window_sec} = 10800;
+        }
+        my $traffic_profile = "";
+        if (defined($j->{network}{traffic_profile})) {
+            $traffic_profile = lc(trim("$j->{network}{traffic_profile}"));
+        }
+        $traffic_profile =~ s/_/-/g;
+        $traffic_profile =~ s/\s+//g;
+        if ($traffic_profile =~ /^(api|api-heavy|api-hosting|apihosting)$/) {
+            $j->{network}{traffic_profile} = "api-heavy";
+        } elsif ($traffic_profile =~ /^(small|small-web|smallweb|website-small)$/) {
+            $j->{network}{traffic_profile} = "small-web";
+        } elsif ($traffic_profile =~ /^(bot|bot-shield|botshield|anti-bot|antibot|under-attack|underattack|ddos|ddos-bot)$/) {
+            $j->{network}{traffic_profile} = "bot-shield";
+        } elsif ($traffic_profile =~ /^(mixed|normal|default)$/) {
+            $j->{network}{traffic_profile} = "mixed";
+        } else {
+            $j->{network}{traffic_profile} = "mixed";
+        }
 
         open my $out, ">", $f or die;
         print $out JSON::PP->new->ascii->pretty->canonical->encode($j);
@@ -1022,6 +1048,9 @@ if [[ -f "${INSTALL_DIR}/scripts/unblock_portal.py" ]]; then
 fi
 if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_challenge_api.py" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/pteroprotect_challenge_api.py"
+fi
+if [[ -f "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh"
 fi
 
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect.service" ]]; then

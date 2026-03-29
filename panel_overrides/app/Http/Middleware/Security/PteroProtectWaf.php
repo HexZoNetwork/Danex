@@ -66,6 +66,11 @@ class PteroProtectWaf
             return $this->blockedResponse($request, 429, 'Server is under heavy load.');
         }
 
+        if ($this->isRateLimitedByClearance($request, $category, $lockdown, $mode, $config, $decay)) {
+            $this->logDecision($config, 'deny', "clearance:{$category}:{$mode}", $ip, $path, $userAgent);
+            return $this->blockedResponse($request, 429, 'Too many requests from this clearance session.');
+        }
+
         return $next($request);
     }
 
@@ -73,6 +78,10 @@ class PteroProtectWaf
     {
         if (preg_match('#^auth(?:/|$)#i', $path) === 1) {
             return 'auth';
+        }
+
+        if (preg_match('#^api/client/servers/[^/]+/websocket(?:/|$)#i', $path) === 1) {
+            return 'websocket';
         }
 
         if (preg_match('#^api/client/servers/[^/]+/(resources|websocket|files|network)(?:/|$)#i', $path) === 1) {
@@ -93,10 +102,6 @@ class PteroProtectWaf
         }
 
         if (preg_match('#^api/remote(?:/|$)#i', $path) === 1) {
-            return true;
-        }
-
-        if (preg_match('#^api/client/servers/[^/]+/websocket(?:/|$)#i', $path) === 1) {
             return true;
         }
 
@@ -143,11 +148,11 @@ class PteroProtectWaf
 
     private function shouldBypassApiRateLimit(Request $request, string $category, bool $lockdown, string $mode, array $config): bool
     {
-        if ($category !== 'api' && $category !== 'resource') {
+        if ($category !== 'api') {
             return false;
         }
 
-        $path = ltrim($request->path(), '/');
+        $ip = trim((string) $request->ip());
         $authHeader = trim((string) $request->header('Authorization', ''));
 
         if ($lockdown || $mode === 'emergency') {
@@ -158,11 +163,16 @@ class PteroProtectWaf
             return false;
         }
 
+        // Never allow public clients to bypass API throttling only by presenting headers.
+        if (!$this->isTrustedIp($ip, $config)) {
+            return false;
+        }
+
         if ($authHeader !== '' && preg_match('/^Bearer\s+\S+$/i', $authHeader) === 1) {
             return true;
         }
 
-        return trim((string) $request->header('X-Api-Key', '')) !== '';
+        return false;
     }
 
     private function limitsForCategory(string $category, bool $lockdown, string $mode, array $config): array
@@ -177,6 +187,11 @@ class PteroProtectWaf
             'resource' => [
                 (int) ($lockdown ? ($config['lockdown_resource_per_ip_limit'] ?? 3) : ($config['resource_per_ip_limit'] ?? 12)),
                 (int) ($lockdown ? ($config['lockdown_resource_global_limit'] ?? 12) : ($config['resource_global_limit'] ?? 50)),
+                $decay,
+            ],
+            'websocket' => [
+                (int) ($lockdown ? ($config['lockdown_websocket_per_ip_limit'] ?? 24) : ($config['websocket_per_ip_limit'] ?? 120)),
+                (int) ($lockdown ? ($config['lockdown_websocket_global_limit'] ?? 160) : ($config['websocket_global_limit'] ?? 900)),
                 $decay,
             ],
             'api' => [
@@ -211,6 +226,55 @@ class PteroProtectWaf
         RateLimiter::hit($key, $decay);
 
         return false;
+    }
+
+    private function isRateLimitedByClearance(
+        Request $request,
+        string $category,
+        bool $lockdown,
+        string $mode,
+        array $config,
+        int $decay
+    ): bool {
+        if ($category !== 'resource' && $category !== 'api') {
+            return false;
+        }
+
+        $cookieName = trim((string) ($config['challenge_cookie_name'] ?? 'pp_clearance'));
+        if ($cookieName === '') {
+            $cookieName = 'pp_clearance';
+        }
+
+        $clearance = trim((string) $request->cookie($cookieName, ''));
+        if ($clearance === '') {
+            return false;
+        }
+
+        $limit = $this->clearanceLimitForCategory($category, $lockdown, $mode, $config);
+        if ($limit <= 0) {
+            return false;
+        }
+
+        $ip = trim((string) $request->ip());
+        $ua = strtolower((string) $request->userAgent());
+        $keyData = hash('sha256', $category . '|' . $ip . '|' . $ua . '|' . $clearance);
+        return $this->isRateLimited("pteroprotect:waf:clearance:{$category}:{$keyData}", $limit, $decay);
+    }
+
+    private function clearanceLimitForCategory(string $category, bool $lockdown, string $mode, array $config): int
+    {
+        $limit = match ($category) {
+            'resource' => (int) ($lockdown
+                ? ($config['lockdown_resource_clearance_limit'] ?? 6)
+                : ($config['resource_clearance_limit'] ?? 14)),
+            'api' => (int) ($lockdown
+                ? ($config['lockdown_api_clearance_limit'] ?? 12)
+                : ($config['api_clearance_limit'] ?? 40)),
+            default => 0,
+        };
+
+        $multiplier = $this->modeMultiplier($mode, $config);
+        return max(1, (int) ceil($limit * $multiplier));
     }
 
     private function isSuspiciousRequest(

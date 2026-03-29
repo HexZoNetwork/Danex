@@ -15,8 +15,8 @@ class PteroProtectNodeFileShield
      * @var array<string,int>
      */
     private const PER_MINUTE_LIMITS = [
-        'list' => 180,
-        'contents' => 180,
+        'list' => 120,
+        'contents' => 120,
         'download' => 120,
         'write' => 40,
         'rename' => 40,
@@ -30,8 +30,33 @@ class PteroProtectNodeFileShield
         'upload' => 35,
     ];
 
+    /**
+     * Global per-server cap to prevent many users/tokens from overloading one node.
+     *
+     * @var array<string,int>
+     */
+    private const SERVER_PER_MINUTE_LIMITS = [
+        'list' => 420,
+        'contents' => 360,
+        'download' => 240,
+        'write' => 120,
+    ];
+
+    /**
+     * Short window burst limits (open/close abuse protection).
+     *
+     * @var array<string,int>
+     */
+    private const BURST_LIMITS = [
+        'list' => 18,
+        'contents' => 14,
+        'download' => 12,
+    ];
+
     private const DEFAULT_LIMIT = 60;
     private const WINDOW_SECONDS = 60;
+    private const BURST_WINDOW_SECONDS = 5;
+    private const BURST_BLOCK_SECONDS = 30;
     private const MAX_WRITE_BYTES_PER_REQUEST = 1_500_000; // 1.5 MB per write call
     private const MAX_WRITE_BYTES_PER_MINUTE = 6_000_000; // 6 MB/minute per user per server
     private const MAX_FILES_PER_BATCH = 120;
@@ -56,6 +81,16 @@ class PteroProtectNodeFileShield
         $throttle = $this->guardRateLimit($userId, $serverKey, $action);
         if ($throttle !== null) {
             return $throttle;
+        }
+
+        $serverThrottle = $this->guardServerRateLimit($serverKey, $action);
+        if ($serverThrottle !== null) {
+            return $serverThrottle;
+        }
+
+        $burstGuard = $this->guardBurstRateLimit($userId, $serverKey, $action);
+        if ($burstGuard !== null) {
+            return $burstGuard;
         }
 
         $batchGuard = $this->guardBatchOperation($request, $action);
@@ -124,6 +159,60 @@ class PteroProtectNodeFileShield
 
         if (!Cache::has($key)) {
             Cache::put($key, 1, now()->addSeconds(self::WINDOW_SECONDS + 2));
+        } else {
+            Cache::increment($key);
+        }
+
+        return null;
+    }
+
+    private function guardServerRateLimit(string $serverKey, string $action): ?JsonResponse
+    {
+        $limit = self::SERVER_PER_MINUTE_LIMITS[$action] ?? 0;
+        if ($limit <= 0) {
+            return null;
+        }
+
+        $bucket = (int) floor(time() / self::WINDOW_SECONDS);
+        $key = sprintf('pp:nodefs:srvrate:s%s:a%s:w%d', $serverKey, $action, $bucket);
+
+        $current = (int) Cache::get($key, 0);
+        if ($current >= $limit) {
+            return $this->reject('File operation is globally rate-limited for this server. Please retry shortly.', 429);
+        }
+
+        if (!Cache::has($key)) {
+            Cache::put($key, 1, now()->addSeconds(self::WINDOW_SECONDS + 2));
+        } else {
+            Cache::increment($key);
+        }
+
+        return null;
+    }
+
+    private function guardBurstRateLimit(int $userId, string $serverKey, string $action): ?JsonResponse
+    {
+        $limit = self::BURST_LIMITS[$action] ?? 0;
+        if ($limit <= 0) {
+            return null;
+        }
+
+        $blockedKey = sprintf('pp:nodefs:burst:block:u%d:s%s:a%s', $userId, $serverKey, $action);
+        if (Cache::has($blockedKey)) {
+            return $this->reject('Burst access detected on file endpoint. Slow down and retry in a few seconds.', 429);
+        }
+
+        $bucket = (int) floor(time() / self::BURST_WINDOW_SECONDS);
+        $key = sprintf('pp:nodefs:burst:u%d:s%s:a%s:w%d', $userId, $serverKey, $action, $bucket);
+        $current = (int) Cache::get($key, 0);
+        if ($current >= $limit) {
+            Cache::put($blockedKey, 1, now()->addSeconds(self::BURST_BLOCK_SECONDS));
+
+            return $this->reject('Burst access detected on file endpoint. Slow down and retry in a few seconds.', 429);
+        }
+
+        if (!Cache::has($key)) {
+            Cache::put($key, 1, now()->addSeconds(self::BURST_WINDOW_SECONDS + 2));
         } else {
             Cache::increment($key);
         }
