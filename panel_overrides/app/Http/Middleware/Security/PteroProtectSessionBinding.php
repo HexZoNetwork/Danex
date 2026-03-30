@@ -26,6 +26,15 @@ class PteroProtectSessionBinding
             return $next($request);
         }
 
+        $ipChallengeKey = $this->ipChallengeKey($request);
+        if ($ipChallengeKey !== null && (bool) Cache::get($ipChallengeKey, false)) {
+            if (!$this->hasClearanceCookie($request)) {
+                return $this->challengeResponse($request);
+            }
+
+            Cache::forget($ipChallengeKey);
+        }
+
         $user = $request->user();
         $userId = $user ? (int) $user->id : 0;
         $cacheKey = 'pteroprotect:session:bind:' . hash('sha256', $sessionId);
@@ -39,6 +48,9 @@ class PteroProtectSessionBinding
 
             Cache::put($cacheKey, $this->fingerprintPayload($request, $userId), $this->ttlSeconds());
             Cache::forget($rebindKey);
+            if ($ipChallengeKey !== null) {
+                Cache::forget($ipChallengeKey);
+            }
 
             return $next($request);
         }
@@ -70,6 +82,9 @@ class PteroProtectSessionBinding
         // Do not logout; force challenge and rebind only after clearance is present.
         Cache::put($rebindKey, true, $this->ttlSeconds());
         Cache::forget($cacheKey);
+        if ($ipChallengeKey !== null) {
+            Cache::put($ipChallengeKey, true, $this->ttlSeconds());
+        }
 
         return $this->challengeResponse($request);
     }
@@ -139,5 +154,15 @@ class PteroProtectSessionBinding
         }
 
         return trim((string) $request->cookie($cookieName, '')) !== '';
+    }
+
+    private function ipChallengeKey(Request $request): ?string
+    {
+        $ip = trim((string) $request->ip());
+        if ($ip === '') {
+            return null;
+        }
+
+        return 'pteroprotect:force_challenge:ip:' . hash('sha256', strtolower($ip));
     }
 }
