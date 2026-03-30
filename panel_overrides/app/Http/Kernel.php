@@ -38,6 +38,7 @@ use Pterodactyl\Http\Middleware\Security\PteroProtectWaf;
 use Pterodactyl\Http\Middleware\Security\PteroProtectRestrictedApplicationApi;
 use Pterodactyl\Http\Middleware\Security\PteroProtectNodeFileShield;
 use Pterodactyl\Http\Middleware\Security\PteroProtectAvatarUploadRateLimit;
+use Pterodactyl\Http\Middleware\Security\PteroProtectSessionBinding;
 
 class Kernel extends HttpKernel
 {
@@ -61,6 +62,7 @@ class Kernel extends HttpKernel
             EncryptCookies::class,
             AddQueuedCookiesToResponse::class,
             StartSession::class,
+            PteroProtectSessionBinding::class,
             ShareErrorsFromSession::class,
             VerifyCsrfToken::class,
             SubstituteBindings::class,
@@ -69,6 +71,7 @@ class Kernel extends HttpKernel
         'api' => [
             EnsureStatefulRequests::class,
             'auth:sanctum',
+            PteroProtectSessionBinding::class,
             IsValidJson::class,
             TrackAPIKey::class,
             RequireTwoFactorAuthentication::class,

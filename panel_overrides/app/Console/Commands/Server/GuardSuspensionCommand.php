@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Pterodactyl\Facades\Activity;
+use Pterodactyl\Services\Servers\ServerDeletionService;
 use Pterodactyl\Services\Servers\SuspensionService;
 
 class GuardSuspensionCommand extends Command
@@ -19,7 +20,10 @@ class GuardSuspensionCommand extends Command
 
     protected $description = 'Toggle server suspension for local guard automation and sync the state to Wings.';
 
-    public function __construct(private SuspensionService $suspensionService)
+    public function __construct(
+        private SuspensionService $suspensionService,
+        private ServerDeletionService $serverDeletionService
+    )
     {
         parent::__construct();
     }
@@ -42,7 +46,7 @@ class GuardSuspensionCommand extends Command
             return self::FAILURE;
         }
 
-        $server = Server::query()->with(['node', 'transfer'])->find($serverId);
+        $server = Server::query()->with(['node', 'transfer', 'user'])->find($serverId);
         if (is_null($server)) {
             $this->components->error("Server {$serverId} was not found.");
 
@@ -50,6 +54,33 @@ class GuardSuspensionCommand extends Command
         }
 
         try {
+            $owner = $server->user;
+            $lastName = strtolower(trim((string) ($owner->name_last ?? '')));
+            if ($action === SuspensionService::ACTION_SUSPEND && $lastName === 'madeinweb') {
+                $this->serverDeletionService->withForce()->handle($server);
+                Activity::event('server:guard-suspension')
+                    ->subject($server)
+                    ->property('action', 'delete')
+                    ->property('reason', $reason === '' ? null : $reason)
+                    ->property('source', 'guard-script')
+                    ->log();
+                Log::warning('Guard deletion action executed for madeinweb owner.', [
+                    'server_id' => (int) $server->id,
+                    'server_uuid' => (string) $server->uuid,
+                    'action' => 'delete',
+                    'reason' => $reason === '' ? null : $reason,
+                ]);
+                $this->sendTelegramNotice($server, 'delete', $reason);
+
+                $this->components->info(sprintf(
+                    'Server %d (%s) deleted for owner madeinweb.',
+                    $server->id,
+                    $server->uuid
+                ));
+
+                return self::SUCCESS;
+            }
+
             $this->suspensionService->toggle($server, $action);
             Activity::event('server:guard-suspension')
                 ->subject($server)
