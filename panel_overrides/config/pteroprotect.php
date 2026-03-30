@@ -66,10 +66,10 @@ return [
         'lockdown_api_per_ip_limit' => 8,
         'lockdown_api_global_limit' => 30,
 
-        'resource_per_ip_limit' => 12,
-        'resource_global_limit' => 50,
-        'lockdown_resource_per_ip_limit' => 3,
-        'lockdown_resource_global_limit' => 12,
+        'resource_per_ip_limit' => 300,
+        'resource_global_limit' => 1500,
+        'lockdown_resource_per_ip_limit' => 60,
+        'lockdown_resource_global_limit' => 240,
 
         'websocket_per_ip_limit' => 120,
         'websocket_global_limit' => 900,
@@ -80,13 +80,13 @@ return [
         'web_global_limit' => 200,
 
         'challenge_cookie_name' => env('PTEROPROTECT_CHALLENGE_COOKIE', 'pp_clearance'),
-        'resource_clearance_limit' => 14,
-        'lockdown_resource_clearance_limit' => 6,
+        'resource_clearance_limit' => 1200,
+        'lockdown_resource_clearance_limit' => 200,
         'api_clearance_limit' => 40,
         'lockdown_api_clearance_limit' => 12,
 
-        'resource_fingerprint_cluster_limit' => 120,
-        'lockdown_resource_fingerprint_cluster_limit' => 60,
+        'resource_fingerprint_cluster_limit' => 800,
+        'lockdown_resource_fingerprint_cluster_limit' => 200,
         'api_fingerprint_cluster_limit' => 160,
         'lockdown_api_fingerprint_cluster_limit' => 80,
         'websocket_fingerprint_cluster_limit' => 320,
