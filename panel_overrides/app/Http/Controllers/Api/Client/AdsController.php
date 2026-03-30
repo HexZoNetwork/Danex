@@ -25,7 +25,14 @@ class AdsController extends ClientApiController
             ]);
         }
 
-        $banners = $this->ads->randomBanners(2);
+        $allEnabled = array_values(array_filter($this->ads->all(), fn (array $item) => (bool) ($item['enabled'] ?? false)));
+        $bannerPool = array_values(array_filter($allEnabled, fn (array $item) => !(bool) ($item['is_popup'] ?? false)));
+        if ($bannerPool === []) {
+            $bannerPool = $allEnabled;
+        }
+
+        $rotatingBanner = $this->pickRotatingItem($bannerPool, 600, 'banner');
+        $banners = is_array($rotatingBanner) ? [$rotatingBanner] : [];
         $popup = $this->ads->randomPopup();
 
         return new JsonResponse([
@@ -35,6 +42,24 @@ class AdsController extends ClientApiController
                 'popup' => is_array($popup) ? $this->transform($popup) : null,
             ],
         ]);
+    }
+
+    /**
+     * @param list<array<string,mixed>> $items
+     * @return array<string,mixed>|null
+     */
+    private function pickRotatingItem(array $items, int $windowSeconds, string $salt): ?array
+    {
+        if ($items === []) {
+            return null;
+        }
+
+        $window = max(60, $windowSeconds);
+        $bucket = (int) floor(time() / $window);
+        $seed = (string) config('app.key', 'pteroprotect') . '|' . $salt . '|' . (string) $bucket;
+        $idx = (int) (abs(crc32($seed)) % count($items));
+
+        return $items[$idx] ?? null;
     }
 
     private function transform(array $item): array

@@ -74,7 +74,7 @@ export default () => {
                     popupCandidateRef.current = null;
                     return;
                 }
-                setBanners(payload.banners.slice(0, 2));
+                setBanners(payload.banners.slice(0, 1));
                 popupCandidateRef.current = payload.popup ?? null;
             } catch {
                 // ignore ads failure
