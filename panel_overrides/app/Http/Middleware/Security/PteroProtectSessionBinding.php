@@ -69,12 +69,8 @@ class PteroProtectSessionBinding
         $current = $this->fingerprintPayload($request, $userId);
         $boundFp = (string) ($bound['fp'] ?? '');
         $currentFp = (string) ($current['fp'] ?? '');
-        $boundUserId = (int) ($bound['user_id'] ?? 0);
-
         $mismatch = ($boundFp === '' || $currentFp === '' || !hash_equals($boundFp, $currentFp));
-        $userMismatch = ($boundUserId > 0 && $userId > 0 && $boundUserId !== $userId);
-
-        if (!$mismatch && !$userMismatch) {
+        if (!$mismatch) {
             Cache::put($cacheKey, $bound, $this->ttlSeconds());
             return $next($request);
         }
