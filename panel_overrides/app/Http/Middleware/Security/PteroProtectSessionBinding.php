@@ -75,7 +75,16 @@ class PteroProtectSessionBinding
             return $next($request);
         }
 
-        // Do not logout; force challenge and rebind only after clearance is present.
+        if ($this->hasClearanceCookie($request)) {
+            Cache::put($cacheKey, $current, $this->ttlSeconds());
+            Cache::forget($rebindKey);
+            if ($ipChallengeKey !== null) {
+                Cache::forget($ipChallengeKey);
+            }
+
+            return $next($request);
+        }
+        
         Cache::put($rebindKey, true, $this->ttlSeconds());
         Cache::forget($cacheKey);
         if ($ipChallengeKey !== null) {
