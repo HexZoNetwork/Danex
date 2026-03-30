@@ -341,7 +341,7 @@ static Settings load_settings() {
             s.bind = json_get_string(net, "waf_challenge_bind", "127.0.0.1");
             s.port = std::max(1, std::min(65535, json_get_int(net, "waf_challenge_port", 18444)));
             s.ttl = std::max(60, std::min(86400, json_get_int(net, "waf_challenge_ttl_sec", 1800)));
-            s.pow_bits = std::max(8, std::min(24, json_get_int(net, "waf_pow_bits", 14)));
+            s.pow_bits = std::max(8, std::min(14, json_get_int(net, "waf_pow_bits", 14)));
             s.cookie_name = trim(json_get_string(net, "waf_challenge_cookie_name", "pp_clearance"));
             if (s.cookie_name.empty()) s.cookie_name = "pp_clearance";
             s.secret = trim(json_get_string(net, "waf_challenge_secret", ""));
