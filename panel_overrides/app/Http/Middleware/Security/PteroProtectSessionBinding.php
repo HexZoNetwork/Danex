@@ -109,16 +109,79 @@ class PteroProtectSessionBinding
      */
     private function fingerprintPayload(Request $request, int $userId): array
     {
-        $ip = trim((string) $request->ip());
+        $rawIp = trim((string) $request->ip());
         $ua = strtolower(trim((string) $request->userAgent()));
         if (strlen($ua) > 512) {
             $ua = substr($ua, 0, 512);
         }
+        $ip = $this->normalizeIpForBinding($rawIp, $ua);
 
         return [
             'fp' => hash('sha256', strtolower($ip) . '|' . $ua),
             'user_id' => $userId,
         ];
+    }
+
+    private function normalizeIpForBinding(string $ip, string $ua): string
+    {
+        $ip = strtolower(trim($ip));
+        if ($ip === '' || filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return $ip;
+        }
+
+        // Mobile carriers often rotate subscriber IP quickly.
+        // Keep strict full-IP binding for desktop, and prefix binding for mobile.
+        if (!$this->isMobileUserAgent($ua)) {
+            return $ip;
+        }
+
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            $parts = explode('.', $ip);
+            if (count($parts) === 4) {
+                $parts[3] = '0';
+                return implode('.', $parts) . '/24';
+            }
+
+            return $ip;
+        }
+
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
+            $packed = @inet_pton($ip);
+            if ($packed === false) {
+                return $ip;
+            }
+
+            $bytes = unpack('C*', $packed);
+            if (!is_array($bytes)) {
+                return $ip;
+            }
+
+            for ($i = 9; $i <= 16; $i++) {
+                $bytes[$i] = 0;
+            }
+
+            $masked = '';
+            for ($i = 1; $i <= 16; $i++) {
+                $masked .= chr((int) ($bytes[$i] ?? 0));
+            }
+
+            $normalized = @inet_ntop($masked);
+            return strtolower(($normalized !== false ? $normalized : $ip) . '/64');
+        }
+
+        return $ip;
+    }
+
+    private function isMobileUserAgent(string $ua): bool
+    {
+        $ua = strtolower(trim($ua));
+        return $ua !== '' && (
+            str_contains($ua, 'mobile') ||
+            str_contains($ua, 'android') ||
+            str_contains($ua, 'iphone') ||
+            str_contains($ua, 'ipad') ||
+            str_contains($ua, 'ipod')
+        );
     }
 
     private function ttlSeconds(): int
