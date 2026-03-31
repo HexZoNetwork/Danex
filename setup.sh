@@ -775,7 +775,9 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
             for my $db_key (keys %db_env) {
                 my $ek = $db_env{$db_key};
                 next if !exists($env{$ek});
-                $j->{database}{$db_key} = defined($env{$ek}) ? $env{$ek} : "";
+                my $val = defined($env{$ek}) ? $env{$ek} : "";
+                next if $db_key ne "password" && $val eq "";
+                $j->{database}{$db_key} = $val;
             }
 
             # Fill missing/empty network keys from PTEROPROTECT_* env vars
@@ -885,7 +887,7 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
 
     # Source of truth flow (two-way, ordered):
     # 1) panel .env -> config.json (database keys)
-    # 2) config.json -> panel .env (PTEROPROTECT_* and DB keys)
+    # 2) config.json -> panel .env (PTEROPROTECT_* and legacy aliases only)
     if [[ -f "${PANEL_ENV_FILE}" ]]; then
         python3 - "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" <<'PY'
 import json
@@ -940,19 +942,8 @@ lines = env_path.read_text().splitlines()
 for k, v in net.items():
     updates[env_key_from_network(k)] = value_to_string(v)
 
-# After step (1), config.json already follows panel .env for DB values.
-# Apply DB keys back to .env unconditionally so runtime env is fully consistent.
-db = cfg.get("database") if isinstance(cfg, dict) else {}
-if not isinstance(db, dict):
-    db = {}
-if "host" in db:
-    updates["DB_HOST"] = value_to_string(db.get("host", ""))
-if "name" in db:
-    updates["DB_DATABASE"] = value_to_string(db.get("name", ""))
-if "user" in db:
-    updates["DB_USERNAME"] = value_to_string(db.get("user", ""))
-if "password" in db:
-    updates["DB_PASSWORD"] = value_to_string(db.get("password", ""))
+# DB_* intentionally NOT written from config.json to panel .env.
+# Database source of truth must remain panel .env.
 
 # Legacy compatibility aliases used in some stacks/scripts.
 if "waf_challenge_secret" in net:
