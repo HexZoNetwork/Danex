@@ -1037,8 +1037,10 @@ if [[ -f "${INSTALL_DIR}/challenge_guard" ]]; then
     chmod 755 "${INSTALL_DIR}/challenge_guard"
 fi
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
-    chown root:root "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
-    chmod 600 "${INSTALL_DIR}/config.json"
+    # Panel ProtectController writes this file as www-data.
+    # Keep root owner but grant group write to www-data.
+    chown root:www-data "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
+    chmod 660 "${INSTALL_DIR}/config.json"
 fi
 if [[ -f "${PROJECT_DIR}/config.json" ]]; then
     chown root:root "${PROJECT_DIR}/config.json" >/dev/null 2>&1 || true
