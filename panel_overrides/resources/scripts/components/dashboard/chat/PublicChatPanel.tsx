@@ -55,15 +55,15 @@ const Small = tw.button`text-xs text-neutral-300 hover:text-neutral-100`;
 const Tiny = tw.button`text-[11px] text-neutral-300 hover:text-neutral-100 px-2 py-1 rounded border border-neutral-600 hover:border-neutral-400`;
 
 const Main = tw.div`flex-1 flex flex-col min-w-0 min-h-0 bg-neutral-900`;
-const MainHeader = tw.div`px-3 py-2 lg:px-4 lg:py-3 border-b border-neutral-700 flex items-center justify-between`;
+const MainHeader = tw.div`px-3 py-2 lg:px-4 lg:py-3 border-b border-neutral-700 flex flex-wrap items-start lg:items-center justify-between gap-2`;
 const HeaderTitle = tw.h3`text-base font-semibold text-neutral-100 truncate`;
-const HeaderMeta = tw.div`text-xs text-neutral-400`;
-const Body = tw.div`flex-1 min-h-0 overflow-y-auto px-2 py-2 lg:px-4 lg:py-3 space-y-2`;
+const HeaderMeta = tw.div`text-xs text-neutral-400 truncate`;
+const Body = tw.div`flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 py-2 lg:px-4 lg:py-3 space-y-2`;
 const Composer = tw.form`flex-shrink-0 p-3 border-t border-neutral-700 bg-neutral-800 space-y-2`;
 
 const BubbleWrap = tw.div`flex`;
 const Bubble = tw.div`relative max-w-[94%] lg:max-w-[84%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words`;
-const Meta = tw.div`mt-1 text-[11px] text-neutral-400 flex items-center gap-2`;
+const Meta = tw.div`mt-1 text-[11px] text-neutral-400 flex items-center gap-2 flex-wrap`;
 const Tag = tw.span`px-1.5 py-0.5 rounded bg-neutral-700 text-[10px] text-neutral-200`;
 
 const AvatarImage = tw.img`w-full h-full object-cover`;
@@ -2011,7 +2011,7 @@ export default () => {
 
             <Main css={mobilePane === 'chats' ? tw`hidden lg:flex` : undefined}>
                 <MainHeader>
-                    <div css={tw`min-w-0 flex items-center gap-3`}>
+                    <div css={tw`min-w-0 flex-1 flex items-center gap-3`}>
                         {activeConversation && (
                             <div css={tw`w-9 h-9 rounded-full overflow-hidden flex-shrink-0 relative`}>
                                 {conversationAvatar(activeConversation).src ? (
@@ -2038,7 +2038,7 @@ export default () => {
                             </HeaderMeta>
                         </div>
                     </div>
-                    <div css={tw`flex items-center gap-1.5 lg:gap-2`}>
+                    <div css={tw`w-full lg:w-auto flex flex-wrap items-center justify-end gap-1.5 lg:gap-2`}>
                         {activeConversation && (
                             <Tiny type={'button'} onClick={handleHeaderCall} disabled={callLoading}>
                                 Call
