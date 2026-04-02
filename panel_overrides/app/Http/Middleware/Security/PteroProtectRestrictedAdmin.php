@@ -71,12 +71,6 @@ class PteroProtectRestrictedAdmin
                 if ($ownerId <= 0) {
                     throw new AccessDeniedHttpException('Invalid server owner.');
                 }
-                $allowedOwnerIds = $this->ownership->ownedIdsFor('users', (int) $user->id);
-                $allowedOwnerIds[] = (int) $user->id;
-                $allowedOwnerIds = array_values(array_unique(array_map('intval', $allowedOwnerIds)));
-                if (!in_array($ownerId, $allowedOwnerIds, true)) {
-                    throw new AccessDeniedHttpException('You can only assign server owner to your own managed users.');
-                }
             }
 
             $targetServer = $this->resolveServerTarget($request, $path);
@@ -84,7 +78,11 @@ class PteroProtectRestrictedAdmin
                 if ((int) $targetServer->owner_id === 1) {
                     throw new AccessDeniedHttpException('Primary admin resources cannot be modified.');
                 }
-                if (!$this->ownership->isOwnedBy('servers', (int) $targetServer->id, (int) $user->id)) {
+                $ownsServer = $this->ownership->isOwnedBy('servers', (int) $targetServer->id, (int) $user->id);
+                $ownsOwnerUser = $this->ownership->isOwnedBy('users', (int) $targetServer->owner_id, (int) $user->id)
+                    || (int) $targetServer->owner_id === (int) $user->id;
+
+                if (!$ownsServer && !$ownsOwnerUser) {
                     throw new AccessDeniedHttpException('You do not own this server resource.');
                 }
             }

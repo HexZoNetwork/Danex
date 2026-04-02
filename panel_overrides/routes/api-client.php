@@ -8,6 +8,7 @@ use Pterodactyl\Http\Middleware\Activity\AccountSubject;
 use Pterodactyl\Http\Middleware\RequireTwoFactorAuthentication;
 use Pterodactyl\Http\Middleware\Api\Client\Server\ResourceBelongsToServer;
 use Pterodactyl\Http\Middleware\Api\Client\Server\AuthenticateServerAccess;
+use Pterodactyl\Http\Middleware\Security\PteroProtectRestrictedClientServerAccess;
 
 /*
 |--------------------------------------------------------------------------
@@ -104,6 +105,7 @@ Route::prefix('/account')->middleware(AccountSubject::class)->group(function () 
 Route::group([
     'prefix' => '/servers/{server}',
     'middleware' => [
+        PteroProtectRestrictedClientServerAccess::class,
         ServerSubject::class,
         AuthenticateServerAccess::class,
         ResourceBelongsToServer::class,

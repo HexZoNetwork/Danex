@@ -34,13 +34,25 @@ class ServerController extends Controller
         if (!is_array($owned)) {
             $owned = $this->ownership->ownedIdsFor('servers', (int) $request->user()->id);
         }
+        $ownedUsers = $this->ownership->ownedIdsFor('users', (int) $request->user()->id);
+        $ownedUsers[] = (int) $request->user()->id;
+        $ownedUsers = array_values(array_unique(array_map('intval', $ownedUsers)));
 
         $query = Server::query()->with('node', 'user', 'allocation');
-        if ($owned === []) {
-            $query->whereRaw('1 = 0');
-        } else {
-            $query->whereIn('id', $owned);
-        }
+        $query->where(function ($builder) use ($owned, $ownedUsers) {
+            if ($owned !== []) {
+                $builder->whereIn('id', $owned);
+            }
+
+            if ($ownedUsers !== []) {
+                $method = $owned !== [] ? 'orWhereIn' : 'whereIn';
+                $builder->{$method}('owner_id', $ownedUsers);
+            }
+
+            if ($owned === [] && $ownedUsers === []) {
+                $builder->whereRaw('1 = 0');
+            }
+        });
 
         $servers = QueryBuilder::for($query)
             ->allowedFilters([
