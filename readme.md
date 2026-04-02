@@ -78,3 +78,13 @@ bash scripts/pteroprotect-mode.sh emergency 900
 docs/INCIDENT_15M_PLAYBOOK.md
 ```
 
+- Lock origin supaya cuma edge/CDN CIDR yang bisa akses 80/443:
+```bash
+bash scripts/edge_origin_cloak.sh apply
+```
+```bash
+bash scripts/edge_origin_cloak.sh status
+```
+```bash
+bash scripts/edge_origin_cloak.sh clear
+```

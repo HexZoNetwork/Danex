@@ -35,6 +35,7 @@ PANEL_ACCESS_LOG="/var/log/nginx/pteroprotect.access.log"
 TRUSTED_LOGIN_LOG="/dev/shm/pteroprotect/auth_success_ips.log"
 BLOCK_HISTORY_FILE="${RUNTIME_DIR}/block_history.tsv"
 TENANT_HISTORY_FILE="${RUNTIME_DIR}/tenant_quarantine.tsv"
+ADAPTIVE_STATE_FILE="${RUNTIME_DIR}/adaptive_baseline.state"
 LOCKDOWN_FLAG_FILE="${RUNTIME_DIR}/strict_lockdown.flag"
 MODE_FLAG_FILE="${RUNTIME_DIR}/mode.flag"
 LOCKDOWN_FLAG_FILE_PANEL="${PANEL_RUNTIME_DIR}/lockdown.json"
@@ -46,6 +47,11 @@ LAST_NGINX_RELOAD_TS=0
 LAST_SERVICE_PULSE_COUNT=0
 IP_TRUST_STATE_FILE="${GUARD_HOME}/runtime/ip_trust.tsv"
 IP_TRUST_RESTORE_DONE=0
+ADAPTIVE_ESTABLISHED_BASE=0
+ADAPTIVE_SYN_RECV_BASE=0
+ADAPTIVE_HTTP_BASE=0
+ADAPTIVE_SERVICE_BASE=0
+ADAPTIVE_SAMPLES=0
 
 mkdir -p "${RUNTIME_DIR}"
 mkdir -p "${PANEL_RUNTIME_DIR}"
@@ -115,6 +121,79 @@ trim_lines() {
     current="$(wc -l < "${file}" 2>/dev/null || echo 0)"
     if [[ "${current}" -gt "${max_lines}" ]]; then
         tail -n "${max_lines}" "${file}" > "${file}.tmp" && mv "${file}.tmp" "${file}"
+    fi
+}
+
+clamp_percentage() {
+    local value="$1"
+    local min="$2"
+    local max="$3"
+    [[ "${value}" =~ ^[0-9]+$ ]] || value="${min}"
+    if (( value < min )); then value="${min}"; fi
+    if (( value > max )); then value="${max}"; fi
+    printf '%s' "${value}"
+}
+
+load_adaptive_state() {
+    if [[ ! -f "${ADAPTIVE_STATE_FILE}" ]]; then
+        return 0
+    fi
+
+    # shellcheck disable=SC1090
+    source "${ADAPTIVE_STATE_FILE}" 2>/dev/null || true
+    [[ "${ADAPTIVE_ESTABLISHED_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_ESTABLISHED_BASE=0
+    [[ "${ADAPTIVE_SYN_RECV_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_SYN_RECV_BASE=0
+    [[ "${ADAPTIVE_HTTP_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_HTTP_BASE=0
+    [[ "${ADAPTIVE_SERVICE_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_SERVICE_BASE=0
+    [[ "${ADAPTIVE_SAMPLES:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_SAMPLES=0
+}
+
+save_adaptive_state() {
+    cat > "${ADAPTIVE_STATE_FILE}" <<EOF
+ADAPTIVE_ESTABLISHED_BASE=${ADAPTIVE_ESTABLISHED_BASE}
+ADAPTIVE_SYN_RECV_BASE=${ADAPTIVE_SYN_RECV_BASE}
+ADAPTIVE_HTTP_BASE=${ADAPTIVE_HTTP_BASE}
+ADAPTIVE_SERVICE_BASE=${ADAPTIVE_SERVICE_BASE}
+ADAPTIVE_SAMPLES=${ADAPTIVE_SAMPLES}
+EOF
+}
+
+ewma_next() {
+    local base="$1"
+    local current="$2"
+    local alpha_pct="$3"
+
+    [[ "${base}" =~ ^[0-9]+$ ]] || base=0
+    [[ "${current}" =~ ^[0-9]+$ ]] || current=0
+    [[ "${alpha_pct}" =~ ^[0-9]+$ ]] || alpha_pct=12
+    if (( base <= 0 )); then
+        printf '%s' "${current}"
+        return 0
+    fi
+    printf '%s' $(( (base * (100 - alpha_pct) + current * alpha_pct) / 100 ))
+}
+
+adaptive_trigger_brownout() {
+    local ttl="$1"
+    local min_interval="$2"
+    local now last=0 marker="${RUNTIME_DIR}/adaptive_brownout.last"
+
+    [[ "${ttl}" =~ ^[0-9]+$ ]] || ttl=60
+    [[ "${min_interval}" =~ ^[0-9]+$ ]] || min_interval=120
+    now="$(date +%s)"
+    if [[ -f "${marker}" ]]; then
+        last="$(cat "${marker}" 2>/dev/null || echo 0)"
+    fi
+    [[ "${last}" =~ ^[0-9]+$ ]] || last=0
+    if (( now - last < min_interval )); then
+        return 0
+    fi
+
+    if [[ -x "${GUARD_HOME}/scripts/survive_60s.sh" ]]; then
+        nohup bash "${GUARD_HOME}/scripts/survive_60s.sh" on "${ttl}" >/dev/null 2>&1 || true
+        printf '%s\n' "${now}" > "${marker}"
+        printf '[adaptive] brownout_trigger ttl=%s min_interval=%s\n' "${ttl}" "${min_interval}" >> "${LOG_FILE}"
+        printf '[adaptive] brownout_trigger ttl=%s min_interval=%s\n' "${ttl}" "${min_interval}" >> "${LATEST_FILE}"
     fi
 }
 
@@ -1909,6 +1988,8 @@ EOF
     fi
 }
 
+load_adaptive_state
+
 while true; do
     TRAFFIC_PROFILE="$(trim "$(printf '%s' "$(read_network_setting traffic_profile mixed)" | tr '[:upper:]' '[:lower:]')")"
     MONITOR_TCP_PORTS="$(sanitize_ports_csv "$(read_network_setting monitor_tcp_ports '22,80,443,8080,2022')")"
@@ -2009,6 +2090,15 @@ while true; do
     SWARM_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_req_threshold 240)" 40)"
     SWARM_UNIQUE_IP_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_unique_ip_threshold 24)" 4)"
     SWARM_PER_IP_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_per_ip_req_threshold 24)" 4)"
+    ADAPTIVE_GUARD_ENABLED="$(normalize_bool "$(read_network_setting adaptive_guard_enabled 1)")"
+    ADAPTIVE_ALPHA_PCT="$(clamp_percentage "$(read_network_setting adaptive_alpha_pct 12)" 2 60)"
+    ADAPTIVE_MIN_SAMPLES="$(clamp_min_int "$(read_network_setting adaptive_min_samples 20)" 5)"
+    ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT="$(clamp_percentage "$(read_network_setting adaptive_aggressive_multiplier_pct 170)" 120 1000)"
+    ADAPTIVE_EMERGENCY_MULTIPLIER_PCT="$(clamp_percentage "$(read_network_setting adaptive_emergency_multiplier_pct 260)" 150 1500)"
+    ADAPTIVE_BROWNOUT_ENABLED="$(normalize_bool "$(read_network_setting adaptive_brownout_enabled 1)")"
+    ADAPTIVE_BROWNOUT_TTL_SEC="$(clamp_min_int "$(read_network_setting adaptive_brownout_ttl_sec 60)" 30)"
+    ADAPTIVE_BROWNOUT_MIN_INTERVAL_SEC="$(clamp_min_int "$(read_network_setting adaptive_brownout_min_interval_sec 120)" 30)"
+    ADAPTIVE_BROWNOUT_MULTIPLIER_PCT="$(clamp_percentage "$(read_network_setting adaptive_brownout_multiplier_pct 420)" 220 2000)"
     IP_TRUST_ENABLED="$(normalize_bool "$(read_network_setting ip_trust_enabled 1)")"
     IP_TRUST_PROMOTION_OBS="$(clamp_min_int "$(read_network_setting ip_trust_promotion_observations 80)" 10)"
     IP_TRUST_VTRUST_OBS="$(clamp_min_int "$(read_network_setting ip_trust_vtrusted_observations 240)" 20)"
@@ -2220,6 +2310,57 @@ while true; do
     top_http_count="$(awk 'NF >= 1 {print $1; exit}' <<< "${access_ip_counts}" 2>/dev/null || true)"
     [[ "${top_http_count}" =~ ^[0-9]+$ ]] || top_http_count=0
 
+    if [[ "${ADAPTIVE_GUARD_ENABLED}" == "1" ]]; then
+        ADAPTIVE_ESTABLISHED_BASE="$(ewma_next "${ADAPTIVE_ESTABLISHED_BASE}" "${established}" "${ADAPTIVE_ALPHA_PCT}")"
+        ADAPTIVE_SYN_RECV_BASE="$(ewma_next "${ADAPTIVE_SYN_RECV_BASE}" "${syn_recv}" "${ADAPTIVE_ALPHA_PCT}")"
+        ADAPTIVE_HTTP_BASE="$(ewma_next "${ADAPTIVE_HTTP_BASE}" "${top_http_count}" "${ADAPTIVE_ALPHA_PCT}")"
+        ADAPTIVE_SERVICE_BASE="$(ewma_next "${ADAPTIVE_SERVICE_BASE}" "${service_pulse_count}" "${ADAPTIVE_ALPHA_PCT}")"
+        ADAPTIVE_SAMPLES=$(( ADAPTIVE_SAMPLES + 1 ))
+        save_adaptive_state
+    fi
+
+    adaptive_ready=0
+    adaptive_aggressive_signal=0
+    adaptive_emergency_signal=0
+    adaptive_brownout_signal=0
+    if [[ "${ADAPTIVE_GUARD_ENABLED}" == "1" ]] && (( ADAPTIVE_SAMPLES >= ADAPTIVE_MIN_SAMPLES )); then
+        adaptive_ready=1
+        est_agg=$(( ADAPTIVE_ESTABLISHED_BASE * ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT / 100 ))
+        syn_agg=$(( ADAPTIVE_SYN_RECV_BASE * ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT / 100 ))
+        http_agg=$(( ADAPTIVE_HTTP_BASE * ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT / 100 ))
+        svc_agg=$(( ADAPTIVE_SERVICE_BASE * ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT / 100 ))
+        (( est_agg < MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) && est_agg="${MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD}"
+        (( syn_agg < MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) && syn_agg="${MODE_AGGRESSIVE_SYN_RECV_THRESHOLD}"
+        (( http_agg < MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )) && http_agg="${MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD}"
+        (( svc_agg < SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) && svc_agg="${SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD}"
+
+        est_emg=$(( ADAPTIVE_ESTABLISHED_BASE * ADAPTIVE_EMERGENCY_MULTIPLIER_PCT / 100 ))
+        syn_emg=$(( ADAPTIVE_SYN_RECV_BASE * ADAPTIVE_EMERGENCY_MULTIPLIER_PCT / 100 ))
+        http_emg=$(( ADAPTIVE_HTTP_BASE * ADAPTIVE_EMERGENCY_MULTIPLIER_PCT / 100 ))
+        svc_emg=$(( ADAPTIVE_SERVICE_BASE * ADAPTIVE_EMERGENCY_MULTIPLIER_PCT / 100 ))
+        (( est_emg < MODE_EMERGENCY_ESTABLISHED_THRESHOLD )) && est_emg="${MODE_EMERGENCY_ESTABLISHED_THRESHOLD}"
+        (( syn_emg < MODE_EMERGENCY_SYN_RECV_THRESHOLD )) && syn_emg="${MODE_EMERGENCY_SYN_RECV_THRESHOLD}"
+        (( http_emg < MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD )) && http_emg="${MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD}"
+        (( svc_emg < SERVICE_ACTIVITY_EMERGENCY_THRESHOLD )) && svc_emg="${SERVICE_ACTIVITY_EMERGENCY_THRESHOLD}"
+
+        if (( established >= est_agg )) || (( syn_recv >= syn_agg )) || (( top_http_count >= http_agg )) || (( service_pulse_count >= svc_agg )); then
+            adaptive_aggressive_signal=1
+        fi
+        if (( established >= est_emg )) || (( syn_recv >= syn_emg )) || (( top_http_count >= http_emg )) || (( service_pulse_count >= svc_emg )); then
+            adaptive_emergency_signal=1
+        fi
+
+        brownout_est=$(( ADAPTIVE_ESTABLISHED_BASE * ADAPTIVE_BROWNOUT_MULTIPLIER_PCT / 100 ))
+        brownout_syn=$(( ADAPTIVE_SYN_RECV_BASE * ADAPTIVE_BROWNOUT_MULTIPLIER_PCT / 100 ))
+        brownout_http=$(( ADAPTIVE_HTTP_BASE * ADAPTIVE_BROWNOUT_MULTIPLIER_PCT / 100 ))
+        (( brownout_est < MODE_EMERGENCY_ESTABLISHED_THRESHOLD * 2 )) && brownout_est=$(( MODE_EMERGENCY_ESTABLISHED_THRESHOLD * 2 ))
+        (( brownout_syn < MODE_EMERGENCY_SYN_RECV_THRESHOLD * 2 )) && brownout_syn=$(( MODE_EMERGENCY_SYN_RECV_THRESHOLD * 2 ))
+        (( brownout_http < MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD * 2 )) && brownout_http=$(( MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD * 2 ))
+        if (( established >= brownout_est )) || (( syn_recv >= brownout_syn )) || (( top_http_count >= brownout_http )); then
+            adaptive_brownout_signal=1
+        fi
+    fi
+
     desired_mode="normal"
     desired_reason="steady-state"
     desired_ttl=0
@@ -2237,10 +2378,22 @@ while true; do
             desired_mode="emergency"
             desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta}"
             desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
+        elif (( adaptive_emergency_signal == 1 )); then
+            desired_mode="emergency"
+            desired_reason="adaptive-shock established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},samples=${ADAPTIVE_SAMPLES}"
+            desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
         elif (( established >= MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) || (( top_http_count >= MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )) || (( service_pulse_count >= SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) || (( service_pulse_delta >= SERVICE_ACTIVITY_DELTA_AGGRESSIVE )) || (( swarm_hits >= 1 )); then
             desired_mode="aggressive"
             desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta},swarm=${swarm_hits}"
             desired_ttl="${MODE_AGGRESSIVE_TTL_SEC}"
+        elif (( adaptive_aggressive_signal == 1 )); then
+            desired_mode="aggressive"
+            desired_reason="adaptive-rise established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},samples=${ADAPTIVE_SAMPLES}"
+            desired_ttl="${MODE_AGGRESSIVE_TTL_SEC}"
+        fi
+
+        if [[ "${ADAPTIVE_BROWNOUT_ENABLED}" == "1" ]] && (( adaptive_brownout_signal == 1 )); then
+            adaptive_trigger_brownout "${ADAPTIVE_BROWNOUT_TTL_SEC}" "${ADAPTIVE_BROWNOUT_MIN_INTERVAL_SEC}"
         fi
     fi
     set_mode_state "${desired_mode}" "${desired_reason}" "${desired_ttl}"
@@ -2278,6 +2431,10 @@ while true; do
         echo "${top_bad_token_ips:-none}"
         echo "--- service_pulse ---"
         echo "count=${service_pulse_count} delta=${service_pulse_delta} regex=${SERVICE_ACTIVITY_PATH_REGEX} swarm_hits=${swarm_hits:-0}"
+        echo "--- adaptive_guard ---"
+        echo "enabled=${ADAPTIVE_GUARD_ENABLED} samples=${ADAPTIVE_SAMPLES} alpha_pct=${ADAPTIVE_ALPHA_PCT} ready=${adaptive_ready}"
+        echo "baseline established=${ADAPTIVE_ESTABLISHED_BASE} syn_recv=${ADAPTIVE_SYN_RECV_BASE} top_http=${ADAPTIVE_HTTP_BASE} service_pulse=${ADAPTIVE_SERVICE_BASE}"
+        echo "signals aggressive=${adaptive_aggressive_signal} emergency=${adaptive_emergency_signal} brownout=${adaptive_brownout_signal}"
         echo "--- nginx_limiter_hits ---"
         echo "${limiter_hits:-none}"
         echo "--- iptables_pteroprotect_host ---"
