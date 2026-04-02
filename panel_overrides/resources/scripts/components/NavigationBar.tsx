@@ -18,7 +18,7 @@ const RightNavigation = styled.div`
     & > a,
     & > button,
     & > .navigation-link {
-        ${tw`flex items-center h-full no-underline text-neutral-300 px-3 sm:px-6 cursor-pointer transition-all duration-150`};
+        ${tw`flex items-center h-full no-underline text-neutral-300 px-2 sm:px-6 cursor-pointer transition-all duration-150`};
 
         &:active,
         &:hover {
@@ -85,7 +85,9 @@ export default () => {
                     </Link>
                 </div>
                 <RightNavigation className={'flex h-full items-center justify-center'}>
-                    <SearchContainer />
+                    <div className={'hidden md:flex h-full'}>
+                        <SearchContainer />
+                    </div>
                     <Tooltip placement={'bottom'} content={'Dashboard'}>
                         <NavLink to={'/'} exact>
                             <FontAwesomeIcon icon={faLayerGroup} />

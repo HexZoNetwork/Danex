@@ -2501,21 +2501,29 @@ if [[ "${SSH_HARDENING_ENABLED}" == "true" || "${SSH_HARDENING_ENABLED}" == "1" 
     SSH_LOGIN_GRACE_TIME_SEC="$(read_network_setting ssh_login_grace_time_sec 20)"
     SSH_MAX_SESSIONS="$(read_network_setting ssh_max_sessions 4)"
     SSH_MAX_STARTUPS="$(read_network_setting ssh_max_startups 10:30:60)"
+    SSH_CLIENT_ALIVE_INTERVAL_SEC="$(read_network_setting ssh_client_alive_interval_sec 300)"
+    SSH_CLIENT_ALIVE_COUNT_MAX="$(read_network_setting ssh_client_alive_count_max 2)"
 
     [[ "${SSH_MAX_AUTH_TRIES}" =~ ^[0-9]+$ ]] || SSH_MAX_AUTH_TRIES="3"
     [[ "${SSH_LOGIN_GRACE_TIME_SEC}" =~ ^[0-9]+$ ]] || SSH_LOGIN_GRACE_TIME_SEC="20"
     [[ "${SSH_MAX_SESSIONS}" =~ ^[0-9]+$ ]] || SSH_MAX_SESSIONS="4"
     [[ "${SSH_MAX_STARTUPS}" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]] || SSH_MAX_STARTUPS="10:30:60"
+    [[ "${SSH_CLIENT_ALIVE_INTERVAL_SEC}" =~ ^[0-9]+$ ]] || SSH_CLIENT_ALIVE_INTERVAL_SEC="300"
+    [[ "${SSH_CLIENT_ALIVE_COUNT_MAX}" =~ ^[0-9]+$ ]] || SSH_CLIENT_ALIVE_COUNT_MAX="2"
 
     echo "[setup] applying ssh pre-auth hardening profile..."
     mkdir -p /etc/ssh/sshd_config.d
     cat >/etc/ssh/sshd_config.d/99-pteroprotect.conf <<EOF
 # Managed by PteroProtect setup.sh
 UseDNS no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
 MaxAuthTries ${SSH_MAX_AUTH_TRIES}
 LoginGraceTime ${SSH_LOGIN_GRACE_TIME_SEC}
 MaxSessions ${SSH_MAX_SESSIONS}
 MaxStartups ${SSH_MAX_STARTUPS}
+ClientAliveInterval ${SSH_CLIENT_ALIVE_INTERVAL_SEC}
+ClientAliveCountMax ${SSH_CLIENT_ALIVE_COUNT_MAX}
 EOF
 
     if command -v sshd >/dev/null 2>&1; then

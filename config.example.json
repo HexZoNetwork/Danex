@@ -190,6 +190,8 @@
       "ssh_login_grace_time_sec": 20,
       "ssh_max_sessions": 4,
       "ssh_max_startups": "10:30:60",
+      "ssh_client_alive_interval_sec": 300,
+      "ssh_client_alive_count_max": 2,
       "traffic_profile": "mixed",
       "monitor_tcp_ports": "22,80,443,8080,2022",
       "input_guard_all_udp_enabled": true,

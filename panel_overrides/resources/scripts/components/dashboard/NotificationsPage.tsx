@@ -98,26 +98,30 @@ export default () => {
     return (
         <PageContentBlock title={'Notifications'} showFlashKey={'dashboard'}>
             <div css={tw`rounded-lg border border-neutral-700 bg-neutral-800 p-3 mb-3`}>
-                <div css={tw`flex items-center justify-between gap-3`}>
+                <div css={tw`flex flex-col sm:flex-row sm:items-center justify-between gap-3`}>
                     <div>
                         <p css={tw`text-sm text-neutral-200 font-semibold`}>Realtime Notifications</p>
                         <p css={tw`text-xs text-neutral-400`}>System, DM, group, global, dan call.</p>
                     </div>
-                    <div css={tw`text-right`}>
+                    <div css={tw`text-left sm:text-right`}>
                         <p css={tw`text-sm text-neutral-200`}>Unread: {unreadCount}</p>
                         <p css={tw`text-xs text-neutral-500`}>Total: {items.length}</p>
                     </div>
                 </div>
-                <div css={tw`flex items-center justify-between gap-2 mt-3 flex-wrap`}>
-                    <div css={tw`flex items-center gap-2`}>
-                        <Button type={'button'} size={'xsmall'} color={showUnreadOnly ? 'primary' : 'secondary'} onClick={() => setShowUnreadOnly((s) => !s)}>
+                <div css={tw`mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2`}>
+                    <Button
+                        type={'button'}
+                        size={'xsmall'}
+                        color={showUnreadOnly ? 'primary' : 'secondary'}
+                        css={tw`w-full justify-center`}
+                        onClick={() => setShowUnreadOnly((s) => !s)}
+                    >
                             {showUnreadOnly ? 'Showing Unread' : 'Show Unread Only'}
-                        </Button>
-                        <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={enableBrowserNotifications}>
-                            Browser: {browserNotifState}
-                        </Button>
-                    </div>
-                    <Button type={'button'} size={'xsmall'} onClick={markAllRead}>
+                    </Button>
+                    <Button type={'button'} size={'xsmall'} color={'secondary'} css={tw`w-full justify-center`} onClick={enableBrowserNotifications}>
+                        Browser: {browserNotifState}
+                    </Button>
+                    <Button type={'button'} size={'xsmall'} css={tw`w-full justify-center`} onClick={markAllRead}>
                         Mark All Read
                     </Button>
                 </div>
