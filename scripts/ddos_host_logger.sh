@@ -4,6 +4,7 @@ set -euo pipefail
 GUARD_HOME="${DANN_GUARD_HOME:-/pteroprotect}"
 CONFIG_FILE="${GUARD_HOME}/config.json"
 RUNTIME_DIR="/dev/shm/pteroprotect"
+PANEL_RUNTIME_DIR="${PTEROPROTECT_PANEL_RUNTIME_DIR:-/pteroprotect/runtime}"
 LOG_FILE="${RUNTIME_DIR}/ddos_host.log"
 LATEST_FILE="${RUNTIME_DIR}/ddos_host.latest"
 PORTS_REGEX=':(80|443|8080|2022)$'
@@ -36,6 +37,8 @@ BLOCK_HISTORY_FILE="${RUNTIME_DIR}/block_history.tsv"
 TENANT_HISTORY_FILE="${RUNTIME_DIR}/tenant_quarantine.tsv"
 LOCKDOWN_FLAG_FILE="${RUNTIME_DIR}/strict_lockdown.flag"
 MODE_FLAG_FILE="${RUNTIME_DIR}/mode.flag"
+LOCKDOWN_FLAG_FILE_PANEL="${PANEL_RUNTIME_DIR}/lockdown.json"
+MODE_FLAG_FILE_PANEL="${PANEL_RUNTIME_DIR}/mode.json"
 NGINX_EMERGENCY_PROFILE_FILE="/etc/nginx/conf.d/pteroprotect_emergency_profile.conf"
 MODE_STATE_CACHE="normal"
 NGINX_PROFILE_STATE_CACHE="normal"
@@ -45,9 +48,24 @@ IP_TRUST_STATE_FILE="${GUARD_HOME}/runtime/ip_trust.tsv"
 IP_TRUST_RESTORE_DONE=0
 
 mkdir -p "${RUNTIME_DIR}"
+mkdir -p "${PANEL_RUNTIME_DIR}"
 touch "${LOG_FILE}"
 touch "${BLOCK_HISTORY_FILE}"
 touch "${TENANT_HISTORY_FILE}"
+
+write_runtime_payload() {
+    local payload="$1"
+    local primary="$2"
+    local mirror="$3"
+    printf '%s\n' "${payload}" > "${primary}"
+    printf '%s\n' "${payload}" > "${mirror}"
+}
+
+remove_runtime_payload() {
+    local primary="$1"
+    local mirror="$2"
+    rm -f "${primary}" "${mirror}"
+}
 
 read_network_setting() {
     local key="$1"
@@ -1799,12 +1817,15 @@ set_lockdown_state() {
 
     if [[ "${enabled}" == "1" ]]; then
         until=$(( now + ttl ))
-        printf '{"enabled":true,"reason":"%s","until":%s,"updated_at":%s}\n' "${reason}" "${until}" "${now}" > "${LOCKDOWN_FLAG_FILE}"
+        write_runtime_payload \
+            "$(printf '{"enabled":true,"reason":"%s","until":%s,"updated_at":%s}' "${reason}" "${until}" "${now}")" \
+            "${LOCKDOWN_FLAG_FILE}" \
+            "${LOCKDOWN_FLAG_FILE_PANEL}"
         printf '[lockdown] enabled ttl=%s reason=%s\n' "${ttl}" "${reason}" >> "${LOG_FILE}"
         printf '[lockdown] enabled ttl=%s reason=%s\n' "${ttl}" "${reason}" >> "${LATEST_FILE}"
     else
-        if [[ -f "${LOCKDOWN_FLAG_FILE}" ]]; then
-            rm -f "${LOCKDOWN_FLAG_FILE}"
+        if [[ -f "${LOCKDOWN_FLAG_FILE}" || -f "${LOCKDOWN_FLAG_FILE_PANEL}" ]]; then
+            remove_runtime_payload "${LOCKDOWN_FLAG_FILE}" "${LOCKDOWN_FLAG_FILE_PANEL}"
             printf '[lockdown] cleared\n' >> "${LOG_FILE}"
             printf '[lockdown] cleared\n' >> "${LATEST_FILE}"
         fi
@@ -1819,8 +1840,8 @@ set_mode_state() {
     now="$(date +%s)"
 
     if [[ "${mode}" == "normal" ]]; then
-        if [[ -f "${MODE_FLAG_FILE}" ]]; then
-            rm -f "${MODE_FLAG_FILE}"
+        if [[ -f "${MODE_FLAG_FILE}" || -f "${MODE_FLAG_FILE_PANEL}" ]]; then
+            remove_runtime_payload "${MODE_FLAG_FILE}" "${MODE_FLAG_FILE_PANEL}"
         fi
         if [[ "${MODE_STATE_CACHE}" != "normal" ]]; then
             printf '[mode] switched mode=normal reason=%s\n' "${reason}" >> "${LOG_FILE}"
@@ -1831,7 +1852,10 @@ set_mode_state() {
     fi
 
     until=$(( now + ttl ))
-    printf '{"mode":"%s","reason":"%s","until":%s,"updated_at":%s}\n' "${mode}" "${reason}" "${until}" "${now}" > "${MODE_FLAG_FILE}"
+    write_runtime_payload \
+        "$(printf '{"mode":"%s","reason":"%s","until":%s,"updated_at":%s}' "${mode}" "${reason}" "${until}" "${now}")" \
+        "${MODE_FLAG_FILE}" \
+        "${MODE_FLAG_FILE_PANEL}"
     if [[ "${MODE_STATE_CACHE}" != "${mode}" ]]; then
         printf '[mode] switched mode=%s ttl=%s reason=%s\n' "${mode}" "${ttl}" "${reason}" >> "${LOG_FILE}"
         printf '[mode] switched mode=%s ttl=%s reason=%s\n' "${mode}" "${ttl}" "${reason}" >> "${LATEST_FILE}"

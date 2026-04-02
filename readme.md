@@ -55,4 +55,26 @@ System update kami bukan update v1 / v2 tapi v1.0 jadi bagi yang beli no up itu 
 - https://pterodactyl.io/ as MiT License holder
 - HexZo & Dann as Developer or Contributor
 
+---
+
+# Quick Defense Ops
+- Audit cepat semua layer (safe):
+```bash
+bash scripts/defense_scorecard.sh https://domain-panel-lu
+```
+
+- Cek mode proteksi:
+```bash
+bash scripts/pteroprotect-mode.sh status
+```
+
+- Emergency mode 15 menit:
+```bash
+bash scripts/pteroprotect-mode.sh emergency 900
+```
+
+- Playbook incident:
+```text
+docs/INCIDENT_15M_PLAYBOOK.md
+```
 
