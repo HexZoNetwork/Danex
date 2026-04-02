@@ -8,6 +8,7 @@ BROWNOUT_FLAG="${RUNTIME_DIR}/brownout.flag"
 STATE_FILE="${RUNTIME_DIR}/brownout.state.json"
 LOCK_PORTS="${PTEROPROTECT_EDGE_PORTS:-80,443}"
 EDGE_CIDRS="${PTEROPROTECT_EDGE_CIDRS:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'USAGE'
@@ -38,8 +39,28 @@ write_state() {
 }
 
 status() {
+    local now enabled_until enabled_state
+    now="$(now_epoch)"
+    enabled_until=0
+    enabled_state=0
+    if [[ -f "${STATE_FILE}" ]]; then
+        enabled_until="$(awk -F'"until":' '{print $2}' "${STATE_FILE}" | awk -F',' '{print $1}' | tr -cd '0-9' || true)"
+        [[ -n "${enabled_until}" ]] || enabled_until=0
+    fi
+
+    # Auto-heal stale runtime when TTL already elapsed.
+    if [[ "${enabled_until}" -gt 0 && "${enabled_until}" -le "${now}" ]]; then
+        rm -f "${BROWNOUT_FLAG}" "${STATE_FILE}"
+        enabled_until=0
+    fi
+
     echo "brownout_flag=${BROWNOUT_FLAG}"
     if [[ -f "${BROWNOUT_FLAG}" ]]; then
+        enabled_state=1
+    elif [[ "${enabled_until}" -gt "${now}" ]]; then
+        enabled_state=1
+    fi
+    if [[ "${enabled_state}" -eq 1 ]]; then
         echo "brownout_enabled=1"
     else
         echo "brownout_enabled=0"
@@ -61,12 +82,12 @@ enable_brownout() {
     touch "${BROWNOUT_FLAG}"
     write_state "${ttl}"
 
-    if [[ -x scripts/pteroprotect-mode.sh ]]; then
-        bash scripts/pteroprotect-mode.sh emergency "${ttl}" >/dev/null || true
+    if [[ -x "${SCRIPT_DIR}/pteroprotect-mode.sh" ]]; then
+        bash "${SCRIPT_DIR}/pteroprotect-mode.sh" emergency "${ttl}" >/dev/null || true
     fi
 
-    if [[ -x scripts/edge_origin_cloak.sh ]]; then
-        bash scripts/edge_origin_cloak.sh apply "${LOCK_PORTS}" "${EDGE_CIDRS}" >/dev/null || true
+    if [[ -x "${SCRIPT_DIR}/edge_origin_cloak.sh" ]]; then
+        bash "${SCRIPT_DIR}/edge_origin_cloak.sh" apply "${LOCK_PORTS}" "${EDGE_CIDRS}" >/dev/null || true
     fi
 
     nginx -t >/dev/null
@@ -79,8 +100,8 @@ enable_brownout() {
         sleep ${ttl}
         if [[ -f '${BROWNOUT_FLAG}' ]]; then
             rm -f '${BROWNOUT_FLAG}' '${STATE_FILE}'
-            if [[ -x scripts/pteroprotect-mode.sh ]]; then
-                bash scripts/pteroprotect-mode.sh aggressive >/dev/null 2>&1 || true
+            if [[ -x '${SCRIPT_DIR}/pteroprotect-mode.sh' ]]; then
+                bash '${SCRIPT_DIR}/pteroprotect-mode.sh' aggressive >/dev/null 2>&1 || true
             fi
             nginx -t >/dev/null 2>&1 && (systemctl reload nginx >/dev/null 2>&1 || nginx -s reload >/dev/null 2>&1 || true)
         fi
@@ -92,8 +113,8 @@ enable_brownout() {
 
 disable_brownout() {
     rm -f "${BROWNOUT_FLAG}" "${STATE_FILE}"
-    if [[ -x scripts/pteroprotect-mode.sh ]]; then
-        bash scripts/pteroprotect-mode.sh aggressive >/dev/null || true
+    if [[ -x "${SCRIPT_DIR}/pteroprotect-mode.sh" ]]; then
+        bash "${SCRIPT_DIR}/pteroprotect-mode.sh" aggressive >/dev/null || true
     fi
     nginx -t >/dev/null
     systemctl reload nginx >/dev/null 2>&1 || nginx -s reload >/dev/null 2>&1 || true

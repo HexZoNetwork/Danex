@@ -100,6 +100,8 @@ apply_rules() {
     local ports="$1"
     local cidr_csv="$2"
     local cidr
+    local allow_v4_count=0
+    local allow_v6_count=0
 
     ports="$(sanitize_ports "${ports}")"
     echo "[edge-cloak] apply ports=${ports}"
@@ -107,6 +109,30 @@ apply_rules() {
     if ! have iptables; then
         echo "[edge-cloak] iptables not found" >&2
         exit 1
+    fi
+
+    while IFS= read -r cidr; do
+        [[ -n "${cidr}" ]] || continue
+        allow_v4_count=$((allow_v4_count + 1))
+    done < <(read_edge_cidrs_from_config v4)
+
+    while IFS= read -r cidr; do
+        [[ -n "${cidr}" ]] || continue
+        if [[ "${cidr}" == *:* ]]; then
+            allow_v6_count=$((allow_v6_count + 1))
+        else
+            allow_v4_count=$((allow_v4_count + 1))
+        fi
+    done < <(csv_to_lines "${cidr_csv}")
+
+    while IFS= read -r cidr; do
+        [[ -n "${cidr}" ]] || continue
+        allow_v6_count=$((allow_v6_count + 1))
+    done < <(read_edge_cidrs_from_config v6)
+
+    if (( allow_v4_count == 0 && allow_v6_count == 0 )); then
+        echo "[edge-cloak] skip apply: no trusted edge CIDRs configured (fail-safe no-op)"
+        return 0
     fi
 
     ensure_chain4

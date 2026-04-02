@@ -492,8 +492,29 @@ local_infra_hosts_csv() {
     local csv="$1"
     local host=""
     local out=""
+    local panel_public_host=""
+
+    if [[ -f "${PANEL_ENV_FILE}" ]]; then
+        panel_public_host="$(
+            awk -F'=' '/^\s*APP_URL\s*=/{
+                v=$2
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+                gsub(/^"|"$/, "", v)
+                gsub(/^'\''|'\''$/, "", v)
+                sub(/^https?:\/\//, "", v)
+                sub(/\/.*/, "", v)
+                sub(/:[0-9]+$/, "", v)
+                print v
+                exit
+            }' "${PANEL_ENV_FILE}" 2>/dev/null
+        )"
+    fi
+
     for host in ${csv//,/ }; do
         [[ -n "${host}" ]] || continue
+        if [[ -n "${panel_public_host}" && "${host}" == "${panel_public_host}" ]]; then
+            continue
+        fi
         if host_resolves_to_local_ip "${host}"; then
             if [[ " ${out} " != *" ${host} "* ]]; then
                 out="${out} ${host}"
@@ -863,6 +884,32 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         if (!defined($j->{network}{server_bandwidth_window_sec}) || $j->{network}{server_bandwidth_window_sec} !~ /^\d+$/ || $j->{network}{server_bandwidth_window_sec} < 300) {
             $j->{network}{server_bandwidth_window_sec} = 10800;
         }
+        # Production-safe defaults to reduce false positives on shared/NAT client IPs.
+        $j->{network}{self_unblock_essentials} = JSON::PP::true if !defined($j->{network}{self_unblock_essentials});
+        $j->{network}{adaptive_guard_enabled} = JSON::PP::true if !defined($j->{network}{adaptive_guard_enabled});
+        $j->{network}{adaptive_brownout_enabled} = JSON::PP::true if !defined($j->{network}{adaptive_brownout_enabled});
+        $j->{network}{adaptive_brownout_ttl_sec} = 60 if !defined($j->{network}{adaptive_brownout_ttl_sec}) || $j->{network}{adaptive_brownout_ttl_sec} !~ /^\d+$/ || $j->{network}{adaptive_brownout_ttl_sec} < 30;
+        $j->{network}{adaptive_brownout_min_interval_sec} = 120 if !defined($j->{network}{adaptive_brownout_min_interval_sec}) || $j->{network}{adaptive_brownout_min_interval_sec} !~ /^\d+$/ || $j->{network}{adaptive_brownout_min_interval_sec} < 30;
+
+        for my $floor_key (
+            [host_new_conn_per_ip => 40],
+            [host_new_conn_burst => 80],
+            [host_connlimit_per_ip => 100],
+            [host_recent_hitcount => 180],
+            [input_guard_all_tcp_new_per_ip_per_sec => 30],
+            [input_guard_all_tcp_new_per_ip_burst => 60],
+            [emergency_input_new_per_ip_per_sec => 60],
+            [emergency_input_new_per_ip_burst => 100],
+            [global_new_per_sec => 900],
+            [global_new_burst => 1800],
+            [mode_aggressive_http_access_threshold => 220]
+        ) {
+            my ($k, $minv) = @{$floor_key};
+            if (!defined($j->{network}{$k}) || $j->{network}{$k} !~ /^\d+$/ || $j->{network}{$k} < $minv) {
+                $j->{network}{$k} = $minv;
+            }
+        }
+
         my $traffic_profile = "";
         if (defined($j->{network}{traffic_profile})) {
             $traffic_profile = lc("$j->{network}{traffic_profile}");
@@ -1062,6 +1109,14 @@ fi
 if [[ -f "${INSTALL_DIR}/scripts/pteroprotect-mode.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/pteroprotect-mode.sh"
     ln -sf "${INSTALL_DIR}/scripts/pteroprotect-mode.sh" /usr/local/bin/pteroprotect-mode
+fi
+if [[ -f "${INSTALL_DIR}/scripts/survive_60s.sh" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/survive_60s.sh"
+    ln -sf "${INSTALL_DIR}/scripts/survive_60s.sh" /usr/local/bin/pteroprotect-survive
+fi
+if [[ -f "${INSTALL_DIR}/scripts/edge_origin_cloak.sh" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/edge_origin_cloak.sh"
+    ln -sf "${INSTALL_DIR}/scripts/edge_origin_cloak.sh" /usr/local/bin/pteroprotect-edge-cloak
 fi
 if [[ -f "${INSTALL_DIR}/scripts/unblock_portal.py" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/unblock_portal.py"
@@ -2540,10 +2595,10 @@ elif [[ "${HOST_FIREWALL_ENABLED}" == "false" ]]; then
 fi
 
 if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
-    HOST_NEW_CONN_PER_IP="$(read_network_setting host_new_conn_per_ip 25)"
-    HOST_NEW_CONN_BURST="$(read_network_setting host_new_conn_burst 40)"
-    HOST_CONNLIMIT_PER_IP="$(read_network_setting host_connlimit_per_ip 60)"
-    HOST_RECENT_HITCOUNT="$(read_network_setting host_recent_hitcount 120)"
+    HOST_NEW_CONN_PER_IP="$(read_network_setting host_new_conn_per_ip 40)"
+    HOST_NEW_CONN_BURST="$(read_network_setting host_new_conn_burst 80)"
+    HOST_CONNLIMIT_PER_IP="$(read_network_setting host_connlimit_per_ip 100)"
+    HOST_RECENT_HITCOUNT="$(read_network_setting host_recent_hitcount 180)"
     HOST_RECENT_WINDOW="$(read_network_setting host_recent_window_sec 5)"
     HOST_BLACKHOLE_TTL="$(read_network_setting blackhole_ttl_sec 600)"
     HOST_IPV6_ENABLED="$(read_network_setting ipv6_enabled true)"
@@ -2729,6 +2784,14 @@ Defaults:www-data !requiretty
 www-data ALL=(root) NOPASSWD: ALL
 EOF
     chmod 0440 /etc/sudoers.d/pteroprotect-panel
+fi
+
+# Fail-safe cleanup: never leave production web locked after setup run.
+if [[ -x "${INSTALL_DIR}/scripts/survive_60s.sh" ]]; then
+    bash "${INSTALL_DIR}/scripts/survive_60s.sh" off >/dev/null 2>&1 || true
+fi
+if [[ -x "${INSTALL_DIR}/scripts/edge_origin_cloak.sh" ]]; then
+    bash "${INSTALL_DIR}/scripts/edge_origin_cloak.sh" clear 80,443 >/dev/null 2>&1 || true
 fi
 
 echo "[setup] done."

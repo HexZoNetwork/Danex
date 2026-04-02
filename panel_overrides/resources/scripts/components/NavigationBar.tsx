@@ -85,9 +85,7 @@ export default () => {
                     </Link>
                 </div>
                 <RightNavigation className={'flex h-full items-center justify-center'}>
-                    <div className={'hidden md:flex h-full'}>
-                        <SearchContainer />
-                    </div>
+                    <SearchContainer />
                     <Tooltip placement={'bottom'} content={'Dashboard'}>
                         <NavLink to={'/'} exact>
                             <FontAwesomeIcon icon={faLayerGroup} />
