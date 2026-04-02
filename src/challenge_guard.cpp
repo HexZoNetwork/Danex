@@ -103,6 +103,65 @@ static bool ua_mobile_like(const std::string& ua) {
            l.find("ipod") != std::string::npos;
 }
 
+static bool ua_inapp_like(const std::string& ua) {
+    std::string l = ua;
+    std::transform(l.begin(), l.end(), l.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    static const std::vector<std::string> hints = {
+        " wv)", "; wv", "telegram", "fb_iab", "fban", "fbav", "instagram",
+        "line/", "micromessenger", "gsa/", "okhttp", "vivo", "miuibrowser"
+    };
+    for (const auto& h : hints) {
+        if (l.find(h) != std::string::npos) return true;
+    }
+    return false;
+}
+
+static std::string ua_binding_material(const std::string& ua_raw) {
+    std::string ua = trim(ua_raw);
+    std::transform(ua.begin(), ua.end(), ua.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (ua.empty()) return ua;
+    if (ua.size() > 512) ua = ua.substr(0, 512);
+
+    // Keep strict/full UA for desktop. Relax mobile/in-app into stable buckets
+    // because many webviews mutate UA tokens between requests (wv/version/etc).
+    const bool mobile = ua_mobile_like(ua);
+    const bool inapp = ua_inapp_like(ua);
+    if (!mobile && !inapp) {
+        return ua;
+    }
+
+    std::string platform = "mobile";
+    if (ua.find("android") != std::string::npos) platform = "android";
+    else if (ua.find("iphone") != std::string::npos || ua.find("ipad") != std::string::npos || ua.find("ipod") != std::string::npos) platform = "ios";
+
+    std::string browser = "other";
+    std::string major = "0";
+    const std::vector<std::pair<std::string, std::string>> rules = {
+        {"edg/", "edge"},
+        {"opr/", "opera"},
+        {"firefox/", "firefox"},
+        {"fxios/", "firefox"},
+        {"crios/", "chrome"},
+        {"chrome/", "chrome"},
+        {"version/", "safari"},
+    };
+    for (const auto& r : rules) {
+        const auto pos = ua.find(r.first);
+        if (pos == std::string::npos) continue;
+        browser = r.second;
+        std::size_t i = pos + r.first.size();
+        std::string digits;
+        while (i < ua.size() && std::isdigit(static_cast<unsigned char>(ua[i]))) {
+            digits.push_back(ua[i]);
+            ++i;
+        }
+        if (!digits.empty()) major = digits;
+        break;
+    }
+
+    return std::string("mobile|") + platform + "|" + browser + "|" + major;
+}
+
 static std::string to_lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
@@ -1215,7 +1274,7 @@ static void handle_client(int fd, std::string remote_ip) {
     Settings s = load_settings();
     std::string ip = resolve_client_ip(req);
     std::string ua = req.headers.count("user-agent") ? req.headers["user-agent"] : "";
-    std::string ua_fp = sha256_hex_24(ua);
+    std::string ua_fp = sha256_hex_24(ua_binding_material(ua));
 
     cleanup_nonce_map();
     cleanup_session_map();

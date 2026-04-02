@@ -54,7 +54,11 @@
         "xterm-addon-search-bar": "^0.2.0",
         "xterm-addon-unicode11": "^0.6.0",
         "xterm-addon-web-links": "^0.6.0",
-        "yup": "^0.29.1"
+        "yup": "^0.29.1",
+        "react-icons": "^5.5.0",
+        "i18next-browser-languagedetector": "^8.2.0",
+        "md5": "^2.3.0",
+        "flag-icons": "^7.3.2"
     },
     "devDependencies": {
         "@babel/core": "^7.12.1",

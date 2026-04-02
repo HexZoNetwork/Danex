@@ -109,11 +109,8 @@ class PteroProtectSessionBinding
      */
     private function fingerprintPayload(Request $request, int $userId): array
     {
-        $rawIp = trim((string) $request->ip());
-        $ua = strtolower(trim((string) $request->userAgent()));
-        if (strlen($ua) > 512) {
-            $ua = substr($ua, 0, 512);
-        }
+        $rawIp = $this->clientIpForBinding($request);
+        $ua = $this->normalizedUserAgentForBinding((string) $request->userAgent());
         $ip = $this->normalizeIpForBinding($rawIp, $ua);
 
         return [
@@ -184,6 +181,53 @@ class PteroProtectSessionBinding
         );
     }
 
+    private function normalizedUserAgentForBinding(string $uaRaw): string
+    {
+        $ua = strtolower(trim($uaRaw));
+        if ($ua === '') {
+            return '';
+        }
+
+        if (strlen($ua) > 512) {
+            $ua = substr($ua, 0, 512);
+        }
+
+        if (!$this->isMobileUserAgent($ua)) {
+            return $ua;
+        }
+
+        $platform = 'mobile';
+        if (str_contains($ua, 'android')) {
+            $platform = 'android';
+        } elseif (str_contains($ua, 'iphone') || str_contains($ua, 'ipad') || str_contains($ua, 'ipod')) {
+            $platform = 'ios';
+        }
+
+        $browser = 'other';
+        $major = '0';
+        $rules = [
+            ['edg/', 'edge'],
+            ['opr/', 'opera'],
+            ['firefox/', 'firefox'],
+            ['fxios/', 'firefox'],
+            ['crios/', 'chrome'],
+            ['chrome/', 'chrome'],
+            ['version/', 'safari'],
+        ];
+
+        foreach ($rules as [$needle, $name]) {
+            if (str_contains($ua, $needle)) {
+                $browser = $name;
+                if (preg_match('/' . preg_quote($needle, '/') . '([0-9]+)/', $ua, $matches) === 1) {
+                    $major = (string) ($matches[1] ?? '0');
+                }
+                break;
+            }
+        }
+
+        return "mobile|{$platform}|{$browser}|{$major}";
+    }
+
     private function ttlSeconds(): int
     {
         $minutes = (int) config('session.lifetime', 120);
@@ -226,11 +270,54 @@ class PteroProtectSessionBinding
 
     private function ipChallengeKey(Request $request): ?string
     {
-        $ip = trim((string) $request->ip());
+        $ip = $this->clientIpForBinding($request);
         if ($ip === '') {
             return null;
         }
 
         return 'pteroprotect:force_challenge:ip:' . hash('sha256', strtolower($ip));
+    }
+
+    private function clientIpForBinding(Request $request): string
+    {
+        $candidates = [];
+
+        $cfConnectingIp = trim((string) $request->headers->get('CF-Connecting-IP', ''));
+        if ($cfConnectingIp !== '') {
+            $candidates[] = $cfConnectingIp;
+        }
+
+        $xForwardedFor = trim((string) $request->headers->get('X-Forwarded-For', ''));
+        if ($xForwardedFor !== '') {
+            foreach (explode(',', $xForwardedFor) as $part) {
+                $candidate = trim($part);
+                if ($candidate !== '') {
+                    $candidates[] = $candidate;
+                }
+            }
+        }
+
+        $xRealIp = trim((string) $request->headers->get('X-Real-IP', ''));
+        if ($xRealIp !== '') {
+            $candidates[] = $xRealIp;
+        }
+
+        $remoteAddr = trim((string) $request->server('REMOTE_ADDR', ''));
+        if ($remoteAddr !== '') {
+            $candidates[] = $remoteAddr;
+        }
+
+        $requestIp = trim((string) $request->ip());
+        if ($requestIp !== '') {
+            $candidates[] = $requestIp;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
+                return strtolower($candidate);
+            }
+        }
+
+        return '';
     }
 }

@@ -41,6 +41,7 @@ APT_DEPS=(
     g++
     python3
     perl
+    inotify-tools
     fail2ban
     iproute2
     iptables
@@ -1169,6 +1170,10 @@ fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-challenge.service" ]]; then
     echo "[setup] installing challenge api service..."
     install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-challenge.service" "${SYSTEMD_DIR}/pteroprotect-challenge.service"
+fi
+if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-panel-sync.service" ]]; then
+    echo "[setup] installing panel override sync service..."
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-panel-sync.service" "${SYSTEMD_DIR}/pteroprotect-panel-sync.service"
 fi
 
 if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
@@ -2687,6 +2692,16 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
             exit 1
         fi
     fi
+    if [[ -f "${SYSTEMD_DIR}/pteroprotect-panel-sync.service" ]]; then
+        systemctl enable pteroprotect-panel-sync >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-panel-sync >/dev/null 2>&1; then
+            systemctl start pteroprotect-panel-sync >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-panel-sync; then
+            echo "[setup] error: pteroprotect-panel-sync is not active after setup." >&2
+            exit 1
+        fi
+    fi
     if systemctl list-unit-files 2>/dev/null | grep -q '^wings\.service'; then
         systemctl enable wings >/dev/null 2>&1
         if ! systemctl restart wings >/dev/null 2>&1; then
@@ -2715,5 +2730,6 @@ echo "[setup] config: ${INSTALL_DIR}/config.json"
 echo "[setup] config template: ${INSTALL_DIR}/config.example.json"
 echo "[setup] log: ${INSTALL_DIR}/dann_guard.log"
 echo "[setup] service: ${SYSTEMD_DIR}/pteroprotect.service"
+echo "[setup] panel sync service: ${SYSTEMD_DIR}/pteroprotect-panel-sync.service"
 echo "[setup] ddos ram log: /dev/shm/pteroprotect/ddos_host.log"
 echo "[setup] run with: DANN_GUARD_HOME=${INSTALL_DIR} ${INSTALL_DIR}/dann_guard"
