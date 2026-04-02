@@ -55,6 +55,13 @@ APT_DEPS=(
     nlohmann-json3-dev
 )
 
+APT_INSTALL_OPTS=(
+    -y
+    --no-install-recommends
+    -o Dpkg::Options::=--force-confdef
+    -o Dpkg::Options::=--force-confold
+)
+
 MYSQL_DEV_CANDIDATES=(
     default-libmysqlclient-dev
     libmysqlclient-dev
@@ -95,7 +102,7 @@ ensure_node22_runtime() {
 
     if command -v curl >/dev/null 2>&1; then
         (curl -fsSL https://deb.nodesource.com/setup_22.x | bash -) >/dev/null 2>&1 || true
-        apt-get install -y nodejs >/dev/null 2>&1 || true
+        apt-get install "${APT_INSTALL_OPTS[@]}" nodejs >/dev/null 2>&1 || true
     fi
 
     node_major="$(node_major_version)"
@@ -617,6 +624,8 @@ apt_update_resilient() {
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export APT_LISTCHANGES_FRONTEND=none
+export UCF_FORCE_CONFOLD=1
+export UCF_FORCE_CONFFOLD=1
 
 echo "[setup] non-interactive mode enabled (DEBIAN_FRONTEND=${DEBIAN_FRONTEND})..."
 
@@ -642,7 +651,7 @@ fi
 APT_DEPS+=("${MYSQL_DEV_PKG}")
 
 printf '%s\n' "${APT_DEPS[@]}" | sed 's/^/[setup]   will install /'
-apt-get install -y --no-install-recommends "${APT_DEPS[@]}"
+apt-get install "${APT_INSTALL_OPTS[@]}" "${APT_DEPS[@]}"
 
 echo "[setup] creating workspace backup in ${BACKUP_DIR}..."
 mkdir -p "${BACKUP_DIR}"
@@ -687,49 +696,6 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         sub deep_copy {
             my ($v) = @_;
             return decode_json(JSON::PP->new->allow_nonref->encode($v));
-        }
-
-        sub env_to_network_key {
-            my ($k) = @_;
-            return undef if !defined $k;
-            return undef if $k !~ /^PTEROPROTECT_[A-Z0-9_]+$/;
-            my $name = $k;
-            $name =~ s/^PTEROPROTECT_//;
-            $name = lc($name);
-            $name =~ s/_+/_/g;
-            return $name;
-        }
-
-        sub to_bool {
-            my ($v) = @_;
-            my $s = lc($v // "");
-            return undef if $s eq "";
-            return 1 if $s =~ /^(1|true|yes|on)$/;
-            return 0 if $s =~ /^(0|false|no|off)$/;
-            return undef;
-        }
-
-        sub cast_like {
-            my ($raw, $tmpl) = @_;
-            return $raw if !defined $tmpl;
-            my $tref = ref($tmpl);
-            if ($tref eq "JSON::PP::Boolean") {
-                my $b = to_bool($raw);
-                return defined($b) ? ($b ? JSON::PP::true : JSON::PP::false) : $tmpl;
-            }
-            if (!$tref) {
-                if ($tmpl =~ /^-?\d+$/) {
-                    return ($raw =~ /^-?\d+$/) ? int($raw) : $tmpl;
-                }
-                if ($tmpl =~ /^-?\d+\.\d+$/) {
-                    return ($raw =~ /^-?\d+(?:\.\d+)?$/) ? ($raw + 0) : $tmpl;
-                }
-                my $b = to_bool($raw);
-                if (defined $b && ($tmpl eq "true" || $tmpl eq "false")) {
-                    return $b ? "true" : "false";
-                }
-            }
-            return $raw;
         }
 
         sub should_fill_default {
@@ -802,32 +768,8 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
                 $j->{database}{$db_key} = $val;
             }
 
-            # Fill missing/empty network keys from PTEROPROTECT_* env vars
-            for my $ek (keys %env) {
-                my $nk = env_to_network_key($ek);
-                next if !defined $nk;
-                next if !defined($env{$ek}) || $env{$ek} eq "";
-
-                my $has_key = exists $j->{network}{$nk};
-                my $cur = $has_key ? $j->{network}{$nk} : undef;
-                my $missing = (!defined($cur) || (ref($cur) eq "" && $cur eq ""));
-                next if !$missing;
-
-                my $tmpl = (ref($default_cfg) eq "HASH" && ref($default_cfg->{network}) eq "HASH" && exists $default_cfg->{network}{$nk})
-                    ? $default_cfg->{network}{$nk}
-                    : undef;
-                $j->{network}{$nk} = cast_like($env{$ek}, $tmpl);
-            }
-
-            # Legacy alias fallback -> network keys
-            if ((!defined($j->{network}{waf_challenge_secret}) || $j->{network}{waf_challenge_secret} eq "") &&
-                defined($env{WAF_CHALLENGE_SECRET}) && $env{WAF_CHALLENGE_SECRET} ne "") {
-                $j->{network}{waf_challenge_secret} = $env{WAF_CHALLENGE_SECRET};
-            }
-            if ((!defined($j->{network}{unblock_portal_token}) || $j->{network}{unblock_portal_token} eq "") &&
-                defined($env{UNBLOCK_PORTAL_TOKEN}) && $env{UNBLOCK_PORTAL_TOKEN} ne "") {
-                $j->{network}{unblock_portal_token} = $env{UNBLOCK_PORTAL_TOKEN};
-            }
+            # Config-only mode: network settings are sourced strictly from config.json.
+            # Environment variables are intentionally ignored here to prevent drift.
         }
 
         sub random_alnum {
@@ -933,9 +875,10 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         print $out JSON::PP->new->ascii->pretty->canonical->encode($j);
     ' "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" "${INSTALL_DIR}/config.example.json"
 
-    # Source of truth flow (two-way, ordered):
-    # 1) panel .env -> config.json (database keys)
-    # 2) config.json -> panel .env (PTEROPROTECT_* and legacy aliases only)
+    # Source of truth flow:
+    # 1) panel .env -> config.json (database keys only)
+    # 2) config.json -> panel .env (PTEROPROTECT_* exports)
+    # Network security settings remain config.json-only.
     if [[ -f "${PANEL_ENV_FILE}" ]]; then
         python3 - "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" <<'PY'
 import json
@@ -1326,7 +1269,7 @@ PY
         echo "[setup] building panel frontend assets..."
         if ! command -v npx >/dev/null 2>&1 && ! command -v yarn >/dev/null 2>&1 && ! command -v yarnpkg >/dev/null 2>&1; then
             echo "[setup] installing node build tooling for panel assets..."
-            apt-get install -y --no-install-recommends nodejs npm || true
+            apt-get install "${APT_INSTALL_OPTS[@]}" nodejs npm || true
         fi
 
         NODE_MAJOR="$(node_major_version)"
