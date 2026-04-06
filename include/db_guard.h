@@ -53,6 +53,7 @@ public:
     std::vector<std::string> get_all_server_uuids();
     std::vector<ServerActivityEntry> get_recent_server_activity(int server_id, long long after_id = 0, int limit = 25);
     bool suspend_server(int server_id);
+    int count_suspended_servers();
 
     bool log_user_violation(
         int user_id,

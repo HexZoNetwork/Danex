@@ -142,7 +142,7 @@ class Handler extends ExceptionHandler
         if (($e instanceof ModelNotFoundException || $e->getPrevious() instanceof ModelNotFoundException)
             && $request->isMethod('DELETE')
             && $request->expectsJson()
-            && $request->is('api/application/servers/*')
+            && $request->is('api/application/*')
         ) {
             return response()->noContent();
         }

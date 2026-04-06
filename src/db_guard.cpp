@@ -310,6 +310,25 @@ bool DatabaseGuard::suspend_server(int server_id) {
     return mysql_affected_rows(conn) > 0;
 }
 
+int DatabaseGuard::count_suspended_servers() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!ensure_connection()) return 0;
+
+    const char* query = "SELECT COUNT(*) FROM servers WHERE status = 'suspended'";
+    if (mysql_query(conn, query) != 0) {
+        logger.error("count_suspended_servers failed: " + std::string(mysql_error(conn)));
+        return 0;
+    }
+
+    MYSQL_RES* result = mysql_store_result(conn);
+    if (!result) return 0;
+
+    MYSQL_ROW row = mysql_fetch_row(result);
+    int count = (row && row[0]) ? atoi(row[0]) : 0;
+    mysql_free_result(result);
+    return count;
+}
+
 bool DatabaseGuard::log_user_violation(
     int user_id,
     const std::string& username,

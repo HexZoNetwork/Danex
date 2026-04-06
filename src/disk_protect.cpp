@@ -1788,8 +1788,7 @@ int DiskProtector::get_total_servers() {
 }
 
 int DiskProtector::get_suspended_count() {
-    std::lock_guard<std::mutex> lock(cache_mutex);
-    return (int)cache_penuh.size();
+    return db.count_suspended_servers();
 }
 
 std::vector<ServerInfo> DiskProtector::get_all_servers() {
