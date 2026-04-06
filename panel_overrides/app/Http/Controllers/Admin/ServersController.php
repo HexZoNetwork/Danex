@@ -172,7 +172,8 @@ class ServersController extends Controller
      */
     public function delete(Request $request, Server $server): RedirectResponse
     {
-        $this->deletionService->withForce($request->filled('force_delete'))->handle($server);
+        $forceDelete = $request->filled('force_delete') || $server->isSuspended();
+        $this->deletionService->withForce($forceDelete)->handle($server);
         $this->alert->success(trans('admin/server.alerts.server_deleted'))->flash();
 
         return redirect()->route('admin.servers');
