@@ -47,6 +47,7 @@ const double DISK_OVER_LIMIT_MULTIPLIER = 3.0;
 const long long SPARSE_FILE_MIN_SIZE_BYTES = 512LL * 1024LL * 1024LL;
 const long long SPARSE_FILE_MAX_ALLOCATED_BYTES = 64LL * 1024LL * 1024LL;
 const double SPARSE_FILE_MAX_ALLOCATED_RATIO = 0.01;
+const int DISK_FLOOD_FILENAME_HARD_THRESHOLD = 1;
 
 const std::vector<std::string> EKSTENSI_AMAN = {
     ".jar", ".zip", ".tar.gz", ".db", ".sqlite", ".bak", ".backup",
@@ -220,6 +221,18 @@ bool is_probably_elf_file(const std::string& path) {
     f.read(reinterpret_cast<char*>(magic), 4);
     if (f.gcount() < 4) return false;
     return magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
+}
+
+bool is_disk_flood_artifact_name(const std::string& lower_name) {
+    static const std::regex flood_re(
+        R"(file_[0-9]+_[0-9]+_[0-9]+_(fallocate|sparse|truncate)\.bin$)",
+        std::regex_constants::icase);
+
+    if (std::regex_search(lower_name, flood_re)) return true;
+    if (lower_name.find("_fallocate.bin") != std::string::npos) return true;
+    if (lower_name.find("_sparse.bin") != std::string::npos) return true;
+    if (lower_name.find("_truncate.bin") != std::string::npos) return true;
+    return false;
 }
 
 bool is_soft_quarantine_reason(const std::string& reason) {
@@ -578,6 +591,9 @@ std::string get_container_id_by_uuid(const std::string& uuid) {
 bool stop_container_by_uuid(const std::string& uuid) {
     std::string id = get_container_id_by_uuid(uuid);
     if (id.empty()) return false;
+
+    // Prevent attacker workload from auto-restarting while we are mitigating.
+    system(("docker update --restart=no " + id + " >/dev/null 2>&1").c_str());
 
     if (system(("docker stop -t 3 " + id + " >/dev/null 2>&1").c_str()) == 0) {
         return true;
@@ -1047,6 +1063,11 @@ bool DiskProtector::is_suspicious_file(const FileInfo& file, std::string& reason
     // ── 1. Filename check against all keyword lists ─────────────────────────
     std::string lower_name = to_lower_copy(file.name);
 
+    if (is_disk_flood_artifact_name(lower_name)) {
+        reason = "Disk flood artifact filename: " + file.name;
+        return true;
+    }
+
     for (const auto& k : CRITICAL_KEYWORDS) {
         if (lower_name.find(to_lower_copy(k)) != std::string::npos) {
             reason = "Filename matches critical pattern: " + k;
@@ -1326,6 +1347,20 @@ void DiskProtector::check_server(const std::string& uuid) {
         files = scan_folder(path);
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache_last_file_scan[uuid] = now;
+    }
+
+    int disk_flood_filename_hits = 0;
+    for (const auto& f : files) {
+        std::string r = to_lower_copy(f.suspicion_reason);
+        if (r.find("disk flood artifact filename:") != std::string::npos) {
+            disk_flood_filename_hits++;
+        }
+    }
+
+    if (disk_flood_filename_hits >= DISK_FLOOD_FILENAME_HARD_THRESHOLD) {
+        hard_trigger = true;
+        need_action = true;
+        reason = "DISK FLOOD ARTIFACT x" + std::to_string(disk_flood_filename_hits);
     }
 
     std::vector<FileInfo> deleted;
