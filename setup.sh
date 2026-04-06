@@ -1174,12 +1174,25 @@ if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-panel-sync.service" ]]; then
     install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-panel-sync.service" "${SYSTEMD_DIR}/pteroprotect-panel-sync.service"
 fi
 
-if [[ -d "${PANEL_DIR}" && -d "${INSTALL_DIR}/panel_overrides" ]]; then
-    echo "[setup] applying bundled Pterodactyl overrides to ${PANEL_DIR}..."
+PANEL_OVERRIDE_SOURCE=""
+if [[ -d "${PROJECT_DIR}/panel_overrides" ]]; then
+    PANEL_OVERRIDE_SOURCE="${PROJECT_DIR}/panel_overrides"
+elif [[ -d "${INSTALL_DIR}/panel_overrides" ]]; then
+    PANEL_OVERRIDE_SOURCE="${INSTALL_DIR}/panel_overrides"
+fi
+
+PANEL_SYNC_WAS_ACTIVE=0
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet pteroprotect-panel-sync; then
+    PANEL_SYNC_WAS_ACTIVE=1
+    systemctl stop pteroprotect-panel-sync >/dev/null 2>&1 || true
+fi
+
+if [[ -d "${PANEL_DIR}" && -n "${PANEL_OVERRIDE_SOURCE}" ]]; then
+    echo "[setup] applying bundled Pterodactyl overrides from ${PANEL_OVERRIDE_SOURCE} to ${PANEL_DIR}..."
     ensure_panel_runtime_dirs "${PANEL_DIR}"
     PANEL_OVERRIDE_BACKUP_DIR="${BACKUP_DIR}/panel_overrides_$(date -u +%Y%m%d_%H%M%S)"
-    backup_panel_override_targets "${INSTALL_DIR}/panel_overrides" "${PANEL_DIR}" "${PANEL_OVERRIDE_BACKUP_DIR}"
-    copy_tree "${INSTALL_DIR}/panel_overrides" "${PANEL_DIR}"
+    backup_panel_override_targets "${PANEL_OVERRIDE_SOURCE}" "${PANEL_DIR}" "${PANEL_OVERRIDE_BACKUP_DIR}"
+    copy_tree "${PANEL_OVERRIDE_SOURCE}" "${PANEL_DIR}"
 
     # Reviactyl compatibility bridge:
     # ensure known extra frontend deps and line-clamp plugin are present
@@ -1250,7 +1263,7 @@ PY
     fi
 
     if command -v php >/dev/null 2>&1 && [[ -f "${PANEL_DIR}/artisan" ]]; then
-        lint_php_tree "${INSTALL_DIR}/panel_overrides" "${PANEL_DIR}"
+        lint_php_tree "${PANEL_OVERRIDE_SOURCE}" "${PANEL_DIR}"
         if ! (cd "${PANEL_DIR}" && php artisan migrate --force); then
             echo "[setup] warning: panel migration failed, overrides applied but DB schema may be outdated." >&2
         fi
@@ -1411,6 +1424,10 @@ PY
         fi
         fi
     fi
+fi
+
+if (( PANEL_SYNC_WAS_ACTIVE == 1 )); then
+    systemctl start pteroprotect-panel-sync >/dev/null 2>&1 || true
 fi
 
 if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then

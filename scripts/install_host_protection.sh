@@ -88,9 +88,16 @@ init_ipset_runtime() {
     }
 
     if ! ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1; then
-        echo "[host_protection] warning: ipset backend unavailable; continuing with non-ipset firewall mode." >&2
-        IPSET_RUNTIME_OK=0
-        return 0
+        # Try to bring up common kernel modules before giving up on ipset backend.
+        modprobe ip_set >/dev/null 2>&1 || true
+        modprobe ip_set_hash_ip >/dev/null 2>&1 || true
+        modprobe xt_set >/dev/null 2>&1 || true
+
+        if ! ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1; then
+            echo "[host_protection] warning: ipset backend unavailable; continuing with non-ipset firewall mode." >&2
+            IPSET_RUNTIME_OK=0
+            return 0
+        fi
     fi
     if ! ipset list "${IPSET4}" >/dev/null 2>&1; then
         echo "[host_protection] warning: ipset set ${IPSET4} missing after create; disabling ipset integration." >&2
@@ -519,6 +526,18 @@ ensure_local_wings_access_rules_v4() {
     done
 }
 
+ensure_loopback_web_access_rules_v4() {
+    while iptables -C INPUT -i lo -j ACCEPT >/dev/null 2>&1; do
+        iptables -D INPUT -i lo -j ACCEPT >/dev/null 2>&1 || break
+    done
+    iptables -I INPUT 1 -i lo -j ACCEPT
+
+    while iptables -C INPUT -s 127.0.0.1/32 -p tcp -m multiport --dports 80,443 -j ACCEPT >/dev/null 2>&1; do
+        iptables -D INPUT -s 127.0.0.1/32 -p tcp -m multiport --dports 80,443 -j ACCEPT >/dev/null 2>&1 || break
+    done
+    iptables -I INPUT 2 -s 127.0.0.1/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
+}
+
 ensure_local_wings_access_rules_v6() {
     local port="$1"
     local host_ip
@@ -535,6 +554,19 @@ ensure_local_wings_access_rules_v6() {
         done
         ip6tables -I INPUT 1 -p tcp --dport "${port}" -s "${host_ip}/128" -j ACCEPT
     done
+}
+
+ensure_loopback_web_access_rules_v6() {
+    have_cmd ip6tables || return 0
+    while ip6tables -C INPUT -i lo -j ACCEPT >/dev/null 2>&1; do
+        ip6tables -D INPUT -i lo -j ACCEPT >/dev/null 2>&1 || break
+    done
+    ip6tables -I INPUT 1 -i lo -j ACCEPT
+
+    while ip6tables -C INPUT -s ::1/128 -p tcp -m multiport --dports 80,443 -j ACCEPT >/dev/null 2>&1; do
+        ip6tables -D INPUT -s ::1/128 -p tcp -m multiport --dports 80,443 -j ACCEPT >/dev/null 2>&1 || break
+    done
+    ip6tables -I INPUT 2 -s ::1/128 -p tcp -m multiport --dports 80,443 -j ACCEPT
 }
 
 prune_input_jump_rules_v6() {
@@ -747,6 +779,7 @@ prune_wings_guard_jump_rules_v4 "${WINGS_GUARD_PORTS}"
 prune_bw_jump_rules_v4
 prune_synproxy_jump_rules_v4
 ensure_unblock_portal_accept_rule_v4 "${UNBLOCK_PORTAL_PORT}"
+ensure_loopback_web_access_rules_v4
 ensure_local_wings_access_rules_v4 "${WINGS_API_PORT}"
 init_ipset_runtime
 
@@ -974,6 +1007,7 @@ if iptables -S DOCKER-USER >/dev/null 2>&1; then
 fi
 
 if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
+    ensure_loopback_web_access_rules_v6
     ensure_local_wings_access_rules_v6 "${WINGS_API_PORT}"
     ip6tables -N "${CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -N "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
