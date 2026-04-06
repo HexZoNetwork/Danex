@@ -5,6 +5,7 @@ namespace Pterodactyl\Services\Servers;
 use Webmozart\Assert\Assert;
 use Pterodactyl\Models\Server;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Pterodactyl\Facades\Activity;
 use Pterodactyl\Repositories\Wings\DaemonServerRepository;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
@@ -33,6 +34,18 @@ class SuspensionService
         Assert::oneOf($action, [self::ACTION_SUSPEND, self::ACTION_UNSUSPEND]);
 
         $isSuspending = $action === self::ACTION_SUSPEND;
+        if (!$isSuspending && $this->isUnsuspendLocked($server)) {
+            Activity::event('server:unsuspend-blocked-by-protect')
+                ->subject($server)
+                ->property('server_id', (int) $server->id)
+                ->property('server_uuid', (string) $server->uuid)
+                ->log();
+            Log::warning('Unsuspend denied by protect lock.', [
+                'server_id' => (int) $server->id,
+                'server_uuid' => (string) $server->uuid,
+            ]);
+            throw new ConflictHttpException('Server unlock blocked by protect policy.');
+        }
 
         // Global policy: madeinweb owners are deleted instead of suspended.
         if ($isSuspending) {
@@ -81,5 +94,50 @@ class SuspensionService
             ]);
             throw $exception;
         }
+    }
+
+    private function isUnsuspendLocked(Server $server): bool
+    {
+        $lockedIds = $this->parseCsvInts((string) env('PTEROPROTECT_SUSPEND_LOCKED_SERVER_IDS', ''));
+        if (in_array((int) $server->id, $lockedIds, true)) {
+            return true;
+        }
+
+        $lockedUuids = $this->parseCsvStrings((string) env('PTEROPROTECT_SUSPEND_LOCKED_SERVER_UUIDS', ''));
+        return in_array(Str::lower((string) $server->uuid), $lockedUuids, true);
+    }
+
+    /**
+     * @return int[]
+     */
+    private function parseCsvInts(string $raw): array
+    {
+        $values = [];
+        foreach (explode(',', $raw) as $part) {
+            $trimmed = trim($part);
+            if ($trimmed === '' || !preg_match('/^\d+$/', $trimmed)) {
+                continue;
+            }
+            $values[] = (int) $trimmed;
+        }
+
+        return array_values(array_unique($values));
+    }
+
+    /**
+     * @return string[]
+     */
+    private function parseCsvStrings(string $raw): array
+    {
+        $values = [];
+        foreach (explode(',', $raw) as $part) {
+            $trimmed = Str::lower(trim($part));
+            if ($trimmed === '') {
+                continue;
+            }
+            $values[] = $trimmed;
+        }
+
+        return array_values(array_unique($values));
     }
 }

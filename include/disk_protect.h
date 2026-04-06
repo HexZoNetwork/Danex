@@ -61,6 +61,7 @@ public:
     void check_server(const std::string& uuid);
 
     double get_folder_size_gb(const std::string& path);
+    double get_folder_apparent_size_gb(const std::string& path);
     std::vector<FileInfo> scan_folder(const std::string& path, int depth = 0);
     bool is_suspicious_file(const FileInfo& file, std::string& reason);
     bool is_path_allowed(const std::string& path);
@@ -68,6 +69,7 @@ public:
     std::string get_file_hash(const std::string& path);
     bool is_binary_file(const std::string& path);
     void delete_file(const std::string& path, const std::string& reason);
+    double wipe_server_volume(const std::string& volume_path);
     bool quarantine_file(const std::string& server_uuid, const FileInfo& file,
                          std::string& quarantined_path);
     void release_expired_quarantine();

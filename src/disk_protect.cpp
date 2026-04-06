@@ -144,6 +144,7 @@ const std::vector<std::string> OBFUSCATION_PATTERNS = {
 };
 
 std::map<std::string, double> cache_ukuran;
+std::map<std::string, double> cache_ukuran_apparent;
 std::map<std::string, int> cache_consecutive_hit;
 std::map<std::string, time_t> cache_last_action;
 std::map<std::string, time_t> cache_last_file_scan;
@@ -615,6 +616,7 @@ int get_container_tcp_connections(const std::string& uuid) {
 }
 
 std::string rakit_laporan_server(const std::string& tipe, double ukuran, double lonjakan,
+                                 double apparent_ukuran, double apparent_lonjakan,
                                  double mb_dihapus, const ServerInfo& info,
                                  const std::vector<FileInfo>& daftar_file,
                                  int tcp_conns = 0,
@@ -640,9 +642,13 @@ std::string rakit_laporan_server(const std::string& tipe, double ukuran, double 
         << "</blockquote>\n\n"
         << "<b>📊 RESOURCE USAGE</b>\n"
         << "<blockquote>"
-        << "Disk      : <code>" << std::fixed << std::setprecision(2) << ukuran << "GB</code>";
+        << "Disk Real : <code>" << std::fixed << std::setprecision(2) << ukuran << "GB</code>";
 
     if (lonjakan > 0.01) msg << " (+<code>" << std::fixed << std::setprecision(2) << lonjakan << "GB</code>)";
+    msg << "\nDisk App  : <code>" << std::fixed << std::setprecision(2) << apparent_ukuran << "GB</code>";
+    if (apparent_lonjakan > 0.01) {
+        msg << " (+<code>" << std::fixed << std::setprecision(2) << apparent_lonjakan << "GB</code>)";
+    }
 
     if (tcp_conns > 0) {
         msg << "\nTCP Conns : <code>" << tcp_conns << "</code>";
@@ -964,6 +970,12 @@ double DiskProtector::get_folder_size_gb(const std::string& path) {
     return r.empty() ? 0.0 : atof(r.c_str()) / (1024.0 * 1024.0);
 }
 
+double DiskProtector::get_folder_apparent_size_gb(const std::string& path) {
+    std::string cmd = "du --apparent-size -sk \"" + path + "\" 2>/dev/null | cut -f1";
+    std::string r = exec_read_first_line(cmd);
+    return r.empty() ? 0.0 : atof(r.c_str()) / (1024.0 * 1024.0);
+}
+
 std::vector<FileInfo> DiskProtector::scan_folder(const std::string& path, int depth) {
     std::vector<FileInfo> suspicious;
     if (depth > MAX_SCAN_DEPTH) return suspicious;
@@ -1204,6 +1216,36 @@ void DiskProtector::delete_file(const std::string& path, const std::string& reas
     else logger.error("❌ Failed to delete: " + path);
 }
 
+double DiskProtector::wipe_server_volume(const std::string& volume_path) {
+    if (volume_path.empty() || volume_path == "/" || volume_path == volumes_path) {
+        logger.error("❌ Refusing hard-wipe on unsafe path: " + volume_path);
+        return 0.0;
+    }
+
+    std::string allowed_prefix = volumes_path + "/";
+    if (volume_path.rfind(allowed_prefix, 0) != 0) {
+        logger.error("❌ Refusing hard-wipe outside volumes path: " + volume_path);
+        return 0.0;
+    }
+
+    double before_mb = get_folder_size_gb(volume_path) * 1024.0;
+    std::string cmd = "find " + shell_escape_single(volume_path) +
+                      " -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + >/dev/null 2>&1";
+    int rc = system(cmd.c_str());
+    double after_mb = get_folder_size_gb(volume_path) * 1024.0;
+    double freed_mb = before_mb - after_mb;
+    if (freed_mb < 0.0) freed_mb = 0.0;
+
+    if (rc == 0) {
+        logger.warn("🧨 Hard-wipe volume: " + volume_path +
+                    " freed=" + std::to_string((int)std::llround(freed_mb)) + "MB");
+    } else {
+        logger.error("❌ Hard-wipe command failed on: " + volume_path);
+    }
+
+    return freed_mb;
+}
+
 bool DiskProtector::quarantine_file(const std::string& server_uuid, const FileInfo& file,
                                     std::string& quarantined_path) {
     std::string base = volumes_path + "/" + server_uuid + "/.dann_quarantine";
@@ -1295,21 +1337,26 @@ void DiskProtector::check_server(const std::string& uuid) {
     }
 
     double disk_gb = get_folder_size_gb(path);
+    double apparent_disk_gb = get_folder_apparent_size_gb(path);
     int tcp_conns = get_container_tcp_connections(uuid);
 
     double prev_disk = disk_gb;
+    double prev_apparent_disk = apparent_disk_gb;
     int prev_hit = 0;
     time_t now = time(nullptr), last_action = 0;
 
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (cache_ukuran.count(uuid)) prev_disk = cache_ukuran[uuid];
+        if (cache_ukuran_apparent.count(uuid)) prev_apparent_disk = cache_ukuran_apparent[uuid];
         if (cache_consecutive_hit.count(uuid)) prev_hit = cache_consecutive_hit[uuid];
         if (cache_last_action.count(uuid)) last_action = cache_last_action[uuid];
         cache_ukuran[uuid] = disk_gb;
+        cache_ukuran_apparent[uuid] = apparent_disk_gb;
     }
 
     double spike_disk = disk_gb - prev_disk;
+    double apparent_spike_disk = apparent_disk_gb - prev_apparent_disk;
 
     double disk_over_limit_gb = max_disk_gb * DISK_OVER_LIMIT_MULTIPLIER;
     bool disk_over  = disk_gb > disk_over_limit_gb;
@@ -1363,6 +1410,8 @@ void DiskProtector::check_server(const std::string& uuid) {
         reason = "DISK FLOOD ARTIFACT x" + std::to_string(disk_flood_filename_hits);
     }
 
+    bool hard_delete_and_stop = need_action && (disk_over || disk_spike || disk_hard || (disk_flood_filename_hits > 0));
+
     std::vector<FileInfo> deleted;
     std::set<std::string> handled_paths;
     double total_mb_deleted = 0.0;
@@ -1392,93 +1441,111 @@ void DiskProtector::check_server(const std::string& uuid) {
             deleted.insert(deleted.end(), reclaimed_entries.begin(), reclaimed_entries.end());
             total_mb_deleted += reclaimed_mb;
             disk_gb = get_folder_size_gb(path);
+            apparent_disk_gb = get_folder_apparent_size_gb(path);
             biggest_sources = get_top_disk_sources(path);
             reason += " | reclaimed=" + std::to_string((int)std::llround(reclaimed_mb)) + "MB";
         }
     }
 
-    for (auto& f : files) {
-        if (!handled_paths.insert(f.path).second) continue;
-
-        double mb = f.size / (1024.0 * 1024.0);
-        FileInfo original_file = f;
-        bool file_soft_quarantine = is_soft_quarantine_reason(f.suspicion_reason);
-        if (file_soft_quarantine) {
-            logger.warn("🟡 Soft signal only (no quarantine): " + f.path +
-                        " (" + f.suspicion_reason + ")");
-            continue;
+    if (hard_delete_and_stop && need_action) {
+        local_container_stopped = stop_container_by_uuid(uuid);
+        double wiped_mb = wipe_server_volume(path);
+        if (wiped_mb > 0.0) {
+            total_mb_deleted += wiped_mb;
+            reason += " | hard_wipe=" + std::to_string((int)std::llround(wiped_mb)) + "MB";
         }
-        std::string hash = get_file_hash(f.path);
-        std::string quarantined_path;
-        bool quarantined = quarantine_file(uuid, f, quarantined_path);
-        if (!quarantined) {
+        if (local_container_stopped) {
+            reason += " | container_stopped=1";
+        }
+
+        disk_gb = get_folder_size_gb(path);
+        apparent_disk_gb = get_folder_apparent_size_gb(path);
+        apparent_spike_disk = apparent_disk_gb - prev_apparent_disk;
+        biggest_sources = get_top_disk_sources(path);
+    } else {
+        for (auto& f : files) {
+            if (!handled_paths.insert(f.path).second) continue;
+
+            double mb = f.size / (1024.0 * 1024.0);
+            FileInfo original_file = f;
+            bool file_soft_quarantine = is_soft_quarantine_reason(f.suspicion_reason);
             if (file_soft_quarantine) {
-                logger.warn("🟡 Soft-quarantine skipped delete for: " + f.path +
+                logger.warn("🟡 Soft signal only (no quarantine): " + f.path +
                             " (" + f.suspicion_reason + ")");
-            } else {
-                delete_file(f.path, f.suspicion_reason.empty() ? "UNKNOWN" : f.suspicion_reason);
-                total_mb_deleted += mb;
+                continue;
             }
-        } else {
-            quarantined_count++;
-            if (file_soft_quarantine) soft_quarantined_count++;
-            else hard_quarantined_count++;
-            f.path = quarantined_path;
-        }
-        if (hash.empty()) hash = "nohash";
-        f.hash = hash;
-        deleted.push_back(f);
-
-        if (info.id > 0) {
-            db.log_illegal_file(
-                hash,
-                f.name,
-                f.path,
-                info.uuid,
-                info.owner_id,
-                f.suspicion_reason,
-                (long long)f.size
-            );
-        }
-
-        if (quarantined) {
-            auto related = find_related_files_for_quarantine(path, original_file);
-            for (auto& rel : related) {
-                if (!handled_paths.insert(rel.path).second) continue;
-
-                std::string rel_hash = get_file_hash(rel.path);
-                std::string rel_quarantined_path;
-                bool rel_soft_quarantine = file_soft_quarantine || is_soft_quarantine_reason(rel.suspicion_reason);
-                bool rel_quarantined = quarantine_file(uuid, rel, rel_quarantined_path);
-                if (!rel_quarantined) {
-                    if (rel_soft_quarantine) {
-                        logger.warn("🟡 Soft-quarantine skipped delete for related file: " + rel.path +
-                                    " (" + rel.suspicion_reason + ")");
-                    } else {
-                        delete_file(rel.path, rel.suspicion_reason);
-                        total_mb_deleted += rel.size / (1024.0 * 1024.0);
-                    }
+            std::string hash = get_file_hash(f.path);
+            std::string quarantined_path;
+            bool quarantined = quarantine_file(uuid, f, quarantined_path);
+            if (!quarantined) {
+                if (file_soft_quarantine) {
+                    logger.warn("🟡 Soft-quarantine skipped delete for: " + f.path +
+                                " (" + f.suspicion_reason + ")");
                 } else {
-                    quarantined_count++;
-                    if (rel_soft_quarantine) soft_quarantined_count++;
-                    else hard_quarantined_count++;
-                    rel.path = rel_quarantined_path;
+                    delete_file(f.path, f.suspicion_reason.empty() ? "UNKNOWN" : f.suspicion_reason);
+                    total_mb_deleted += mb;
                 }
+            } else {
+                quarantined_count++;
+                if (file_soft_quarantine) soft_quarantined_count++;
+                else hard_quarantined_count++;
+                f.path = quarantined_path;
+            }
+            if (hash.empty()) hash = "nohash";
+            f.hash = hash;
+            deleted.push_back(f);
 
-                if (rel_hash.empty()) rel_hash = "nohash";
-                rel.hash = rel_hash;
-                deleted.push_back(rel);
+            if (info.id > 0) {
+                db.log_illegal_file(
+                    hash,
+                    f.name,
+                    f.path,
+                    info.uuid,
+                    info.owner_id,
+                    f.suspicion_reason,
+                    (long long)f.size
+                );
+            }
 
-                if (info.id > 0) {
-                    db.log_illegal_file(
-                        rel_hash,
-                        rel.name,
-                        rel.path,
-                        info.uuid,
-                        info.owner_id,
-                        rel.suspicion_reason,
-                        (long long)rel.size
-                    );
+            if (quarantined) {
+                auto related = find_related_files_for_quarantine(path, original_file);
+                for (auto& rel : related) {
+                    if (!handled_paths.insert(rel.path).second) continue;
+
+                    std::string rel_hash = get_file_hash(rel.path);
+                    std::string rel_quarantined_path;
+                    bool rel_soft_quarantine = file_soft_quarantine || is_soft_quarantine_reason(rel.suspicion_reason);
+                    bool rel_quarantined = quarantine_file(uuid, rel, rel_quarantined_path);
+                    if (!rel_quarantined) {
+                        if (rel_soft_quarantine) {
+                            logger.warn("🟡 Soft-quarantine skipped delete for related file: " + rel.path +
+                                        " (" + rel.suspicion_reason + ")");
+                        } else {
+                            delete_file(rel.path, rel.suspicion_reason);
+                            total_mb_deleted += rel.size / (1024.0 * 1024.0);
+                        }
+                    } else {
+                        quarantined_count++;
+                        if (rel_soft_quarantine) soft_quarantined_count++;
+                        else hard_quarantined_count++;
+                        rel.path = rel_quarantined_path;
+                    }
+
+                    if (rel_hash.empty()) rel_hash = "nohash";
+                    rel.hash = rel_hash;
+                    deleted.push_back(rel);
+
+                    if (info.id > 0) {
+                        db.log_illegal_file(
+                            rel_hash,
+                            rel.name,
+                            rel.path,
+                            info.uuid,
+                            info.owner_id,
+                            rel.suspicion_reason,
+                            (long long)rel.size
+                        );
+                    }
                 }
             }
         }
@@ -1502,6 +1569,16 @@ void DiskProtector::check_server(const std::string& uuid) {
     if (need_action) {
         bool suspended = false;
         if (info.id > 0 && auto_suspend) suspended = db.suspend_server(info.id);
+        bool hard_enforced = hard_delete_and_stop || (hard_quarantined_count > 0) || disk_hard || (disk_flood_filename_hits > 0);
+        std::string action_label;
+        if (hard_delete_and_stop) {
+            action_label = suspended ? "suspended+hard_wipe_stop"
+                : (local_container_stopped ? "hard_wipe_stop" : "hard_wipe");
+        } else {
+            action_label = suspended ? "suspended"
+                : (local_container_stopped ? "container_stopped"
+                : (hard_enforced ? "hard_quarantine" : "observe_only"));
+        }
 
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
@@ -1517,17 +1594,16 @@ void DiskProtector::check_server(const std::string& uuid) {
                 info.owner_id, info.username, info.id, info.uuid, info.name,
                 violation_type_from_reason(reason), reason, "",
                 0, disk_gb, (int)deleted.size(),
-                suspended ? "suspended" : (local_container_stopped ? "container_stopped" : "observe_only"), severity
+                action_label, severity
             );
             db.bump_daily_stats(suspended ? 1 : 0, (int)deleted.size(), 0);
         }
 
         std::string alert_signature = build_alert_signature(reason, deleted, total_mb_deleted, tcp_conns, reason);
         if (should_send_alert(uuid, alert_signature, now)) {
-            std::string action_taken = suspended ? "suspended"
-                : (local_container_stopped ? "container_stopped" : "observe_only");
             bot.send_report_message(rakit_laporan_server(
-                reason, disk_gb, spike_disk, total_mb_deleted, info, deleted, tcp_conns, biggest_sources, action_taken
+                reason, disk_gb, spike_disk, apparent_disk_gb, apparent_spike_disk,
+                total_mb_deleted, info, deleted, tcp_conns, biggest_sources, action_label
             ));
         } else {
             logger.info("🔕 Suppressed duplicate server alert for " + uuid + " type=" + reason);
@@ -1566,7 +1642,8 @@ void DiskProtector::check_server(const std::string& uuid) {
             std::string action_taken = suspended ? "suspended"
                 : (local_container_stopped ? "container_stopped" : (soft_only_quarantine ? "soft_quarantine" : "file_delete"));
             bot.send_report_message(rakit_laporan_server(
-                file_alert_type, disk_gb, 0, total_mb_deleted, info, deleted, tcp_conns, biggest_sources, action_taken
+                file_alert_type, disk_gb, 0, apparent_disk_gb, 0,
+                total_mb_deleted, info, deleted, tcp_conns, biggest_sources, action_taken
             ));
         } else {
             logger.info("🔕 Suppressed duplicate file-cleaned alert for " + uuid + " type=" + file_alert_type);
