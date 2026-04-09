@@ -3,7 +3,7 @@
 namespace Pterodactyl\Http\Controllers\Api\Client\Servers;
 
 use Throwable;
-use Carbon\CarbonImmutable;s
+use Carbon\CarbonImmutable;
 use Pterodactyl\Models\Server;
 use Illuminate\Http\JsonResponse;
 use Pterodactyl\Models\Permission;
