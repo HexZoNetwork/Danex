@@ -751,9 +751,14 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
                 close $efh;
             }
 
-            # Database credentials must follow panel .env on each setup run.
-            # This prevents stale repo/install config.json values from
-            # overwriting correct per-server DB credentials.
+            # By default keep explicit config.json DB values, then fill any
+            # missing fields from panel .env. Set
+            # PTEROPROTECT_FORCE_PANEL_DB_SYNC=1 to force full overwrite.
+            my $force_panel_db_sync = 0;
+            if (exists $ENV{PTEROPROTECT_FORCE_PANEL_DB_SYNC}) {
+                my $raw = lc($ENV{PTEROPROTECT_FORCE_PANEL_DB_SYNC});
+                $force_panel_db_sync = 1 if $raw eq "1" || $raw eq "true" || $raw eq "yes" || $raw eq "on";
+            }
             my %db_env = (
                 host => "DB_HOST",
                 name => "DB_DATABASE",
@@ -764,7 +769,17 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
                 my $ek = $db_env{$db_key};
                 next if !exists($env{$ek});
                 my $val = defined($env{$ek}) ? $env{$ek} : "";
-                next if $db_key ne "password" && $val eq "";
+
+                if (!$force_panel_db_sync) {
+                    my $cur = $j->{database}{$db_key};
+                    if (defined($cur) && ref($cur) eq "" && $cur ne "") {
+                        next;
+                    }
+                    next if $val eq "";
+                } else {
+                    next if $db_key ne "password" && $val eq "";
+                }
+
                 $j->{database}{$db_key} = $val;
             }
 
