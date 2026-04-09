@@ -850,7 +850,6 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network}{host_global_new_per_sec} = 1200 if !defined($j->{network}{host_global_new_per_sec}) || $j->{network}{host_global_new_per_sec} !~ /^\d+$/ || $j->{network}{host_global_new_per_sec} < 100;
         $j->{network}{host_global_new_burst} = 2400 if !defined($j->{network}{host_global_new_burst}) || $j->{network}{host_global_new_burst} !~ /^\d+$/ || $j->{network}{host_global_new_burst} < 200;
         $j->{network}{infra_guard_ports} = "22,2022,8080,3306,5432,6379" if !defined($j->{network}{infra_guard_ports}) || $j->{network}{infra_guard_ports} eq "";
-        $j->{network}{monitor_tcp_ports} = "22,80,443,8080,2022,3306,6379" if !defined($j->{network}{monitor_tcp_ports}) || $j->{network}{monitor_tcp_ports} eq "";
         $j->{network}{infra_guard_connlimit_per_ip} = 12 if !defined($j->{network}{infra_guard_connlimit_per_ip}) || $j->{network}{infra_guard_connlimit_per_ip} !~ /^\d+$/ || $j->{network}{infra_guard_connlimit_per_ip} < 4;
         $j->{network}{infra_guard_new_conn_per_ip} = 8 if !defined($j->{network}{infra_guard_new_conn_per_ip}) || $j->{network}{infra_guard_new_conn_per_ip} !~ /^\d+$/ || $j->{network}{infra_guard_new_conn_per_ip} < 2;
         $j->{network}{infra_guard_new_conn_burst} = 16 if !defined($j->{network}{infra_guard_new_conn_burst}) || $j->{network}{infra_guard_new_conn_burst} !~ /^\d+$/ || $j->{network}{infra_guard_new_conn_burst} < 4;

@@ -41,7 +41,6 @@
          "/dev/shm/pteroprotect/"
       ],
       "rce_default_timeout_sec": 15,
-      "monitor_tcp_ports": "22,80,443,8080,2022,3306,6379",
       "trusted_hosts": [
          ""
       ]
