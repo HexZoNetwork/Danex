@@ -17,7 +17,13 @@ config.json
 # Archives and logs
 *.tar.gz
 *.log
-
+tesspace
 # Local-only secrets/config variants
 .env
 config.local.json
+
+# Security harness workspace runtime artifacts
+tesspace/runtime/
+tesspace/.env
+tesspace/.venv/
+tesspace/*.local.json
