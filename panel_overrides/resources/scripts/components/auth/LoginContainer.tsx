@@ -112,7 +112,7 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
                     <div css={tw`mt-3 text-center`}>
                         <Link
                             to={'/auth/register'}
-                            css={tw`text-xs text-cyan-500 tracking-wide no-underline uppercase hover:text-cyan-400`}
+                            css={tw`inline-flex items-center justify-center px-5 py-2 rounded-md bg-cyan-600 text-white text-xs font-semibold tracking-wide uppercase no-underline shadow-md hover:bg-cyan-500 transition-colors`}
                         >
                             Daftar
                         </Link>
