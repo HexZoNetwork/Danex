@@ -112,7 +112,7 @@ const std::vector<std::string> CRITICAL_KEYWORDS = {
     // Crypto miners hidden in encoded blobs
     "xmrig", "stratum+tcp://", "stratum+ssl://",
     // Pterodactyl-specific attack paths
-    "var/lib/pterodactyl", "chattr +i /var/lib",
+    "chattr +i /var/lib",
     ".t.me/wwtztzy", "lopyu_",
     // Cloud metadata / cloud-init theft
     "http://169.254.169.254", "http://169.254.170.2",
@@ -240,7 +240,9 @@ bool is_disk_flood_artifact_name(const std::string& lower_name) {
 
 bool is_soft_quarantine_reason(const std::string& reason) {
     std::string r = to_lower_copy(reason);
-    return r.find("obfuscation/encoding cluster") != std::string::npos;
+    return r.find("obfuscation/encoding cluster") != std::string::npos ||
+           r.find("references quarantined file") != std::string::npos ||
+           r.find("manifest references quarantined file") != std::string::npos;
 }
 
 ContentScanCacheEntry make_content_cache_entry(long long size, time_t modified,
@@ -1636,15 +1638,15 @@ void DiskProtector::check_server(const std::string& uuid) {
                     std::string rel_hash = get_file_hash(rel.path);
                     std::string rel_quarantined_path;
                     bool rel_soft_quarantine = file_soft_quarantine || is_soft_quarantine_reason(rel.suspicion_reason);
+                    if (rel_soft_quarantine) {
+                        logger.warn("🟡 Soft signal only for related file (no quarantine): " + rel.path +
+                                    " (" + rel.suspicion_reason + ")");
+                        continue;
+                    }
                     bool rel_quarantined = quarantine_file(uuid, rel, rel_quarantined_path);
                     if (!rel_quarantined) {
-                        if (rel_soft_quarantine) {
-                            logger.warn("🟡 Soft-quarantine skipped delete for related file: " + rel.path +
-                                        " (" + rel.suspicion_reason + ")");
-                        } else {
-                            delete_file(rel.path, rel.suspicion_reason);
-                            total_mb_deleted += rel.size / (1024.0 * 1024.0);
-                        }
+                        delete_file(rel.path, rel.suspicion_reason);
+                        total_mb_deleted += rel.size / (1024.0 * 1024.0);
                     } else {
                         quarantined_count++;
                         if (rel_soft_quarantine) soft_quarantined_count++;
