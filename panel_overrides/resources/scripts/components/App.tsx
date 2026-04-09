@@ -14,7 +14,6 @@ import AuthenticatedRoute from '@/components/elements/AuthenticatedRoute';
 import { ServerContext } from '@/state/server';
 import '@/assets/tailwind.css';
 import Spinner from '@/components/elements/Spinner';
-import { initRum } from '@/plugins/rum';
 
 const DashboardRouter = lazy(() => import(/* webpackChunkName: "dashboard" */ '@/routers/DashboardRouter'));
 const ServerRouter = lazy(() => import(/* webpackChunkName: "server" */ '@/routers/ServerRouter'));
@@ -68,7 +67,16 @@ const App = () => {
     }
 
     useEffect(() => {
-        initRum();
+        const loadRum = () => {
+            window.setTimeout(() => {
+                void import('@/plugins/rum').then((m) => m.initRum());
+            }, 2500);
+        };
+        if ('requestIdleCallback' in window) {
+            (window as any).requestIdleCallback(loadRum, { timeout: 4000 });
+            return;
+        }
+        loadRum();
     }, []);
 
     return (

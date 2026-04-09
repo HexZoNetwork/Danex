@@ -1,8 +1,8 @@
 const SAMPLE_KEY = 'danex_rum_sample_v1';
-const SAMPLE_RATE = 0.05;
-const MAX_QUEUE = 80;
-const FLUSH_COUNT = 12;
-const FLUSH_INTERVAL_MS = 30000;
+const SAMPLE_RATE = 0.01;
+const MAX_QUEUE = 50;
+const FLUSH_COUNT = 20;
+const FLUSH_INTERVAL_MS = 60000;
 
 type RumMetric =
     | 'LCP'
@@ -67,6 +67,12 @@ const ratingFor = (metric: RumMetric, value: number): 'good' | 'needs-improvemen
     return 'good';
 };
 
+declare global {
+    interface Window {
+        __danexRumTrackApi?: (path: string, durationMs: number, status?: number) => void;
+    }
+}
+
 const sendEvents = (events: RumEvent[]) => {
     if (!events.length) return;
     const payload = JSON.stringify({ events });
@@ -126,57 +132,13 @@ const observeCoreWebVitals = () => {
         });
     }
 
-    let clsValue = 0;
-    let lcpValue = 0;
-
-    try {
-        const clsObserver = new PerformanceObserver((list) => {
-            for (const entry of list.getEntries() as PerformanceEntry[]) {
-                const ls = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean };
-                if (ls.hadRecentInput) continue;
-                clsValue += ls.value || 0;
-            }
-        });
-        clsObserver.observe({ type: 'layout-shift', buffered: true });
-    } catch {
-        // unsupported
-    }
-
-    try {
-        const lcpObserver = new PerformanceObserver((list) => {
-            const entries = list.getEntries();
-            const last = entries[entries.length - 1];
-            if (last) lcpValue = last.startTime;
-        });
-        lcpObserver.observe({ type: 'largest-contentful-paint', buffered: true });
-    } catch {
-        // unsupported
-    }
-
-    const finalizeVitals = () => {
-        if (lcpValue > 0) {
-            enqueueRum({ metric: 'LCP', value: lcpValue, rating: ratingFor('LCP', lcpValue), ttfb: nav?.responseStart || 0 });
-        }
-        if (clsValue > 0) {
-            enqueueRum({ metric: 'CLS', value: Number(clsValue.toFixed(4)), rating: ratingFor('CLS', clsValue) });
-        }
-        flushRumQueue(true);
-    };
-
-    document.addEventListener(
-        'visibilitychange',
-        () => {
-            if (document.visibilityState === 'hidden') finalizeVitals();
-        },
-        { once: true }
-    );
-}
+};
 
 export const rumTrackApi = (path: string, durationMs: number, status?: number) => {
     if (!enabled) return;
     const isError = !!status && status >= 500;
-    if (!isError && durationMs < 1200) return;
-    if (!isError && Math.random() > 0.1) return;
+    if (!isError && durationMs < 2000) return;
+    if (!isError && Math.random() > 0.05) return;
     enqueueRum({
         metric: 'api_latency',
         api_path: path.slice(0, 255),
@@ -213,6 +175,7 @@ export const initRum = () => {
     started = true;
     enabled = shouldSample();
     if (!enabled) return;
+    window.__danexRumTrackApi = rumTrackApi;
     observeCoreWebVitals();
     setupErrorCollectors();
     flushTimer = window.setInterval(() => flushRumQueue(), FLUSH_INTERVAL_MS);
@@ -224,5 +187,6 @@ export const stopRum = () => {
         window.clearInterval(flushTimer);
         flushTimer = undefined;
     }
+    delete window.__danexRumTrackApi;
     flushRumQueue(true);
 };

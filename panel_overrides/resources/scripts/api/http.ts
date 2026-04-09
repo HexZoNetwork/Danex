@@ -1,6 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
 import { store } from '@/state';
-import { rumTrackApi } from '@/plugins/rum';
 
 const http: AxiosInstance = axios.create({
     withCredentials: true,
@@ -32,7 +31,10 @@ http.interceptors.response.use(
             } else if (resp.config?.url?.startsWith('/api/')) {
                 const finished = typeof performance !== 'undefined' ? performance.now() : Date.now();
                 const duration = finished - started;
-                rumTrackApi(resp.config.url, duration, resp.status);
+                const rumTrackApi = (window as any).__danexRumTrackApi;
+                if (typeof rumTrackApi === 'function') {
+                    rumTrackApi(resp.config.url, duration, resp.status);
+                }
             }
         } catch {
             // no-op
@@ -51,7 +53,10 @@ http.interceptors.response.use(
                 const finished = typeof performance !== 'undefined' ? performance.now() : Date.now();
                 const duration = finished - started;
                 const status = error?.response?.status;
-                rumTrackApi(cfg.url, duration, status);
+                const rumTrackApi = (window as any).__danexRumTrackApi;
+                if (typeof rumTrackApi === 'function') {
+                    rumTrackApi(cfg.url, duration, status);
+                }
             }
         } catch {
             // no-op
