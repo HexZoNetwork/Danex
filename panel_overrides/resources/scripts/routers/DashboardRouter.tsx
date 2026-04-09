@@ -1,11 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { lazy, useEffect, useRef } from 'react';
 import { NavLink, Route, Switch } from 'react-router-dom';
 import NavigationBar from '@/components/NavigationBar';
 import DashboardContainer from '@/components/dashboard/DashboardContainer';
-import PublicChatPage from '@/components/dashboard/PublicChatPage';
-import DanexCoinPage from '@/components/dashboard/DanexCoinPage';
-import NotificationsPage from '@/components/dashboard/NotificationsPage';
-import CreatePanelPage from '@/components/dashboard/CreatePanelPage';
 import AdsSurface from '@/components/dashboard/AdsSurface';
 import { NotFound } from '@/components/elements/ScreenBlock';
 import TransitionRouter from '@/TransitionRouter';
@@ -13,10 +9,15 @@ import SubNavigation from '@/components/elements/SubNavigation';
 import { useLocation } from 'react-router';
 import Spinner from '@/components/elements/Spinner';
 import routes from '@/routers/routes';
-import AccountProfileContainer from '@/components/dashboard/AccountProfileContainer';
 import { getChatNotifications } from '@/api/chat/publicChat';
 import { useStoreState } from 'easy-peasy';
 import { ApplicationStore } from '@/state';
+
+const PublicChatPage = lazy(() => import('@/components/dashboard/PublicChatPage'));
+const DanexCoinPage = lazy(() => import('@/components/dashboard/DanexCoinPage'));
+const NotificationsPage = lazy(() => import('@/components/dashboard/NotificationsPage'));
+const CreatePanelPage = lazy(() => import('@/components/dashboard/CreatePanelPage'));
+const AccountProfileContainer = lazy(() => import('@/components/dashboard/AccountProfileContainer'));
 
 export default () => {
     const location = useLocation();
@@ -67,17 +68,18 @@ export default () => {
             }
         };
 
-        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission().catch(() => {
-                // ignore
-            });
-        }
+        const scheduleTick = () => {
+            if (document.visibilityState !== 'visible') return;
+            void tick();
+        };
 
-        tick();
-        const timer = window.setInterval(tick, 3500);
+        // Delay the first poll so initial route render stays snappy.
+        const firstTimer = window.setTimeout(scheduleTick, 2500);
+        const timer = window.setInterval(scheduleTick, 15000);
 
         return () => {
             cancelled = true;
+            window.clearTimeout(firstTimer);
             window.clearInterval(timer);
         };
     }, []);

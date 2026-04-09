@@ -8,10 +8,10 @@ import NetworkContainer from '@/components/server/network/NetworkContainer';
 import StartupContainer from '@/components/server/startup/StartupContainer';
 import FileManagerContainer from '@/components/server/files/FileManagerContainer';
 import SettingsContainer from '@/components/server/settings/SettingsContainer';
-import AccountOverviewContainer from '@/components/dashboard/AccountOverviewContainer';
-import AccountApiContainer from '@/components/dashboard/AccountApiContainer';
-import AccountSSHContainer from '@/components/dashboard/ssh/AccountSSHContainer';
-import ActivityLogContainer from '@/components/dashboard/activity/ActivityLogContainer';
+const AccountOverviewContainer = lazy(() => import('@/components/dashboard/AccountOverviewContainer'));
+const AccountApiContainer = lazy(() => import('@/components/dashboard/AccountApiContainer'));
+const AccountSSHContainer = lazy(() => import('@/components/dashboard/ssh/AccountSSHContainer'));
+const ActivityLogContainer = lazy(() => import('@/components/dashboard/activity/ActivityLogContainer'));
 import ServerActivityLogContainer from '@/components/server/ServerActivityLogContainer';
 
 // Each of the router files is already code split out appropriately — so
