@@ -118,26 +118,9 @@ module.exports = {
         sideEffects: false,
         runtimeChunk: false,
         removeEmptyChunks: true,
-        splitChunks: isProduction
-            ? {
-                  chunks: 'all',
-                  minSize: 20000,
-                  maxInitialRequests: 20,
-                  cacheGroups: {
-                      vendors: {
-                          test: /[\\/]node_modules[\\/]/,
-                          name: 'vendors',
-                          chunks: 'all',
-                          priority: 20,
-                      },
-                      default: {
-                          minChunks: 2,
-                          priority: 10,
-                          reuseExistingChunk: true,
-                      },
-                  },
-              }
-            : false,
+        // Keep a single initial bundle because the blade template only injects
+        // the main entrypoint script.
+        splitChunks: false,
         minimize: isProduction,
         minimizer: [
             new TerserPlugin({
