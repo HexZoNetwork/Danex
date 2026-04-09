@@ -73,7 +73,12 @@ export default () => {
                     {({ items }) =>
                         items.length > 0 ? (
                             items.map((server, index) => (
-                                <ServerRow key={server.uuid} server={server} css={index > 0 ? tw`mt-2` : undefined} />
+                                <ServerRow
+                                    key={server.uuid}
+                                    server={server}
+                                    eager={index < 3}
+                                    css={index > 0 ? tw`mt-2` : undefined}
+                                />
                             ))
                         ) : (
                             <p css={tw`text-center text-sm text-neutral-400`}>

@@ -49,9 +49,11 @@ const StatusIndicatorBox = styled(GreyRowBox)<{ $status: ServerPowerState | unde
 
 type Timer = ReturnType<typeof setInterval>;
 
-export default ({ server, className }: { server: Server; className?: string }) => {
+export default ({ server, className, eager = false }: { server: Server; className?: string; eager?: boolean }) => {
     const interval = useRef<Timer>(null) as React.MutableRefObject<Timer>;
+    const rowRef = useRef<HTMLAnchorElement | null>(null);
     const [isSuspended, setIsSuspended] = useState(server.status === 'suspended');
+    const [isVisible, setIsVisible] = useState(eager);
     const [stats, setStats] = useState<ServerStats | null>(null);
 
     const getStats = () =>
@@ -68,18 +70,56 @@ export default ({ server, className }: { server: Server; className?: string }) =
     }, [stats?.isSuspended, server.status]);
 
     useEffect(() => {
-        // Don't waste a HTTP request if there is nothing important to show to the user because
-        // the server is suspended.
-        if (isSuspended) return;
+        if (eager) {
+            setIsVisible(true);
+            return;
+        }
 
-        getStats().then(() => {
-            interval.current = setInterval(() => getStats(), 30000);
-        });
+        if (!rowRef.current || !('IntersectionObserver' in window)) {
+            setIsVisible(true);
+            return;
+        }
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries.some((entry) => entry.isIntersecting)) {
+                    setIsVisible(true);
+                    observer.disconnect();
+                }
+            },
+            { rootMargin: '180px 0px' }
+        );
+        observer.observe(rowRef.current);
+
+        return () => observer.disconnect();
+    }, [eager]);
+
+    useEffect(() => {
+        // Don't waste a HTTP request if there is nothing important to show to the user because
+        // the server is suspended or not visible yet.
+        if (isSuspended || !isVisible) return;
+
+        let cancelled = false;
+        const startPolling = () => {
+            if (cancelled) return;
+            getStats().then(() => {
+                if (!cancelled) {
+                    interval.current = setInterval(() => getStats(), 45000);
+                }
+            });
+        };
+
+        if ((window as any).requestIdleCallback) {
+            (window as any).requestIdleCallback(startPolling, { timeout: 1200 });
+        } else {
+            window.setTimeout(startPolling, 200);
+        }
 
         return () => {
+            cancelled = true;
             interval.current && clearInterval(interval.current);
         };
-    }, [isSuspended]);
+    }, [isSuspended, isVisible]);
 
     const alarms = { cpu: false, memory: false, disk: false };
     if (stats) {
@@ -93,7 +133,7 @@ export default ({ server, className }: { server: Server; className?: string }) =
     const cpuLimit = server.limits.cpu !== 0 ? server.limits.cpu + ' %' : 'Unlimited';
 
     return (
-        <StatusIndicatorBox as={Link} to={`/server/${server.id}`} className={className} $status={stats?.status}>
+        <StatusIndicatorBox as={Link} to={`/server/${server.id}`} className={className} $status={stats?.status} ref={rowRef}>
             <div css={tw`flex items-center col-span-12 sm:col-span-5 lg:col-span-6`}>
                 <div className={'icon mr-4'}>
                     <FontAwesomeIcon icon={faServer} />
