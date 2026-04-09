@@ -4,12 +4,14 @@ namespace Pterodactyl\Http\Controllers\Api\Client;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Pterodactyl\Models\Allocation;
 use Pterodactyl\Models\Egg;
 use Pterodactyl\Models\EggVariable;
 use Pterodactyl\Models\Server;
+use Pterodactyl\Models\User;
 use Pterodactyl\Services\Servers\ServerCreationService;
 use Pterodactyl\Services\Servers\SuspensionService;
 use Throwable;
@@ -70,15 +72,6 @@ class CreatePanelController extends ClientApiController
             return new JsonResponse(['error' => 'Kolom panel khusus belum tersedia. Jalankan migration terlebih dahulu.'], 409);
         }
 
-        $user = $request->user()->fresh();
-        if (!$this->isMadeInWeb($user?->name_last)) {
-            return new JsonResponse(['error' => 'Fitur ini khusus akun madeinweb.'], 403);
-        }
-        $hasOwnedServer = Server::query()->where('owner_id', (int) $user->id)->exists();
-        if ($user?->madeinweb_panel_created_at !== null && $hasOwnedServer) {
-            return new JsonResponse(['error' => 'Create Panel hanya bisa digunakan satu kali.'], 422);
-        }
-
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:191'],
             'egg_id' => ['required', 'integer', 'exists:eggs,id'],
@@ -87,18 +80,6 @@ class CreatePanelController extends ClientApiController
 
         /** @var Egg $egg */
         $egg = Egg::query()->findOrFail((int) $validated['egg_id']);
-
-        $allocation = Allocation::query()
-            ->select('allocations.id')
-            ->join('nodes', 'nodes.id', '=', 'allocations.node_id')
-            ->whereNull('allocations.server_id')
-            ->where('nodes.maintenance_mode', false)
-            ->orderBy('allocations.id')
-            ->first();
-
-        if (!$allocation) {
-            return new JsonResponse(['error' => 'Tidak ada allocation kosong saat ini.'], 422);
-        }
 
         $environment = EggVariable::query()
             ->where('egg_id', (int) $egg->id)
@@ -112,51 +93,93 @@ class CreatePanelController extends ClientApiController
         }
 
         $ram = (int) $validated['ram'];
-        $server = $this->serverCreationService->handle([
-            'name' => (string) $validated['name'],
-            'description' => 'Created via madeinweb Create Panel',
-            'owner_id' => (int) $user->id,
-            'egg_id' => (int) $egg->id,
-            'nest_id' => (int) $egg->nest_id,
-            'image' => $image,
-            'startup' => (string) ($egg->startup ?? ''),
-            'environment' => $environment,
-            'memory' => $ram,
-            'swap' => 0,
-            'disk' => max(1024, $ram * 2),
-            'io' => 500,
-            'cpu' => 100,
-            'threads' => '1',
-            'oom_disabled' => false,
-            'allocation_id' => (int) $allocation->id,
-            'database_limit' => 0,
-            'allocation_limit' => 0,
-            'backup_limit' => 0,
-            'skip_scripts' => false,
-            'start_on_completion' => true,
-        ]);
-
-        $autoSuspended = false;
-        if ($this->isCreatePanelAutoSuspendEnabled()) {
-            try {
-                $this->suspensionService->toggle($server, SuspensionService::ACTION_SUSPEND);
-                $autoSuspended = true;
-            } catch (Throwable $exception) {
-                report($exception);
+        $requestUserId = (int) $request->user()->id;
+        $result = DB::transaction(function () use ($requestUserId, $validated, $egg, $image, $ram, $environment) {
+            $user = User::query()->whereKey($requestUserId)->lockForUpdate()->first();
+            if (!$user) {
+                return ['error' => 'User tidak ditemukan.', 'status' => 404];
             }
+
+            if (!$this->isMadeInWeb($user->name_last)) {
+                return ['error' => 'Fitur ini khusus akun madeinweb.', 'status' => 403];
+            }
+
+            $hasOwnedServer = Server::query()->where('owner_id', (int) $user->id)->exists();
+            if ($user->madeinweb_panel_created_at !== null && $hasOwnedServer) {
+                return ['error' => 'Create Panel hanya bisa digunakan satu kali.', 'status' => 422];
+            }
+
+            $allocation = Allocation::query()
+                ->whereNull('allocations.server_id')
+                ->whereExists(function ($query) {
+                    $query->selectRaw('1')
+                        ->from('nodes')
+                        ->whereColumn('nodes.id', 'allocations.node_id')
+                        ->where('nodes.maintenance_mode', false);
+                })
+                ->orderBy('allocations.id')
+                ->lockForUpdate()
+                ->first(['allocations.id']);
+
+            if (!$allocation) {
+                return ['error' => 'Tidak ada allocation kosong saat ini.', 'status' => 422];
+            }
+
+            // Reserve one-time slot inside the transaction to prevent parallel creates.
+            $user->forceFill([
+                'madeinweb_panel_created_at' => now(),
+            ])->saveOrFail();
+
+            $server = $this->serverCreationService->handle([
+                'name' => (string) $validated['name'],
+                'description' => 'Created via madeinweb Create Panel',
+                'owner_id' => (int) $user->id,
+                'egg_id' => (int) $egg->id,
+                'nest_id' => (int) $egg->nest_id,
+                'image' => $image,
+                'startup' => (string) ($egg->startup ?? ''),
+                'environment' => $environment,
+                'memory' => $ram,
+                'swap' => 0,
+                'disk' => max(1024, $ram * 2),
+                'io' => 500,
+                'cpu' => 100,
+                'threads' => '1',
+                'oom_disabled' => false,
+                'allocation_id' => (int) $allocation->id,
+                'database_limit' => 0,
+                'allocation_limit' => 0,
+                'backup_limit' => 0,
+                'skip_scripts' => false,
+                'start_on_completion' => true,
+            ]);
+
+            $autoSuspended = false;
+            if ($this->isCreatePanelAutoSuspendEnabled()) {
+                try {
+                    $this->suspensionService->toggle($server, SuspensionService::ACTION_SUSPEND);
+                    $autoSuspended = true;
+                } catch (Throwable $exception) {
+                    report($exception);
+                }
+            }
+
+            return [
+                'data' => [
+                    'server_id' => (int) $server->id,
+                    'server_uuid' => (string) $server->uuid,
+                    'server_identifier' => (string) $server->uuidShort,
+                    'auto_suspended' => $autoSuspended,
+                ],
+            ];
+        });
+
+        if (isset($result['error'])) {
+            return new JsonResponse(['error' => (string) $result['error']], (int) ($result['status'] ?? 422));
         }
 
-        $user->forceFill([
-            'madeinweb_panel_created_at' => now(),
-        ])->saveOrFail();
-
         return new JsonResponse([
-            'data' => [
-                'server_id' => (int) $server->id,
-                'server_uuid' => (string) $server->uuid,
-                'server_identifier' => (string) $server->uuidShort,
-                'auto_suspended' => $autoSuspended,
-            ],
+            'data' => $result['data'],
         ], 201);
     }
 

@@ -6,6 +6,7 @@ use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\RateLimiter;
 use Pterodactyl\Models\Server;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -166,19 +167,13 @@ class PteroProtectNodeFileShield
     private function guardRateLimit(int $userId, string $serverKey, string $action): ?JsonResponse
     {
         $limit = self::PER_MINUTE_LIMITS[$action] ?? self::DEFAULT_LIMIT;
-        $bucket = (int) floor(time() / self::WINDOW_SECONDS);
-        $key = sprintf('pp:nodefs:rate:u%d:s%s:a%s:w%d', $userId, $serverKey, $action, $bucket);
+        $key = sprintf('pp:nodefs:rate:u%d:s%s:a%s', $userId, $serverKey, $action);
 
-        $current = (int) Cache::get($key, 0);
-        if ($current >= $limit) {
+        if (RateLimiter::tooManyAttempts($key, $limit)) {
             return $this->reject('File operation is temporarily rate-limited. Please slow down.', 429);
         }
 
-        if (!Cache::has($key)) {
-            Cache::put($key, 1, now()->addSeconds(self::WINDOW_SECONDS + 2));
-        } else {
-            Cache::increment($key);
-        }
+        RateLimiter::hit($key, self::WINDOW_SECONDS);
 
         return null;
     }
@@ -190,19 +185,13 @@ class PteroProtectNodeFileShield
             return null;
         }
 
-        $bucket = (int) floor(time() / self::WINDOW_SECONDS);
-        $key = sprintf('pp:nodefs:srvrate:s%s:a%s:w%d', $serverKey, $action, $bucket);
+        $key = sprintf('pp:nodefs:srvrate:s%s:a%s', $serverKey, $action);
 
-        $current = (int) Cache::get($key, 0);
-        if ($current >= $limit) {
+        if (RateLimiter::tooManyAttempts($key, $limit)) {
             return $this->reject('File operation is globally rate-limited for this server. Please retry shortly.', 429);
         }
 
-        if (!Cache::has($key)) {
-            Cache::put($key, 1, now()->addSeconds(self::WINDOW_SECONDS + 2));
-        } else {
-            Cache::increment($key);
-        }
+        RateLimiter::hit($key, self::WINDOW_SECONDS);
 
         return null;
     }
@@ -221,19 +210,13 @@ class PteroProtectNodeFileShield
 
         $ua = strtolower(trim((string) $request->userAgent()));
         $fingerprint = hash('sha256', $ip . '|' . $ua);
-        $bucket = (int) floor(time() / self::WINDOW_SECONDS);
-        $key = sprintf('pp:nodefs:iprate:s%s:a%s:f%s:w%d', $serverKey, $action, $fingerprint, $bucket);
+        $key = sprintf('pp:nodefs:iprate:s%s:a%s:f%s', $serverKey, $action, $fingerprint);
 
-        $current = (int) Cache::get($key, 0);
-        if ($current >= $limit) {
+        if (RateLimiter::tooManyAttempts($key, $limit)) {
             return $this->reject('File endpoint rate-limit reached for your connection fingerprint.', 429);
         }
 
-        if (!Cache::has($key)) {
-            Cache::put($key, 1, now()->addSeconds(self::WINDOW_SECONDS + 2));
-        } else {
-            Cache::increment($key);
-        }
+        RateLimiter::hit($key, self::WINDOW_SECONDS);
 
         return null;
     }
@@ -250,20 +233,14 @@ class PteroProtectNodeFileShield
             return $this->reject('Burst access detected on file endpoint. Slow down and retry in a few seconds.', 429);
         }
 
-        $bucket = (int) floor(time() / self::BURST_WINDOW_SECONDS);
-        $key = sprintf('pp:nodefs:burst:u%d:s%s:a%s:w%d', $userId, $serverKey, $action, $bucket);
-        $current = (int) Cache::get($key, 0);
-        if ($current >= $limit) {
+        $key = sprintf('pp:nodefs:burst:u%d:s%s:a%s', $userId, $serverKey, $action);
+        if (RateLimiter::tooManyAttempts($key, $limit)) {
             Cache::put($blockedKey, 1, now()->addSeconds(self::BURST_BLOCK_SECONDS));
 
             return $this->reject('Burst access detected on file endpoint. Slow down and retry in a few seconds.', 429);
         }
 
-        if (!Cache::has($key)) {
-            Cache::put($key, 1, now()->addSeconds(self::BURST_WINDOW_SECONDS + 2));
-        } else {
-            Cache::increment($key);
-        }
+        RateLimiter::hit($key, self::BURST_WINDOW_SECONDS);
 
         return null;
     }
@@ -300,15 +277,14 @@ class PteroProtectNodeFileShield
 
         $bucket = (int) floor(time() / self::WINDOW_SECONDS);
         $key = sprintf('pp:nodefs:bytes:u%d:s%s:w%d', $userId, $serverKey, $bucket);
-        $used = (int) Cache::get($key, 0);
-        if ($used + $bytes > self::MAX_WRITE_BYTES_PER_MINUTE) {
+        if (!Cache::add($key, $bytes, now()->addSeconds(self::WINDOW_SECONDS + 2))) {
+            $updated = Cache::increment($key, $bytes);
+            $used = is_numeric($updated) ? (int) $updated : (int) Cache::get($key, 0);
+            if ($used > self::MAX_WRITE_BYTES_PER_MINUTE) {
+                return $this->reject('Write throughput limit reached. Please wait a moment.', 429);
+            }
+        } elseif ($bytes > self::MAX_WRITE_BYTES_PER_MINUTE) {
             return $this->reject('Write throughput limit reached. Please wait a moment.', 429);
-        }
-
-        if (!Cache::has($key)) {
-            Cache::put($key, $bytes, now()->addSeconds(self::WINDOW_SECONDS + 2));
-        } else {
-            Cache::increment($key, $bytes);
         }
 
         return null;

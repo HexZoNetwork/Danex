@@ -5,7 +5,7 @@ namespace Pterodactyl\Http\Middleware\Security;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\RateLimiter;
 use Symfony\Component\HttpFoundation\Response;
 
 class PteroProtectAvatarUploadRateLimit
@@ -20,21 +20,14 @@ class PteroProtectAvatarUploadRateLimit
             return $next($request);
         }
 
-        $bucket = (int) floor(time() / self::WINDOW_SECONDS);
-        $key = sprintf('pp:avatar-upload:u%d:h%d', $userId, $bucket);
-        $count = (int) Cache::get($key, 0);
-
-        if ($count >= self::LIMIT_PER_HOUR) {
+        $key = sprintf('pp:avatar-upload:u%d', $userId);
+        if (RateLimiter::tooManyAttempts($key, self::LIMIT_PER_HOUR)) {
             return new JsonResponse([
                 'error' => 'Upload avatar dibatasi maksimal 3 kali per jam.',
             ], 429);
         }
 
-        if (!Cache::has($key)) {
-            Cache::put($key, 1, now()->addSeconds(self::WINDOW_SECONDS + 5));
-        } else {
-            Cache::increment($key);
-        }
+        RateLimiter::hit($key, self::WINDOW_SECONDS);
 
         return $next($request);
     }
