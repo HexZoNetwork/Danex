@@ -5,7 +5,8 @@ return [
         'enabled' => env('PTEROPROTECT_WAF_ENABLED', true),
         'lockdown_flag' => env('PTEROPROTECT_LOCKDOWN_FLAG', '/pteroprotect/runtime/lockdown.json'),
         'mode_flag' => env('PTEROPROTECT_MODE_FLAG', '/pteroprotect/runtime/mode.json'),
-        'log_file' => env('PTEROPROTECT_WAF_LOG', '/pteroprotect/runtime/waf_decisions.log'),
+        // Keep default log path aligned with fail2ban/check.sh expectations.
+        'log_file' => env('PTEROPROTECT_WAF_LOG', '/dev/shm/pteroprotect/waf.log'),
 
         'trust_private_ranges' => env('PTEROPROTECT_WAF_TRUST_PRIVATE_RANGES', false),
         'trusted_ips' => [],

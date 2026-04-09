@@ -469,6 +469,76 @@ std::vector<std::string> split_copy(const std::string& s, char delim) {
     return parts;
 }
 
+bool parse_socket_endpoint(const std::string& endpoint, std::string& ip, int& port) {
+    ip.clear();
+    port = 0;
+    std::string v = trim_copy(endpoint);
+    if (v.empty()) return false;
+
+    std::string port_text;
+    if (!v.empty() && v.front() == '[') {
+        size_t rb = v.find(']');
+        if (rb == std::string::npos || rb + 1 >= v.size() || v[rb + 1] != ':') return false;
+        ip = trim_copy(v.substr(1, rb - 1));
+        port_text = trim_copy(v.substr(rb + 2));
+    } else {
+        size_t pos = v.rfind(':');
+        if (pos == std::string::npos) return false;
+        ip = trim_copy(v.substr(0, pos));
+        port_text = trim_copy(v.substr(pos + 1));
+    }
+
+    if (ip.empty() || port_text.empty()) return false;
+    if (!is_safe_numeric_token(port_text)) return false;
+
+    int parsed_port = std::atoi(port_text.c_str());
+    if (parsed_port <= 0 || parsed_port > 65535) return false;
+    port = parsed_port;
+    return true;
+}
+
+std::set<int> get_container_service_ports(const std::string& identifier) {
+    static std::mutex cache_mu;
+    static std::map<std::string, std::set<int> > cache;
+
+    std::string ref = resolve_local_container_ref(identifier);
+    if (ref.empty() || !is_safe_docker_ref_token(ref)) return {};
+
+    {
+        std::lock_guard<std::mutex> lock(cache_mu);
+        std::map<std::string, std::set<int> >::const_iterator it = cache.find(ref);
+        if (it != cache.end()) return it->second;
+    }
+
+    std::set<int> ports;
+    std::string raw = trim_copy(exec_read_all(
+        "docker inspect --format '{{json .NetworkSettings.Ports}}' " + shell_quote_single(ref) + " 2>/dev/null"));
+    if (!raw.empty() && raw != "null") {
+        try {
+            json j = json::parse(raw);
+            if (j.is_object()) {
+                for (json::const_iterator it = j.begin(); it != j.end(); ++it) {
+                    std::string key = it.key();
+                    size_t slash = key.find('/');
+                    std::string port_part = (slash == std::string::npos) ? key : key.substr(0, slash);
+                    port_part = trim_copy(port_part);
+                    if (!port_part.empty() && is_safe_numeric_token(port_part)) {
+                        int p = std::atoi(port_part.c_str());
+                        if (p > 0 && p <= 65535) ports.insert(p);
+                    }
+                }
+            }
+        } catch (...) {
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(cache_mu);
+        cache[ref] = ports;
+    }
+    return ports;
+}
+
 long long parse_size_to_bytes(std::string text) {
     text = trim_copy(text);
     if (text.empty()) return 0;
@@ -774,6 +844,7 @@ std::map<std::string, std::string> get_container_ip_actor_map() {
 
 bool block_iptables_ip(const std::string& ip) {
     if (ip.empty() || is_private_or_local_ip(ip)) return false;
+    if (is_host_ip(ip) || is_wings_known_ip(ip)) return false;
     if (!is_safe_ip_literal_token(ip)) return false;
     std::string check_cmd = "iptables -C PTEROPROTECT -s " + ip + " -j DROP >/dev/null 2>&1";
     if (system(check_cmd.c_str()) == 0) return true;
@@ -786,30 +857,68 @@ InboundStats collect_inbound_stats(const std::string& identifier) {
     static std::map<std::string, std::string> actor_map = get_container_ip_actor_map();
     std::string pid = get_container_pid(identifier);
     if (pid.empty() || pid == "0" || !is_safe_numeric_token(pid)) return stats;
+    std::set<int> service_ports = get_container_service_ports(identifier);
 
     std::string cmd = "nsenter -t " + pid + " -n ss -tnH state established,syn-recv,fin-wait-1,fin-wait-2,close-wait,last-ack,time-wait 2>/dev/null";
     std::string body = exec_read_all(cmd);
     if (body.empty()) return stats;
 
+    struct ParsedConn {
+        int local_port;
+        std::string peer_ip;
+    };
+    std::vector<ParsedConn> parsed;
+    std::map<int, int> local_port_counts;
+
+    {
+        std::stringstream ss(body);
+        std::string line;
+        while (std::getline(ss, line)) {
+            line = trim_copy(line);
+            if (line.empty()) continue;
+
+            std::stringstream ls(line);
+            std::string state, recvq, sendq, local_addr, peer_addr;
+            if (!(ls >> state >> recvq >> sendq >> local_addr >> peer_addr)) continue;
+
+            std::string local_ip;
+            int local_port = 0;
+            if (!parse_socket_endpoint(local_addr, local_ip, local_port)) continue;
+
+            std::string peer_ip;
+            int peer_port = 0;
+            if (!parse_socket_endpoint(peer_addr, peer_ip, peer_port)) continue;
+            if (peer_ip.empty()) continue;
+
+            ParsedConn conn;
+            conn.local_port = local_port;
+            conn.peer_ip = peer_ip;
+            parsed.push_back(conn);
+            local_port_counts[local_port]++;
+        }
+    }
+
+    if (parsed.empty()) return stats;
+
+    std::set<int> inbound_ports = service_ports;
+    if (inbound_ports.empty()) {
+        int min_count = std::max(4, static_cast<int>(parsed.size() / 20));
+        for (std::map<int, int>::const_iterator it = local_port_counts.begin(); it != local_port_counts.end(); ++it) {
+            if (it->second >= min_count) inbound_ports.insert(it->first);
+        }
+    }
+
+    if (inbound_ports.empty()) {
+        return stats;
+    }
+
     std::map<std::string, int> counts;
     std::map<std::string, int> external_counts;
     std::map<std::string, int> local_counts;
     bool infra_only_local = true;
-    std::stringstream ss(body);
-    std::string line;
-    while (std::getline(ss, line)) {
-        line = trim_copy(line);
-        if (line.empty()) continue;
-
-        std::stringstream ls(line);
-        std::string state, recvq, sendq, local_addr, peer_addr;
-        if (!(ls >> state >> recvq >> sendq >> local_addr >> peer_addr)) continue;
-
-        size_t pos = peer_addr.rfind(':');
-        std::string ip = pos == std::string::npos ? peer_addr : peer_addr.substr(0, pos);
-        if (!ip.empty() && ip.front() == '[' && ip.back() == ']') ip = ip.substr(1, ip.size() - 2);
-        if (ip.empty()) continue;
-
+    for (size_t i = 0; i < parsed.size(); ++i) {
+        if (inbound_ports.count(parsed[i].local_port) == 0) continue;
+        const std::string& ip = parsed[i].peer_ip;
         counts[ip]++;
         stats.total_conns++;
 
@@ -884,25 +993,63 @@ InboundStats collect_inbound_stats(const std::string& identifier) {
 std::string block_abusive_inbound_ips(const std::string& identifier) {
     std::string pid = get_container_pid(identifier);
     if (pid.empty() || pid == "0" || !is_safe_numeric_token(pid)) return "";
+    std::set<int> service_ports = get_container_service_ports(identifier);
 
     std::string cmd = "nsenter -t " + pid + " -n ss -tnH 2>/dev/null";
     std::string body = exec_read_all(cmd);
     if (body.empty()) return "";
 
+    struct ParsedConn {
+        int local_port;
+        std::string peer_ip;
+    };
+    std::vector<ParsedConn> parsed;
+    std::map<int, int> local_port_counts;
+
+    {
+        std::stringstream ss(body);
+        std::string line;
+        while (std::getline(ss, line)) {
+            line = trim_copy(line);
+            if (line.empty()) continue;
+
+            std::stringstream ls(line);
+            std::string state, recvq, sendq, local_addr, peer_addr;
+            if (!(ls >> state >> recvq >> sendq >> local_addr >> peer_addr)) continue;
+
+            std::string local_ip;
+            int local_port = 0;
+            if (!parse_socket_endpoint(local_addr, local_ip, local_port)) continue;
+
+            std::string peer_ip;
+            int peer_port = 0;
+            if (!parse_socket_endpoint(peer_addr, peer_ip, peer_port)) continue;
+            if (peer_ip.empty()) continue;
+
+            ParsedConn conn;
+            conn.local_port = local_port;
+            conn.peer_ip = peer_ip;
+            parsed.push_back(conn);
+            local_port_counts[local_port]++;
+        }
+    }
+
+    if (parsed.empty()) return "";
+
+    std::set<int> inbound_ports = service_ports;
+    if (inbound_ports.empty()) {
+        int min_count = std::max(4, static_cast<int>(parsed.size() / 20));
+        for (std::map<int, int>::const_iterator it = local_port_counts.begin(); it != local_port_counts.end(); ++it) {
+            if (it->second >= min_count) inbound_ports.insert(it->first);
+        }
+    }
+
+    if (inbound_ports.empty()) return "";
+
     std::map<std::string, int> counts;
-    std::stringstream ss(body);
-    std::string line;
-    while (std::getline(ss, line)) {
-        line = trim_copy(line);
-        if (line.empty()) continue;
-
-        std::stringstream ls(line);
-        std::string state, recvq, sendq, local_addr, peer_addr;
-        if (!(ls >> state >> recvq >> sendq >> local_addr >> peer_addr)) continue;
-
-        size_t pos = peer_addr.rfind(':');
-        std::string ip = pos == std::string::npos ? peer_addr : peer_addr.substr(0, pos);
-        if (!ip.empty() && ip.front() == '[' && ip.back() == ']') ip = ip.substr(1, ip.size() - 2);
+    for (size_t i = 0; i < parsed.size(); ++i) {
+        if (inbound_ports.count(parsed[i].local_port) == 0) continue;
+        std::string ip = parsed[i].peer_ip;
         if (ip.empty() || is_private_or_local_ip(ip)) continue;
         counts[ip]++;
     }

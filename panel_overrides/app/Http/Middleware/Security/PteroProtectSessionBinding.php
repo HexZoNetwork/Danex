@@ -280,42 +280,37 @@ class PteroProtectSessionBinding
 
     private function clientIpForBinding(Request $request): string
     {
-        $candidates = [];
-
-        $cfConnectingIp = trim((string) $request->headers->get('CF-Connecting-IP', ''));
-        if ($cfConnectingIp !== '') {
-            $candidates[] = $cfConnectingIp;
+        // Prefer Laravel trusted-proxy-resolved IP first.
+        $requestIp = trim((string) $request->ip());
+        if ($requestIp !== '' && filter_var($requestIp, FILTER_VALIDATE_IP) !== false) {
+            return strtolower($requestIp);
         }
 
+        // Fallback to server REMOTE_ADDR.
+        $remoteAddr = trim((string) $request->server('REMOTE_ADDR', ''));
+        if ($remoteAddr !== '' && filter_var($remoteAddr, FILTER_VALIDATE_IP) !== false) {
+            return strtolower($remoteAddr);
+        }
+
+        // Final fallback: use first valid forwarding header value if available.
         $xForwardedFor = trim((string) $request->headers->get('X-Forwarded-For', ''));
         if ($xForwardedFor !== '') {
             foreach (explode(',', $xForwardedFor) as $part) {
                 $candidate = trim($part);
-                if ($candidate !== '') {
-                    $candidates[] = $candidate;
+                if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
+                    return strtolower($candidate);
                 }
             }
         }
 
         $xRealIp = trim((string) $request->headers->get('X-Real-IP', ''));
-        if ($xRealIp !== '') {
-            $candidates[] = $xRealIp;
+        if ($xRealIp !== '' && filter_var($xRealIp, FILTER_VALIDATE_IP) !== false) {
+            return strtolower($xRealIp);
         }
 
-        $remoteAddr = trim((string) $request->server('REMOTE_ADDR', ''));
-        if ($remoteAddr !== '') {
-            $candidates[] = $remoteAddr;
-        }
-
-        $requestIp = trim((string) $request->ip());
-        if ($requestIp !== '') {
-            $candidates[] = $requestIp;
-        }
-
-        foreach ($candidates as $candidate) {
-            if (filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
-                return strtolower($candidate);
-            }
+        $cfConnectingIp = trim((string) $request->headers->get('CF-Connecting-IP', ''));
+        if ($cfConnectingIp !== '' && filter_var($cfConnectingIp, FILTER_VALIDATE_IP) !== false) {
+            return strtolower($cfConnectingIp);
         }
 
         return '';

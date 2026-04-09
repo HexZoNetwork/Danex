@@ -466,46 +466,88 @@ class PteroProtectWaf
 
     private function hasClientIpSpoofHeaders(Request $request): bool
     {
-        $spoofHeaders = [
-            'x-forwarded-for',
-            'x-real-ip',
-            'x-client-ip',
-            'true-client-ip',
-            'cf-connecting-ip',
-            'forwarded',
-        ];
+        $remoteAddr = trim((string) $request->server('REMOTE_ADDR', ''));
+        $xffRaw = trim((string) $request->header('x-forwarded-for', ''));
+        $xRealIp = trim((string) $request->header('x-real-ip', ''));
+        $cfConnectingIp = trim((string) $request->header('cf-connecting-ip', ''));
+        $trueClientIp = trim((string) $request->header('true-client-ip', ''));
+        $xClientIp = trim((string) $request->header('x-client-ip', ''));
+        $forwarded = trim((string) $request->header('forwarded', ''));
 
-        $seen = 0;
-        foreach ($spoofHeaders as $header) {
-            $value = trim((string) $request->header($header, ''));
-            if ($value !== '') {
-                $seen++;
-            }
-        }
-
-        if ($seen === 0) {
+        if ($xffRaw === '' && $xRealIp === '' && $cfConnectingIp === '' && $trueClientIp === '' && $xClientIp === '' && $forwarded === '') {
             return false;
         }
 
-        // Multiple forwarding headers from an untrusted client are almost always spoof attempts.
-        if ($seen >= 2) {
+        if ($xClientIp !== '' && filter_var($xClientIp, FILTER_VALIDATE_IP) === false) {
             return true;
         }
 
-        $xff = trim((string) $request->header('x-forwarded-for', ''));
-        if ($xff !== '') {
-            // Block chained XFF values and obvious invalid characters.
-            if (str_contains($xff, ',') || preg_match('/[^0-9a-fA-F:\.\s]/', $xff) === 1) {
+        // "Forwarded" header with multiple for= hops from direct clients is suspicious.
+        if ($forwarded !== '' && preg_match('/for=.*,/i', $forwarded) === 1 && !$this->isProxySourceAddress($remoteAddr)) {
+            return true;
+        }
+
+        $xffValues = [];
+        if ($xffRaw !== '') {
+            foreach (explode(',', $xffRaw) as $part) {
+                $candidate = trim($part);
+                if ($candidate === '') {
+                    continue;
+                }
+                if (filter_var($candidate, FILTER_VALIDATE_IP) === false) {
+                    return true;
+                }
+                $xffValues[] = strtolower($candidate);
+            }
+
+            // Very long proxy chains are atypical for legitimate panel traffic.
+            if (count($xffValues) > 6) {
                 return true;
             }
         }
 
-        $forwarded = trim((string) $request->header('forwarded', ''));
-        if ($forwarded !== '' && preg_match('/for=.*,/', strtolower($forwarded)) === 1) {
+        $namedForwardedIps = [];
+        foreach ([$xRealIp, $cfConnectingIp, $trueClientIp] as $value) {
+            if ($value === '') {
+                continue;
+            }
+            if (filter_var($value, FILTER_VALIDATE_IP) === false) {
+                return true;
+            }
+            $namedForwardedIps[] = strtolower($value);
+        }
+
+        if (count(array_unique($namedForwardedIps)) > 1) {
             return true;
         }
 
+        $primaryForwardedIp = $xffValues[0] ?? ($namedForwardedIps[0] ?? '');
+        if ($primaryForwardedIp !== '' && !empty($namedForwardedIps) && $primaryForwardedIp !== $namedForwardedIps[0]) {
+            return true;
+        }
+
+        // If request does not originate from a proxy edge and forwarding headers disagree
+        // with REMOTE_ADDR, treat as spoof attempt.
+        if ($primaryForwardedIp !== '' && $remoteAddr !== '' && filter_var($remoteAddr, FILTER_VALIDATE_IP) !== false) {
+            if (!$this->isProxySourceAddress($remoteAddr) && strtolower($remoteAddr) !== $primaryForwardedIp) {
+                return true;
+            }
+        }
+
         return false;
+    }
+
+    private function isProxySourceAddress(string $ip): bool
+    {
+        if ($ip === '127.0.0.1' || $ip === '::1' || $ip === '::ffff:127.0.0.1') {
+            return true;
+        }
+
+        if ($ip === '') {
+            return false;
+        }
+
+        return $this->isPrivateOrReservedIp($ip);
     }
 
     private function hasMalformedHostHeader(Request $request): bool

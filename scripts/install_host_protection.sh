@@ -14,6 +14,8 @@ SYNPROXY_CHAIN6="PTEROPROTECT-V6-SYNPROXY"
 DOCKER_CHAIN="PTEROPROTECT-DOCKER"
 WINGS_GUARD_CHAIN4="PTEROPROTECT-WINGS"
 WINGS_GUARD_CHAIN6="PTEROPROTECT-WINGS-V6"
+INFRA_GUARD_CHAIN4="PTEROPROTECT-INFRA"
+INFRA_GUARD_CHAIN6="PTEROPROTECT-INFRA-V6"
 IPSET4="pteroprotect_block_v4"
 IPSET6="pteroprotect_block_v6"
 BW_IPSET4_PROBATION="pteroprotect_bw_probation_v4"
@@ -64,7 +66,13 @@ WINGS_GUARD_CONNLIMIT_PER_IP="${PTEROPROTECT_WINGS_GUARD_CONNLIMIT_PER_IP:-32}"
 WINGS_GUARD_NEW_CONN_RATE="${PTEROPROTECT_WINGS_GUARD_NEW_CONN_RATE:-10}"
 WINGS_GUARD_NEW_CONN_BURST="${PTEROPROTECT_WINGS_GUARD_NEW_CONN_BURST:-20}"
 SSH_GUARD_PORTS="${PTEROPROTECT_SSH_GUARD_PORTS:-22,2022}"
+INFRA_GUARD_PORTS="${PTEROPROTECT_INFRA_GUARD_PORTS:-22,2022,8080,3306,5432,6379}"
 PROTECTED_TCP_PORTS=""
+INFRA_CONNLIMIT_PER_IP="${PTEROPROTECT_INFRA_CONNLIMIT_PER_IP:-12}"
+INFRA_NEW_CONN_RATE="${PTEROPROTECT_INFRA_NEW_CONN_RATE:-8}"
+INFRA_NEW_CONN_BURST="${PTEROPROTECT_INFRA_NEW_CONN_BURST:-16}"
+INFRA_GLOBAL_NEW_PER_SEC="${PTEROPROTECT_INFRA_GLOBAL_NEW_PER_SEC:-120}"
+INFRA_GLOBAL_NEW_BURST="${PTEROPROTECT_INFRA_GLOBAL_NEW_BURST:-240}"
 SSH_CONNLIMIT_PER_IP="${PTEROPROTECT_SSH_CONNLIMIT_PER_IP:-10}"
 SSH_NEW_PER_IP_PER_MIN="${PTEROPROTECT_SSH_NEW_PER_IP_PER_MIN:-20}"
 SSH_NEW_PER_IP_BURST="${PTEROPROTECT_SSH_NEW_PER_IP_BURST:-30}"
@@ -286,6 +294,30 @@ PY
     printf '%s' "${value}"
 }
 
+read_network_string_from_config() {
+    local key="$1"
+    local fallback="$2"
+    local value="${fallback}"
+    if [[ -f "${CONFIG_PATH}" ]] && have_cmd python3; then
+        value="$(python3 - <<'PY' "${CONFIG_PATH}" "${key}" "${fallback}" 2>/dev/null || true
+import json,sys
+path,key,fallback=sys.argv[1],sys.argv[2],sys.argv[3]
+try:
+    with open(path,'r',encoding='utf-8') as f:
+        d=json.load(f)
+    v=(d.get('network') or {}).get(key, fallback)
+    if isinstance(v, list):
+        print(",".join(str(x) for x in v))
+    else:
+        print(v)
+except Exception:
+    print(fallback)
+PY
+)"
+    fi
+    printf '%s' "${value}"
+}
+
 effective_burst_kb() {
     local rate_kbps="$1"
     local burst_kb="$2"
@@ -480,6 +512,14 @@ prune_wings_guard_jump_rules_v4() {
     done
 }
 
+prune_infra_guard_jump_rules_v4() {
+    local ports="$1"
+    [[ -n "${ports}" ]] || return 0
+    while iptables -C INPUT -p tcp -m multiport --dports "${ports}" -j "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports "${ports}" -j "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || break
+    done
+}
+
 prune_bw_jump_rules_v4() {
     while iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN}" >/dev/null 2>&1; do
         iptables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN}" >/dev/null 2>&1 || break
@@ -590,6 +630,14 @@ prune_wings_guard_jump_rules_v6() {
     done
 }
 
+prune_infra_guard_jump_rules_v6() {
+    local ports="$1"
+    [[ -n "${ports}" ]] || return 0
+    while ip6tables -C INPUT -p tcp -m multiport --dports "${ports}" -j "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp -m multiport --dports "${ports}" -j "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || break
+    done
+}
+
 prune_bw_jump_rules_v6() {
     while ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN6}" >/dev/null 2>&1; do
         ip6tables -D INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN6}" >/dev/null 2>&1 || break
@@ -617,6 +665,7 @@ supports_synproxy_v6() {
 cleanup_host_protection() {
     prune_input_jump_rules_v4
     prune_wings_guard_jump_rules_v4 "8080,2022"
+    prune_infra_guard_jump_rules_v4 "22,2022,8080,3306,5432,6379"
     prune_bw_jump_rules_v4
     prune_synproxy_jump_rules_v4
     while iptables -C INPUT -p icmp --icmp-type echo-request -j DROP >/dev/null 2>&1; do
@@ -629,6 +678,8 @@ cleanup_host_protection() {
     iptables -X "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
     iptables -F "${WINGS_GUARD_CHAIN4}" >/dev/null 2>&1 || true
     iptables -X "${WINGS_GUARD_CHAIN4}" >/dev/null 2>&1 || true
+    iptables -F "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || true
+    iptables -X "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || true
     iptables -F "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
     iptables -X "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
     iptables -F "${BW_CHAIN}" >/dev/null 2>&1 || true
@@ -651,6 +702,7 @@ cleanup_host_protection() {
     if have_cmd ip6tables; then
         prune_input_jump_rules_v6
         prune_wings_guard_jump_rules_v6 "8080,2022"
+        prune_infra_guard_jump_rules_v6 "22,2022,8080,3306,5432,6379"
         prune_bw_jump_rules_v6
         prune_synproxy_jump_rules_v6
         while ip6tables -C INPUT -p ipv6-icmp --icmpv6-type echo-request -j DROP >/dev/null 2>&1; do
@@ -660,6 +712,8 @@ cleanup_host_protection() {
         ip6tables -X "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -F "${WINGS_GUARD_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -X "${WINGS_GUARD_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -F "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -X "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -F "${BW_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -X "${BW_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -F "${CHAIN6}" >/dev/null 2>&1 || true
@@ -687,10 +741,12 @@ fi
 iptables -N "${CHAIN}" >/dev/null 2>&1 || true
 iptables -N "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
 iptables -N "${WINGS_GUARD_CHAIN4}" >/dev/null 2>&1 || true
+iptables -N "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || true
 iptables -N "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
 iptables -F "${CHAIN}" >/dev/null 2>&1 || true
 iptables -F "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
 iptables -F "${WINGS_GUARD_CHAIN4}" >/dev/null 2>&1 || true
+iptables -F "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || true
 iptables -F "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
 
 while iptables -C INPUT -p icmp --icmp-type echo-request -j DROP >/dev/null 2>&1; do
@@ -702,7 +758,12 @@ PUBLIC_TCP_PORTS="$(sanitize_ports "${PUBLIC_TCP_PORTS}")"
 EGRESS_TCP_BLOCK_PORTS="$(sanitize_ports "${EGRESS_TCP_BLOCK_PORTS}")"
 EGRESS_UDP_BLOCK_PORTS="$(sanitize_ports "${EGRESS_UDP_BLOCK_PORTS}")"
 SSH_GUARD_PORTS="$(sanitize_ports "${SSH_GUARD_PORTS}")"
+if [[ -z "${PTEROPROTECT_INFRA_GUARD_PORTS:-}" ]]; then
+    INFRA_GUARD_PORTS="$(read_network_string_from_config "infra_guard_ports" "${INFRA_GUARD_PORTS}")"
+fi
+INFRA_GUARD_PORTS="$(sanitize_ports "${INFRA_GUARD_PORTS}")"
 PROTECTED_TCP_PORTS="$(merge_ports "${PUBLIC_TCP_PORTS}" "${SSH_GUARD_PORTS}")"
+PROTECTED_TCP_PORTS="$(merge_ports "${PROTECTED_TCP_PORTS}" "${INFRA_GUARD_PORTS}")"
 UNBLOCK_PORTAL_PORT="$(read_unblock_portal_port)"
 WINGS_API_PORT="$(read_wings_api_port)"
 WINGS_SFTP_PORT="$(read_wings_sftp_port)"
@@ -753,6 +814,21 @@ fi
 if [[ -z "${PTEROPROTECT_TCP_GLOBAL_NEW_BURST:-}" ]]; then
     TCP_GLOBAL_NEW_BURST="$(read_network_int_from_config "host_global_new_burst" "${TCP_GLOBAL_NEW_BURST}")"
 fi
+if [[ -z "${PTEROPROTECT_INFRA_CONNLIMIT_PER_IP:-}" ]]; then
+    INFRA_CONNLIMIT_PER_IP="$(read_network_int_from_config "infra_guard_connlimit_per_ip" "${INFRA_CONNLIMIT_PER_IP}")"
+fi
+if [[ -z "${PTEROPROTECT_INFRA_NEW_CONN_RATE:-}" ]]; then
+    INFRA_NEW_CONN_RATE="$(read_network_int_from_config "infra_guard_new_conn_per_ip" "${INFRA_NEW_CONN_RATE}")"
+fi
+if [[ -z "${PTEROPROTECT_INFRA_NEW_CONN_BURST:-}" ]]; then
+    INFRA_NEW_CONN_BURST="$(read_network_int_from_config "infra_guard_new_conn_burst" "${INFRA_NEW_CONN_BURST}")"
+fi
+if [[ -z "${PTEROPROTECT_INFRA_GLOBAL_NEW_PER_SEC:-}" ]]; then
+    INFRA_GLOBAL_NEW_PER_SEC="$(read_network_int_from_config "infra_guard_global_new_per_sec" "${INFRA_GLOBAL_NEW_PER_SEC}")"
+fi
+if [[ -z "${PTEROPROTECT_INFRA_GLOBAL_NEW_BURST:-}" ]]; then
+    INFRA_GLOBAL_NEW_BURST="$(read_network_int_from_config "infra_guard_global_new_burst" "${INFRA_GLOBAL_NEW_BURST}")"
+fi
 if (( WINGS_GUARD_CONNLIMIT_PER_IP < 8 )); then WINGS_GUARD_CONNLIMIT_PER_IP=8; fi
 if (( WINGS_GUARD_CONNLIMIT_PER_IP > 256 )); then WINGS_GUARD_CONNLIMIT_PER_IP=256; fi
 if (( WINGS_GUARD_NEW_CONN_RATE < 2 )); then WINGS_GUARD_NEW_CONN_RATE=2; fi
@@ -773,9 +849,20 @@ if (( TCP_GLOBAL_NEW_PER_SEC < 100 )); then TCP_GLOBAL_NEW_PER_SEC=100; fi
 if (( TCP_GLOBAL_NEW_PER_SEC > 20000 )); then TCP_GLOBAL_NEW_PER_SEC=20000; fi
 if (( TCP_GLOBAL_NEW_BURST < 200 )); then TCP_GLOBAL_NEW_BURST=200; fi
 if (( TCP_GLOBAL_NEW_BURST > 40000 )); then TCP_GLOBAL_NEW_BURST=40000; fi
+if (( INFRA_CONNLIMIT_PER_IP < 4 )); then INFRA_CONNLIMIT_PER_IP=4; fi
+if (( INFRA_CONNLIMIT_PER_IP > 128 )); then INFRA_CONNLIMIT_PER_IP=128; fi
+if (( INFRA_NEW_CONN_RATE < 2 )); then INFRA_NEW_CONN_RATE=2; fi
+if (( INFRA_NEW_CONN_RATE > 200 )); then INFRA_NEW_CONN_RATE=200; fi
+if (( INFRA_NEW_CONN_BURST < 4 )); then INFRA_NEW_CONN_BURST=4; fi
+if (( INFRA_NEW_CONN_BURST > 600 )); then INFRA_NEW_CONN_BURST=600; fi
+if (( INFRA_GLOBAL_NEW_PER_SEC < 10 )); then INFRA_GLOBAL_NEW_PER_SEC=10; fi
+if (( INFRA_GLOBAL_NEW_PER_SEC > 5000 )); then INFRA_GLOBAL_NEW_PER_SEC=5000; fi
+if (( INFRA_GLOBAL_NEW_BURST < 20 )); then INFRA_GLOBAL_NEW_BURST=20; fi
+if (( INFRA_GLOBAL_NEW_BURST > 20000 )); then INFRA_GLOBAL_NEW_BURST=20000; fi
 
 prune_input_jump_rules_v4
 prune_wings_guard_jump_rules_v4 "${WINGS_GUARD_PORTS}"
+prune_infra_guard_jump_rules_v4 "${INFRA_GUARD_PORTS}"
 prune_bw_jump_rules_v4
 prune_synproxy_jump_rules_v4
 ensure_unblock_portal_accept_rule_v4 "${UNBLOCK_PORTAL_PORT}"
@@ -803,6 +890,31 @@ if [[ -n "${WINGS_GUARD_PORTS}" ]]; then
     iptables -A "${WINGS_GUARD_CHAIN4}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_wings_new_v4 \
         --hashlimit-above "${WINGS_GUARD_NEW_CONN_RATE}"/second --hashlimit-burst "${WINGS_GUARD_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
     iptables -A "${WINGS_GUARD_CHAIN4}" -j RETURN
+fi
+
+if [[ -n "${INFRA_GUARD_PORTS}" ]]; then
+    iptables -C INPUT -p tcp -m multiport --dports "${INFRA_GUARD_PORTS}" -j "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || \
+        iptables -I INPUT -p tcp -m multiport --dports "${INFRA_GUARD_PORTS}" -j "${INFRA_GUARD_CHAIN4}"
+    iptables -A "${INFRA_GUARD_CHAIN4}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    iptables -A "${INFRA_GUARD_CHAIN4}" -s 127.0.0.1/32 -j RETURN
+    iptables -A "${INFRA_GUARD_CHAIN4}" -s 10.0.0.0/8 -j RETURN
+    iptables -A "${INFRA_GUARD_CHAIN4}" -s 172.16.0.0/12 -j RETURN
+    iptables -A "${INFRA_GUARD_CHAIN4}" -s 192.168.0.0/16 -j RETURN
+    if have_cmd ipset; then
+        iptables -A "${INFRA_GUARD_CHAIN4}" -m set --match-set "${IPSET4}" src -j DROP
+        iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp --syn -m connlimit --connlimit-above "${INFRA_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j SET --add-set "${IPSET4}" src
+    fi
+    iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp --syn -m connlimit --connlimit-above "${INFRA_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j DROP
+    if have_cmd ipset; then
+        iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_infra_new_v4 \
+            --hashlimit-above "${INFRA_NEW_CONN_RATE}"/second --hashlimit-burst "${INFRA_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j SET --add-set "${IPSET4}" src
+    fi
+    iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_infra_new_v4 \
+        --hashlimit-above "${INFRA_NEW_CONN_RATE}"/second --hashlimit-burst "${INFRA_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+    iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_infra_new_global_v4 --hashlimit-above "${INFRA_GLOBAL_NEW_PER_SEC}"/second \
+        --hashlimit-burst "${INFRA_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
+    iptables -A "${INFRA_GUARD_CHAIN4}" -j RETURN
 fi
 
 if [[ "${IP_TRUST_BW_ENABLED}" == "1" ]] && have_cmd ipset; then
@@ -1012,9 +1124,11 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
     ip6tables -N "${CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -N "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -N "${WINGS_GUARD_CHAIN6}" >/dev/null 2>&1 || true
+    ip6tables -N "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -F "${CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -F "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -F "${WINGS_GUARD_CHAIN6}" >/dev/null 2>&1 || true
+    ip6tables -F "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || true
 
     while ip6tables -C INPUT -p ipv6-icmp --icmpv6-type echo-request -j DROP >/dev/null 2>&1; do
         ip6tables -D INPUT -p ipv6-icmp --icmpv6-type echo-request -j DROP >/dev/null 2>&1 || break
@@ -1023,6 +1137,7 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
 
     prune_input_jump_rules_v6
     prune_wings_guard_jump_rules_v6 "${WINGS_GUARD_PORTS}"
+    prune_infra_guard_jump_rules_v6 "${INFRA_GUARD_PORTS}"
     prune_bw_jump_rules_v6
     prune_synproxy_jump_rules_v6
 
@@ -1045,6 +1160,30 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
         ip6tables -A "${WINGS_GUARD_CHAIN6}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_wings_new_v6 \
             --hashlimit-above "${WINGS_GUARD_NEW_CONN_RATE}"/second --hashlimit-burst "${WINGS_GUARD_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
         ip6tables -A "${WINGS_GUARD_CHAIN6}" -j RETURN
+    fi
+
+    if [[ -n "${INFRA_GUARD_PORTS}" ]]; then
+        ip6tables -C INPUT -p tcp -m multiport --dports "${INFRA_GUARD_PORTS}" -j "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || \
+            ip6tables -I INPUT -p tcp -m multiport --dports "${INFRA_GUARD_PORTS}" -j "${INFRA_GUARD_CHAIN6}"
+        ip6tables -A "${INFRA_GUARD_CHAIN6}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+        ip6tables -A "${INFRA_GUARD_CHAIN6}" -s ::1/128 -j RETURN
+        ip6tables -A "${INFRA_GUARD_CHAIN6}" -s fe80::/10 -j RETURN
+        ip6tables -A "${INFRA_GUARD_CHAIN6}" -s fc00::/7 -j RETURN
+        if have_cmd ipset; then
+            ip6tables -A "${INFRA_GUARD_CHAIN6}" -m set --match-set "${IPSET6}" src -j DROP
+            ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${INFRA_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j SET --add-set "${IPSET6}" src
+        fi
+        ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${INFRA_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j DROP
+        if have_cmd ipset; then
+            ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_infra_new_v6 \
+                --hashlimit-above "${INFRA_NEW_CONN_RATE}"/second --hashlimit-burst "${INFRA_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j SET --add-set "${IPSET6}" src
+        fi
+        ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_infra_new_v6 \
+            --hashlimit-above "${INFRA_NEW_CONN_RATE}"/second --hashlimit-burst "${INFRA_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+        ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
+            --hashlimit-name pteroprotect_infra_new_global_v6 --hashlimit-above "${INFRA_GLOBAL_NEW_PER_SEC}"/second \
+            --hashlimit-burst "${INFRA_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
+        ip6tables -A "${INFRA_GUARD_CHAIN6}" -j RETURN
     fi
 
     if [[ "${IP_TRUST_BW_ENABLED}" == "1" ]] && have_cmd ipset; then

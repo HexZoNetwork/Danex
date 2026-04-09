@@ -828,6 +828,15 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         }
         # Production-safe defaults to reduce false positives on shared/NAT client IPs.
         $j->{network}{self_unblock_essentials} = JSON::PP::true if !defined($j->{network}{self_unblock_essentials});
+        $j->{network}{host_firewall_enabled} = JSON::PP::true if !defined($j->{network}{host_firewall_enabled});
+        $j->{network}{host_global_new_per_sec} = 1200 if !defined($j->{network}{host_global_new_per_sec}) || $j->{network}{host_global_new_per_sec} !~ /^\d+$/ || $j->{network}{host_global_new_per_sec} < 100;
+        $j->{network}{host_global_new_burst} = 2400 if !defined($j->{network}{host_global_new_burst}) || $j->{network}{host_global_new_burst} !~ /^\d+$/ || $j->{network}{host_global_new_burst} < 200;
+        $j->{network}{infra_guard_ports} = "22,2022,8080,3306,5432,6379" if !defined($j->{network}{infra_guard_ports}) || $j->{network}{infra_guard_ports} eq "";
+        $j->{network}{infra_guard_connlimit_per_ip} = 12 if !defined($j->{network}{infra_guard_connlimit_per_ip}) || $j->{network}{infra_guard_connlimit_per_ip} !~ /^\d+$/ || $j->{network}{infra_guard_connlimit_per_ip} < 4;
+        $j->{network}{infra_guard_new_conn_per_ip} = 8 if !defined($j->{network}{infra_guard_new_conn_per_ip}) || $j->{network}{infra_guard_new_conn_per_ip} !~ /^\d+$/ || $j->{network}{infra_guard_new_conn_per_ip} < 2;
+        $j->{network}{infra_guard_new_conn_burst} = 16 if !defined($j->{network}{infra_guard_new_conn_burst}) || $j->{network}{infra_guard_new_conn_burst} !~ /^\d+$/ || $j->{network}{infra_guard_new_conn_burst} < 4;
+        $j->{network}{infra_guard_global_new_per_sec} = 120 if !defined($j->{network}{infra_guard_global_new_per_sec}) || $j->{network}{infra_guard_global_new_per_sec} !~ /^\d+$/ || $j->{network}{infra_guard_global_new_per_sec} < 10;
+        $j->{network}{infra_guard_global_new_burst} = 240 if !defined($j->{network}{infra_guard_global_new_burst}) || $j->{network}{infra_guard_global_new_burst} !~ /^\d+$/ || $j->{network}{infra_guard_global_new_burst} < 20;
         $j->{network}{adaptive_guard_enabled} = JSON::PP::true if !defined($j->{network}{adaptive_guard_enabled});
         $j->{network}{adaptive_brownout_enabled} = JSON::PP::true if !defined($j->{network}{adaptive_brownout_enabled});
         $j->{network}{adaptive_brownout_ttl_sec} = 60 if !defined($j->{network}{adaptive_brownout_ttl_sec}) || $j->{network}{adaptive_brownout_ttl_sec} !~ /^\d+$/ || $j->{network}{adaptive_brownout_ttl_sec} < 30;
@@ -2547,7 +2556,7 @@ EOF
     systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
 fi
 
-HOST_FIREWALL_ENABLED="$(read_network_setting host_firewall_enabled false)"
+HOST_FIREWALL_ENABLED="$(read_network_setting host_firewall_enabled true)"
 if [[ "${HOST_FIREWALL_ENABLED}" == "true" ]]; then
     HOST_FIREWALL_ENABLED="1"
 elif [[ "${HOST_FIREWALL_ENABLED}" == "false" ]]; then
@@ -2577,6 +2586,12 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
     HOST_IP_TRUST_BW_BAD_KBPS="$(read_network_setting ip_trust_bw_bad_kbps 1000)"
     HOST_IP_TRUST_BW_WORST_KBPS="$(read_network_setting ip_trust_bw_worst_kbps 100)"
     HOST_IP_TRUST_BW_BURST_KB="$(read_network_setting ip_trust_bw_burst_kb 512)"
+    HOST_INFRA_GUARD_PORTS="$(read_network_setting infra_guard_ports 22,2022,8080,3306,5432,6379)"
+    HOST_INFRA_CONNLIMIT_PER_IP="$(read_network_setting infra_guard_connlimit_per_ip 12)"
+    HOST_INFRA_NEW_CONN_RATE="$(read_network_setting infra_guard_new_conn_per_ip 8)"
+    HOST_INFRA_NEW_CONN_BURST="$(read_network_setting infra_guard_new_conn_burst 16)"
+    HOST_INFRA_GLOBAL_NEW_PER_SEC="$(read_network_setting infra_guard_global_new_per_sec 120)"
+    HOST_INFRA_GLOBAL_NEW_BURST="$(read_network_setting infra_guard_global_new_burst 240)"
     if [[ "${HOST_IPV6_ENABLED}" == "true" ]]; then
         HOST_IPV6_ENABLED="1"
     elif [[ "${HOST_IPV6_ENABLED}" == "false" ]]; then
@@ -2627,6 +2642,12 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
             PTEROPROTECT_IP_TRUST_BW_BAD_KBPS="${HOST_IP_TRUST_BW_BAD_KBPS}" \
             PTEROPROTECT_IP_TRUST_BW_WORST_KBPS="${HOST_IP_TRUST_BW_WORST_KBPS}" \
             PTEROPROTECT_IP_TRUST_BW_BURST_KB="${HOST_IP_TRUST_BW_BURST_KB}" \
+            PTEROPROTECT_INFRA_GUARD_PORTS="${HOST_INFRA_GUARD_PORTS}" \
+            PTEROPROTECT_INFRA_CONNLIMIT_PER_IP="${HOST_INFRA_CONNLIMIT_PER_IP}" \
+            PTEROPROTECT_INFRA_NEW_CONN_RATE="${HOST_INFRA_NEW_CONN_RATE}" \
+            PTEROPROTECT_INFRA_NEW_CONN_BURST="${HOST_INFRA_NEW_CONN_BURST}" \
+            PTEROPROTECT_INFRA_GLOBAL_NEW_PER_SEC="${HOST_INFRA_GLOBAL_NEW_PER_SEC}" \
+            PTEROPROTECT_INFRA_GLOBAL_NEW_BURST="${HOST_INFRA_GLOBAL_NEW_BURST}" \
             "${INSTALL_DIR}/scripts/install_host_protection.sh"
     else
         echo "[setup] disabling host firewall protection to avoid false positives..."
