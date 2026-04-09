@@ -55,6 +55,8 @@ ADAPTIVE_SAMPLES=0
 
 mkdir -p "${RUNTIME_DIR}"
 mkdir -p "${PANEL_RUNTIME_DIR}"
+chown root:www-data "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
+chmod 2775 "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
 touch "${LOG_FILE}"
 touch "${BLOCK_HISTORY_FILE}"
 touch "${TENANT_HISTORY_FILE}"
@@ -65,6 +67,8 @@ write_runtime_payload() {
     local mirror="$3"
     printf '%s\n' "${payload}" > "${primary}"
     printf '%s\n' "${payload}" > "${mirror}"
+    chown root:www-data "${primary}" "${mirror}" >/dev/null 2>&1 || true
+    chmod 664 "${primary}" "${mirror}" >/dev/null 2>&1 || true
 }
 
 remove_runtime_payload() {

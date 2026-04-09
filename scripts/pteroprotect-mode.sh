@@ -17,19 +17,53 @@ LOCKDOWN_FILES=(
     "${PANEL_RUNTIME_DIR}/lockdown.json"
 )
 
+write_file_safely() {
+    local file="$1"
+    local payload="$2"
+
+    if printf '%s\n' "${payload}" > "${file}" 2>/dev/null; then
+        chmod 664 "${file}" >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    if command -v sudo >/dev/null 2>&1; then
+        if printf '%s\n' "${payload}" | sudo tee "${file}" >/dev/null 2>&1; then
+            sudo chmod 664 "${file}" >/dev/null 2>&1 || true
+            return 0
+        fi
+    fi
+
+    echo "Mode change failed: cannot write ${file} (permission denied)" >&2
+    return 1
+}
+
+remove_file_safely() {
+    local file="$1"
+    if rm -f "${file}" 2>/dev/null; then
+        return 0
+    fi
+
+    if command -v sudo >/dev/null 2>&1; then
+        sudo rm -f "${file}" >/dev/null 2>&1 && return 0
+    fi
+
+    echo "Mode change failed: cannot remove ${file} (permission denied)" >&2
+    return 1
+}
+
 write_json_to_targets() {
     local payload="$1"
     shift
     local file
     for file in "$@"; do
-        printf '%s\n' "${payload}" > "${file}"
+        write_file_safely "${file}" "${payload}"
     done
 }
 
 remove_targets() {
     local file
     for file in "$@"; do
-        rm -f "${file}"
+        remove_file_safely "${file}"
     done
 }
 

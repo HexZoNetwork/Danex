@@ -1049,6 +1049,24 @@ fi
 ln -sf "${INSTALL_DIR}/dann_guard" /usr/local/bin/dann_guard
 touch "${INSTALL_DIR}/dann_guard.log"
 mkdir -p "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect
+chown root:www-data "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
+chmod 2775 "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
+
+# Ensure mode/lockdown control files are group-writable for operational tools.
+printf '{"mode":"normal"}\n' > /dev/shm/pteroprotect/mode.flag || true
+printf '{"enabled":false}\n' > /dev/shm/pteroprotect/strict_lockdown.flag || true
+printf '{"mode":"normal"}\n' > "${INSTALL_DIR}/runtime/mode.json" || true
+printf '{"enabled":false}\n' > "${INSTALL_DIR}/runtime/lockdown.json" || true
+chown root:www-data \
+    /dev/shm/pteroprotect/mode.flag \
+    /dev/shm/pteroprotect/strict_lockdown.flag \
+    "${INSTALL_DIR}/runtime/mode.json" \
+    "${INSTALL_DIR}/runtime/lockdown.json" >/dev/null 2>&1 || true
+chmod 664 \
+    /dev/shm/pteroprotect/mode.flag \
+    /dev/shm/pteroprotect/strict_lockdown.flag \
+    "${INSTALL_DIR}/runtime/mode.json" \
+    "${INSTALL_DIR}/runtime/lockdown.json" >/dev/null 2>&1 || true
 chmod 755 "${INSTALL_DIR}"
 chmod 755 "${INSTALL_DIR}/dann_guard"
 if [[ -f "${INSTALL_DIR}/challenge_guard" ]]; then
