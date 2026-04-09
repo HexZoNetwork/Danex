@@ -2065,6 +2065,7 @@ while true; do
     MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_aggressive_established_threshold 220)" 20)"
     MODE_AGGRESSIVE_SYN_RECV_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_aggressive_syn_recv_threshold 120)" 10)"
     MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_aggressive_http_access_threshold 240)" 20)"
+    MODE_AGGRESSIVE_HTTP_ONLY_FACTOR_PCT="$(clamp_percentage "$(read_network_setting mode_aggressive_http_only_factor_pct 200)" 120 1000)"
     MODE_AGGRESSIVE_TTL_SEC="$(clamp_min_int "$(read_network_setting mode_aggressive_ttl_sec 180)" 30)"
     MODE_EMERGENCY_ESTABLISHED_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_emergency_established_threshold 400)" 20)"
     MODE_EMERGENCY_SYN_RECV_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_emergency_syn_recv_threshold 180)" 10)"
@@ -2365,6 +2366,14 @@ while true; do
     desired_reason="steady-state"
     desired_ttl=0
     if [[ "${AUTO_MODE_ENABLED}" == "1" ]]; then
+        aggressive_signal=0
+        http_only_est_floor=$(( MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD / 4 ))
+        http_only_syn_floor=$(( MODE_AGGRESSIVE_SYN_RECV_THRESHOLD / 4 ))
+        http_only_service_floor=$(( SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD / 2 ))
+        (( http_only_est_floor < 10 )) && http_only_est_floor=10
+        (( http_only_syn_floor < 5 )) && http_only_syn_floor=5
+        (( http_only_service_floor < 10 )) && http_only_service_floor=10
+
         emergency_load_signal=0
         emergency_delay_signal=0
         if (( established >= MODE_EMERGENCY_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_EMERGENCY_SYN_RECV_THRESHOLD )) || (( top_http_count >= MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD )); then
@@ -2382,7 +2391,19 @@ while true; do
             desired_mode="emergency"
             desired_reason="adaptive-shock established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},samples=${ADAPTIVE_SAMPLES}"
             desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
-        elif (( established >= MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) || (( top_http_count >= MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )) || (( service_pulse_count >= SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) || (( service_pulse_delta >= SERVICE_ACTIVITY_DELTA_AGGRESSIVE )) || (( swarm_hits >= 1 )); then
+        else
+            if (( established >= MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) || (( service_pulse_count >= SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) || (( service_pulse_delta >= SERVICE_ACTIVITY_DELTA_AGGRESSIVE )) || (( swarm_hits >= 1 )); then
+                aggressive_signal=1
+            elif (( top_http_count >= MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )); then
+                # Avoid false-positive aggressive mode when only a single high-HTTP
+                # sample appears without connection pressure.
+                if (( established >= http_only_est_floor )) || (( syn_recv >= http_only_syn_floor )) || (( service_pulse_count >= http_only_service_floor )) || (( top_http_count >= (MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD * MODE_AGGRESSIVE_HTTP_ONLY_FACTOR_PCT / 100) )); then
+                    aggressive_signal=1
+                fi
+            fi
+        fi
+
+        if (( aggressive_signal == 1 )); then
             desired_mode="aggressive"
             desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta},swarm=${swarm_hits}"
             desired_ttl="${MODE_AGGRESSIVE_TTL_SEC}"
