@@ -75,8 +75,8 @@ export default () => {
         };
 
         // Delay the first poll so initial route render stays snappy.
-        const firstTimer = window.setTimeout(scheduleTick, 2500);
-        const timer = window.setInterval(scheduleTick, 15000);
+        const firstTimer = window.setTimeout(scheduleTick, 4000);
+        const timer = window.setInterval(scheduleTick, 30000);
 
         return () => {
             cancelled = true;
@@ -88,10 +88,10 @@ export default () => {
     useEffect(() => {
         const enable = () => setShowAds(true);
         if ('requestIdleCallback' in window) {
-            (window as any).requestIdleCallback(enable, { timeout: 7000 });
+            (window as any).requestIdleCallback(enable, { timeout: 10000 });
             return;
         }
-        const timer = window.setTimeout(enable, 3500);
+        const timer = window.setTimeout(enable, 7000);
         return () => window.clearTimeout(timer);
     }, []);
 

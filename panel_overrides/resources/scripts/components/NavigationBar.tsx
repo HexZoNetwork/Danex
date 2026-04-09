@@ -57,8 +57,8 @@ export default () => {
 
         const firstTimer = window.setTimeout(() => {
             void tick();
-        }, 1500);
-        const timer = window.setInterval(tick, 20000);
+        }, 3000);
+        const timer = window.setInterval(tick, 45000);
 
         return () => {
             cancelled = true;

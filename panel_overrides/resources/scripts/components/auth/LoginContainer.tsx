@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, RouteComponentProps } from 'react-router-dom';
 import login from '@/api/auth/login';
 import LoginFormContainer from '@/components/auth/LoginFormContainer';
@@ -8,7 +8,6 @@ import { object, string } from 'yup';
 import Field from '@/components/elements/Field';
 import tw from 'twin.macro';
 import Button from '@/components/elements/Button';
-import Reaptcha from 'reaptcha';
 import useFlash from '@/plugins/useFlash';
 
 interface Values {
@@ -17,8 +16,9 @@ interface Values {
 }
 
 const LoginContainer = ({ history }: RouteComponentProps) => {
-    const ref = useRef<Reaptcha>(null);
+    const ref = useRef<any>(null);
     const [token, setToken] = useState('');
+    const [ReaptchaComponent, setReaptchaComponent] = useState<React.ComponentType<any> | null>(null);
 
     const { clearFlashes, clearAndAddHttpError } = useFlash();
     const recaptcha = useStoreState((state) => state.settings.data?.recaptcha);
@@ -29,12 +29,46 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
         clearFlashes();
     }, []);
 
+    const loadRecaptcha = useCallback(() => {
+        if (!recaptchaEnabled || ReaptchaComponent) return;
+        void import('reaptcha')
+            .then((mod) => {
+                setReaptchaComponent(() => mod.default);
+            })
+            .catch(() => {
+                // silent
+            });
+    }, [recaptchaEnabled, ReaptchaComponent]);
+
+    useEffect(() => {
+        if (!recaptchaEnabled) return;
+        let timer: number;
+        const schedule = () => {
+            timer = window.setTimeout(loadRecaptcha, 2500);
+        };
+
+        if ('requestIdleCallback' in window) {
+            (window as any).requestIdleCallback(schedule, { timeout: 4000 });
+        } else {
+            schedule();
+        }
+
+        return () => {
+            if (timer) window.clearTimeout(timer);
+        };
+    }, [recaptchaEnabled, loadRecaptcha]);
+
     const onSubmit = (values: Values, { setSubmitting }: FormikHelpers<Values>) => {
         clearFlashes();
 
         // If there is no token in the state yet, request the token and then abort this submit request
         // since it will be re-submitted when the recaptcha data is returned by the component.
         if (recaptchaEnabled && !token) {
+            if (!ref.current) {
+                loadRecaptcha();
+                setSubmitting(false);
+                return;
+            }
             ref.current!.execute().catch((error) => {
                 console.error(error);
 
@@ -76,7 +110,7 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
             })}
         >
             {({ isSubmitting, setSubmitting, submitForm }) => (
-                <LoginFormContainer title={'Login to Continue'} css={tw`w-full flex`}>
+                <LoginFormContainer title={'Login to Continue'} css={tw`w-full flex`} onFocusCapture={loadRecaptcha}>
                     <Field light type={'text'} label={'Username or Email'} name={'username'} disabled={isSubmitting} />
                     <div css={tw`mt-6`}>
                         <Field light type={'password'} label={'Password'} name={'password'} disabled={isSubmitting} />
@@ -86,8 +120,8 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
                             Login
                         </Button>
                     </div>
-                    {recaptchaEnabled && (
-                        <Reaptcha
+                    {recaptchaEnabled && ReaptchaComponent && (
+                        <ReaptchaComponent
                             ref={ref}
                             size={'invisible'}
                             sitekey={siteKey || '_invalid_key'}
