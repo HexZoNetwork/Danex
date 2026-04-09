@@ -13,7 +13,7 @@ module.exports = {
     performance: {
         hints: false,
     },
-    entry: [!isProduction && 'react-hot-loader/patch', './resources/scripts/index.tsx'].filter(Boolean),
+    entry: ['./resources/scripts/index.tsx'],
     output: {
         path: path.join(__dirname, '/public/assets'),
         filename: isProduction ? 'bundle.[chunkhash:8].js' : 'bundle.[fullhash:8].js',
@@ -118,9 +118,26 @@ module.exports = {
         sideEffects: false,
         runtimeChunk: false,
         removeEmptyChunks: true,
-        // The panel template injects only the main entry script, so keep the
-        // bootstrap path in a single initial bundle to avoid blank-screen boots.
-        splitChunks: false,
+        splitChunks: isProduction
+            ? {
+                  chunks: 'all',
+                  minSize: 20000,
+                  maxInitialRequests: 20,
+                  cacheGroups: {
+                      vendors: {
+                          test: /[\\/]node_modules[\\/]/,
+                          name: 'vendors',
+                          chunks: 'all',
+                          priority: 20,
+                      },
+                      default: {
+                          minChunks: 2,
+                          priority: 10,
+                          reuseExistingChunk: true,
+                      },
+                  },
+              }
+            : false,
         minimize: isProduction,
         minimizer: [
             new TerserPlugin({
