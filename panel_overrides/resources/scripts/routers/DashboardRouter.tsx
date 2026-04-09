@@ -7,7 +7,7 @@ import TransitionRouter from '@/TransitionRouter';
 import SubNavigation from '@/components/elements/SubNavigation';
 import { useLocation } from 'react-router';
 import Spinner from '@/components/elements/Spinner';
-import routes from '@/routers/routes';
+import accountRoutes from '@/routers/accountRoutes';
 import { getChatNotifications } from '@/api/chat/publicChat';
 import { useStoreState } from 'easy-peasy';
 import { ApplicationStore } from '@/state';
@@ -121,7 +121,7 @@ export default () => {
             {location.pathname.startsWith('/account') && (
                 <SubNavigation>
                     <div>
-                        {routes.account
+                        {accountRoutes
                             .filter((route) => !!route.name)
                             .map(({ path, name, exact = false }) => (
                                 <NavLink key={path} to={`/account/${path}`.replace('//', '/')} exact={exact}>
@@ -157,7 +157,7 @@ export default () => {
                         <Route path={'/notifications'} exact>
                             <NotificationsPage />
                         </Route>
-                        {routes.account.map(({ path, component: Component }) => (
+                        {accountRoutes.map(({ path, component: Component }) => (
                             <Route key={path} path={`/account/${path}`.replace('//', '/')} exact>
                                 <Component />
                             </Route>

@@ -38,7 +38,14 @@ export default forwardRef<HTMLFormElement, Props>(({ title, compact, hideLogo, .
             <div css={[tw`w-full bg-white shadow-lg rounded-lg p-6 mx-1`, !compact && tw`md:flex md:pl-0`]}>
                 {!hideLogo && (
                     <div css={tw`flex-none select-none mb-6 md:mb-0 self-center`}>
-                        <img src={'/assets/svgs/pterodactyl.svg'} css={tw`block w-48 md:w-64 mx-auto`} />
+                        <img
+                            src={'/assets/svgs/pterodactyl.svg'}
+                            width={256}
+                            height={256}
+                            loading={'eager'}
+                            decoding={'async'}
+                            css={tw`block w-48 md:w-64 h-auto mx-auto`}
+                        />
                     </div>
                 )}
                 <div css={tw`flex-1`}>{props.children}</div>
