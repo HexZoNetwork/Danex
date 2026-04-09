@@ -14,7 +14,8 @@ return [
 
         'global_decay_seconds' => env('PTEROPROTECT_WAF_DECAY_SECONDS', 10),
 
-        'block_empty_agent_on_api' => true,
+        // Keep API compatibility for internal integrations that omit UA.
+        'block_empty_agent_on_api' => false,
         'block_client_ip_spoof_headers' => true,
         'block_malformed_host_header' => true,
         'block_query_pipe_equals_pattern' => true,
@@ -22,16 +23,11 @@ return [
         'max_query_length' => env('PTEROPROTECT_WAF_MAX_QUERY_LENGTH', 2048),
         'max_content_length' => env('PTEROPROTECT_WAF_MAX_CONTENT_LENGTH', 1048576),
         'block_headless_stealth' => true,
-        'fingerprint_cluster_limit_enabled' => true,
+        // Can trigger false positives on NAT/shared-client traffic; keep opt-in.
+        'fingerprint_cluster_limit_enabled' => env('PTEROPROTECT_WAF_FP_CLUSTER_ENABLED', false),
 
+        // High-confidence abusive automation markers only.
         'suspicious_user_agents' => [
-            'curl/',
-            'wget/',
-            'python-requests',
-            'go-http-client',
-            'httpclient',
-            'aiohttp',
-            'scrapy',
             'sqlmap',
             'headlesschrome',
             'puppeteer',
