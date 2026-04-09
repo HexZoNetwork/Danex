@@ -167,6 +167,99 @@ class ProtectController extends Controller
         ]);
     }
 
+    public function rumIndex(Request $request): View|RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $summary = [
+            'hour_total' => 0,
+            'day_total' => 0,
+            'hour_5xx' => 0,
+            'hour_js_errors' => 0,
+        ];
+        $metrics = collect();
+        $topApis = collect();
+        $errorRoutes = collect();
+        $hasTable = Schema::hasTable('panel_rum_events');
+
+        if ($hasTable) {
+            $hourStart = now()->subHour();
+            $dayStart = now()->subDay();
+
+            $summary['hour_total'] = DB::table('panel_rum_events')
+                ->where('occurred_at', '>=', $hourStart)
+                ->count();
+            $summary['day_total'] = DB::table('panel_rum_events')
+                ->where('occurred_at', '>=', $dayStart)
+                ->count();
+            $summary['hour_5xx'] = DB::table('panel_rum_events')
+                ->where('metric', 'API_LATENCY')
+                ->where('occurred_at', '>=', $hourStart)
+                ->where('status', '>=', 500)
+                ->count();
+            $summary['hour_js_errors'] = DB::table('panel_rum_events')
+                ->whereIn('metric', ['JS_ERROR', 'UNHANDLED_REJECTION'])
+                ->where('occurred_at', '>=', $hourStart)
+                ->count();
+
+            $metrics = DB::table('panel_rum_events')
+                ->select([
+                    'metric',
+                    DB::raw('COUNT(*) as total'),
+                    DB::raw('AVG(value) as avg_value'),
+                    DB::raw("SUM(CASE WHEN rating = 'poor' THEN 1 ELSE 0 END) as poor_count"),
+                    DB::raw("SUM(CASE WHEN rating = 'needs-improvement' THEN 1 ELSE 0 END) as ni_count"),
+                    DB::raw("SUM(CASE WHEN rating = 'good' THEN 1 ELSE 0 END) as good_count"),
+                ])
+                ->where('occurred_at', '>=', $dayStart)
+                ->groupBy('metric')
+                ->orderByDesc('total')
+                ->limit(20)
+                ->get();
+
+            $topApis = DB::table('panel_rum_events')
+                ->select([
+                    'api_path',
+                    DB::raw('COUNT(*) as total'),
+                    DB::raw('AVG(value) as avg_ms'),
+                    DB::raw('MAX(value) as max_ms'),
+                    DB::raw('SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END) as err_5xx'),
+                ])
+                ->where('metric', 'API_LATENCY')
+                ->where('occurred_at', '>=', $hourStart)
+                ->where('api_path', '!=', '')
+                ->groupBy('api_path')
+                ->orderByDesc('avg_ms')
+                ->limit(10)
+                ->get();
+
+            $errorRoutes = DB::table('panel_rum_events')
+                ->select([
+                    'route',
+                    DB::raw('COUNT(*) as total'),
+                    DB::raw('MAX(occurred_at) as latest_at'),
+                ])
+                ->whereIn('metric', ['JS_ERROR', 'UNHANDLED_REJECTION'])
+                ->where('occurred_at', '>=', $dayStart)
+                ->where('route', '!=', '')
+                ->groupBy('route')
+                ->orderByDesc('total')
+                ->limit(12)
+                ->get();
+        }
+
+        return view('admin.protect.rum', [
+            'summary' => $summary,
+            'metrics' => $metrics,
+            'topApis' => $topApis,
+            'errorRoutes' => $errorRoutes,
+            'hasRumTable' => $hasTable,
+        ]);
+    }
+
     public function adsIndex(Request $request): View|RedirectResponse
     {
         $guard = $this->requireVerified($request);

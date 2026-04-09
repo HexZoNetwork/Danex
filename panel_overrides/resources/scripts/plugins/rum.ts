@@ -1,8 +1,8 @@
 const SAMPLE_KEY = 'danex_rum_sample_v1';
-const SAMPLE_RATE = 0.01;
-const MAX_QUEUE = 50;
-const FLUSH_COUNT = 20;
-const FLUSH_INTERVAL_MS = 60000;
+const SAMPLE_RATE = 0.005;
+const MAX_QUEUE = 24;
+const FLUSH_COUNT = 8;
+const FLUSH_INTERVAL_MS = 120000;
 
 type RumMetric =
     | 'LCP'
@@ -10,9 +10,9 @@ type RumMetric =
     | 'INP'
     | 'FCP'
     | 'TTFB'
-    | 'api_latency'
-    | 'js_error'
-    | 'unhandled_rejection';
+    | 'API_LATENCY'
+    | 'JS_ERROR'
+    | 'UNHANDLED_REJECTION';
 
 interface RumEvent {
     metric: RumMetric;
@@ -34,6 +34,22 @@ let flushTimer: number | undefined;
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const routePath = () => window.location.pathname || '/';
+
+const shouldEnableForDevice = () => {
+    try {
+        const nav = navigator as any;
+        const connection = nav.connection;
+        if (connection && connection.saveData === true) return false;
+        const memory = Number(nav.deviceMemory || 0);
+        if (memory > 0 && memory <= 2) return false;
+        const cores = Number(nav.hardwareConcurrency || 0);
+        if (cores > 0 && cores <= 2) return false;
+    } catch {
+        // no-op
+    }
+
+    return true;
+};
 
 const shouldSample = () => {
     try {
@@ -113,34 +129,35 @@ const enqueueRum = (event: RumEvent) => {
 };
 
 const observeCoreWebVitals = () => {
-    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
-    if (nav && nav.responseStart > 0) {
-        enqueueRum({
-            metric: 'TTFB',
-            value: nav.responseStart,
-            rating: nav.responseStart <= 800 ? 'good' : nav.responseStart <= 1800 ? 'needs-improvement' : 'poor',
-        });
-    }
+    window.setTimeout(() => {
+        const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+        if (nav && nav.responseStart > 0) {
+            enqueueRum({
+                metric: 'TTFB',
+                value: nav.responseStart,
+                rating: nav.responseStart <= 800 ? 'good' : nav.responseStart <= 1800 ? 'needs-improvement' : 'poor',
+            });
+        }
 
-    const fcp = performance.getEntriesByName('first-contentful-paint')[0] as PerformanceEntry | undefined;
-    if (fcp) {
-        const value = fcp.startTime;
-        enqueueRum({
-            metric: 'FCP',
-            value,
-            rating: value <= 1800 ? 'good' : value <= 3000 ? 'needs-improvement' : 'poor',
-        });
-    }
-
+        const fcp = performance.getEntriesByName('first-contentful-paint')[0] as PerformanceEntry | undefined;
+        if (fcp) {
+            const value = fcp.startTime;
+            enqueueRum({
+                metric: 'FCP',
+                value,
+                rating: value <= 1800 ? 'good' : value <= 3000 ? 'needs-improvement' : 'poor',
+            });
+        }
+    }, 1500);
 };
 
 export const rumTrackApi = (path: string, durationMs: number, status?: number) => {
     if (!enabled) return;
     const isError = !!status && status >= 500;
-    if (!isError && durationMs < 2000) return;
-    if (!isError && Math.random() > 0.05) return;
+    if (!isError && durationMs < 3000) return;
+    if (!isError && Math.random() > 0.2) return;
     enqueueRum({
-        metric: 'api_latency',
+        metric: 'API_LATENCY',
         api_path: path.slice(0, 255),
         value: Math.max(0, durationMs),
         status,
@@ -150,21 +167,29 @@ export const rumTrackApi = (path: string, durationMs: number, status?: number) =
 
 const setupErrorCollectors = () => {
     window.addEventListener('error', (event) => {
+        const source = String(event.filename || '');
+        if (source.startsWith('chrome-extension://') || source.startsWith('moz-extension://')) {
+            return;
+        }
         enqueueRum({
-            metric: 'js_error',
+            metric: 'JS_ERROR',
             value: 1,
             meta: {
                 message: String(event.message || ''),
-                source: String(event.filename || ''),
+                source,
             },
         });
     });
     window.addEventListener('unhandledrejection', (event) => {
+        const message = String((event.reason && (event.reason.message || event.reason)) || 'unknown');
+        if (message.includes('chrome-extension://') || message.includes('moz-extension://')) {
+            return;
+        }
         enqueueRum({
-            metric: 'unhandled_rejection',
+            metric: 'UNHANDLED_REJECTION',
             value: 1,
             meta: {
-                message: String((event.reason && (event.reason.message || event.reason)) || 'unknown'),
+                message,
             },
         });
     });
@@ -173,6 +198,7 @@ const setupErrorCollectors = () => {
 export const initRum = () => {
     if (started) return;
     started = true;
+    if (!shouldEnableForDevice()) return;
     enabled = shouldSample();
     if (!enabled) return;
     window.__danexRumTrackApi = rumTrackApi;
@@ -180,6 +206,12 @@ export const initRum = () => {
     setupErrorCollectors();
     flushTimer = window.setInterval(() => flushRumQueue(), FLUSH_INTERVAL_MS);
     window.addEventListener('beforeunload', () => flushRumQueue(true));
+    window.addEventListener('pagehide', () => flushRumQueue(true));
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            flushRumQueue(true);
+        }
+    });
 };
 
 export const stopRum = () => {

@@ -63,7 +63,9 @@ write_json_to_targets() {
 remove_targets() {
     local file
     for file in "$@"; do
-        remove_file_safely "${file}"
+        if ! remove_file_safely "${file}"; then
+            return 1
+        fi
     done
 }
 
@@ -87,11 +89,15 @@ write_lockdown() {
 }
 
 clear_lockdown() {
-    remove_targets "${LOCKDOWN_FILES[@]}"
+    local now
+    now="$(date +%s)"
+    write_json_to_targets \
+        "$(printf '{"enabled":false,"updated_at":%s}' "${now}")" \
+        "${LOCKDOWN_FILES[@]}"
 }
 
 clear_mode() {
-    remove_targets "${MODE_FILES[@]}"
+    write_mode "normal"
 }
 
 status() {

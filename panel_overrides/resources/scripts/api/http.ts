@@ -12,7 +12,8 @@ const http: AxiosInstance = axios.create({
 });
 
 http.interceptors.request.use((req) => {
-    if (req.url?.startsWith('/api/') && !req.url.startsWith('/api/client/rum')) {
+    const rumTrackApi = (window as any).__danexRumTrackApi;
+    if (typeof rumTrackApi === 'function' && req.url?.startsWith('/api/') && !req.url.startsWith('/api/client/rum')) {
         (req as any).__rumStartedAt = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     }
     if (!req.url?.endsWith('/resources')) {

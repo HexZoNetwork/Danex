@@ -34,9 +34,9 @@ class RumIngestController extends ClientApiController
             'INP',
             'FCP',
             'TTFB',
-            'api_latency',
-            'js_error',
-            'unhandled_rejection',
+            'API_LATENCY',
+            'JS_ERROR',
+            'UNHANDLED_REJECTION',
         ];
 
         $now = now();
@@ -44,7 +44,7 @@ class RumIngestController extends ClientApiController
         $userId = (int) $request->user()->id;
 
         foreach ($validated['events'] as $event) {
-            $metric = strtoupper((string) ($event['metric'] ?? ''));
+            $metric = strtoupper(str_replace('-', '_', (string) ($event['metric'] ?? '')));
             if (!in_array($metric, $allowedMetrics, true)) {
                 continue;
             }

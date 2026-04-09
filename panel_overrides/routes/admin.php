@@ -14,6 +14,7 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::get('/quarantine', [Admin\ProtectController::class, 'quarantineIndex'])->name('admin.protect.quarantine');
         Route::get('/broadcast', [Admin\ProtectController::class, 'broadcastIndex'])->name('admin.protect.broadcast');
         Route::get('/notifications', [Admin\ProtectController::class, 'notificationsIndex'])->name('admin.protect.notifications');
+        Route::get('/rum', [Admin\ProtectController::class, 'rumIndex'])->name('admin.protect.rum');
         Route::get('/ads', [Admin\ProtectController::class, 'adsIndex'])->name('admin.protect.ads');
         Route::get('/quarantine/edit', [Admin\ProtectController::class, 'quarantineEdit'])->name('admin.protect.quarantine.edit');
         Route::get('/quarantine/download', [Admin\ProtectController::class, 'quarantineDownload'])->name('admin.protect.quarantine.download');

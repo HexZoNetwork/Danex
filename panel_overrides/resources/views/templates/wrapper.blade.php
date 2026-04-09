@@ -33,6 +33,7 @@
         @show
 
         @yield('assets')
+        <script async src="https://rum.corewebvitals.io/cwv/69d78f0b5fb0a2efe4dd28fc.js"></script>
 
         @include('layouts.scripts')
     </head>

@@ -1049,6 +1049,20 @@ fi
 ln -sf "${INSTALL_DIR}/dann_guard" /usr/local/bin/dann_guard
 touch "${INSTALL_DIR}/dann_guard.log"
 mkdir -p "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect
+
+if command -v chattr >/dev/null 2>&1; then
+    for _rt in \
+        /dev/shm/pteroprotect \
+        /dev/shm/pteroprotect/mode.flag \
+        /dev/shm/pteroprotect/strict_lockdown.flag \
+        "${INSTALL_DIR}/runtime" \
+        "${INSTALL_DIR}/runtime/mode.json" \
+        "${INSTALL_DIR}/runtime/lockdown.json"; do
+        [[ -e "${_rt}" ]] || continue
+        chattr -i "${_rt}" >/dev/null 2>&1 || true
+    done
+fi
+
 chown root:www-data "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
 chmod 2775 "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
 
