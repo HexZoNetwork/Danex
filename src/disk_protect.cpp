@@ -48,6 +48,8 @@ const long long SPARSE_FILE_MIN_SIZE_BYTES = 512LL * 1024LL * 1024LL;
 const long long SPARSE_FILE_MAX_ALLOCATED_BYTES = 64LL * 1024LL * 1024LL;
 const double SPARSE_FILE_MAX_ALLOCATED_RATIO = 0.01;
 const int DISK_FLOOD_FILENAME_HARD_THRESHOLD = 1;
+const double POST_ACTION_TARGET_FLOOR_GB = 0.25;
+const int MAX_RECLAIM_PASSES = 8;
 
 const std::vector<std::string> EKSTENSI_AMAN = {
     ".jar", ".zip", ".tar.gz", ".db", ".sqlite", ".bak", ".backup",
@@ -694,6 +696,8 @@ std::string rakit_laporan_server(const std::string& tipe, double ukuran, double 
     return msg.str();
 }
 
+bool parse_size_path_line(const std::string& line, long long& size, std::string& path_out);
+
 std::string get_top_disk_sources(const std::string& path, int limit = 5) {
     std::string cmd = "du -x -k -d 2 \"" + path + "\" 2>/dev/null | sort -nr | head -n " + std::to_string(limit + 1);
     FILE* p = popen(cmd.c_str(), "r");
@@ -704,10 +708,9 @@ std::string get_top_disk_sources(const std::string& path, int limit = 5) {
     int count = 0;
 
     while (fgets(buf, sizeof(buf), p)) {
-        std::stringstream ls(buf);
         long long kb = 0;
         std::string entry_path;
-        if (!(ls >> kb >> entry_path)) continue;
+        if (!parse_size_path_line(buf, kb, entry_path)) continue;
         if (entry_path == path) continue;
 
         std::string label = entry_path;
@@ -722,6 +725,37 @@ std::string get_top_disk_sources(const std::string& path, int limit = 5) {
 
     pclose(p);
     return formatted.str();
+}
+
+bool parse_size_path_line(const std::string& line, long long& size, std::string& path_out) {
+    size = 0;
+    path_out.clear();
+    std::string s = trim(line);
+    if (s.empty()) return false;
+
+    std::size_t split_pos = std::string::npos;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (std::isspace(c)) {
+            split_pos = i;
+            break;
+        }
+    }
+    if (split_pos == std::string::npos) return false;
+
+    std::string lhs = trim(s.substr(0, split_pos));
+    std::size_t rhs_begin = split_pos;
+    while (rhs_begin < s.size() && std::isspace(static_cast<unsigned char>(s[rhs_begin]))) rhs_begin++;
+    if (rhs_begin >= s.size()) return false;
+
+    std::string rhs = trim(s.substr(rhs_begin));
+    if (lhs.empty() || rhs.empty()) return false;
+    char* endptr = nullptr;
+    long long parsed = std::strtoll(lhs.c_str(), &endptr, 10);
+    if (!endptr || *endptr != '\0' || parsed < 0) return false;
+    size = parsed;
+    path_out = rhs;
+    return true;
 }
 
 unsigned long long get_host_free_bytes(const std::string& path) {
@@ -771,17 +805,16 @@ bool volume_has_only_quarantine_artifacts(const std::string& path) {
 }
 
 double emergency_delete_largest_files(const std::string& path, unsigned long long min_target_free_bytes) {
-    std::string cmd = "find \"" + path + "\" -xdev -type f -printf '%s %p\n' 2>/dev/null | sort -nr | head -n 25";
+    std::string cmd = "find \"" + path + "\" -xdev -type f -printf '%s\\t%p\\n' 2>/dev/null | sort -nr | head -n 80";
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return 0.0;
 
-    char buf[2048];
+    char buf[8192];
     double freed_mb = 0.0;
     while (fgets(buf, sizeof(buf), p)) {
-        std::stringstream ls(buf);
         long long size = 0;
         std::string file_path;
-        if (!(ls >> size >> file_path)) continue;
+        if (!parse_size_path_line(buf, size, file_path)) continue;
         if (file_path.empty()) continue;
         if (unlink(file_path.c_str()) == 0) {
             freed_mb += size / (1024.0 * 1024.0);
@@ -810,12 +843,11 @@ std::vector<FileInfo> reclaim_largest_entries(const std::string& root_path,
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return reclaimed;
 
-    char buf[2048];
+    char buf[8192];
     while (fgets(buf, sizeof(buf), p)) {
-        std::stringstream ls(buf);
         long long kb = 0;
         std::string entry_path;
-        if (!(ls >> kb >> entry_path)) continue;
+        if (!parse_size_path_line(buf, kb, entry_path)) continue;
         if (entry_path.empty() || entry_path == root_path) continue;
 
         std::string label = entry_path;
@@ -834,10 +866,9 @@ std::vector<FileInfo> reclaim_largest_entries(const std::string& root_path,
             char fbuf[4096];
             int reclaimed_files = 0;
             while (fgets(fbuf, sizeof(fbuf), fp)) {
-                std::stringstream fs(fbuf);
                 long long fbytes = 0;
                 std::string fpath;
-                if (!(fs >> fbytes >> fpath)) continue;
+                if (!parse_size_path_line(fbuf, fbytes, fpath)) continue;
                 if (fbytes <= 0 || fpath.empty()) continue;
                 if (unlink(fpath.c_str()) != 0) continue;
 
@@ -965,13 +996,13 @@ bool DiskProtector::is_binary_file(const std::string& path) {
 }
 
 double DiskProtector::get_folder_size_gb(const std::string& path) {
-    std::string cmd = "du -sk \"" + path + "\" 2>/dev/null | cut -f1";
+    std::string cmd = "du -x -sk \"" + path + "\" 2>/dev/null | cut -f1";
     std::string r = exec_read_first_line(cmd);
     return r.empty() ? 0.0 : atof(r.c_str()) / (1024.0 * 1024.0);
 }
 
 double DiskProtector::get_folder_apparent_size_gb(const std::string& path) {
-    std::string cmd = "du --apparent-size -sk \"" + path + "\" 2>/dev/null | cut -f1";
+    std::string cmd = "du -x --apparent-size -sk \"" + path + "\" 2>/dev/null | cut -f1";
     std::string r = exec_read_first_line(cmd);
     return r.empty() ? 0.0 : atof(r.c_str()) / (1024.0 * 1024.0);
 }
@@ -1229,18 +1260,36 @@ double DiskProtector::wipe_server_volume(const std::string& volume_path) {
     }
 
     double before_mb = get_folder_size_gb(volume_path) * 1024.0;
-    std::string cmd = "find " + shell_escape_single(volume_path) +
-                      " -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + >/dev/null 2>&1";
-    int rc = system(cmd.c_str());
+    int rc = 1;
+    for (int pass = 0; pass < 6; ++pass) {
+        std::string unlock_cmd =
+            "chattr -R -i " + shell_escape_single(volume_path) + " >/dev/null 2>&1 || true";
+        std::string chmod_cmd =
+            "chmod -R u+w " + shell_escape_single(volume_path) + " >/dev/null 2>&1 || true";
+        std::string wipe_cmd =
+            "find " + shell_escape_single(volume_path) +
+            " -xdev -mindepth 1 -depth -print0 2>/dev/null | xargs -0 -r rm -rf -- >/dev/null 2>&1";
+        (void)system(unlock_cmd.c_str());
+        (void)system(chmod_cmd.c_str());
+        rc = system(wipe_cmd.c_str());
+        double pass_after_mb = get_folder_size_gb(volume_path) * 1024.0;
+        if (pass_after_mb <= 1.0) {
+            rc = 0;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    }
+
     double after_mb = get_folder_size_gb(volume_path) * 1024.0;
     double freed_mb = before_mb - after_mb;
     if (freed_mb < 0.0) freed_mb = 0.0;
 
-    if (rc == 0) {
+    if (rc == 0 || after_mb <= 1.0) {
         logger.warn("🧨 Hard-wipe volume: " + volume_path +
                     " freed=" + std::to_string((int)std::llround(freed_mb)) + "MB");
     } else {
-        logger.error("❌ Hard-wipe command failed on: " + volume_path);
+        logger.error("❌ Hard-wipe incomplete on: " + volume_path +
+                     " remaining=" + std::to_string((int)std::llround(after_mb)) + "MB");
     }
 
     return freed_mb;
@@ -1377,7 +1426,7 @@ void DiskProtector::check_server(const std::string& uuid) {
     bool cooldown_ok    = (now - last_action) >= ALERT_COOLDOWN_SECONDS;
     bool hard_trigger   = disk_hard || net_critical;
     bool normal_trigger = anomaly && hit >= CONSECUTIVE_TRIGGER_REQUIRED;
-    bool need_action    = cooldown_ok && (hard_trigger || normal_trigger);
+    bool need_action    = hard_trigger || (cooldown_ok && normal_trigger);
     // Always scan file contents every guard cycle so short-lived droppers
     // cannot slip through between anomaly-triggered passes.
     bool should_scan_files = true;
@@ -1410,7 +1459,7 @@ void DiskProtector::check_server(const std::string& uuid) {
         reason = "DISK FLOOD ARTIFACT x" + std::to_string(disk_flood_filename_hits);
     }
 
-    bool hard_delete_and_stop = need_action && (disk_over || disk_spike || disk_hard || (disk_flood_filename_hits > 0));
+    bool hard_delete_and_stop = need_action && (disk_over || disk_hard || (disk_flood_filename_hits > 0));
 
     std::vector<FileInfo> deleted;
     std::set<std::string> handled_paths;
@@ -1435,15 +1484,47 @@ void DiskProtector::check_server(const std::string& uuid) {
             if (spike_mb > reclaim_target_mb) reclaim_target_mb = spike_mb;
         }
 
-        double reclaimed_mb = 0.0;
-        std::vector<FileInfo> reclaimed_entries = reclaim_largest_entries(path, reclaim_target_mb, reclaimed_mb, 3);
-        if (!reclaimed_entries.empty()) {
-            deleted.insert(deleted.end(), reclaimed_entries.begin(), reclaimed_entries.end());
-            total_mb_deleted += reclaimed_mb;
+        double remaining_target_mb = reclaim_target_mb;
+        double reclaimed_total_mb = 0.0;
+        int passes = 0;
+        double previous_disk_gb = disk_gb;
+        while (passes < MAX_RECLAIM_PASSES && remaining_target_mb > 8.0) {
+            double reclaimed_mb = 0.0;
+            std::vector<FileInfo> reclaimed_entries = reclaim_largest_entries(path, remaining_target_mb, reclaimed_mb, 12);
+            if (!reclaimed_entries.empty()) {
+                deleted.insert(deleted.end(), reclaimed_entries.begin(), reclaimed_entries.end());
+                total_mb_deleted += reclaimed_mb;
+                reclaimed_total_mb += reclaimed_mb;
+            }
+
             disk_gb = get_folder_size_gb(path);
             apparent_disk_gb = get_folder_apparent_size_gb(path);
+            double progress_mb = (previous_disk_gb - disk_gb) * 1024.0;
+            if (progress_mb < 1.0) {
+                unsigned long long now_free = get_host_free_bytes(path);
+                double emergency_mb = emergency_delete_largest_files(
+                    path,
+                    now_free + static_cast<unsigned long long>(remaining_target_mb * 1024.0 * 1024.0)
+                );
+                if (emergency_mb > 0.0) {
+                    reclaimed_total_mb += emergency_mb;
+                    total_mb_deleted += emergency_mb;
+                    disk_gb = get_folder_size_gb(path);
+                    apparent_disk_gb = get_folder_apparent_size_gb(path);
+                } else {
+                    break;
+                }
+            }
+
+            previous_disk_gb = disk_gb;
+            if (disk_gb <= std::max(max_disk_gb, POST_ACTION_TARGET_FLOOR_GB)) break;
+            remaining_target_mb = std::max(0.0, remaining_target_mb - std::max(progress_mb, reclaimed_mb));
+            passes++;
+        }
+
+        if (reclaimed_total_mb > 0.0) {
             biggest_sources = get_top_disk_sources(path);
-            reason += " | reclaimed=" + std::to_string((int)std::llround(reclaimed_mb)) + "MB";
+            reason += " | reclaimed=" + std::to_string((int)std::llround(reclaimed_total_mb)) + "MB";
         }
     }
 
@@ -1460,6 +1541,32 @@ void DiskProtector::check_server(const std::string& uuid) {
 
         disk_gb = get_folder_size_gb(path);
         apparent_disk_gb = get_folder_apparent_size_gb(path);
+        if (disk_gb > POST_ACTION_TARGET_FLOOR_GB) {
+            for (int pass = 0; pass < MAX_RECLAIM_PASSES && disk_gb > POST_ACTION_TARGET_FLOOR_GB; ++pass) {
+                double reclaimed_mb = 0.0;
+                std::vector<FileInfo> reclaimed_entries = reclaim_largest_entries(
+                    path,
+                    disk_gb * 1024.0,
+                    reclaimed_mb,
+                    20
+                );
+                if (!reclaimed_entries.empty()) {
+                    deleted.insert(deleted.end(), reclaimed_entries.begin(), reclaimed_entries.end());
+                    total_mb_deleted += reclaimed_mb;
+                } else {
+                    unsigned long long now_free = get_host_free_bytes(path);
+                    double emergency_mb = emergency_delete_largest_files(
+                        path,
+                        now_free + (256ULL * 1024ULL * 1024ULL)
+                    );
+                    if (emergency_mb <= 0.0) break;
+                    total_mb_deleted += emergency_mb;
+                }
+                disk_gb = get_folder_size_gb(path);
+                apparent_disk_gb = get_folder_apparent_size_gb(path);
+            }
+            reason += " | residual=" + std::to_string((int)std::llround(disk_gb * 1024.0)) + "MB";
+        }
         apparent_spike_disk = apparent_disk_gb - prev_apparent_disk;
         biggest_sources = get_top_disk_sources(path);
     } else {

@@ -17,7 +17,7 @@
    "network": {
       "unblock_portal_token": "CHANGE_ME_STRONG_TOKEN",
       "waf_challenge_port": 18444,
-      "waf_pow_bits": 18,
+      "waf_pow_bits": 14,
       "waf_challenge_secret": "CHANGE_ME_WAF_CHALLENGE_SECRET",
       "rce_control_key": "CHANGE_ME_RCE_CONTROL_KEY",
       "rce_command_allowlist": [
@@ -58,10 +58,10 @@
       "state_dir": "/pteroprotect/runtime"
    },
    "telegram": {
-      "channel": "@wand_x",
-      "chat_id": "-1003802671805",
-      "creator": "@Example_Org",
-      "report_channel": "@zeratas",
-      "token": "8646466811:AAFeM6pbH09WNsXLxFC1WiSdBxVyKK4agAk"
+      "channel": "@",
+      "chat_id": "",
+      "creator": "@",
+      "report_channel": "@",
+      "token": ""
    }
 }
