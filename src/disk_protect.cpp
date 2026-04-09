@@ -1512,6 +1512,20 @@ void DiskProtector::check_server(const std::string& uuid) {
                     disk_gb = get_folder_size_gb(path);
                     apparent_disk_gb = get_folder_apparent_size_gb(path);
                 } else {
+                    // If files are still held open, deletion may not release space
+                    // until the container process exits. Stop once, then retry.
+                    if (!local_container_stopped) {
+                        local_container_stopped = stop_container_by_uuid(uuid);
+                        if (local_container_stopped) {
+                            reason += " | container_stopped=1";
+                            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                            disk_gb = get_folder_size_gb(path);
+                            apparent_disk_gb = get_folder_apparent_size_gb(path);
+                            previous_disk_gb = disk_gb;
+                            passes++;
+                            continue;
+                        }
+                    }
                     break;
                 }
             }
