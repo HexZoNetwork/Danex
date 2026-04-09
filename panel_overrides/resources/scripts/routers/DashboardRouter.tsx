@@ -1,8 +1,7 @@
-import React, { lazy, useEffect, useRef } from 'react';
+import React, { lazy, useEffect, useRef, useState } from 'react';
 import { NavLink, Route, Switch } from 'react-router-dom';
 import NavigationBar from '@/components/NavigationBar';
 import DashboardContainer from '@/components/dashboard/DashboardContainer';
-import AdsSurface from '@/components/dashboard/AdsSurface';
 import { NotFound } from '@/components/elements/ScreenBlock';
 import TransitionRouter from '@/TransitionRouter';
 import SubNavigation from '@/components/elements/SubNavigation';
@@ -18,6 +17,7 @@ const DanexCoinPage = lazy(() => import('@/components/dashboard/DanexCoinPage'))
 const NotificationsPage = lazy(() => import('@/components/dashboard/NotificationsPage'));
 const CreatePanelPage = lazy(() => import('@/components/dashboard/CreatePanelPage'));
 const AccountProfileContainer = lazy(() => import('@/components/dashboard/AccountProfileContainer'));
+const AdsSurface = lazy(() => import('@/components/dashboard/AdsSurface'));
 
 export default () => {
     const location = useLocation();
@@ -26,6 +26,7 @@ export default () => {
     const notificationSinceRef = useRef(0);
     const notificationBootedRef = useRef(false);
     const shownRef = useRef<Set<number>>(new Set());
+    const [showAds, setShowAds] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -84,6 +85,16 @@ export default () => {
         };
     }, []);
 
+    useEffect(() => {
+        const enable = () => setShowAds(true);
+        if ('requestIdleCallback' in window) {
+            (window as any).requestIdleCallback(enable, { timeout: 7000 });
+            return;
+        }
+        const timer = window.setTimeout(enable, 3500);
+        return () => window.clearTimeout(timer);
+    }, []);
+
     return (
         <>
             <NavigationBar />
@@ -123,7 +134,11 @@ export default () => {
                     </div>
                 </SubNavigation>
             )}
-            <AdsSurface />
+            {showAds && (
+                <React.Suspense fallback={null}>
+                    <AdsSurface />
+                </React.Suspense>
+            )}
             <TransitionRouter>
                 <React.Suspense fallback={<Spinner centered />}>
                     <Switch location={location}>

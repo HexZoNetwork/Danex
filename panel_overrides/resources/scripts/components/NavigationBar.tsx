@@ -1,11 +1,10 @@
 import * as React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { lazy, useEffect, useRef, useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBell, faCogs, faLayerGroup, faSignOutAlt } from '@fortawesome/free-solid-svg-icons';
 import { useStoreState } from 'easy-peasy';
 import { ApplicationStore } from '@/state';
-import SearchContainer from '@/components/dashboard/search/SearchContainer';
 import tw, { theme } from 'twin.macro';
 import styled from 'styled-components/macro';
 import http from '@/api/http';
@@ -13,6 +12,8 @@ import SpinnerOverlay from '@/components/elements/SpinnerOverlay';
 import Tooltip from '@/components/elements/tooltip/Tooltip';
 import Avatar from '@/components/Avatar';
 import { getChatNotifications } from '@/api/chat/publicChat';
+
+const SearchContainer = lazy(() => import('@/components/dashboard/search/SearchContainer'));
 
 const RightNavigation = styled.div`
     & > a,
@@ -43,6 +44,7 @@ export default () => {
     useEffect(() => {
         let cancelled = false;
         const tick = async () => {
+            if (document.visibilityState !== 'visible') return;
             try {
                 const result = await getChatNotifications(notificationSinceRef.current || undefined, 20);
                 if (cancelled) return;
@@ -53,11 +55,14 @@ export default () => {
             }
         };
 
-        tick();
-        const timer = window.setInterval(tick, 5000);
+        const firstTimer = window.setTimeout(() => {
+            void tick();
+        }, 1500);
+        const timer = window.setInterval(tick, 20000);
 
         return () => {
             cancelled = true;
+            window.clearTimeout(firstTimer);
             window.clearInterval(timer);
         };
     }, []);
@@ -85,7 +90,9 @@ export default () => {
                     </Link>
                 </div>
                 <RightNavigation className={'flex h-full items-center justify-center'}>
-                    <SearchContainer />
+                    <React.Suspense fallback={null}>
+                        <SearchContainer />
+                    </React.Suspense>
                     <Tooltip placement={'bottom'} content={'Dashboard'}>
                         <NavLink to={'/'} exact>
                             <FontAwesomeIcon icon={faLayerGroup} />
