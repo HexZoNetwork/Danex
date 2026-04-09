@@ -1996,7 +1996,7 @@ load_adaptive_state
 
 while true; do
     TRAFFIC_PROFILE="$(trim "$(printf '%s' "$(read_network_setting traffic_profile mixed)" | tr '[:upper:]' '[:lower:]')")"
-    MONITOR_TCP_PORTS="$(sanitize_ports_csv "$(read_network_setting monitor_tcp_ports '22,80,443,8080,2022')")"
+    MONITOR_TCP_PORTS="$(sanitize_ports_csv "$(read_network_setting monitor_tcp_ports '22,80,443,8080,2022,3306,6379')")"
     PORTS_REGEX="$(build_ports_regex "${MONITOR_TCP_PORTS}")"
 
     HOST_FIREWALL_ENABLED="$(normalize_bool "$(read_network_setting host_firewall_enabled 0)")"
