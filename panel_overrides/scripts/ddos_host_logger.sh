@@ -4,6 +4,7 @@ set -euo pipefail
 GUARD_HOME="${DANN_GUARD_HOME:-/pteroprotect}"
 CONFIG_FILE="${GUARD_HOME}/config.json"
 RUNTIME_DIR="/dev/shm/pteroprotect"
+PANEL_RUNTIME_DIR="${PTEROPROTECT_PANEL_RUNTIME_DIR:-/pteroprotect/runtime}"
 LOG_FILE="${RUNTIME_DIR}/ddos_host.log"
 LATEST_FILE="${RUNTIME_DIR}/ddos_host.latest"
 PORTS_REGEX=':(80|443|8080|2022)$'
@@ -15,6 +16,7 @@ SELF_DDOS_RATE_IPSET4="pteroprotect_selfddos_rl_v4"
 SELF_DDOS_RATE_IPSET6="pteroprotect_selfddos_rl_v6"
 SELF_DDOS_RATE_CHAIN4="PTEROPROTECT-SELFDDOS-RL"
 SELF_DDOS_RATE_CHAIN6="PTEROPROTECT-SELFDDOS-RL-V6"
+SELF_DDOS_RATE_LIMIT_CHAIN_READY=0
 BW_IPSET4_PROBATION="pteroprotect_bw_probation_v4"
 BW_IPSET4_BAD="pteroprotect_bw_bad_v4"
 BW_IPSET4_WORST="pteroprotect_bw_worst_v4"
@@ -33,8 +35,12 @@ PANEL_ACCESS_LOG="/var/log/nginx/pteroprotect.access.log"
 TRUSTED_LOGIN_LOG="/dev/shm/pteroprotect/auth_success_ips.log"
 BLOCK_HISTORY_FILE="${RUNTIME_DIR}/block_history.tsv"
 TENANT_HISTORY_FILE="${RUNTIME_DIR}/tenant_quarantine.tsv"
+OWNER_LOCK_FILE="${RUNTIME_DIR}/owner_lock.tsv"
+ADAPTIVE_STATE_FILE="${RUNTIME_DIR}/adaptive_baseline.state"
 LOCKDOWN_FLAG_FILE="${RUNTIME_DIR}/strict_lockdown.flag"
 MODE_FLAG_FILE="${RUNTIME_DIR}/mode.flag"
+LOCKDOWN_FLAG_FILE_PANEL="${PANEL_RUNTIME_DIR}/lockdown.json"
+MODE_FLAG_FILE_PANEL="${PANEL_RUNTIME_DIR}/mode.json"
 NGINX_EMERGENCY_PROFILE_FILE="/etc/nginx/conf.d/pteroprotect_emergency_profile.conf"
 MODE_STATE_CACHE="normal"
 NGINX_PROFILE_STATE_CACHE="normal"
@@ -42,11 +48,36 @@ LAST_NGINX_RELOAD_TS=0
 LAST_SERVICE_PULSE_COUNT=0
 IP_TRUST_STATE_FILE="${GUARD_HOME}/runtime/ip_trust.tsv"
 IP_TRUST_RESTORE_DONE=0
+ADAPTIVE_ESTABLISHED_BASE=0
+ADAPTIVE_SYN_RECV_BASE=0
+ADAPTIVE_HTTP_BASE=0
+ADAPTIVE_SERVICE_BASE=0
+ADAPTIVE_SAMPLES=0
 
 mkdir -p "${RUNTIME_DIR}"
+mkdir -p "${PANEL_RUNTIME_DIR}"
+chown root:www-data "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
+chmod 2775 "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
 touch "${LOG_FILE}"
 touch "${BLOCK_HISTORY_FILE}"
 touch "${TENANT_HISTORY_FILE}"
+touch "${OWNER_LOCK_FILE}"
+
+write_runtime_payload() {
+    local payload="$1"
+    local primary="$2"
+    local mirror="$3"
+    printf '%s\n' "${payload}" > "${primary}"
+    printf '%s\n' "${payload}" > "${mirror}"
+    chown root:www-data "${primary}" "${mirror}" >/dev/null 2>&1 || true
+    chmod 664 "${primary}" "${mirror}" >/dev/null 2>&1 || true
+}
+
+remove_runtime_payload() {
+    local primary="$1"
+    local mirror="$2"
+    rm -f "${primary}" "${mirror}"
+}
 
 read_network_setting() {
     local key="$1"
@@ -99,6 +130,79 @@ trim_lines() {
     fi
 }
 
+clamp_percentage() {
+    local value="$1"
+    local min="$2"
+    local max="$3"
+    [[ "${value}" =~ ^[0-9]+$ ]] || value="${min}"
+    if (( value < min )); then value="${min}"; fi
+    if (( value > max )); then value="${max}"; fi
+    printf '%s' "${value}"
+}
+
+load_adaptive_state() {
+    if [[ ! -f "${ADAPTIVE_STATE_FILE}" ]]; then
+        return 0
+    fi
+
+    # shellcheck disable=SC1090
+    source "${ADAPTIVE_STATE_FILE}" 2>/dev/null || true
+    [[ "${ADAPTIVE_ESTABLISHED_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_ESTABLISHED_BASE=0
+    [[ "${ADAPTIVE_SYN_RECV_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_SYN_RECV_BASE=0
+    [[ "${ADAPTIVE_HTTP_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_HTTP_BASE=0
+    [[ "${ADAPTIVE_SERVICE_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_SERVICE_BASE=0
+    [[ "${ADAPTIVE_SAMPLES:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_SAMPLES=0
+}
+
+save_adaptive_state() {
+    cat > "${ADAPTIVE_STATE_FILE}" <<EOF
+ADAPTIVE_ESTABLISHED_BASE=${ADAPTIVE_ESTABLISHED_BASE}
+ADAPTIVE_SYN_RECV_BASE=${ADAPTIVE_SYN_RECV_BASE}
+ADAPTIVE_HTTP_BASE=${ADAPTIVE_HTTP_BASE}
+ADAPTIVE_SERVICE_BASE=${ADAPTIVE_SERVICE_BASE}
+ADAPTIVE_SAMPLES=${ADAPTIVE_SAMPLES}
+EOF
+}
+
+ewma_next() {
+    local base="$1"
+    local current="$2"
+    local alpha_pct="$3"
+
+    [[ "${base}" =~ ^[0-9]+$ ]] || base=0
+    [[ "${current}" =~ ^[0-9]+$ ]] || current=0
+    [[ "${alpha_pct}" =~ ^[0-9]+$ ]] || alpha_pct=12
+    if (( base <= 0 )); then
+        printf '%s' "${current}"
+        return 0
+    fi
+    printf '%s' $(( (base * (100 - alpha_pct) + current * alpha_pct) / 100 ))
+}
+
+adaptive_trigger_brownout() {
+    local ttl="$1"
+    local min_interval="$2"
+    local now last=0 marker="${RUNTIME_DIR}/adaptive_brownout.last"
+
+    [[ "${ttl}" =~ ^[0-9]+$ ]] || ttl=60
+    [[ "${min_interval}" =~ ^[0-9]+$ ]] || min_interval=120
+    now="$(date +%s)"
+    if [[ -f "${marker}" ]]; then
+        last="$(cat "${marker}" 2>/dev/null || echo 0)"
+    fi
+    [[ "${last}" =~ ^[0-9]+$ ]] || last=0
+    if (( now - last < min_interval )); then
+        return 0
+    fi
+
+    if [[ -x "${GUARD_HOME}/scripts/survive_60s.sh" ]]; then
+        nohup bash "${GUARD_HOME}/scripts/survive_60s.sh" on "${ttl}" >/dev/null 2>&1 || true
+        printf '%s\n' "${now}" > "${marker}"
+        printf '[adaptive] brownout_trigger ttl=%s min_interval=%s\n' "${ttl}" "${min_interval}" >> "${LOG_FILE}"
+        printf '[adaptive] brownout_trigger ttl=%s min_interval=%s\n' "${ttl}" "${min_interval}" >> "${LATEST_FILE}"
+    fi
+}
+
 sanitize_ports_csv() {
     local raw="$1"
     local cleaned
@@ -121,6 +225,21 @@ safe_cmd() {
     bash -lc "$1" 2>/dev/null || true
 }
 
+sanitize_shell_single_quoted() {
+    local value="$1"
+    value="${value//$'\r'/}"
+    value="${value//$'\n'/}"
+    value="${value//\'/}"
+    printf '%s' "${value}"
+}
+
+mysql_escape_literal() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\'/\'\'}"
+    printf '%s' "${value}"
+}
+
 read_panel_env() {
     local key="$1"
     local value
@@ -141,10 +260,20 @@ mysql_exec() {
     database="$(read_panel_env DB_DATABASE)"
     port="$(read_panel_env DB_PORT)"
 
-    [[ -n "${host}" && -n "${user}" && -n "${database}" ]] || return 1
+    [[ -n "${database}" ]] || database="panel"
     [[ -n "${port}" ]] || port="3306"
 
-    mysql -N -B -h"${host}" -P"${port}" -u"${user}" "-p${password}" "${database}" -e "${sql}" 2>/dev/null
+    if [[ -n "${host}" && -n "${user}" ]]; then
+        if mysql -N -B -h"${host}" -P"${port}" -u"${user}" "-p${password}" "${database}" -e "${sql}" 2>/dev/null; then
+            return 0
+        fi
+        if mysql -N -B -h"${host}" -P"${port}" -u"${user}" "${database}" -e "${sql}" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # Fallback when panel .env DB credentials are stale/mismatched.
+    mysql -N -B "${database}" -e "${sql}" 2>/dev/null || true
 }
 
 normalize_ip() {
@@ -293,6 +422,18 @@ is_whitelisted_ip() {
     return 1
 }
 
+is_host_ip() {
+    local ip host_ip
+    ip="$(normalize_ip "$1")"
+    [[ -n "${ip}" ]] || return 1
+    for host_ip in ${HOST_IPS}; do
+        host_ip="$(normalize_ip "${host_ip}")"
+        [[ -z "${host_ip}" ]] && continue
+        [[ "${host_ip}" == "${ip}" ]] && return 0
+    done
+    return 1
+}
+
 resolve_trusted_ips() {
     local trusted_hosts_raw trusted_host resolved infra_hosts value remote_host hosts panel_host resolver_ip
     trusted_hosts_raw="$(read_network_setting trusted_hosts "")"
@@ -308,8 +449,12 @@ resolve_trusted_ips() {
         hosts="$(add_unique_word "$(extract_host_from_value "${trusted_host}")" "${hosts}")"
     done
 
-    panel_host="$(extract_host_from_value "$(read_panel_env APP_URL)")"
-    hosts="$(add_unique_word "${panel_host}" "${hosts}")"
+    # By default, do not auto-whitelist APP_URL host. It can hide real floods
+    # when origin/public IP equals the attacker source.
+    if [[ "${WHITELIST_PANEL_APP_URL_HOST:-0}" == "1" ]]; then
+        panel_host="$(extract_host_from_value "$(read_panel_env APP_URL)")"
+        hosts="$(add_unique_word "${panel_host}" "${hosts}")"
+    fi
 
     for infra_hosts in ${hosts}; do
         [[ -z "${infra_hosts}" ]] && continue
@@ -379,7 +524,9 @@ resolve_host_ips() {
 
 resolve_server_uuid_by_identifier() {
     local identifier="$1"
-    mysql_exec "SELECT uuid FROM servers WHERE uuidShort = '${identifier}' OR uuid = '${identifier}' LIMIT 1;" | head -n 1
+    local safe_identifier
+    safe_identifier="$(mysql_escape_literal "${identifier}")"
+    mysql_exec "SELECT uuid FROM servers WHERE uuidShort = '${safe_identifier}' OR uuid = '${safe_identifier}' LIMIT 1;" | head -n 1
 }
 
 resolve_container_ips_by_server_identifier() {
@@ -412,6 +559,7 @@ resolve_container_ips_by_server_identifier() {
 
 ensure_self_ddos_rate_limit_chains() {
     [[ "${SELF_DDOS_RATE_LIMIT_ENABLED:-0}" == "1" ]] || return 0
+    [[ "${SELF_DDOS_RATE_LIMIT_CHAIN_READY:-0}" == "1" ]] && return 0
     command -v iptables >/dev/null 2>&1 || return 0
     command -v ipset >/dev/null 2>&1 || return 0
 
@@ -423,11 +571,19 @@ ensure_self_ddos_rate_limit_chains() {
         iptables -C DOCKER-USER -j "${SELF_DDOS_RATE_CHAIN4}" >/dev/null 2>&1 || iptables -I DOCKER-USER 1 -j "${SELF_DDOS_RATE_CHAIN4}"
     fi
     iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    # Inbound flood protection to container IPs (self-ddos victim path): match destination container IP.
+    iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m set --match-set "${SELF_DDOS_RATE_IPSET4}" dst -p tcp -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_selfddos_tcp_in_v4 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+        --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode dstip --hashlimit-dstmask 32 -j DROP
+    iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m set --match-set "${SELF_DDOS_RATE_IPSET4}" dst -p udp -m hashlimit \
+        --hashlimit-name pteroprotect_selfddos_udp_in_v4 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+        --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode dstip --hashlimit-dstmask 32 -j DROP
+    # Outbound abuse protection from compromised container.
     iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m set --match-set "${SELF_DDOS_RATE_IPSET4}" src -p tcp -m conntrack --ctstate NEW -m hashlimit \
-        --hashlimit-name pteroprotect_selfddos_tcp --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+        --hashlimit-name pteroprotect_selfddos_tcp_out_v4 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
         --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
     iptables -A "${SELF_DDOS_RATE_CHAIN4}" -m set --match-set "${SELF_DDOS_RATE_IPSET4}" src -p udp -m hashlimit \
-        --hashlimit-name pteroprotect_selfddos_udp --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+        --hashlimit-name pteroprotect_selfddos_udp_out_v4 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
         --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
     iptables -A "${SELF_DDOS_RATE_CHAIN4}" -j RETURN
 
@@ -440,14 +596,22 @@ ensure_self_ddos_rate_limit_chains() {
             ip6tables -C DOCKER-USER -j "${SELF_DDOS_RATE_CHAIN6}" >/dev/null 2>&1 || ip6tables -I DOCKER-USER 1 -j "${SELF_DDOS_RATE_CHAIN6}"
         fi
         ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+        ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m set --match-set "${SELF_DDOS_RATE_IPSET6}" dst -p tcp -m conntrack --ctstate NEW -m hashlimit \
+            --hashlimit-name pteroprotect_selfddos_tcp_in_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+            --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode dstip --hashlimit-dstmask 128 -j DROP
+        ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m set --match-set "${SELF_DDOS_RATE_IPSET6}" dst -p udp -m hashlimit \
+            --hashlimit-name pteroprotect_selfddos_udp_in_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+            --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode dstip --hashlimit-dstmask 128 -j DROP
         ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m set --match-set "${SELF_DDOS_RATE_IPSET6}" src -p tcp -m conntrack --ctstate NEW -m hashlimit \
-            --hashlimit-name pteroprotect_selfddos_tcp_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+            --hashlimit-name pteroprotect_selfddos_tcp_out_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
             --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
         ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -m set --match-set "${SELF_DDOS_RATE_IPSET6}" src -p udp -m hashlimit \
-            --hashlimit-name pteroprotect_selfddos_udp_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
+            --hashlimit-name pteroprotect_selfddos_udp_out_v6 --hashlimit-above "${SELF_DDOS_RATE_LIMIT_RPS}/second" \
             --hashlimit-burst "${SELF_DDOS_RATE_LIMIT_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
         ip6tables -A "${SELF_DDOS_RATE_CHAIN6}" -j RETURN
     fi
+
+    SELF_DDOS_RATE_LIMIT_CHAIN_READY=1
 }
 
 apply_self_ddos_rate_limit_for_server() {
@@ -824,8 +988,15 @@ add_ipset_block() {
         return 0
     fi
     if is_whitelisted_ip "${ip}"; then
-        printf '[mitigate] skip-block ip=%s reason=whitelisted candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
-        return 0
+        if [[ "${WHITELIST_OVERLOAD_BYPASS_ENABLED:-1}" == "1" ]] &&
+           [[ "${reason}" == *"overload-fast:"* || "${reason}" == *"overload-hard:"* || "${reason}" == "http-access-hard:"* || "${reason}" == "established-hard:"* || "${reason}" == "syn-recv-hard:"* || "${reason}" == clear-threshold:* ]] &&
+           ! is_private_ip "${ip}" &&
+           ! is_host_ip "${ip}"; then
+            printf '[mitigate] whitelist-override ip=%s reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
+        else
+            printf '[mitigate] skip-block ip=%s reason=whitelisted candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
+            return 0
+        fi
     fi
 
     if [[ "${DYNAMIC_BLOCK_DRY_RUN:-0}" == "1" ]]; then
@@ -1243,12 +1414,9 @@ next_owner_quarantine_count() {
 
 suspend_server_id() {
     local server_id="$1"
-    local reason="${2:-auto-guard}"
-    local escaped_reason
-    escaped_reason="$(printf "%s" "${reason}" | sed "s/'/'\"'\"'/g")"
     [[ -n "${server_id}" ]] || return 1
-    [[ -d "${PANEL_DIR}" && -f "${PANEL_DIR}/artisan" ]] || return 1
-    bash -lc "cd '${PANEL_DIR}' && php artisan p:server:guard-suspension ${server_id} --action=suspend --reason='${escaped_reason}' --no-interaction" >/dev/null 2>&1
+    mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
+    return 0
 }
 
 quarantine_owner_servers() {
@@ -1258,30 +1426,165 @@ quarantine_owner_servers() {
 
     while read -r server_id; do
         [[ -z "${server_id}" ]] && continue
-        suspend_server_id "${server_id}" "${reason}" || true
+        suspend_server_id "${server_id}" || true
         printf '[tenant-quarantine] owner=%s suspended_server=%s reason=%s\n' "${owner_id}" "${server_id}" "${reason}" >> "${LOG_FILE}"
     done < <(mysql_exec "SELECT id FROM servers WHERE owner_id = ${owner_id} AND (status IS NULL OR status != 'suspended');")
+}
+
+trim_owner_locks() {
+    local now tmp_file
+    now="$(date +%s)"
+    tmp_file="${OWNER_LOCK_FILE}.tmp"
+    awk -F '\t' -v now="${now}" '
+        NF >= 3 {
+            owner=$1; until_ts=$2; reason=$3;
+            if (owner ~ /^[0-9]+$/ && until_ts ~ /^[0-9]+$/ && until_ts > now) {
+                print owner "\t" until_ts "\t" reason;
+            }
+        }
+    ' "${OWNER_LOCK_FILE}" 2>/dev/null > "${tmp_file}" || true
+    mv "${tmp_file}" "${OWNER_LOCK_FILE}"
+}
+
+set_owner_lock() {
+    local owner_id="$1"
+    local reason="$2"
+    local ttl="$3"
+    local now until_ts tmp_file
+
+    [[ "${owner_id}" =~ ^[0-9]+$ ]] || return 0
+    [[ "${ttl}" =~ ^[0-9]+$ ]] || ttl=86400
+    if (( ttl < 60 )); then ttl=60; fi
+    now="$(date +%s)"
+    until_ts=$(( now + ttl ))
+    tmp_file="${OWNER_LOCK_FILE}.tmp"
+
+    trim_owner_locks
+    awk -F '\t' -v owner="${owner_id}" '
+        NF >= 3 && $1 != owner { print $0 }
+    ' "${OWNER_LOCK_FILE}" 2>/dev/null > "${tmp_file}" || true
+    printf '%s\t%s\t%s\n' "${owner_id}" "${until_ts}" "${reason}" >> "${tmp_file}"
+    mv "${tmp_file}" "${OWNER_LOCK_FILE}"
+    printf '[owner-lock] owner=%s until=%s ttl=%s reason=%s\n' "${owner_id}" "${until_ts}" "${ttl}" "${reason}" >> "${LOG_FILE}"
+    printf '[owner-lock] owner=%s until=%s ttl=%s reason=%s\n' "${owner_id}" "${until_ts}" "${ttl}" "${reason}" >> "${LATEST_FILE}"
+}
+
+is_owner_locked() {
+    local owner_id="$1"
+    local now until_ts
+    [[ "${owner_id}" =~ ^[0-9]+$ ]] || return 1
+    now="$(date +%s)"
+    until_ts="$(awk -F '\t' -v owner="${owner_id}" '$1 == owner {print $2; exit}' "${OWNER_LOCK_FILE}" 2>/dev/null || true)"
+    [[ "${until_ts}" =~ ^[0-9]+$ ]] || return 1
+    (( until_ts > now ))
+}
+
+stop_server_containers_by_uuid() {
+    local server_uuid="$1"
+    local cid
+    [[ -n "${server_uuid}" ]] || return 0
+
+    while read -r cid; do
+        [[ -n "${cid}" ]] || continue
+        docker rm -f "${cid}" >/dev/null 2>&1 || true
+        printf '[container-kill] uuid=%s cid=%s\n' "${server_uuid}" "${cid}" >> "${LOG_FILE}"
+        printf '[container-kill] uuid=%s cid=%s\n' "${server_uuid}" "${cid}" >> "${LATEST_FILE}"
+    done < <(docker ps -aq --filter "label=service_uuid=${server_uuid}" 2>/dev/null)
+
+    while read -r cid; do
+        [[ -n "${cid}" ]] || continue
+        docker rm -f "${cid}" >/dev/null 2>&1 || true
+        printf '[container-kill] uuid=%s cid=%s source=name\n' "${server_uuid}" "${cid}" >> "${LOG_FILE}"
+        printf '[container-kill] uuid=%s cid=%s source=name\n' "${server_uuid}" "${cid}" >> "${LATEST_FILE}"
+    done < <(docker ps -aq --filter "name=${server_uuid}" 2>/dev/null)
+}
+
+quarantine_server_volume() {
+    local server_uuid="$1"
+    local volume_root quarantine_root moved_count
+    local file rel dest
+    [[ -n "${server_uuid}" ]] || return 0
+    volume_root="/var/lib/pterodactyl/volumes/${server_uuid}"
+    [[ -d "${volume_root}" ]] || return 0
+    quarantine_root="${volume_root}/.dann_quarantine"
+    mkdir -p "${quarantine_root}" >/dev/null 2>&1 || true
+    moved_count=0
+
+    while IFS= read -r -d '' file; do
+        [[ -f "${file}" ]] || continue
+        rel="${file#${volume_root}/}"
+        dest="${quarantine_root}/${rel}.quarantined"
+        mkdir -p "$(dirname "${dest}")" >/dev/null 2>&1 || true
+        mv -f "${file}" "${dest}" 2>/dev/null || continue
+        moved_count=$(( moved_count + 1 ))
+    done < <(find "${volume_root}" -maxdepth 3 -type f \
+        \( -iname "spiker.js" -o -iname "*flood*" -o -iname "*ddos*" -o -iname "*stress*" -o -iname "*attack*" -o -iname "*udp*" -o -iname "*tcp*" \) \
+        -print0 2>/dev/null)
+
+    while IFS= read -r -d '' file; do
+        [[ -f "${file}" ]] || continue
+        rel="${file#${volume_root}/}"
+        dest="${quarantine_root}/${rel}.quarantined"
+        mkdir -p "$(dirname "${dest}")" >/dev/null 2>&1 || true
+        mv -f "${file}" "${dest}" 2>/dev/null || continue
+        moved_count=$(( moved_count + 1 ))
+    done < <(find "${volume_root}" -maxdepth 2 -type f \
+        \( -name "*.js" -o -name "*.sh" -o -name "*.py" -o -name "*.php" \) -size +128k -print0 2>/dev/null)
+
+    if (( moved_count > 0 )); then
+        printf '[volume-quarantine] uuid=%s moved=%s dir=%s\n' "${server_uuid}" "${moved_count}" "${quarantine_root}" >> "${LOG_FILE}"
+        printf '[volume-quarantine] uuid=%s moved=%s dir=%s\n' "${server_uuid}" "${moved_count}" "${quarantine_root}" >> "${LATEST_FILE}"
+    fi
+}
+
+enforce_locked_owners() {
+    local now owner_id until_ts reason server_id server_uuid
+    now="$(date +%s)"
+    trim_owner_locks
+
+    while IFS=$'\t' read -r owner_id until_ts reason; do
+        [[ "${owner_id:-}" =~ ^[0-9]+$ ]] || continue
+        [[ "${until_ts:-}" =~ ^[0-9]+$ ]] || continue
+        (( until_ts > now )) || continue
+
+        while IFS=$'\t' read -r server_id server_uuid; do
+            [[ -n "${server_id}" ]] || continue
+            mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
+            stop_server_containers_by_uuid "${server_uuid}"
+            quarantine_server_volume "${server_uuid}"
+            printf '[owner-lock-enforce] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LOG_FILE}"
+            printf '[owner-lock-enforce] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LATEST_FILE}"
+        done < <(mysql_exec "SELECT id, uuid FROM servers WHERE owner_id = ${owner_id};")
+    done < "${OWNER_LOCK_FILE}"
 }
 
 quarantine_server_identifier() {
     local identifier="$1"
     local request_count="$2"
     local row server_id owner_id server_uuid server_name server_status owner_hits
+    local safe_identifier
 
     [[ "${SELF_DDOS_QUARANTINE_ENABLED}" == "1" ]] || return 0
-    row="$(mysql_exec "SELECT id, owner_id, uuid, name, COALESCE(status,'') FROM servers WHERE uuidShort = '${identifier}' OR uuid = '${identifier}' LIMIT 1;" | head -n 1)"
+    safe_identifier="$(mysql_escape_literal "${identifier}")"
+    row="$(mysql_exec "SELECT id, owner_id, uuid, name, COALESCE(status,'') FROM servers WHERE uuidShort = '${safe_identifier}' OR uuid = '${safe_identifier}' LIMIT 1;" | head -n 1)"
     [[ -n "${row}" ]] || return 0
 
     IFS=$'\t' read -r server_id owner_id server_uuid server_name server_status <<< "${row}"
     [[ -n "${server_id}" && -n "${owner_id}" ]] || return 0
 
     if [[ "${server_status}" != "suspended" ]]; then
-        suspend_server_id "${server_id}" "self-ddos:${identifier}:${request_count}" || true
-        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LOG_FILE}"
-        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LATEST_FILE}"
+        mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
+        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=db-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LOG_FILE}"
+        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=db-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LATEST_FILE}"
     fi
 
+    stop_server_containers_by_uuid "${server_uuid}"
+    quarantine_server_volume "${server_uuid}"
+
     owner_hits="$(next_owner_quarantine_count "${owner_id}")"
+    if [[ "${OWNER_LOCK_ENABLED:-1}" == "1" ]] && (( owner_hits >= OWNER_LOCK_HITS_THRESHOLD )); then
+        set_owner_lock "${owner_id}" "self-ddos:${identifier}:${request_count}" "${OWNER_LOCK_TTL_SEC}"
+    fi
     if (( owner_hits >= OWNER_QUARANTINE_THRESHOLD )); then
         quarantine_owner_servers "${owner_id}" "repeat-self-ddos:${identifier}:${request_count}"
     fi
@@ -1765,12 +2068,15 @@ set_lockdown_state() {
 
     if [[ "${enabled}" == "1" ]]; then
         until=$(( now + ttl ))
-        printf '{"enabled":true,"reason":"%s","until":%s,"updated_at":%s}\n' "${reason}" "${until}" "${now}" > "${LOCKDOWN_FLAG_FILE}"
+        write_runtime_payload \
+            "$(printf '{"enabled":true,"reason":"%s","until":%s,"updated_at":%s}' "${reason}" "${until}" "${now}")" \
+            "${LOCKDOWN_FLAG_FILE}" \
+            "${LOCKDOWN_FLAG_FILE_PANEL}"
         printf '[lockdown] enabled ttl=%s reason=%s\n' "${ttl}" "${reason}" >> "${LOG_FILE}"
         printf '[lockdown] enabled ttl=%s reason=%s\n' "${ttl}" "${reason}" >> "${LATEST_FILE}"
     else
-        if [[ -f "${LOCKDOWN_FLAG_FILE}" ]]; then
-            rm -f "${LOCKDOWN_FLAG_FILE}"
+        if [[ -f "${LOCKDOWN_FLAG_FILE}" || -f "${LOCKDOWN_FLAG_FILE_PANEL}" ]]; then
+            remove_runtime_payload "${LOCKDOWN_FLAG_FILE}" "${LOCKDOWN_FLAG_FILE_PANEL}"
             printf '[lockdown] cleared\n' >> "${LOG_FILE}"
             printf '[lockdown] cleared\n' >> "${LATEST_FILE}"
         fi
@@ -1785,8 +2091,8 @@ set_mode_state() {
     now="$(date +%s)"
 
     if [[ "${mode}" == "normal" ]]; then
-        if [[ -f "${MODE_FLAG_FILE}" ]]; then
-            rm -f "${MODE_FLAG_FILE}"
+        if [[ -f "${MODE_FLAG_FILE}" || -f "${MODE_FLAG_FILE_PANEL}" ]]; then
+            remove_runtime_payload "${MODE_FLAG_FILE}" "${MODE_FLAG_FILE_PANEL}"
         fi
         if [[ "${MODE_STATE_CACHE}" != "normal" ]]; then
             printf '[mode] switched mode=normal reason=%s\n' "${reason}" >> "${LOG_FILE}"
@@ -1797,7 +2103,10 @@ set_mode_state() {
     fi
 
     until=$(( now + ttl ))
-    printf '{"mode":"%s","reason":"%s","until":%s,"updated_at":%s}\n' "${mode}" "${reason}" "${until}" "${now}" > "${MODE_FLAG_FILE}"
+    write_runtime_payload \
+        "$(printf '{"mode":"%s","reason":"%s","until":%s,"updated_at":%s}' "${mode}" "${reason}" "${until}" "${now}")" \
+        "${MODE_FLAG_FILE}" \
+        "${MODE_FLAG_FILE_PANEL}"
     if [[ "${MODE_STATE_CACHE}" != "${mode}" ]]; then
         printf '[mode] switched mode=%s ttl=%s reason=%s\n' "${mode}" "${ttl}" "${reason}" >> "${LOG_FILE}"
         printf '[mode] switched mode=%s ttl=%s reason=%s\n' "${mode}" "${ttl}" "${reason}" >> "${LATEST_FILE}"
@@ -1851,6 +2160,8 @@ EOF
     fi
 }
 
+load_adaptive_state
+
 while true; do
     TRAFFIC_PROFILE="$(trim "$(printf '%s' "$(read_network_setting traffic_profile mixed)" | tr '[:upper:]' '[:lower:]')")"
     MONITOR_TCP_PORTS="$(sanitize_ports_csv "$(read_network_setting monitor_tcp_ports '22,80,443,8080,2022,3306,6379')")"
@@ -1872,18 +2183,28 @@ while true; do
     DYNAMIC_BLOCK_DRY_RUN="$(normalize_bool "$(read_network_setting dynamic_block_dry_run 0)")"
     SELF_UNBLOCK_ESSENTIALS="$(normalize_bool "$(read_network_setting self_unblock_essentials 1)")"
     HTTP_IGNORE_PATH_REGEX="$(read_network_setting host_http_ignore_path_regex '^/api/client/servers/.+/websocket$|^/api/remote/')"
-    SELF_DDOS_QUARANTINE_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_quarantine_enabled 0)")"
-    SELF_DDOS_SERVER_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting self_ddos_server_req_threshold 300)" 20)"
+    HTTP_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${HTTP_IGNORE_PATH_REGEX}")"
+    SELF_DDOS_IGNORE_PATH_REGEX="$(read_network_setting self_ddos_ignore_path_regex '^$')"
+    SELF_DDOS_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${SELF_DDOS_IGNORE_PATH_REGEX}")"
+    WHITELIST_PANEL_APP_URL_HOST="$(normalize_bool "$(read_network_setting whitelist_panel_app_url_host 0)")"
+    WHITELIST_OVERLOAD_BYPASS_ENABLED="$(normalize_bool "$(read_network_setting whitelist_overload_bypass_enabled 1)")"
+    SELF_DDOS_QUARANTINE_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_quarantine_enabled 1)")"
+    SELF_DDOS_SERVER_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting self_ddos_server_req_threshold 120)" 20)"
     SELF_DDOS_RATE_LIMIT_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_rate_limit_enabled 1)")"
     SELF_DDOS_RATE_LIMIT_RPS="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_rps 10)" 1)"
     SELF_DDOS_RATE_LIMIT_BURST="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_burst 20)" 1)"
     SELF_DDOS_RATE_LIMIT_TTL_SEC="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_ttl_sec 900)" 30)"
     SELF_DDOS_FLOW_WATCH_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_flow_watch_enabled 1)")"
+    SELF_DDOS_RATE_LIMIT_CHAIN_READY=0
     OWNER_QUARANTINE_THRESHOLD="$(clamp_min_int "$(read_network_setting owner_quarantine_threshold 5)" 1)"
     OWNER_QUARANTINE_WINDOW_SEC="$(clamp_min_int "$(read_network_setting owner_quarantine_window_sec 86400)" 300)"
+    OWNER_LOCK_ENABLED="$(normalize_bool "$(read_network_setting owner_lock_enabled 1)")"
+    OWNER_LOCK_HITS_THRESHOLD="$(clamp_min_int "$(read_network_setting owner_lock_hits_threshold 1)" 1)"
+    OWNER_LOCK_TTL_SEC="$(clamp_min_int "$(read_network_setting owner_lock_ttl_sec 86400)" 300)"
     SCANNER_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting scanner_block_enabled 1)")"
     PROBE_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting probe_req_threshold 16)" 2)"
     PROBE_PATH_REGEX="$(read_network_setting probe_path_regex '^/(wp-admin|wp-login\\.php|xmlrpc\\.php|boaform|cgi-bin|vendor/phpunit|\\.env|actuator|jmx-console|manager/html|login\\.do|console|solr/|owncloud/status\\.php|status\\.php|WebInterface|aspera/faspex|Telerik\\.Web\\.UI\\.WebResource\\.axd|sitecore|jasperserver|OA_HTML|identity|admin/|xampp|\\.git|server-status)')"
+    PROBE_PATH_REGEX="$(sanitize_shell_single_quoted "${PROBE_PATH_REGEX}")"
     SQLI_PROBE_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting sqli_probe_block_enabled 1)")"
     SQLI_PROBE_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting sqli_probe_req_threshold 4)" 2)"
     LIMITER_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting limiter_block_enabled 1)")"
@@ -1894,6 +2215,8 @@ while true; do
     BAD_TOKEN_LOG_TAIL_LINES="$(clamp_min_int "$(read_network_setting bad_token_log_tail_lines 2000)" 100)"
     BAD_TOKEN_PATH_REGEX="$(read_network_setting bad_token_path_regex '^/api/application/|^/api/client/|^/auth/login$')"
     BAD_TOKEN_STATUS_REGEX="$(read_network_setting bad_token_status_regex '^(401|403|419)$')"
+    BAD_TOKEN_PATH_REGEX="$(sanitize_shell_single_quoted "${BAD_TOKEN_PATH_REGEX}")"
+    BAD_TOKEN_STATUS_REGEX="$(sanitize_shell_single_quoted "${BAD_TOKEN_STATUS_REGEX}")"
     EMERGENCY_INPUT_GUARD_ENABLED="$(normalize_bool "$(read_network_setting emergency_input_guard_enabled 1)")"
     EMERGENCY_INPUT_CONN_LIMIT_PER_IP="$(clamp_min_int "$(read_network_setting emergency_input_conn_limit_per_ip 120)" 20)"
     EMERGENCY_INPUT_NEW_PER_IP_PER_SEC="$(clamp_min_int "$(read_network_setting emergency_input_new_per_ip_per_sec 80)" 5)"
@@ -1921,6 +2244,7 @@ while true; do
     MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_aggressive_established_threshold 220)" 20)"
     MODE_AGGRESSIVE_SYN_RECV_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_aggressive_syn_recv_threshold 120)" 10)"
     MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_aggressive_http_access_threshold 240)" 20)"
+    MODE_AGGRESSIVE_HTTP_ONLY_FACTOR_PCT="$(clamp_percentage "$(read_network_setting mode_aggressive_http_only_factor_pct 200)" 120 1000)"
     MODE_AGGRESSIVE_TTL_SEC="$(clamp_min_int "$(read_network_setting mode_aggressive_ttl_sec 180)" 30)"
     MODE_EMERGENCY_ESTABLISHED_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_emergency_established_threshold 400)" 20)"
     MODE_EMERGENCY_SYN_RECV_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_emergency_syn_recv_threshold 180)" 10)"
@@ -1938,6 +2262,7 @@ while true; do
     EMERGENCY_NGINX_PROFILE_ENABLED="$(normalize_bool "$(read_network_setting emergency_nginx_profile_enabled 1)")"
     EMERGENCY_NGINX_RELOAD_MIN_INTERVAL_SEC="$(clamp_min_int "$(read_network_setting emergency_nginx_reload_min_interval_sec 60)" 10)"
     SERVICE_ACTIVITY_PATH_REGEX="$(read_network_setting service_activity_path_regex '^/api/remote/|^/api/client/servers/.+/websocket$')"
+    SERVICE_ACTIVITY_PATH_REGEX="$(sanitize_shell_single_quoted "${SERVICE_ACTIVITY_PATH_REGEX}")"
     SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD="$(clamp_min_int "$(read_network_setting service_activity_aggressive_threshold 120)" 10)"
     SERVICE_ACTIVITY_EMERGENCY_THRESHOLD="$(clamp_min_int "$(read_network_setting service_activity_emergency_threshold 240)" 20)"
     SERVICE_ACTIVITY_DELTA_AGGRESSIVE="$(clamp_min_int "$(read_network_setting service_activity_delta_aggressive 60)" 5)"
@@ -1945,6 +2270,15 @@ while true; do
     SWARM_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_req_threshold 240)" 40)"
     SWARM_UNIQUE_IP_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_unique_ip_threshold 24)" 4)"
     SWARM_PER_IP_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_per_ip_req_threshold 24)" 4)"
+    ADAPTIVE_GUARD_ENABLED="$(normalize_bool "$(read_network_setting adaptive_guard_enabled 1)")"
+    ADAPTIVE_ALPHA_PCT="$(clamp_percentage "$(read_network_setting adaptive_alpha_pct 12)" 2 60)"
+    ADAPTIVE_MIN_SAMPLES="$(clamp_min_int "$(read_network_setting adaptive_min_samples 20)" 5)"
+    ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT="$(clamp_percentage "$(read_network_setting adaptive_aggressive_multiplier_pct 170)" 120 1000)"
+    ADAPTIVE_EMERGENCY_MULTIPLIER_PCT="$(clamp_percentage "$(read_network_setting adaptive_emergency_multiplier_pct 260)" 150 1500)"
+    ADAPTIVE_BROWNOUT_ENABLED="$(normalize_bool "$(read_network_setting adaptive_brownout_enabled 1)")"
+    ADAPTIVE_BROWNOUT_TTL_SEC="$(clamp_min_int "$(read_network_setting adaptive_brownout_ttl_sec 60)" 30)"
+    ADAPTIVE_BROWNOUT_MIN_INTERVAL_SEC="$(clamp_min_int "$(read_network_setting adaptive_brownout_min_interval_sec 120)" 30)"
+    ADAPTIVE_BROWNOUT_MULTIPLIER_PCT="$(clamp_percentage "$(read_network_setting adaptive_brownout_multiplier_pct 420)" 220 2000)"
     IP_TRUST_ENABLED="$(normalize_bool "$(read_network_setting ip_trust_enabled 1)")"
     IP_TRUST_PROMOTION_OBS="$(clamp_min_int "$(read_network_setting ip_trust_promotion_observations 80)" 10)"
     IP_TRUST_VTRUST_OBS="$(clamp_min_int "$(read_network_setting ip_trust_vtrusted_observations 240)" 20)"
@@ -2109,8 +2443,8 @@ while true; do
     top_established="$(sed -n '1,10p' <<< "${established_ip_counts}")"
     top_syn="$(sed -n '1,10p' <<< "${syn_ip_counts}")"
     access_ip_counts="$(safe_cmd "tail -n ${LOG_TAIL_LINES} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${HTTP_IGNORE_PATH_REGEX}' 'NF >= 7 && \$7 !~ ignore_re {print \$1}' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr")"
-    server_identifier_counts="$(extract_server_identifier_counts "${LOG_TAIL_LINES}" "${HTTP_IGNORE_PATH_REGEX}")"
-    server_identifier_ip_stats="$(extract_server_identifier_ip_stats "${LOG_TAIL_LINES}" "${HTTP_IGNORE_PATH_REGEX}")"
+    server_identifier_counts="$(extract_server_identifier_counts "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
+    server_identifier_ip_stats="$(extract_server_identifier_ip_stats "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
     probe_ip_counts="$(extract_probe_ip_counts "${LOG_TAIL_LINES}" "${PROBE_PATH_REGEX}")"
     sqli_probe_ip_counts="$(extract_sqli_probe_ip_counts "${LOG_TAIL_LINES}")"
     limiter_ip_counts="$(extract_limiter_ip_counts "${LIMITER_LOG_TAIL_LINES}")"
@@ -2144,6 +2478,7 @@ while true; do
         "${BLOCK_TTL}" "${SYN_RECV_GLOBAL_THRESHOLD}" "${SYN_RECV_PER_IP_THRESHOLD}" \
         "${ESTABLISHED_PER_IP_THRESHOLD}" "${HTTP_ACCESS_PER_WINDOW_THRESHOLD}"
     detect_self_ddos_tenants "${server_identifier_counts}" "${server_identifier_ip_stats}"
+    enforce_locked_owners
     detect_probe_scanners "${probe_ip_counts}"
     detect_sqli_probes "${sqli_probe_ip_counts}"
     detect_limiter_abusers "${limiter_ip_counts}"
@@ -2156,10 +2491,69 @@ while true; do
     top_http_count="$(awk 'NF >= 1 {print $1; exit}' <<< "${access_ip_counts}" 2>/dev/null || true)"
     [[ "${top_http_count}" =~ ^[0-9]+$ ]] || top_http_count=0
 
+    if [[ "${ADAPTIVE_GUARD_ENABLED}" == "1" ]]; then
+        ADAPTIVE_ESTABLISHED_BASE="$(ewma_next "${ADAPTIVE_ESTABLISHED_BASE}" "${established}" "${ADAPTIVE_ALPHA_PCT}")"
+        ADAPTIVE_SYN_RECV_BASE="$(ewma_next "${ADAPTIVE_SYN_RECV_BASE}" "${syn_recv}" "${ADAPTIVE_ALPHA_PCT}")"
+        ADAPTIVE_HTTP_BASE="$(ewma_next "${ADAPTIVE_HTTP_BASE}" "${top_http_count}" "${ADAPTIVE_ALPHA_PCT}")"
+        ADAPTIVE_SERVICE_BASE="$(ewma_next "${ADAPTIVE_SERVICE_BASE}" "${service_pulse_count}" "${ADAPTIVE_ALPHA_PCT}")"
+        ADAPTIVE_SAMPLES=$(( ADAPTIVE_SAMPLES + 1 ))
+        save_adaptive_state
+    fi
+
+    adaptive_ready=0
+    adaptive_aggressive_signal=0
+    adaptive_emergency_signal=0
+    adaptive_brownout_signal=0
+    if [[ "${ADAPTIVE_GUARD_ENABLED}" == "1" ]] && (( ADAPTIVE_SAMPLES >= ADAPTIVE_MIN_SAMPLES )); then
+        adaptive_ready=1
+        est_agg=$(( ADAPTIVE_ESTABLISHED_BASE * ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT / 100 ))
+        syn_agg=$(( ADAPTIVE_SYN_RECV_BASE * ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT / 100 ))
+        http_agg=$(( ADAPTIVE_HTTP_BASE * ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT / 100 ))
+        svc_agg=$(( ADAPTIVE_SERVICE_BASE * ADAPTIVE_AGGRESSIVE_MULTIPLIER_PCT / 100 ))
+        (( est_agg < MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) && est_agg="${MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD}"
+        (( syn_agg < MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) && syn_agg="${MODE_AGGRESSIVE_SYN_RECV_THRESHOLD}"
+        (( http_agg < MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )) && http_agg="${MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD}"
+        (( svc_agg < SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) && svc_agg="${SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD}"
+
+        est_emg=$(( ADAPTIVE_ESTABLISHED_BASE * ADAPTIVE_EMERGENCY_MULTIPLIER_PCT / 100 ))
+        syn_emg=$(( ADAPTIVE_SYN_RECV_BASE * ADAPTIVE_EMERGENCY_MULTIPLIER_PCT / 100 ))
+        http_emg=$(( ADAPTIVE_HTTP_BASE * ADAPTIVE_EMERGENCY_MULTIPLIER_PCT / 100 ))
+        svc_emg=$(( ADAPTIVE_SERVICE_BASE * ADAPTIVE_EMERGENCY_MULTIPLIER_PCT / 100 ))
+        (( est_emg < MODE_EMERGENCY_ESTABLISHED_THRESHOLD )) && est_emg="${MODE_EMERGENCY_ESTABLISHED_THRESHOLD}"
+        (( syn_emg < MODE_EMERGENCY_SYN_RECV_THRESHOLD )) && syn_emg="${MODE_EMERGENCY_SYN_RECV_THRESHOLD}"
+        (( http_emg < MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD )) && http_emg="${MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD}"
+        (( svc_emg < SERVICE_ACTIVITY_EMERGENCY_THRESHOLD )) && svc_emg="${SERVICE_ACTIVITY_EMERGENCY_THRESHOLD}"
+
+        if (( established >= est_agg )) || (( syn_recv >= syn_agg )) || (( top_http_count >= http_agg )) || (( service_pulse_count >= svc_agg )); then
+            adaptive_aggressive_signal=1
+        fi
+        if (( established >= est_emg )) || (( syn_recv >= syn_emg )) || (( top_http_count >= http_emg )) || (( service_pulse_count >= svc_emg )); then
+            adaptive_emergency_signal=1
+        fi
+
+        brownout_est=$(( ADAPTIVE_ESTABLISHED_BASE * ADAPTIVE_BROWNOUT_MULTIPLIER_PCT / 100 ))
+        brownout_syn=$(( ADAPTIVE_SYN_RECV_BASE * ADAPTIVE_BROWNOUT_MULTIPLIER_PCT / 100 ))
+        brownout_http=$(( ADAPTIVE_HTTP_BASE * ADAPTIVE_BROWNOUT_MULTIPLIER_PCT / 100 ))
+        (( brownout_est < MODE_EMERGENCY_ESTABLISHED_THRESHOLD * 2 )) && brownout_est=$(( MODE_EMERGENCY_ESTABLISHED_THRESHOLD * 2 ))
+        (( brownout_syn < MODE_EMERGENCY_SYN_RECV_THRESHOLD * 2 )) && brownout_syn=$(( MODE_EMERGENCY_SYN_RECV_THRESHOLD * 2 ))
+        (( brownout_http < MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD * 2 )) && brownout_http=$(( MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD * 2 ))
+        if (( established >= brownout_est )) || (( syn_recv >= brownout_syn )) || (( top_http_count >= brownout_http )); then
+            adaptive_brownout_signal=1
+        fi
+    fi
+
     desired_mode="normal"
     desired_reason="steady-state"
     desired_ttl=0
     if [[ "${AUTO_MODE_ENABLED}" == "1" ]]; then
+        aggressive_signal=0
+        http_only_est_floor=$(( MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD / 4 ))
+        http_only_syn_floor=$(( MODE_AGGRESSIVE_SYN_RECV_THRESHOLD / 4 ))
+        http_only_service_floor=$(( SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD / 2 ))
+        (( http_only_est_floor < 10 )) && http_only_est_floor=10
+        (( http_only_syn_floor < 5 )) && http_only_syn_floor=5
+        (( http_only_service_floor < 10 )) && http_only_service_floor=10
+
         emergency_load_signal=0
         emergency_delay_signal=0
         if (( established >= MODE_EMERGENCY_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_EMERGENCY_SYN_RECV_THRESHOLD )) || (( top_http_count >= MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD )); then
@@ -2173,10 +2567,34 @@ while true; do
             desired_mode="emergency"
             desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta}"
             desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
-        elif (( established >= MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) || (( top_http_count >= MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )) || (( service_pulse_count >= SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) || (( service_pulse_delta >= SERVICE_ACTIVITY_DELTA_AGGRESSIVE )) || (( swarm_hits >= 1 )); then
+        elif (( adaptive_emergency_signal == 1 )); then
+            desired_mode="emergency"
+            desired_reason="adaptive-shock established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},samples=${ADAPTIVE_SAMPLES}"
+            desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
+        else
+            if (( established >= MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) || (( service_pulse_count >= SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) || (( service_pulse_delta >= SERVICE_ACTIVITY_DELTA_AGGRESSIVE )) || (( swarm_hits >= 1 )); then
+                aggressive_signal=1
+            elif (( top_http_count >= MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )); then
+                # Avoid false-positive aggressive mode when only a single high-HTTP
+                # sample appears without connection pressure.
+                if (( established >= http_only_est_floor )) || (( syn_recv >= http_only_syn_floor )) || (( service_pulse_count >= http_only_service_floor )) || (( top_http_count >= (MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD * MODE_AGGRESSIVE_HTTP_ONLY_FACTOR_PCT / 100) )); then
+                    aggressive_signal=1
+                fi
+            fi
+        fi
+
+        if (( aggressive_signal == 1 )); then
             desired_mode="aggressive"
             desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta},swarm=${swarm_hits}"
             desired_ttl="${MODE_AGGRESSIVE_TTL_SEC}"
+        elif (( adaptive_aggressive_signal == 1 )); then
+            desired_mode="aggressive"
+            desired_reason="adaptive-rise established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},samples=${ADAPTIVE_SAMPLES}"
+            desired_ttl="${MODE_AGGRESSIVE_TTL_SEC}"
+        fi
+
+        if [[ "${ADAPTIVE_BROWNOUT_ENABLED}" == "1" ]] && (( adaptive_brownout_signal == 1 )); then
+            adaptive_trigger_brownout "${ADAPTIVE_BROWNOUT_TTL_SEC}" "${ADAPTIVE_BROWNOUT_MIN_INTERVAL_SEC}"
         fi
     fi
     set_mode_state "${desired_mode}" "${desired_reason}" "${desired_ttl}"
@@ -2214,6 +2632,10 @@ while true; do
         echo "${top_bad_token_ips:-none}"
         echo "--- service_pulse ---"
         echo "count=${service_pulse_count} delta=${service_pulse_delta} regex=${SERVICE_ACTIVITY_PATH_REGEX} swarm_hits=${swarm_hits:-0}"
+        echo "--- adaptive_guard ---"
+        echo "enabled=${ADAPTIVE_GUARD_ENABLED} samples=${ADAPTIVE_SAMPLES} alpha_pct=${ADAPTIVE_ALPHA_PCT} ready=${adaptive_ready}"
+        echo "baseline established=${ADAPTIVE_ESTABLISHED_BASE} syn_recv=${ADAPTIVE_SYN_RECV_BASE} top_http=${ADAPTIVE_HTTP_BASE} service_pulse=${ADAPTIVE_SERVICE_BASE}"
+        echo "signals aggressive=${adaptive_aggressive_signal} emergency=${adaptive_emergency_signal} brownout=${adaptive_brownout_signal}"
         echo "--- nginx_limiter_hits ---"
         echo "${limiter_hits:-none}"
         echo "--- iptables_pteroprotect_host ---"

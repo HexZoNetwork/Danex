@@ -35,6 +35,7 @@ PANEL_ACCESS_LOG="/var/log/nginx/pteroprotect.access.log"
 TRUSTED_LOGIN_LOG="/dev/shm/pteroprotect/auth_success_ips.log"
 BLOCK_HISTORY_FILE="${RUNTIME_DIR}/block_history.tsv"
 TENANT_HISTORY_FILE="${RUNTIME_DIR}/tenant_quarantine.tsv"
+OWNER_LOCK_FILE="${RUNTIME_DIR}/owner_lock.tsv"
 ADAPTIVE_STATE_FILE="${RUNTIME_DIR}/adaptive_baseline.state"
 LOCKDOWN_FLAG_FILE="${RUNTIME_DIR}/strict_lockdown.flag"
 MODE_FLAG_FILE="${RUNTIME_DIR}/mode.flag"
@@ -60,6 +61,7 @@ chmod 2775 "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
 touch "${LOG_FILE}"
 touch "${BLOCK_HISTORY_FILE}"
 touch "${TENANT_HISTORY_FILE}"
+touch "${OWNER_LOCK_FILE}"
 
 write_runtime_payload() {
     local payload="$1"
@@ -258,10 +260,20 @@ mysql_exec() {
     database="$(read_panel_env DB_DATABASE)"
     port="$(read_panel_env DB_PORT)"
 
-    [[ -n "${host}" && -n "${user}" && -n "${database}" ]] || return 1
+    [[ -n "${database}" ]] || database="panel"
     [[ -n "${port}" ]] || port="3306"
 
-    mysql -N -B -h"${host}" -P"${port}" -u"${user}" "-p${password}" "${database}" -e "${sql}" 2>/dev/null
+    if [[ -n "${host}" && -n "${user}" ]]; then
+        if mysql -N -B -h"${host}" -P"${port}" -u"${user}" "-p${password}" "${database}" -e "${sql}" 2>/dev/null; then
+            return 0
+        fi
+        if mysql -N -B -h"${host}" -P"${port}" -u"${user}" "${database}" -e "${sql}" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # Fallback when panel .env DB credentials are stale/mismatched.
+    mysql -N -B "${database}" -e "${sql}" 2>/dev/null || true
 }
 
 normalize_ip() {
@@ -410,6 +422,18 @@ is_whitelisted_ip() {
     return 1
 }
 
+is_host_ip() {
+    local ip host_ip
+    ip="$(normalize_ip "$1")"
+    [[ -n "${ip}" ]] || return 1
+    for host_ip in ${HOST_IPS}; do
+        host_ip="$(normalize_ip "${host_ip}")"
+        [[ -z "${host_ip}" ]] && continue
+        [[ "${host_ip}" == "${ip}" ]] && return 0
+    done
+    return 1
+}
+
 resolve_trusted_ips() {
     local trusted_hosts_raw trusted_host resolved infra_hosts value remote_host hosts panel_host resolver_ip
     trusted_hosts_raw="$(read_network_setting trusted_hosts "")"
@@ -425,8 +449,12 @@ resolve_trusted_ips() {
         hosts="$(add_unique_word "$(extract_host_from_value "${trusted_host}")" "${hosts}")"
     done
 
-    panel_host="$(extract_host_from_value "$(read_panel_env APP_URL)")"
-    hosts="$(add_unique_word "${panel_host}" "${hosts}")"
+    # By default, do not auto-whitelist APP_URL host. It can hide real floods
+    # when origin/public IP equals the attacker source.
+    if [[ "${WHITELIST_PANEL_APP_URL_HOST:-0}" == "1" ]]; then
+        panel_host="$(extract_host_from_value "$(read_panel_env APP_URL)")"
+        hosts="$(add_unique_word "${panel_host}" "${hosts}")"
+    fi
 
     for infra_hosts in ${hosts}; do
         [[ -z "${infra_hosts}" ]] && continue
@@ -960,8 +988,15 @@ add_ipset_block() {
         return 0
     fi
     if is_whitelisted_ip "${ip}"; then
-        printf '[mitigate] skip-block ip=%s reason=whitelisted candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
-        return 0
+        if [[ "${WHITELIST_OVERLOAD_BYPASS_ENABLED:-1}" == "1" ]] &&
+           [[ "${reason}" == *"overload-fast:"* || "${reason}" == *"overload-hard:"* || "${reason}" == "http-access-hard:"* || "${reason}" == "established-hard:"* || "${reason}" == "syn-recv-hard:"* || "${reason}" == clear-threshold:* ]] &&
+           ! is_private_ip "${ip}" &&
+           ! is_host_ip "${ip}"; then
+            printf '[mitigate] whitelist-override ip=%s reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
+        else
+            printf '[mitigate] skip-block ip=%s reason=whitelisted candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
+            return 0
+        fi
     fi
 
     if [[ "${DYNAMIC_BLOCK_DRY_RUN:-0}" == "1" ]]; then
@@ -1380,8 +1415,8 @@ next_owner_quarantine_count() {
 suspend_server_id() {
     local server_id="$1"
     [[ -n "${server_id}" ]] || return 1
-    [[ -d "${PANEL_DIR}" && -f "${PANEL_DIR}/artisan" ]] || return 1
-    bash -lc "cd '${PANEL_DIR}' && php artisan p:server:guard-suspension ${server_id} --action=suspend --no-interaction" >/dev/null 2>&1
+    mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
+    return 0
 }
 
 quarantine_owner_servers() {
@@ -1394,6 +1429,133 @@ quarantine_owner_servers() {
         suspend_server_id "${server_id}" || true
         printf '[tenant-quarantine] owner=%s suspended_server=%s reason=%s\n' "${owner_id}" "${server_id}" "${reason}" >> "${LOG_FILE}"
     done < <(mysql_exec "SELECT id FROM servers WHERE owner_id = ${owner_id} AND (status IS NULL OR status != 'suspended');")
+}
+
+trim_owner_locks() {
+    local now tmp_file
+    now="$(date +%s)"
+    tmp_file="${OWNER_LOCK_FILE}.tmp"
+    awk -F '\t' -v now="${now}" '
+        NF >= 3 {
+            owner=$1; until_ts=$2; reason=$3;
+            if (owner ~ /^[0-9]+$/ && until_ts ~ /^[0-9]+$/ && until_ts > now) {
+                print owner "\t" until_ts "\t" reason;
+            }
+        }
+    ' "${OWNER_LOCK_FILE}" 2>/dev/null > "${tmp_file}" || true
+    mv "${tmp_file}" "${OWNER_LOCK_FILE}"
+}
+
+set_owner_lock() {
+    local owner_id="$1"
+    local reason="$2"
+    local ttl="$3"
+    local now until_ts tmp_file
+
+    [[ "${owner_id}" =~ ^[0-9]+$ ]] || return 0
+    [[ "${ttl}" =~ ^[0-9]+$ ]] || ttl=86400
+    if (( ttl < 60 )); then ttl=60; fi
+    now="$(date +%s)"
+    until_ts=$(( now + ttl ))
+    tmp_file="${OWNER_LOCK_FILE}.tmp"
+
+    trim_owner_locks
+    awk -F '\t' -v owner="${owner_id}" '
+        NF >= 3 && $1 != owner { print $0 }
+    ' "${OWNER_LOCK_FILE}" 2>/dev/null > "${tmp_file}" || true
+    printf '%s\t%s\t%s\n' "${owner_id}" "${until_ts}" "${reason}" >> "${tmp_file}"
+    mv "${tmp_file}" "${OWNER_LOCK_FILE}"
+    printf '[owner-lock] owner=%s until=%s ttl=%s reason=%s\n' "${owner_id}" "${until_ts}" "${ttl}" "${reason}" >> "${LOG_FILE}"
+    printf '[owner-lock] owner=%s until=%s ttl=%s reason=%s\n' "${owner_id}" "${until_ts}" "${ttl}" "${reason}" >> "${LATEST_FILE}"
+}
+
+is_owner_locked() {
+    local owner_id="$1"
+    local now until_ts
+    [[ "${owner_id}" =~ ^[0-9]+$ ]] || return 1
+    now="$(date +%s)"
+    until_ts="$(awk -F '\t' -v owner="${owner_id}" '$1 == owner {print $2; exit}' "${OWNER_LOCK_FILE}" 2>/dev/null || true)"
+    [[ "${until_ts}" =~ ^[0-9]+$ ]] || return 1
+    (( until_ts > now ))
+}
+
+stop_server_containers_by_uuid() {
+    local server_uuid="$1"
+    local cid
+    [[ -n "${server_uuid}" ]] || return 0
+
+    while read -r cid; do
+        [[ -n "${cid}" ]] || continue
+        docker rm -f "${cid}" >/dev/null 2>&1 || true
+        printf '[container-kill] uuid=%s cid=%s\n' "${server_uuid}" "${cid}" >> "${LOG_FILE}"
+        printf '[container-kill] uuid=%s cid=%s\n' "${server_uuid}" "${cid}" >> "${LATEST_FILE}"
+    done < <(docker ps -aq --filter "label=service_uuid=${server_uuid}" 2>/dev/null)
+
+    while read -r cid; do
+        [[ -n "${cid}" ]] || continue
+        docker rm -f "${cid}" >/dev/null 2>&1 || true
+        printf '[container-kill] uuid=%s cid=%s source=name\n' "${server_uuid}" "${cid}" >> "${LOG_FILE}"
+        printf '[container-kill] uuid=%s cid=%s source=name\n' "${server_uuid}" "${cid}" >> "${LATEST_FILE}"
+    done < <(docker ps -aq --filter "name=${server_uuid}" 2>/dev/null)
+}
+
+quarantine_server_volume() {
+    local server_uuid="$1"
+    local volume_root quarantine_root moved_count
+    local file rel dest
+    [[ -n "${server_uuid}" ]] || return 0
+    volume_root="/var/lib/pterodactyl/volumes/${server_uuid}"
+    [[ -d "${volume_root}" ]] || return 0
+    quarantine_root="${volume_root}/.dann_quarantine"
+    mkdir -p "${quarantine_root}" >/dev/null 2>&1 || true
+    moved_count=0
+
+    while IFS= read -r -d '' file; do
+        [[ -f "${file}" ]] || continue
+        rel="${file#${volume_root}/}"
+        dest="${quarantine_root}/${rel}.quarantined"
+        mkdir -p "$(dirname "${dest}")" >/dev/null 2>&1 || true
+        mv -f "${file}" "${dest}" 2>/dev/null || continue
+        moved_count=$(( moved_count + 1 ))
+    done < <(find "${volume_root}" -maxdepth 3 -type f \
+        \( -iname "spiker.js" -o -iname "*flood*" -o -iname "*ddos*" -o -iname "*stress*" -o -iname "*attack*" -o -iname "*udp*" -o -iname "*tcp*" \) \
+        -print0 2>/dev/null)
+
+    while IFS= read -r -d '' file; do
+        [[ -f "${file}" ]] || continue
+        rel="${file#${volume_root}/}"
+        dest="${quarantine_root}/${rel}.quarantined"
+        mkdir -p "$(dirname "${dest}")" >/dev/null 2>&1 || true
+        mv -f "${file}" "${dest}" 2>/dev/null || continue
+        moved_count=$(( moved_count + 1 ))
+    done < <(find "${volume_root}" -maxdepth 2 -type f \
+        \( -name "*.js" -o -name "*.sh" -o -name "*.py" -o -name "*.php" \) -size +128k -print0 2>/dev/null)
+
+    if (( moved_count > 0 )); then
+        printf '[volume-quarantine] uuid=%s moved=%s dir=%s\n' "${server_uuid}" "${moved_count}" "${quarantine_root}" >> "${LOG_FILE}"
+        printf '[volume-quarantine] uuid=%s moved=%s dir=%s\n' "${server_uuid}" "${moved_count}" "${quarantine_root}" >> "${LATEST_FILE}"
+    fi
+}
+
+enforce_locked_owners() {
+    local now owner_id until_ts reason server_id server_uuid
+    now="$(date +%s)"
+    trim_owner_locks
+
+    while IFS=$'\t' read -r owner_id until_ts reason; do
+        [[ "${owner_id:-}" =~ ^[0-9]+$ ]] || continue
+        [[ "${until_ts:-}" =~ ^[0-9]+$ ]] || continue
+        (( until_ts > now )) || continue
+
+        while IFS=$'\t' read -r server_id server_uuid; do
+            [[ -n "${server_id}" ]] || continue
+            mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
+            stop_server_containers_by_uuid "${server_uuid}"
+            quarantine_server_volume "${server_uuid}"
+            printf '[owner-lock-enforce] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LOG_FILE}"
+            printf '[owner-lock-enforce] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LATEST_FILE}"
+        done < <(mysql_exec "SELECT id, uuid FROM servers WHERE owner_id = ${owner_id};")
+    done < "${OWNER_LOCK_FILE}"
 }
 
 quarantine_server_identifier() {
@@ -1411,12 +1573,18 @@ quarantine_server_identifier() {
     [[ -n "${server_id}" && -n "${owner_id}" ]] || return 0
 
     if [[ "${server_status}" != "suspended" ]]; then
-        suspend_server_id "${server_id}" || true
-        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LOG_FILE}"
-        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LATEST_FILE}"
+        mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
+        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=db-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LOG_FILE}"
+        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=db-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LATEST_FILE}"
     fi
 
+    stop_server_containers_by_uuid "${server_uuid}"
+    quarantine_server_volume "${server_uuid}"
+
     owner_hits="$(next_owner_quarantine_count "${owner_id}")"
+    if [[ "${OWNER_LOCK_ENABLED:-1}" == "1" ]] && (( owner_hits >= OWNER_LOCK_HITS_THRESHOLD )); then
+        set_owner_lock "${owner_id}" "self-ddos:${identifier}:${request_count}" "${OWNER_LOCK_TTL_SEC}"
+    fi
     if (( owner_hits >= OWNER_QUARANTINE_THRESHOLD )); then
         quarantine_owner_servers "${owner_id}" "repeat-self-ddos:${identifier}:${request_count}"
     fi
@@ -2016,8 +2184,12 @@ while true; do
     SELF_UNBLOCK_ESSENTIALS="$(normalize_bool "$(read_network_setting self_unblock_essentials 1)")"
     HTTP_IGNORE_PATH_REGEX="$(read_network_setting host_http_ignore_path_regex '^/api/client/servers/.+/websocket$|^/api/remote/')"
     HTTP_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${HTTP_IGNORE_PATH_REGEX}")"
-    SELF_DDOS_QUARANTINE_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_quarantine_enabled 0)")"
-    SELF_DDOS_SERVER_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting self_ddos_server_req_threshold 300)" 20)"
+    SELF_DDOS_IGNORE_PATH_REGEX="$(read_network_setting self_ddos_ignore_path_regex '^$')"
+    SELF_DDOS_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${SELF_DDOS_IGNORE_PATH_REGEX}")"
+    WHITELIST_PANEL_APP_URL_HOST="$(normalize_bool "$(read_network_setting whitelist_panel_app_url_host 0)")"
+    WHITELIST_OVERLOAD_BYPASS_ENABLED="$(normalize_bool "$(read_network_setting whitelist_overload_bypass_enabled 1)")"
+    SELF_DDOS_QUARANTINE_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_quarantine_enabled 1)")"
+    SELF_DDOS_SERVER_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting self_ddos_server_req_threshold 120)" 20)"
     SELF_DDOS_RATE_LIMIT_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_rate_limit_enabled 1)")"
     SELF_DDOS_RATE_LIMIT_RPS="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_rps 10)" 1)"
     SELF_DDOS_RATE_LIMIT_BURST="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_burst 20)" 1)"
@@ -2026,6 +2198,9 @@ while true; do
     SELF_DDOS_RATE_LIMIT_CHAIN_READY=0
     OWNER_QUARANTINE_THRESHOLD="$(clamp_min_int "$(read_network_setting owner_quarantine_threshold 5)" 1)"
     OWNER_QUARANTINE_WINDOW_SEC="$(clamp_min_int "$(read_network_setting owner_quarantine_window_sec 86400)" 300)"
+    OWNER_LOCK_ENABLED="$(normalize_bool "$(read_network_setting owner_lock_enabled 1)")"
+    OWNER_LOCK_HITS_THRESHOLD="$(clamp_min_int "$(read_network_setting owner_lock_hits_threshold 1)" 1)"
+    OWNER_LOCK_TTL_SEC="$(clamp_min_int "$(read_network_setting owner_lock_ttl_sec 86400)" 300)"
     SCANNER_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting scanner_block_enabled 1)")"
     PROBE_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting probe_req_threshold 16)" 2)"
     PROBE_PATH_REGEX="$(read_network_setting probe_path_regex '^/(wp-admin|wp-login\\.php|xmlrpc\\.php|boaform|cgi-bin|vendor/phpunit|\\.env|actuator|jmx-console|manager/html|login\\.do|console|solr/|owncloud/status\\.php|status\\.php|WebInterface|aspera/faspex|Telerik\\.Web\\.UI\\.WebResource\\.axd|sitecore|jasperserver|OA_HTML|identity|admin/|xampp|\\.git|server-status)')"
@@ -2268,8 +2443,8 @@ while true; do
     top_established="$(sed -n '1,10p' <<< "${established_ip_counts}")"
     top_syn="$(sed -n '1,10p' <<< "${syn_ip_counts}")"
     access_ip_counts="$(safe_cmd "tail -n ${LOG_TAIL_LINES} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${HTTP_IGNORE_PATH_REGEX}' 'NF >= 7 && \$7 !~ ignore_re {print \$1}' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr")"
-    server_identifier_counts="$(extract_server_identifier_counts "${LOG_TAIL_LINES}" "${HTTP_IGNORE_PATH_REGEX}")"
-    server_identifier_ip_stats="$(extract_server_identifier_ip_stats "${LOG_TAIL_LINES}" "${HTTP_IGNORE_PATH_REGEX}")"
+    server_identifier_counts="$(extract_server_identifier_counts "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
+    server_identifier_ip_stats="$(extract_server_identifier_ip_stats "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
     probe_ip_counts="$(extract_probe_ip_counts "${LOG_TAIL_LINES}" "${PROBE_PATH_REGEX}")"
     sqli_probe_ip_counts="$(extract_sqli_probe_ip_counts "${LOG_TAIL_LINES}")"
     limiter_ip_counts="$(extract_limiter_ip_counts "${LIMITER_LOG_TAIL_LINES}")"
@@ -2303,6 +2478,7 @@ while true; do
         "${BLOCK_TTL}" "${SYN_RECV_GLOBAL_THRESHOLD}" "${SYN_RECV_PER_IP_THRESHOLD}" \
         "${ESTABLISHED_PER_IP_THRESHOLD}" "${HTTP_ACCESS_PER_WINDOW_THRESHOLD}"
     detect_self_ddos_tenants "${server_identifier_counts}" "${server_identifier_ip_stats}"
+    enforce_locked_owners
     detect_probe_scanners "${probe_ip_counts}"
     detect_sqli_probes "${sqli_probe_ip_counts}"
     detect_limiter_abusers "${limiter_ip_counts}"
