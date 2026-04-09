@@ -751,13 +751,16 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
                 close $efh;
             }
 
-            # By default keep explicit config.json DB values, then fill any
-            # missing fields from panel .env. Set
-            # PTEROPROTECT_FORCE_PANEL_DB_SYNC=1 to force full overwrite.
-            my $force_panel_db_sync = 0;
+            # Default behavior: always sync DB credentials from panel .env.
+            # Set PTEROPROTECT_FORCE_PANEL_DB_SYNC=0 to preserve config.json DB.
+            my $force_panel_db_sync = 1;
             if (exists $ENV{PTEROPROTECT_FORCE_PANEL_DB_SYNC}) {
                 my $raw = lc($ENV{PTEROPROTECT_FORCE_PANEL_DB_SYNC});
-                $force_panel_db_sync = 1 if $raw eq "1" || $raw eq "true" || $raw eq "yes" || $raw eq "on";
+                if ($raw eq "0" || $raw eq "false" || $raw eq "no" || $raw eq "off") {
+                    $force_panel_db_sync = 0;
+                } elsif ($raw eq "1" || $raw eq "true" || $raw eq "yes" || $raw eq "on") {
+                    $force_panel_db_sync = 1;
+                }
             }
             my %db_env = (
                 host => "DB_HOST",
