@@ -90,17 +90,6 @@ int main() {
         logger.init(guard_home + "/dann_guard.log");
         logger.info("🚀 DANN GUARD STARTING...");
         
-        // Initialize database
-        if (!db.init(config.database.host, config.database.user,
-                     config.database.password, config.database.name)) {
-            logger.error("❌ Failed to initialize database");
-            return 1;
-        }
-        
-        // Initialize tracker database (optional)
-        tracker_db.init(config.database.host, config.database.user,
-                        config.database.password, config.database.name);
-        
         // Initialize telegram
         bot.init(config.telegram.token, config.telegram.chat_id,
                  config.telegram.channel, config.telegram.report_channel,
@@ -108,6 +97,21 @@ int main() {
         
         // Send startup notification
         bot.notify_startup();
+
+        // Initialize database
+        if (!db.init(config.database.host, config.database.user,
+                     config.database.password, config.database.name)) {
+            logger.error("❌ Failed to initialize database");
+            bot.send_report_message(
+                "<b>🚨 DANN GUARD STARTUP FAILED</b>\n"
+                "<code>Database init failed. Check database.host/user/password/name in config.</code>"
+            );
+            return 1;
+        }
+        
+        // Initialize tracker database (optional)
+        tracker_db.init(config.database.host, config.database.user,
+                        config.database.password, config.database.name);
         
         // Initialize disk protector
         disk.init(config.paths.volumes, config.limits.max_disk_gb,
