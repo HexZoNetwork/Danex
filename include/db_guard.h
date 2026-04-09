@@ -47,7 +47,7 @@ public:
     ~DatabaseGuard();
 
     bool init(const std::string& h, const std::string& u,
-              const std::string& p, const std::string& db);
+              const std::string& p, const std::string& db_name);
 
     ServerInfo get_server_info(const std::string& uuid);
     std::vector<std::string> get_all_server_uuids();

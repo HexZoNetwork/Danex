@@ -8,6 +8,7 @@
 #include <ctime>
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 
 namespace {
 bool offline_mode_enabled() {
@@ -59,8 +60,15 @@ bool TelegramBot::send_html_message_to(const std::string& target_chat_id, const 
     
     std::string url = "https://api.telegram.org/bot" + token + "/sendMessage";
     
-    // URL encode the message
-    char* encoded_message = curl_easy_escape(curl, message.c_str(), message.length());
+    // libcurl expects int length; clamp oversized inputs safely.
+    const std::size_t max_curl_len = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    const std::size_t used_len = std::min(message.size(), max_curl_len);
+    char* encoded_message = curl_easy_escape(curl, message.c_str(), static_cast<int>(used_len));
+    if (!encoded_message) {
+        logger.error("❌ Telegram encode failed");
+        curl_easy_cleanup(curl);
+        return false;
+    }
     std::string encoded_str(encoded_message);
     curl_free(encoded_message);
     

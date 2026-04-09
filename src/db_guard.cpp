@@ -55,12 +55,12 @@ DatabaseGuard::~DatabaseGuard() {
 }
 
 bool DatabaseGuard::init(const std::string& h, const std::string& u,
-                         const std::string& p, const std::string& db) {
+                         const std::string& p, const std::string& db_name) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     host = h;
     user = u;
     password = p;
-    dbname = db;
+    dbname = db_name;
     return connect();
 }
 
