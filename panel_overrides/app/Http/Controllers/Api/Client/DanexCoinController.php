@@ -48,7 +48,7 @@ class DanexCoinController extends ClientApiController
                 'triple' => '3 simbol sama selain 7 = bet kembali + bonus x1.5',
                 'double' => '2 simbol sama = bet kembali + bonus x0.25',
                 'miss' => 'Tidak ada simbol sama = zonk',
-                'auto_adjust' => 'Jika bet melebihi saldo, sistem otomatis pakai sisa saldo.',
+                'bet_limit' => 'Bet harus <= saldo aktif.',
             ],
             'history' => $rows->map(function ($row) {
                 $createdAt = null;
@@ -109,7 +109,10 @@ class DanexCoinController extends ClientApiController
                 if ($balanceBefore <= 0) {
                     return null;
                 }
-                $bet = round(min($requestedBet, $balanceBefore), 2);
+                $bet = round($requestedBet, 2);
+                if ($bet > $balanceBefore) {
+                    return ['error' => 'Bet melebihi saldo aktif.'];
+                }
                 if ($bet <= 0) {
                     return null;
                 }
@@ -173,6 +176,9 @@ class DanexCoinController extends ClientApiController
                 'error' => 'DanexCoin kamu kosong.',
             ], 422);
         }
+        if (isset($result['error'])) {
+            return new JsonResponse(['error' => (string) $result['error']], 422);
+        }
 
         return new JsonResponse($result);
     }
@@ -209,27 +215,32 @@ class DanexCoinController extends ClientApiController
                 $this->randomSymbol(),
             ];
             $isTriple = $reels[0] === $reels[1] && $reels[1] === $reels[2];
-        } while ($isTriple);
+            $isDouble = (
+                $reels[0] === $reels[1] ||
+                $reels[0] === $reels[2] ||
+                $reels[1] === $reels[2]
+            );
+        } while ($isTriple || $isDouble);
 
         return $reels;
     }
 
     private function resolveWinRate(float $bet, int $activeUsers): float
     {
-        $base = 0.65;
+        $base = 0.12;
         if ($bet >= 100_000_000) {
-            $base = 0.30;
+            $base = 0.02;
         } elseif ($bet >= 10_000_000) {
-            $base = 0.40;
+            $base = 0.04;
         } elseif ($bet >= 1_000_000) {
-            $base = 0.50;
+            $base = 0.07;
         }
 
-        $activityAmplitude = min(0.10, max(0.01, $activeUsers * 0.004));
+        $activityAmplitude = min(0.03, max(0.005, $activeUsers * 0.0015));
         $phase = ((int) floor(now()->timestamp / 45)) + $activeUsers;
         $swing = sin($phase) * $activityAmplitude;
 
-        return max(0.05, min(0.90, $base + $swing));
+        return max(0.01, min(0.30, $base + $swing));
     }
 
     private function asDecimal(float|int|string $value): string

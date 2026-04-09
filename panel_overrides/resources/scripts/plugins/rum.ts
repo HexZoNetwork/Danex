@@ -1,8 +1,8 @@
 const SAMPLE_KEY = 'danex_rum_sample_v1';
-const SAMPLE_RATE = 0.2;
+const SAMPLE_RATE = 0.05;
 const MAX_QUEUE = 80;
 const FLUSH_COUNT = 12;
-const FLUSH_INTERVAL_MS = 10000;
+const FLUSH_INTERVAL_MS = 30000;
 
 type RumMetric =
     | 'LCP'
@@ -128,7 +128,6 @@ const observeCoreWebVitals = () => {
 
     let clsValue = 0;
     let lcpValue = 0;
-    let inpValue = 0;
 
     try {
         const clsObserver = new PerformanceObserver((list) => {
@@ -154,27 +153,12 @@ const observeCoreWebVitals = () => {
         // unsupported
     }
 
-    try {
-        const eventObserver = new PerformanceObserver((list) => {
-            for (const entry of list.getEntries() as Array<PerformanceEntry & { duration?: number }>) {
-                const d = entry.duration || 0;
-                if (d > inpValue) inpValue = d;
-            }
-        });
-        eventObserver.observe({ type: 'event', buffered: true, durationThreshold: 40 } as PerformanceObserverInit);
-    } catch {
-        // unsupported
-    }
-
     const finalizeVitals = () => {
         if (lcpValue > 0) {
             enqueueRum({ metric: 'LCP', value: lcpValue, rating: ratingFor('LCP', lcpValue), ttfb: nav?.responseStart || 0 });
         }
         if (clsValue > 0) {
             enqueueRum({ metric: 'CLS', value: Number(clsValue.toFixed(4)), rating: ratingFor('CLS', clsValue) });
-        }
-        if (inpValue > 0) {
-            enqueueRum({ metric: 'INP', value: inpValue, rating: ratingFor('INP', inpValue) });
         }
         flushRumQueue(true);
     };
@@ -190,6 +174,9 @@ const observeCoreWebVitals = () => {
 
 export const rumTrackApi = (path: string, durationMs: number, status?: number) => {
     if (!enabled) return;
+    const isError = !!status && status >= 500;
+    if (!isError && durationMs < 1200) return;
+    if (!isError && Math.random() > 0.1) return;
     enqueueRum({
         metric: 'api_latency',
         api_path: path.slice(0, 255),

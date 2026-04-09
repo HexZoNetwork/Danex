@@ -13,7 +13,9 @@ const http: AxiosInstance = axios.create({
 });
 
 http.interceptors.request.use((req) => {
-    (req as any).__rumStartedAt = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if (req.url?.startsWith('/api/') && !req.url.startsWith('/api/client/rum')) {
+        (req as any).__rumStartedAt = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    }
     if (!req.url?.endsWith('/resources')) {
         store.getActions().progress.startContinuous();
     }
@@ -25,9 +27,11 @@ http.interceptors.response.use(
     (resp) => {
         try {
             const started = (resp.config as any).__rumStartedAt;
-            const finished = typeof performance !== 'undefined' ? performance.now() : Date.now();
-            const duration = started ? finished - started : 0;
-            if (resp.config?.url?.startsWith('/api/')) {
+            if (!started) {
+                // skip RUM tracking for unsampled or excluded calls
+            } else if (resp.config?.url?.startsWith('/api/')) {
+                const finished = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                const duration = finished - started;
                 rumTrackApi(resp.config.url, duration, resp.status);
             }
         } catch {
@@ -43,10 +47,10 @@ http.interceptors.response.use(
         try {
             const cfg = error?.config;
             const started = cfg ? (cfg as any).__rumStartedAt : undefined;
-            const finished = typeof performance !== 'undefined' ? performance.now() : Date.now();
-            const duration = started ? finished - started : 0;
-            const status = error?.response?.status;
-            if (cfg?.url?.startsWith('/api/')) {
+            if (started && cfg?.url?.startsWith('/api/')) {
+                const finished = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                const duration = finished - started;
+                const status = error?.response?.status;
                 rumTrackApi(cfg.url, duration, status);
             }
         } catch {
