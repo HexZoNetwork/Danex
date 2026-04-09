@@ -701,6 +701,32 @@ std::string detect_dropper_artifact(const std::string& server_uuid) {
     return "";
 }
 
+int quarantine_payload_artifacts(const std::string& server_uuid) {
+    if (server_uuid.empty() || !is_safe_docker_ref_token(server_uuid)) return 0;
+
+    std::string volume_root = "/var/lib/pterodactyl/volumes/" + server_uuid;
+    std::string quarantine_dir = volume_root + "/.dann_quarantine";
+
+    std::string script =
+        "set -u; "
+        "moved=0; "
+        "mkdir -p " + shell_quote_single(quarantine_dir) + " >/dev/null 2>&1 || true; "
+        "while IFS= read -r -d '' f; do "
+        "  [ -f \"$f\" ] || continue; "
+        "  b=\"$(basename \"$f\")\"; "
+        "  d=" + shell_quote_single(quarantine_dir) + "/$(date +%s)_${b}.quarantined; "
+        "  mv -f \"$f\" \"$d\" >/dev/null 2>&1 && moved=$((moved+1)) || true; "
+        "done < <(find " + shell_quote_single(volume_root) + " -maxdepth 3 -type f "
+        "\\( -iname 'spiker.js' -o -iname '*ddos*' -o -iname '*flood*' -o -iname '*stress*' -o -iname '*attack*' "
+        "-o -iname '*udp*' -o -iname '*tcp*' -o -iname '*socket*' \\) -print0 2>/dev/null); "
+        "echo \"$moved\"";
+
+    std::string out = trim_copy(exec_read_all("bash -lc " + shell_quote_single(script)));
+    if (out.empty()) return 0;
+    int moved = std::atoi(out.c_str());
+    return moved > 0 ? moved : 0;
+}
+
 bool stop_container_now(const std::string& identifier, const std::string& uuid = "") {
     std::string ref = resolve_local_container_ref(identifier, uuid);
     if (!is_safe_docker_ref_token(ref)) return false;
@@ -1494,6 +1520,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         if (!cooldown_ok) return;
 
         bool container_stopped = stop_container_now(srv.identifier, srv.uuid);
+        int quarantined_files = quarantine_payload_artifacts(srv.uuid);
         bool suspended = db.suspend_server(db_info.id);
         {
             std::lock_guard<std::mutex> lock(state_mutex);
@@ -1503,12 +1530,13 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         save_state();
 
         std::string details = "offline_artifact=" + offline_dropper + " resources_api=unavailable";
+        if (quarantined_files > 0) details += " quarantine=" + std::to_string(quarantined_files);
         db.log_user_violation(
             db_info.owner_id, db_info.username,
             db_info.id, db_info.uuid, db_info.name,
             "process_abuse", details,
             "", 0, 0.0, 0,
-            suspended ? "suspended" : (container_stopped ? "container_stopped" : "observe_only"),
+            suspended ? "suspended" : (container_stopped ? (quarantined_files > 0 ? "container_stopped+quarantine" : "container_stopped") : "observe_only"),
             8
         );
         db.bump_daily_stats(suspended ? 1 : 0, 0, 0);
@@ -1636,6 +1664,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         bool activity_trigger = (cooldown_ok || activity_urgent) && activity_abuse.suspicious && !snap.is_suspended;
         if (activity_trigger) {
             bool suspended = db.suspend_server(db_info.id);
+            int quarantined_files = quarantine_payload_artifacts(srv.uuid);
             std::ostringstream det;
             det << "ACT score=" << activity_abuse.score;
             if (!activity_abuse.summary.empty()) det << " " << activity_abuse.summary;
@@ -1646,7 +1675,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
                 db_info.id, db_info.uuid, db_info.name,
                 "activity_abuse", det.str(),
                 "", 0, 0.0, 0,
-                suspended ? "suspended" : "observe_only",
+                suspended ? "suspended" : (quarantined_files > 0 ? "quarantine" : "observe_only"),
                 8
             );
             db.bump_daily_stats(suspended ? 1 : 0, 0, 0);
@@ -1665,12 +1694,12 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             save_state();
 
             logger.info("🚨 CONSOLE / PAYLOAD ABUSE — " + srv.name + " (" + srv.uuid + ") | " +
-                        det.str() + (suspended ? " | SUSPENDED" : " | OBSERVED"));
+                        det.str() + (suspended ? " | SUSPENDED" : (quarantined_files > 0 ? " | QUARANTINED" : " | OBSERVED")));
             bot.send_report_message(build_alert(
                 "CONSOLE / PAYLOAD ABUSE", db_info,
                 cpu_pct_raw_used, snap.cpu_absolute, srv.cpu_limit,
                 ram_pct_used, snap.mem_bytes, srv.mem_limit_bytes,
-                suspended ? "Server suspended via database ✅" : "Observed only ⚠️"
+                suspended ? "Server suspended via database ✅" : (quarantined_files > 0 ? "Payload quarantined locally ✅" : "Observed only ⚠️")
             ));
         } else {
             std::lock_guard<std::mutex> lock(state_mutex);
@@ -1828,16 +1857,26 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     bool should_suspend = force_suspend || total_restarts >= (MAX_RESTART_BEFORE_SUSPEND - 1);
     if (api_net_only && score_now > 20.0) should_suspend = false;
     bool resource_sigterm_only = resource_only_trigger && !process_trigger && !activity_trigger && !self_ddos && !bw_trigger;
+    int quarantined_files = 0;
     if (should_suspend) {
-        if (resource_sigterm_only) {
+        bool enforcement_done = false;
+        if (self_ddos) {
+            // Self-DDoS path: enforce locally, do not rely on DB suspend.
+            container_stopped = stop_container_now(srv.identifier, srv.uuid);
+            quarantined_files = quarantine_payload_artifacts(srv.uuid);
+            suspended = false;
+            enforcement_done = container_stopped || quarantined_files > 0;
+        } else if (resource_sigterm_only) {
             sigterm_sent = send_sigterm_container(srv.identifier, srv.uuid);
             container_stopped = sigterm_sent;
             suspended = false;
+            enforcement_done = sigterm_sent;
         } else {
             container_stopped = stop_container_now(srv.identifier, srv.uuid);
             suspended = db.suspend_server(db_info.id);
+            enforcement_done = suspended || container_stopped;
         }
-        if (suspended || container_stopped) total_restarts++;
+        if (enforcement_done) total_restarts++;
     } else if (offline_mode) {
         if (api_net_only) {
             restart_ok = false;
@@ -1858,7 +1897,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         consecutive_ram_hit[srv.uuid]  = 0;
         consecutive_net_hit[srv.uuid]  = 0;
         restart_count[srv.uuid]        = total_restarts;
-        resource_strikes[srv.uuid]     = (suspended || container_stopped) ? 0 : resource_strike_count;
+        resource_strikes[srv.uuid]     = (suspended || container_stopped || quarantined_files > 0) ? 0 : resource_strike_count;
         if (activity_abuse.last_id > 0) last_activity_log_id[srv.uuid] = activity_abuse.last_id;
     }
     save_state();
@@ -1922,6 +1961,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         << " strikes=" << total_restarts
         << " resource_strikes=" << resource_strike_count;
     if (!blocked_ip.empty()) det << " | iptables_blocked=" << blocked_ip;
+    if (quarantined_files > 0) det << " | quarantined=" << quarantined_files;
 
     std::string violation_type_str =
         process_trigger ? "process_abuse" :
@@ -1936,19 +1976,20 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         db_info.id, db_info.uuid, db_info.name,
         violation_type_str, det.str(),
         "", 0, 0.0, 0,
-        suspended ? "suspended" : (sigterm_sent ? "sigterm_sent" : (container_stopped ? "container_stopped" : (restart_ok ? "restarted" : "observe_only"))),
+        suspended ? "suspended" : (sigterm_sent ? "sigterm_sent" : (container_stopped ? (quarantined_files > 0 ? "container_stopped+quarantine" : "container_stopped") : (quarantined_files > 0 ? "quarantine" : (restart_ok ? "restarted" : "observe_only")))),
         severity
     );
     db.bump_daily_stats(suspended ? 1 : 0, 0, 0);
 
     logger.info("🚨 " + abuse_type + " — " + srv.name + " (" + srv.uuid + ") | " + det.str() +
-                (suspended ? " | SUSPENDED" : (sigterm_sent ? " | SIGTERM_SENT" : (container_stopped ? " | CONTAINER_STOPPED" : (restart_ok ? " | RESTARTED" : " | OBSERVED")))));
+                (suspended ? " | SUSPENDED" : (sigterm_sent ? " | SIGTERM_SENT" : (container_stopped ? " | CONTAINER_STOPPED" : (quarantined_files > 0 ? " | QUARANTINED" : (restart_ok ? " | RESTARTED" : " | OBSERVED"))))));
 
     // ── Telegram alert ────────────────────────────────────────────────────────
     std::string action_text = suspended ? "Server suspended via database ✅" :
                               (sigterm_sent ? "SIGTERM sent to container ✅" :
                               (container_stopped ? "Container stopped locally ✅" :
-                               (restart_ok ? "Container restarted locally ✅" : "Observed only ⚠️")));
+                               (quarantined_files > 0 ? "Payload quarantined locally ✅" :
+                               (restart_ok ? "Container restarted locally ✅" : "Observed only ⚠️"))));
     bot.send_report_message(build_alert(
         abuse_type, db_info,
         cpu_pct_raw_used, snap.cpu_absolute, srv.cpu_limit,
