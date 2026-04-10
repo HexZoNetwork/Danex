@@ -260,6 +260,133 @@ class ProtectController extends Controller
         ]);
     }
 
+    public function timelineIndex(Request $request): View|RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $filters = [
+            'user_id' => max(0, (int) $request->query('user_id', 0)),
+            'server_id' => max(0, (int) $request->query('server_id', 0)),
+            'violation_type' => trim((string) $request->query('violation_type', '')),
+            'action_taken' => trim((string) $request->query('action_taken', '')),
+        ];
+
+        $violations = collect();
+        $hasViolationsTable = Schema::hasTable('user_violations');
+        if ($hasViolationsTable) {
+            $query = DB::table('user_violations')
+                ->orderByDesc('id')
+                ->limit(250);
+
+            if ($filters['user_id'] > 0) {
+                $query->where('user_id', $filters['user_id']);
+            }
+            if ($filters['server_id'] > 0) {
+                $query->where('server_id', $filters['server_id']);
+            }
+            if ($filters['violation_type'] !== '') {
+                $query->where('violation_type', 'like', '%' . $filters['violation_type'] . '%');
+            }
+            if ($filters['action_taken'] !== '') {
+                $query->where('action_taken', 'like', '%' . $filters['action_taken'] . '%');
+            }
+
+            $violations = $query->get([
+                'id',
+                'user_id',
+                'username',
+                'server_id',
+                'server_uuid',
+                'server_name',
+                'violation_type',
+                'details',
+                'file_name',
+                'file_size',
+                'disk_usage_gb',
+                'file_count',
+                'action_taken',
+                'severity',
+                'created_at',
+            ]);
+        }
+
+        $illegalFiles = collect();
+        $hasIllegalFilesTable = Schema::hasTable('illegal_files');
+        if ($hasIllegalFilesTable) {
+            $illegalFiles = DB::table('illegal_files')
+                ->orderByDesc('last_seen')
+                ->limit(120)
+                ->get([
+                    'file_hash',
+                    'file_name',
+                    'file_path',
+                    'server_uuid',
+                    'user_id',
+                    'detection_reason',
+                    'file_size',
+                    'seen_count',
+                    'first_seen',
+                    'last_seen',
+                ]);
+        }
+
+        $activityLogs = collect();
+        $hasActivityLogs = Schema::hasTable('activity_logs');
+        $hasActivitySubjects = Schema::hasTable('activity_log_subjects');
+        if ($hasActivityLogs) {
+            $activityQuery = DB::table('activity_logs as al')
+                ->leftJoin('users as actor', 'actor.id', '=', 'al.actor_id')
+                ->orderByDesc('al.id')
+                ->limit(200);
+
+            if ($hasActivitySubjects) {
+                $activityQuery->leftJoin('activity_log_subjects as als', function ($join) {
+                    $join->on('als.activity_log_id', '=', 'al.id')
+                        ->where('als.subject_type', '=', 'server');
+                });
+            }
+
+            if ($filters['user_id'] > 0) {
+                $activityQuery->where('al.actor_id', $filters['user_id']);
+            }
+            if ($filters['server_id'] > 0 && $hasActivitySubjects) {
+                $activityQuery->where('als.subject_id', $filters['server_id']);
+            }
+            if ($filters['violation_type'] !== '') {
+                $activityQuery->where('al.event', 'like', '%' . $filters['violation_type'] . '%');
+            }
+
+            $columns = [
+                'al.id',
+                'al.event',
+                'al.description',
+                'al.ip',
+                'al.actor_id',
+                'al.timestamp',
+                'al.properties',
+                'actor.username as actor_username',
+            ];
+            if ($hasActivitySubjects) {
+                $columns[] = 'als.subject_id as server_id';
+            }
+
+            $activityLogs = $activityQuery->get($columns);
+        }
+
+        return view('admin.protect.timeline', [
+            'filters' => $filters,
+            'violations' => $violations,
+            'hasViolationsTable' => $hasViolationsTable,
+            'illegalFiles' => $illegalFiles,
+            'hasIllegalFilesTable' => $hasIllegalFilesTable,
+            'activityLogs' => $activityLogs,
+            'hasActivityLogs' => $hasActivityLogs,
+        ]);
+    }
+
     public function adsIndex(Request $request): View|RedirectResponse
     {
         $guard = $this->requireVerified($request);

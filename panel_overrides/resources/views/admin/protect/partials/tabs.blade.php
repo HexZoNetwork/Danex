@@ -7,6 +7,7 @@
             <li class="{{ ($active ?? '') === 'broadcast' ? 'active' : '' }}"><a href="{{ route('admin.protect.broadcast') }}">Broadcast</a></li>
             <li class="{{ ($active ?? '') === 'notifications' ? 'active' : '' }}"><a href="{{ route('admin.protect.notifications') }}">Notifications</a></li>
             <li class="{{ ($active ?? '') === 'rum' ? 'active' : '' }}"><a href="{{ route('admin.protect.rum') }}">RUM Insight</a></li>
+            <li class="{{ ($active ?? '') === 'timeline' ? 'active' : '' }}"><a href="{{ route('admin.protect.timeline') }}">Timeline</a></li>
             <li class="{{ ($active ?? '') === 'ads' ? 'active' : '' }}"><a href="{{ route('admin.protect.ads') }}">Ads</a></li>
         </ul>
     </div>
