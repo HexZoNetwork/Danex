@@ -46,18 +46,6 @@ const xsrfTokenFromCookie = () => {
 };
 
 const shouldEnableForDevice = () => {
-    try {
-        const nav = navigator as any;
-        const connection = nav.connection;
-        if (connection && connection.saveData === true) return false;
-        const memory = Number(nav.deviceMemory || 0);
-        if (memory > 0 && memory <= 2) return false;
-        const cores = Number(nav.hardwareConcurrency || 0);
-        if (cores > 0 && cores <= 2) return false;
-    } catch {
-        // no-op
-    }
-
     return true;
 };
 

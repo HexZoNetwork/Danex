@@ -3,6 +3,7 @@
 namespace Pterodactyl\Http\Controllers\Admin;
 
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -257,7 +258,46 @@ class ProtectController extends Controller
             'topApis' => $topApis,
             'errorRoutes' => $errorRoutes,
             'hasRumTable' => $hasTable,
+            'postProtectToken' => $this->expectedToken(),
         ]);
+    }
+
+    public function rumPing(Request $request): JsonResponse|RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        if (!Schema::hasTable('panel_rum_events')) {
+            return new JsonResponse(['ok' => false, 'reason' => 'missing_table'], 404);
+        }
+
+        $last = (int) $request->session()->get('pp_rum_admin_ping_at', 0);
+        $nowTs = time();
+        if ($last > 0 && ($nowTs - $last) < 6) {
+            return new JsonResponse(['ok' => true, 'skipped' => true]);
+        }
+        $request->session()->put('pp_rum_admin_ping_at', $nowTs);
+
+        $now = now();
+        DB::table('panel_rum_events')->insert([
+            'user_id' => (int) ($request->user()?->id ?? 0),
+            'metric' => 'ADMIN_HEARTBEAT',
+            'value' => 1,
+            'route' => '/admin/protect/rum',
+            'rating' => 'good',
+            'delta' => null,
+            'ttfb' => null,
+            'status' => 200,
+            'api_path' => '/admin/protect/rum/ping',
+            'meta' => json_encode(['source' => 'admin_rum_ping'], JSON_UNESCAPED_SLASHES),
+            'occurred_at' => $now->toDateTimeString(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        return new JsonResponse(['ok' => true]);
     }
 
     public function timelineIndex(Request $request): View|RedirectResponse

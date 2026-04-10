@@ -178,4 +178,41 @@
     </div>
 </div>
 </div>
+
+@if($hasRumTable)
+<script>
+    (function () {
+        var endpoint = "{{ route('admin.protect.rum.ping') }}";
+        var csrf = "{{ csrf_token() }}";
+        var protectToken = "{{ $postProtectToken ?? '' }}";
+        if (!endpoint || !csrf || !protectToken) {
+            return;
+        }
+
+        var sendPing = function () {
+            var body = new URLSearchParams();
+            body.append('protect_token', protectToken);
+
+            fetch(endpoint, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-CSRF-TOKEN': csrf,
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: body.toString()
+            }).catch(function () {});
+        };
+
+        sendPing();
+        window.setInterval(sendPing, 8000);
+        window.setInterval(function () {
+            if (document.visibilityState === 'visible') {
+                window.location.reload();
+            }
+        }, 15000);
+    })();
+</script>
+@endif
 @endsection
