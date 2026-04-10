@@ -35,6 +35,15 @@ let flushTimer: number | undefined;
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const routePath = () => window.location.pathname || '/';
+const xsrfTokenFromCookie = () => {
+    const match = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+    if (!match || !match[1]) return '';
+    try {
+        return decodeURIComponent(match[1]);
+    } catch {
+        return match[1];
+    }
+};
 
 const shouldEnableForDevice = () => {
     try {
@@ -98,19 +107,20 @@ const sendEvents = (events: RumEvent[]) => {
     if (!events.length) return;
     const payload = JSON.stringify({ events });
     const url = '/api/client/rum';
-    try {
-        if (navigator.sendBeacon) {
-            const blob = new Blob([payload], { type: 'application/json' });
-            if (navigator.sendBeacon(url, blob)) return;
-        }
-    } catch {
-        // no-op
+    const xsrf = xsrfTokenFromCookie();
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+    };
+    if (xsrf !== '') {
+        headers['X-XSRF-TOKEN'] = xsrf;
     }
     void fetch(url, {
         method: 'POST',
         credentials: 'include',
         keepalive: true,
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: payload,
     }).catch(() => undefined);
 };
