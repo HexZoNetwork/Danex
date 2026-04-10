@@ -25,10 +25,7 @@ class PteroProtectWaf
         $lockdown = $this->isLockdownActive((string) ($config['lockdown_flag'] ?? ''));
         $mode = $this->currentMode((string) ($config['mode_flag'] ?? ''));
         $category = $this->categoryForPath($path);
-
-        if ($this->isTrustedIp($ip, $config)) {
-            return $next($request);
-        }
+        $trustedIp = $this->isTrustedIp($ip, $config);
 
         if ($this->isSuspiciousRequest($request, $config, $userAgent, $path, $queryString, $contentLength)) {
             $this->logDecision($config, 'deny', 'signature', $ip, $path, $userAgent);
@@ -41,6 +38,11 @@ class PteroProtectWaf
         }
 
         if ($this->shouldBypassRequest($request, $category, $path)) {
+            return $next($request);
+        }
+
+        // Trusted sources still pass signature checks above, but bypass anti-flood controls below.
+        if ($trustedIp) {
             return $next($request);
         }
 

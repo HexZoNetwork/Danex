@@ -67,6 +67,17 @@ class PteroProtectSessionBinding
         }
 
         $current = $this->fingerprintPayload($request, $userId);
+        $boundUserId = (int) ($bound['user_id'] ?? 0);
+        if ($boundUserId > 0 && $userId > 0 && $boundUserId !== $userId) {
+            Cache::put($rebindKey, true, $this->ttlSeconds());
+            Cache::forget($cacheKey);
+            if ($ipChallengeKey !== null) {
+                Cache::put($ipChallengeKey, true, $this->ttlSeconds());
+            }
+
+            return $this->challengeResponse($request);
+        }
+
         $boundFp = (string) ($bound['fp'] ?? '');
         $currentFp = (string) ($current['fp'] ?? '');
         $mismatch = ($boundFp === '' || $currentFp === '' || !hash_equals($boundFp, $currentFp));
@@ -76,18 +87,6 @@ class PteroProtectSessionBinding
         }
 
         if ($this->hasClearanceCookie($request)) {
-            Cache::put($cacheKey, $current, $this->ttlSeconds());
-            Cache::forget($rebindKey);
-            if ($ipChallengeKey !== null) {
-                Cache::forget($ipChallengeKey);
-            }
-
-            return $next($request);
-        }
-
-        // Soft-rebind for authenticated sessions to prevent random logout
-        // on mobile/operator IP rotation and proxy path changes.
-        if ($userId > 0) {
             Cache::put($cacheKey, $current, $this->ttlSeconds());
             Cache::forget($rebindKey);
             if ($ipChallengeKey !== null) {
