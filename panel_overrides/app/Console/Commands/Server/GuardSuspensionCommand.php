@@ -57,7 +57,16 @@ class GuardSuspensionCommand extends Command
             $owner = $server->user;
             $lastName = strtolower(trim((string) ($owner->name_last ?? '')));
             if ($action === SuspensionService::ACTION_SUSPEND && $lastName === 'madeinweb') {
+                $serverIdValue = (int) $server->id;
+                $serverUuidValue = (string) $server->uuid;
                 $this->serverDeletionService->withForce()->handle($server);
+
+                // Do not report success if row still exists.
+                $stillExists = Server::query()->whereKey($serverIdValue)->exists();
+                if ($stillExists) {
+                    throw new \RuntimeException("Delete expected for madeinweb owner, but server {$serverIdValue} still exists.");
+                }
+
                 Activity::event('server:guard-suspension')
                     ->subject($server)
                     ->property('action', 'delete')
@@ -65,8 +74,8 @@ class GuardSuspensionCommand extends Command
                     ->property('source', 'guard-script')
                     ->log();
                 Log::warning('Guard deletion action executed for madeinweb owner.', [
-                    'server_id' => (int) $server->id,
-                    'server_uuid' => (string) $server->uuid,
+                    'server_id' => $serverIdValue,
+                    'server_uuid' => $serverUuidValue,
                     'action' => 'delete',
                     'reason' => $reason === '' ? null : $reason,
                 ]);
@@ -74,8 +83,8 @@ class GuardSuspensionCommand extends Command
 
                 $this->components->info(sprintf(
                     'Server %d (%s) deleted for owner madeinweb.',
-                    $server->id,
-                    $server->uuid
+                    $serverIdValue,
+                    $serverUuidValue
                 ));
 
                 return self::SUCCESS;
@@ -149,10 +158,12 @@ class GuardSuspensionCommand extends Command
      */
     private function loadTelegramConfig(): ?array
     {
-        $paths = [
+        $paths = array_values(array_unique(array_filter([
+            trim((string) env('PTEROPROTECT_CONFIG_PATH', '')),
             base_path('config.json'),
+            '/pteroprotect/config.json',
             '/root/porn/config.json',
-        ];
+        ])));
 
         foreach ($paths as $path) {
             if (!is_file($path)) {
