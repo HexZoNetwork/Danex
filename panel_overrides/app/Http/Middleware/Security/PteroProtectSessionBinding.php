@@ -6,6 +6,7 @@ use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Pterodactyl\Support\Security\PteroProtectClearanceToken;
 use Symfony\Component\HttpFoundation\Response;
 
 class PteroProtectSessionBinding
@@ -271,12 +272,10 @@ class PteroProtectSessionBinding
 
     private function hasClearanceCookie(Request $request): bool
     {
-        $cookieName = trim((string) config('pteroprotect.waf.challenge_cookie_name', 'pp_clearance'));
-        if ($cookieName === '') {
-            $cookieName = 'pp_clearance';
-        }
+        $cookieName = PteroProtectClearanceToken::cookieName();
+        $token = trim((string) $request->cookie($cookieName, ''));
 
-        return trim((string) $request->cookie($cookieName, '')) !== '';
+        return PteroProtectClearanceToken::isValid($request, $token, $cookieName);
     }
 
     private function ipChallengeKey(Request $request): ?string

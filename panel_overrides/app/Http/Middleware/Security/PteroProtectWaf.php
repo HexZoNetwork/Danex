@@ -6,6 +6,7 @@ use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
+use Pterodactyl\Support\Security\PteroProtectClearanceToken;
 use Symfony\Component\HttpFoundation\Response;
 
 class PteroProtectWaf
@@ -259,6 +260,9 @@ class PteroProtectWaf
 
         $clearance = trim((string) $request->cookie($cookieName, ''));
         if ($clearance === '') {
+            return false;
+        }
+        if (!PteroProtectClearanceToken::isValid($request, $clearance, $cookieName)) {
             return false;
         }
 
