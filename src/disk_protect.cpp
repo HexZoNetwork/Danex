@@ -209,6 +209,20 @@ bool has_text_like_extension(const std::string& name) {
     return false;
 }
 
+bool is_known_safe_runtime_path_literal(const std::string& text_lower) {
+    static const std::vector<std::string> safe_literals = {
+        "/var/lib/pterodactyl",
+        "/home/container",
+        "/pteroprotect/",
+        "/etc/pterodactyl/",
+        "/var/www/pterodactyl/"
+    };
+    for (const auto& token : safe_literals) {
+        if (text_lower.find(token) != std::string::npos) return true;
+    }
+    return false;
+}
+
 bool is_known_dropper_filename(const std::string& name) {
     static const std::set<std::string> bad_names = {
         "x86_64", "a.out", "bot", "miner", "scan", "upd", "update",
@@ -1115,6 +1129,7 @@ bool DiskProtector::is_suspicious_file(const FileInfo& file, std::string& reason
 
     for (const auto& k : CRITICAL_KEYWORDS) {
         if (lower_name.find(to_lower_copy(k)) != std::string::npos) {
+            if (is_known_safe_runtime_path_literal(lower_name)) continue;
             reason = "Filename matches critical pattern: " + k;
             return true;
         }
@@ -1189,6 +1204,7 @@ bool DiskProtector::is_suspicious_file(const FileInfo& file, std::string& reason
     for (const auto& k : CRITICAL_KEYWORDS) {
         std::string lk = to_lower_copy(k);
         if (lc.find(lk) != std::string::npos) {
+            if (is_known_safe_runtime_path_literal(lc)) continue;
             reason = "Content matches critical pattern: " + k;
             std::lock_guard<std::mutex> lock(cache_mutex);
             content_scan_cache[file.path] = make_content_cache_entry(file.size, file.modified, true, reason);

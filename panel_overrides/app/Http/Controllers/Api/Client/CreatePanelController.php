@@ -94,7 +94,7 @@ class CreatePanelController extends ClientApiController
 
         $ram = (int) $validated['ram'];
         $requestUserId = (int) $request->user()->id;
-        $result = DB::transaction(function () use ($requestUserId, $validated, $egg, $image, $ram, $environment) {
+        $result = DB::transaction(function () use ($requestUserId) {
             $user = User::query()->whereKey($requestUserId)->lockForUpdate()->first();
             if (!$user) {
                 return ['error' => 'User tidak ditemukan.', 'status' => 404];
@@ -130,10 +130,21 @@ class CreatePanelController extends ClientApiController
                 'madeinweb_panel_created_at' => now(),
             ])->saveOrFail();
 
+            return [
+                'allocation_id' => (int) $allocation->id,
+                'owner_id' => (int) $user->id,
+            ];
+        });
+
+        if (isset($result['error'])) {
+            return new JsonResponse(['error' => (string) $result['error']], (int) ($result['status'] ?? 422));
+        }
+
+        try {
             $server = $this->serverCreationService->handle([
                 'name' => (string) $validated['name'],
                 'description' => 'Created via madeinweb Create Panel',
-                'owner_id' => (int) $user->id,
+                'owner_id' => (int) ($result['owner_id'] ?? $requestUserId),
                 'egg_id' => (int) $egg->id,
                 'nest_id' => (int) $egg->nest_id,
                 'image' => $image,
@@ -146,7 +157,7 @@ class CreatePanelController extends ClientApiController
                 'cpu' => 100,
                 'threads' => '1',
                 'oom_disabled' => false,
-                'allocation_id' => (int) $allocation->id,
+                'allocation_id' => (int) $result['allocation_id'],
                 'database_limit' => 0,
                 'allocation_limit' => 0,
                 'backup_limit' => 0,
@@ -172,10 +183,22 @@ class CreatePanelController extends ClientApiController
                     'auto_suspended' => $autoSuspended,
                 ],
             ];
-        });
+        } catch (Throwable $exception) {
+            report($exception);
+            // Roll back one-time lock if creation failed and user still has no server.
+            User::query()
+                ->whereKey($requestUserId)
+                ->whereNotExists(function ($query) use ($requestUserId) {
+                    $query->selectRaw('1')
+                        ->from('servers')
+                        ->whereColumn('servers.owner_id', 'users.id')
+                        ->where('servers.owner_id', $requestUserId);
+                })
+                ->update(['madeinweb_panel_created_at' => null]);
 
-        if (isset($result['error'])) {
-            return new JsonResponse(['error' => (string) $result['error']], (int) ($result['status'] ?? 422));
+            return new JsonResponse([
+                'error' => 'Gagal membuat server. Silakan coba lagi.',
+            ], 500);
         }
 
         return new JsonResponse([
