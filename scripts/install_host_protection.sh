@@ -1086,6 +1086,8 @@ iptables -A "${ABUSE_CHAIN}" -j RETURN
 iptables -A "${CHAIN}" -j RETURN
 
 if iptables -S DOCKER-USER >/dev/null 2>&1; then
+    iptables -N "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
+    iptables -F "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
     while iptables -C DOCKER-USER -j "${DOCKER_CHAIN}" >/dev/null 2>&1; do
         iptables -D DOCKER-USER -j "${DOCKER_CHAIN}" >/dev/null 2>&1 || break
     done
@@ -1116,13 +1118,13 @@ if iptables -S DOCKER-USER >/dev/null 2>&1; then
     fi
     if [[ "${EGRESS_GUARD_ENABLED}" == "1" ]]; then
         # Generic new-connection limiter per container source IP.
-        iptables -A "${DOCKER_CHAIN}" -p tcp --syn -m connlimit --connlimit-above 120 --connlimit-mask 32 -j DROP
+        iptables -A "${DOCKER_CHAIN}" -p tcp --syn -m connlimit --connlimit-above 40 --connlimit-mask 32 -j DROP
         iptables -A "${DOCKER_CHAIN}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
-            --hashlimit-name pteroprotect_docker_egress_new_v4 --hashlimit-above 40/second \
-            --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+            --hashlimit-name pteroprotect_docker_egress_new_v4 --hashlimit-above 12/second \
+            --hashlimit-burst 24 --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
         iptables -A "${DOCKER_CHAIN}" -p udp -m hashlimit \
-            --hashlimit-name pteroprotect_docker_egress_udp_v4 --hashlimit-above 100/second \
-            --hashlimit-burst 200 --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+            --hashlimit-name pteroprotect_docker_egress_udp_v4 --hashlimit-above 20/second \
+            --hashlimit-burst 40 --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
         if [[ -n "${EGRESS_TCP_BLOCK_PORTS}" ]]; then
             iptables -A "${DOCKER_CHAIN}" -p tcp -m multiport --dports "${EGRESS_TCP_BLOCK_PORTS}" -j DROP
         fi
