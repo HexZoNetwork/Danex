@@ -1,8 +1,9 @@
-const SAMPLE_KEY = 'danex_rum_sample_v1';
-const SAMPLE_RATE = 0.005;
+const SAMPLE_KEY = 'danex_rum_sample_v2';
+const SAMPLE_RATE = 1;
 const MAX_QUEUE = 24;
-const FLUSH_COUNT = 8;
-const FLUSH_INTERVAL_MS = 120000;
+const FLUSH_COUNT = 1;
+const FLUSH_INTERVAL_MS = 10000;
+const API_SLOW_MS = 800;
 
 type RumMetric =
     | 'LCP'
@@ -52,6 +53,10 @@ const shouldEnableForDevice = () => {
 };
 
 const shouldSample = () => {
+    if (SAMPLE_RATE >= 1) {
+        return true;
+    }
+
     try {
         const existing = sessionStorage.getItem(SAMPLE_KEY);
         if (existing === '1') return true;
@@ -153,9 +158,8 @@ const observeCoreWebVitals = () => {
 
 export const rumTrackApi = (path: string, durationMs: number, status?: number) => {
     if (!enabled) return;
-    const isError = !!status && status >= 500;
-    if (!isError && durationMs < 3000) return;
-    if (!isError && Math.random() > 0.2) return;
+    const isError = !!status && status >= 400;
+    if (!isError && durationMs < API_SLOW_MS) return;
     enqueueRum({
         metric: 'API_LATENCY',
         api_path: path.slice(0, 255),
