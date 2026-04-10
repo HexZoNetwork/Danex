@@ -1095,6 +1095,13 @@ if iptables -S DOCKER-USER >/dev/null 2>&1; then
     iptables -A "${DOCKER_CHAIN}" -d 169.254.170.2/32 -j DROP
     iptables -A "${DOCKER_CHAIN}" -d 100.100.100.200/32 -j DROP
     iptables -A "${DOCKER_CHAIN}" -d 169.254.0.0/16 -j DROP
+    # Hard-stop container self-ddos to host/public infra services.
+    # This blocks the common attack pattern: container -> host public IP -> infra ports.
+    while read -r host_ip_v4; do
+        [[ -n "${host_ip_v4}" ]] || continue
+        iptables -A "${DOCKER_CHAIN}" -d "${host_ip_v4}/32" -p tcp -m multiport --dports 22,80,443,8080,2022,3306,5432,6379,8443 -j DROP
+        iptables -A "${DOCKER_CHAIN}" -d "${host_ip_v4}/32" -p udp -m multiport --dports 53,123,443,8080,2022,3306,5432,6379 -j DROP
+    done < <(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | sort -u)
     if [[ "${DOCKER_STRICT_ISOLATION_ENABLED}" == "1" ]]; then
         WINGS_DOCKER_NETWORK_NAME="$(read_wings_docker_network_name)"
         while read -r docker_subnet_v4; do
@@ -1108,6 +1115,14 @@ if iptables -S DOCKER-USER >/dev/null 2>&1; then
         iptables -A "${DOCKER_CHAIN}" -d 192.168.0.0/16 -j DROP
     fi
     if [[ "${EGRESS_GUARD_ENABLED}" == "1" ]]; then
+        # Generic new-connection limiter per container source IP.
+        iptables -A "${DOCKER_CHAIN}" -p tcp --syn -m connlimit --connlimit-above 120 --connlimit-mask 32 -j DROP
+        iptables -A "${DOCKER_CHAIN}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
+            --hashlimit-name pteroprotect_docker_egress_new_v4 --hashlimit-above 40/second \
+            --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
+        iptables -A "${DOCKER_CHAIN}" -p udp -m hashlimit \
+            --hashlimit-name pteroprotect_docker_egress_udp_v4 --hashlimit-above 100/second \
+            --hashlimit-burst 200 --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
         if [[ -n "${EGRESS_TCP_BLOCK_PORTS}" ]]; then
             iptables -A "${DOCKER_CHAIN}" -p tcp -m multiport --dports "${EGRESS_TCP_BLOCK_PORTS}" -j DROP
         fi

@@ -56,6 +56,11 @@ private:
     std::map<std::string, long long> bw_window_base_rx;
     std::map<std::string, long long> bw_window_base_tx;
     std::map<std::string, time_t> bw_window_start;
+    std::map<std::string, time_t> install_grace_until;
+    std::map<std::string, long long> last_net_rx_bytes;
+    std::map<std::string, long long> last_net_tx_bytes;
+    std::map<std::string, time_t> last_net_sample_time;
+    std::map<std::string, int> consecutive_bw_spike_hit;
 
     long long bandwidth_in_limit_bytes;
     long long bandwidth_out_limit_bytes;

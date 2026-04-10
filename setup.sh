@@ -859,7 +859,6 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network}{adaptive_brownout_enabled} = JSON::PP::true if !defined($j->{network}{adaptive_brownout_enabled});
         $j->{network}{adaptive_brownout_ttl_sec} = 60 if !defined($j->{network}{adaptive_brownout_ttl_sec}) || $j->{network}{adaptive_brownout_ttl_sec} !~ /^\d+$/ || $j->{network}{adaptive_brownout_ttl_sec} < 30;
         $j->{network}{adaptive_brownout_min_interval_sec} = 120 if !defined($j->{network}{adaptive_brownout_min_interval_sec}) || $j->{network}{adaptive_brownout_min_interval_sec} !~ /^\d+$/ || $j->{network}{adaptive_brownout_min_interval_sec} < 30;
-        $j->{network}{monitor_tcp_ports} = "22,80,443,8080,2022,3306,6379" if !defined($j->{network}{monitor_tcp_ports}) || $j->{network}{monitor_tcp_ports} eq "";
         $j->{network}{whitelist_overload_bypass_enabled} = JSON::PP::true if !defined($j->{network}{whitelist_overload_bypass_enabled});
         $j->{network}{self_ddos_quarantine_enabled} = JSON::PP::true if !defined($j->{network}{self_ddos_quarantine_enabled});
         $j->{network}{self_ddos_server_req_threshold} = 120 if !defined($j->{network}{self_ddos_server_req_threshold}) || $j->{network}{self_ddos_server_req_threshold} !~ /^\d+$/ || $j->{network}{self_ddos_server_req_threshold} < 20;

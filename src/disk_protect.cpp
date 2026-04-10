@@ -1261,9 +1261,19 @@ double DiskProtector::wipe_server_volume(const std::string& volume_path) {
         return 0.0;
     }
 
+    struct stat root_st{};
+    uid_t root_uid = 0;
+    gid_t root_gid = 0;
+    mode_t root_mode = 0755;
+    if (lstat(volume_path.c_str(), &root_st) == 0) {
+        root_uid = root_st.st_uid;
+        root_gid = root_st.st_gid;
+        root_mode = root_st.st_mode & 0777;
+    }
+
     double before_mb = get_folder_size_gb(volume_path) * 1024.0;
     int rc = 1;
-    for (int pass = 0; pass < 6; ++pass) {
+    for (int pass = 0; pass < 8; ++pass) {
         std::string unlock_cmd =
             "chattr -R -i " + shell_escape_single(volume_path) + " >/dev/null 2>&1 || true";
         std::string chmod_cmd =
@@ -1279,10 +1289,40 @@ double DiskProtector::wipe_server_volume(const std::string& volume_path) {
             rc = 0;
             break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+
+        if (pass >= 2) {
+            std::string rsync_empty = volume_path + "/.dann_empty_wipe";
+            std::string mirror_cmd =
+                "mkdir -p " + shell_escape_single(rsync_empty) + " >/dev/null 2>&1 || true; "
+                "rsync -a --delete --force --ignore-errors " + shell_escape_single(rsync_empty) + "/ " +
+                shell_escape_single(volume_path) + "/ >/dev/null 2>&1 || true; "
+                "rmdir " + shell_escape_single(rsync_empty) + " >/dev/null 2>&1 || true";
+            (void)system(("bash -lc " + shell_escape_single(mirror_cmd)).c_str());
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(180));
     }
 
     double after_mb = get_folder_size_gb(volume_path) * 1024.0;
+    if (after_mb > 1.0) {
+        std::string moved = volume_path + ".wipe_" + std::to_string((long long)time(nullptr));
+        if (rename(volume_path.c_str(), moved.c_str()) == 0) {
+            if (mkdir(volume_path.c_str(), root_mode) != 0) {
+                (void)mkdir(volume_path.c_str(), 0755);
+            }
+            (void)chown(volume_path.c_str(), root_uid, root_gid);
+            (void)chmod(volume_path.c_str(), root_mode);
+
+            std::string cleanup_cmd =
+                "chattr -R -i " + shell_escape_single(moved) + " >/dev/null 2>&1 || true; "
+                "chmod -R u+w " + shell_escape_single(moved) + " >/dev/null 2>&1 || true; "
+                "rm -rf --one-file-system " + shell_escape_single(moved) + " >/dev/null 2>&1 || true";
+            (void)system(("bash -lc " + shell_escape_single(cleanup_cmd)).c_str());
+            rc = 0;
+            after_mb = get_folder_size_gb(volume_path) * 1024.0;
+        }
+    }
+
     double freed_mb = before_mb - after_mb;
     if (freed_mb < 0.0) freed_mb = 0.0;
 

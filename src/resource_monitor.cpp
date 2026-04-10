@@ -41,6 +41,8 @@ static const long long UNLIMITED_RAM_WARN_BYTES = 4LL * 1024 * 1024 * 1024;
 static const long long UNLIMITED_RAM_HARD_BYTES = 8LL * 1024 * 1024 * 1024;
 static const long long DEFAULT_BANDWIDTH_LIMIT_BYTES = 20LL * 1024 * 1024 * 1024; // 20GiB in and 20GiB out
 static const int DEFAULT_BANDWIDTH_WINDOW_SEC = 3 * 60 * 60; // 3 hours
+static const long long HARD_BW_SPIKE_BYTES_PER_SEC = 120LL * 1024LL * 1024LL; // 120MB/s
+static const int HARD_BW_SPIKE_HITS_REQUIRED = 2;
 static const int MAX_RESTART_BEFORE_SUSPEND = 5;
 static const int IPTABLES_BLOCK_CONN_THRESHOLD = 120;
 static const int NET_WARNING_CONN_THRESHOLD = 250;
@@ -83,6 +85,7 @@ struct ProcessAbuseInfo {
 struct ActivityAbuseInfo {
     bool suspicious = false;
     bool hard = false;
+    bool install_activity = false;
     int score = 0;
     long long last_id = 0;
     std::string summary;
@@ -254,6 +257,21 @@ bool looks_like_raw_ip_fetch_command(const std::string& command) {
     return std::regex_search(command, ip_fetch_re);
 }
 
+bool looks_like_legit_install_command(const std::string& command) {
+    if (command.empty()) return false;
+    return contains_any(command, {
+        "npm install", "npm i ", "npm ci", "pnpm install", "yarn install",
+        "composer install", "composer update",
+        "pip install", "pip3 install", "python -m pip install",
+        "apt install", "apt-get install", "apk add", "yum install", "dnf install",
+        "go mod download", "go mod tidy",
+        "cargo build", "cargo install",
+        "mvn package", "mvn install", "gradle build",
+        "git clone", "bun install",
+        "installmodule", "install module"
+    });
+}
+
 bool looks_like_suspicious_exec_target(const std::string& text) {
     std::string s = to_lower_copy_res(text);
     return contains_any(s, {
@@ -282,6 +300,9 @@ ActivityAbuseInfo collect_recent_activity_abuse(int server_id, long long after_i
         std::string new_value = to_lower_copy_res(json_prop_string(row.properties_json, "new"));
 
         if (event == "server:console.command") {
+            if (looks_like_legit_install_command(command)) {
+                info.install_activity = true;
+            }
             if (contains_any(command, {"bash <(", "sh <(", "| sh", "| bash", "curl http", "wget http"}) &&
                 contains_any(command, {"chmod +x", "chmod 777", "./", "/tmp/", "/dev/shm/"})) {
                 score += 6;
@@ -1461,6 +1482,11 @@ void ResourceMonitor::load_state() {
         bw_window_base_rx.clear();
         bw_window_base_tx.clear();
         bw_window_start.clear();
+        install_grace_until.clear();
+        last_net_rx_bytes.clear();
+        last_net_tx_bytes.clear();
+        last_net_sample_time.clear();
+        consecutive_bw_spike_hit.clear();
 
         if (j.contains("restart_count")) restart_count = j["restart_count"].get<std::map<std::string, int> >();
         if (j.contains("resource_strikes")) resource_strikes = j["resource_strikes"].get<std::map<std::string, int> >();
@@ -1473,6 +1499,7 @@ void ResourceMonitor::load_state() {
         if (j.contains("bw_window_base_rx")) bw_window_base_rx = j["bw_window_base_rx"].get<std::map<std::string, long long> >();
         if (j.contains("bw_window_base_tx")) bw_window_base_tx = j["bw_window_base_tx"].get<std::map<std::string, long long> >();
         if (j.contains("bw_window_start")) bw_window_start = j["bw_window_start"].get<std::map<std::string, time_t> >();
+        if (j.contains("install_grace_until")) install_grace_until = j["install_grace_until"].get<std::map<std::string, time_t> >();
     } catch (...) {
         logger.warn("Resource monitor state load failed, starting with fresh in-memory state");
     }
@@ -1493,6 +1520,7 @@ void ResourceMonitor::save_state() {
         j["bw_window_base_rx"] = bw_window_base_rx;
         j["bw_window_base_tx"] = bw_window_base_tx;
         j["bw_window_start"] = bw_window_start;
+        j["install_grace_until"] = install_grace_until;
     }
 
     std::ofstream file(state_file);
@@ -1650,6 +1678,10 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         std::lock_guard<std::mutex> lock(state_mutex);
         last_activity_log_id[srv.uuid] = activity_abuse.last_id;
     }
+    if (activity_abuse.install_activity) {
+        std::lock_guard<std::mutex> lock(state_mutex);
+        install_grace_until[srv.uuid] = now + 8 * 60;
+    }
 
     time_t last_act = 0;
     {
@@ -1658,6 +1690,15 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     }
     bool cooldown_ok = (now - last_act) >= ACTION_COOLDOWN_SEC;
     bool activity_urgent = activity_abuse.hard || activity_abuse.score >= 5;
+    bool install_grace = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex);
+        auto it = install_grace_until.find(srv.uuid);
+        if (it != install_grace_until.end()) {
+            install_grace = it->second > now;
+            if (!install_grace) install_grace_until.erase(it);
+        }
+    }
 
     // Even if the container is already offline, suspicious panel activity should still be actionable.
     if (snap.state != "running" || snap.is_suspended) {
@@ -1687,6 +1728,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
                 consecutive_cpu_hit.erase(srv.uuid);
                 consecutive_ram_hit.erase(srv.uuid);
                 consecutive_net_hit.erase(srv.uuid);
+                consecutive_bw_spike_hit.erase(srv.uuid);
                 cpu_ema.erase(srv.uuid);
                 ram_ema.erase(srv.uuid);
                 net_ema.erase(srv.uuid);
@@ -1706,6 +1748,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             consecutive_cpu_hit.erase(srv.uuid);
             consecutive_ram_hit.erase(srv.uuid);
             consecutive_net_hit.erase(srv.uuid);
+            consecutive_bw_spike_hit.erase(srv.uuid);
             cpu_ema.erase(srv.uuid);
             ram_ema.erase(srv.uuid);
             net_ema.erase(srv.uuid);
@@ -1762,8 +1805,8 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         net_ema[srv.uuid] = net_avg;
         score_now = trust_score.count(srv.uuid) ? trust_score[srv.uuid] : 100.0;
         double penalty = 0.0;
-        if (!startup_grace && cpu_avg >= HOT_THRESHOLD) penalty += 10.0;
-        if (!startup_grace && ram_avg >= HOT_THRESHOLD) penalty += 10.0;
+        if (!startup_grace && !install_grace && cpu_avg >= HOT_THRESHOLD) penalty += 10.0;
+        if (!startup_grace && !install_grace && ram_avg >= HOT_THRESHOLD) penalty += 10.0;
         if (inbound.external_conns >= api_profile.net_warning_conn) penalty += api_profile.enabled ? 6.0 : 10.0;
         if (inbound.external_conns >= api_profile.net_hard_conn) penalty += api_profile.enabled ? 12.0 : 18.0;
         if (inbound.unique_external_ips >= api_profile.net_warning_unique_ips) penalty += api_profile.enabled ? 5.0 : 8.0;
@@ -1772,10 +1815,10 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         if (inbound.local_conns >= api_profile.self_ddos_hard) penalty += api_profile.enabled ? 12.0 : 18.0;
         if (proc_abuse.suspicious) penalty += 45.0;
         if (activity_abuse.suspicious) penalty += activity_abuse.hard ? 38.0 : 22.0;
-        if (!startup_grace && cpu_high) penalty += 8.0;
-        if (!startup_grace && ram_high) penalty += 8.0;
-        if (!startup_grace && cpu_extreme) penalty += 15.0;
-        if (!startup_grace && ram_extreme) penalty += 15.0;
+        if (!startup_grace && !install_grace && cpu_high) penalty += 8.0;
+        if (!startup_grace && !install_grace && ram_high) penalty += 8.0;
+        if (!startup_grace && !install_grace && cpu_extreme) penalty += 15.0;
+        if (!startup_grace && !install_grace && ram_extreme) penalty += 15.0;
         if (!cpu_hot && !ram_hot && score_now < 100.0) score_now += 2.0;
         score_now -= penalty;
         if (score_now < 0.0) score_now = 0.0;
@@ -1784,6 +1827,37 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         total_restarts = restart_count.count(srv.uuid) ? restart_count[srv.uuid] : 0;
         resource_strike_count = resource_strikes.count(srv.uuid) ? resource_strikes[srv.uuid] : 0;
     }
+
+    long long bw_spike_in_bps = 0;
+    long long bw_spike_out_bps = 0;
+    int bw_spike_hits = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex);
+        time_t prev_ts = last_net_sample_time.count(srv.uuid) ? last_net_sample_time[srv.uuid] : 0;
+        long long prev_rx = last_net_rx_bytes.count(srv.uuid) ? last_net_rx_bytes[srv.uuid] : snap.net_rx_bytes;
+        long long prev_tx = last_net_tx_bytes.count(srv.uuid) ? last_net_tx_bytes[srv.uuid] : snap.net_tx_bytes;
+        long long elapsed = std::max<long long>(1, now - prev_ts);
+        if (prev_ts > 0) {
+            long long rx_delta = std::max(0LL, snap.net_rx_bytes - prev_rx);
+            long long tx_delta = std::max(0LL, snap.net_tx_bytes - prev_tx);
+            bw_spike_in_bps = rx_delta / elapsed;
+            bw_spike_out_bps = tx_delta / elapsed;
+            bool bw_spike_now = bw_spike_in_bps >= HARD_BW_SPIKE_BYTES_PER_SEC ||
+                                bw_spike_out_bps >= HARD_BW_SPIKE_BYTES_PER_SEC;
+            bw_spike_hits = bw_spike_now ? (consecutive_bw_spike_hit[srv.uuid] + 1) : 0;
+            consecutive_bw_spike_hit[srv.uuid] = bw_spike_hits;
+        } else {
+            consecutive_bw_spike_hit[srv.uuid] = 0;
+        }
+        last_net_sample_time[srv.uuid] = now;
+        last_net_rx_bytes[srv.uuid] = snap.net_rx_bytes;
+        last_net_tx_bytes[srv.uuid] = snap.net_tx_bytes;
+    }
+    bool bw_spike_trigger = bw_spike_hits >= HARD_BW_SPIKE_HITS_REQUIRED;
+
+    bool ram_oom_emergency = (srv.mem_limit_bytes > 0)
+        ? (ram_pct_used >= 99.0)
+        : (snap.mem_bytes >= (effective_mem_limit_bytes * 12 / 10));
 
     bool cpu_trigger = cooldown_ok && (
         (cpu_extreme && cpu_hits >= HARD_HITS_REQUIRED) ||
@@ -1797,6 +1871,10 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     );
 
     if (startup_grace) {
+        cpu_trigger = false;
+        ram_trigger = false;
+    }
+    if (install_grace) {
         cpu_trigger = false;
         ram_trigger = false;
     }
@@ -1818,11 +1896,14 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     std::string blocked_ip = offline_mode && (net_trigger || net_extreme)
         ? block_abusive_inbound_ips(srv.identifier)
         : "";
-    bool trust_trigger = cooldown_ok && (score_now <= 45.0 || (l7_pressure && (cpu_hot || ram_hot || net_warning)));
+    bool trust_trigger = cooldown_ok && (
+        score_now <= 45.0 ||
+        (!install_grace && l7_pressure && (cpu_hot || ram_hot || net_warning))
+    );
     bool process_trigger = cooldown_ok && proc_abuse.suspicious;
     bool activity_trigger = (cooldown_ok || activity_urgent) && activity_abuse.suspicious;
 
-    if (!cpu_trigger && !ram_trigger && !net_trigger && !bw_trigger && !trust_trigger && !process_trigger && !activity_trigger) {
+    if (!cpu_trigger && !ram_trigger && !ram_oom_emergency && !net_trigger && !bw_trigger && !bw_spike_trigger && !trust_trigger && !process_trigger && !activity_trigger) {
         if (activity_abuse.last_id > last_activity_id) save_state();
         return;
     }
@@ -1844,7 +1925,9 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     else if (cpu_trigger && ram_trigger) abuse_type = "CPU + RAM ABUSE";
     else if (cpu_trigger) abuse_type = "CPU ABUSE";
     else if (ram_trigger) abuse_type = "RAM ABUSE";
+    else if (ram_oom_emergency) abuse_type = "RAM OOM EMERGENCY";
     else if (bw_trigger) abuse_type = "BANDWIDTH ABUSE";
+    else if (bw_spike_trigger) abuse_type = "BANDWIDTH SPIKE ABUSE";
     else abuse_type = "TRUST SCORE ABUSE";
 
     bool restart_ok = false;
@@ -1853,7 +1936,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     bool sigterm_sent = false;
     bool api_net_only = api_profile.enabled && net_trigger && !self_ddos && !cpu_trigger && !ram_trigger && !process_trigger;
     bool resource_suspend_ready = resource_only_trigger && resource_strike_count >= RESOURCE_SUSPEND_STRIKES;
-    bool force_suspend = process_trigger || activity_trigger || self_ddos || bw_trigger || resource_suspend_ready || score_now <= 25.0;
+    bool force_suspend = process_trigger || activity_trigger || self_ddos || bw_trigger || bw_spike_trigger || ram_oom_emergency || resource_suspend_ready || score_now <= 25.0;
     bool should_suspend = force_suspend || total_restarts >= (MAX_RESTART_BEFORE_SUSPEND - 1);
     if (api_net_only && score_now > 20.0) should_suspend = false;
     bool resource_sigterm_only = resource_only_trigger && !process_trigger && !activity_trigger && !self_ddos && !bw_trigger;
@@ -1866,6 +1949,10 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             quarantined_files = quarantine_payload_artifacts(srv.uuid);
             suspended = false;
             enforcement_done = container_stopped || quarantined_files > 0;
+        } else if (ram_oom_emergency || bw_spike_trigger) {
+            container_stopped = stop_container_now(srv.identifier, srv.uuid);
+            suspended = db.suspend_server(db_info.id);
+            enforcement_done = suspended || container_stopped;
         } else if (resource_sigterm_only) {
             sigterm_sent = send_sigterm_container(srv.identifier, srv.uuid);
             container_stopped = sigterm_sent;
@@ -1896,6 +1983,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         consecutive_cpu_hit[srv.uuid]  = 0;
         consecutive_ram_hit[srv.uuid]  = 0;
         consecutive_net_hit[srv.uuid]  = 0;
+        consecutive_bw_spike_hit[srv.uuid] = 0;
         restart_count[srv.uuid]        = total_restarts;
         resource_strikes[srv.uuid]     = (suspended || container_stopped || quarantined_files > 0) ? 0 : resource_strike_count;
         if (activity_abuse.last_id > 0) last_activity_log_id[srv.uuid] = activity_abuse.last_id;
@@ -1927,6 +2015,13 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             << "MB out=" << tx_mb << "MB/" << lim_out_mb << "MB";
         if (bw_window_reset) det << " reset=yes";
     }
+    if (bw_spike_trigger) {
+        if (!det.str().empty()) det << " | ";
+        det << "BW spike in=" << (bw_spike_in_bps / (1024LL * 1024LL)) << "MB/s"
+            << " out=" << (bw_spike_out_bps / (1024LL * 1024LL)) << "MB/s"
+            << " hard=" << (HARD_BW_SPIKE_BYTES_PER_SEC / (1024LL * 1024LL)) << "MB/s"
+            << " hits=" << bw_spike_hits;
+    }
     if ((cpu_trigger || ram_trigger) && net_trigger) det << " | ";
     if (net_trigger || net_warning || self_ddos) {
         det << "NET ext=" << inbound.external_conns
@@ -1954,6 +2049,9 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     }
 
     if (!det.str().empty()) det << " | ";
+    if (install_grace) {
+        det << "install_grace=yes ";
+    }
     det << "trust=" << (int)score_now
         << " cpu_avg=" << (int)cpu_avg
         << "% ram_avg=" << (int)ram_avg
@@ -1967,8 +2065,8 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         process_trigger ? "process_abuse" :
         (activity_trigger ? "activity_abuse" :
         (net_trigger ? (self_ddos ? "self_ddos" : "network_abuse") :
-        (cpu_trigger ? "cpu_abuse" : (ram_trigger ? "ram_abuse" : (bw_trigger ? "bandwidth_abuse" : "behavior_abuse")))));
-    int severity = (process_trigger || activity_trigger || cpu_extreme || ram_extreme || net_extreme || self_ddos || bw_trigger || score_now <= 25.0) ? 8 : 6;
+        (cpu_trigger ? "cpu_abuse" : (ram_trigger || ram_oom_emergency ? "ram_abuse" : ((bw_trigger || bw_spike_trigger) ? "bandwidth_abuse" : "behavior_abuse")))));
+    int severity = (process_trigger || activity_trigger || cpu_extreme || ram_extreme || ram_oom_emergency || net_extreme || self_ddos || bw_trigger || bw_spike_trigger || score_now <= 25.0) ? 8 : 6;
 
     // ── Log to database ───────────────────────────────────────────────────────
     db.log_user_violation(
