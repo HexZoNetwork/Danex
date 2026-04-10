@@ -17,8 +17,11 @@ class SetSecurityHeaders
     private static array $headers = [
         'X-Frame-Options' => 'DENY',
         'X-Content-Type-Options' => 'nosniff',
-        'X-XSS-Protection' => '1; mode=block',
-        'Referrer-Policy' => 'no-referrer-when-downgrade',
+        'Referrer-Policy' => 'strict-origin-when-cross-origin',
+        'Permissions-Policy' => 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=(), interest-cohort=()',
+        'Cross-Origin-Opener-Policy' => 'same-origin',
+        'Cross-Origin-Resource-Policy' => 'same-site',
+        'X-Permitted-Cross-Domain-Policies' => 'none',
     ];
 
     /**
@@ -31,6 +34,33 @@ class SetSecurityHeaders
     public function handle(Request $request, \Closure $next): mixed
     {
         $response = $next($request);
+
+        $csp = implode('; ', [
+            "default-src 'self'",
+            // Existing templates still use inline scripts/styles. Keep functionality while blocking third-party script injection.
+            "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://rum.corewebvitals.io",
+            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
+            "img-src 'self' data: blob: https://www.gravatar.com",
+            "font-src 'self' data: https://cdnjs.cloudflare.com",
+            "connect-src 'self' wss: https:",
+            "frame-ancestors 'none'",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+        ]);
+
+        if (! $response->headers->has('Content-Security-Policy')) {
+            $response->headers->set('Content-Security-Policy', $csp);
+        }
+
+        // Legacy fallback for older browsers.
+        if (! $response->headers->has('X-Content-Security-Policy')) {
+            $response->headers->set('X-Content-Security-Policy', $csp);
+        }
+
+        if ($request->isSecure() && ! $response->headers->has('Strict-Transport-Security')) {
+            $response->headers->set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+        }
 
         foreach (static::$headers as $key => $value) {
             if (! $response->headers->has($key)) {
