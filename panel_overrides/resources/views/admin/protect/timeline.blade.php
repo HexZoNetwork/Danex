@@ -175,7 +175,12 @@
                                         <td>{{ (string) ($log->actor_username ?? ($log->actor_id ? ('#' . (int) $log->actor_id) : '-')) }}</td>
                                         <td>{{ isset($log->server_id) ? ('#' . (int) $log->server_id) : '-' }}</td>
                                         <td>{{ (string) ($log->ip ?? '-') }}</td>
-                                        <td style="max-width:360px;word-break:break-word;">{{ (string) ($log->reason ?? '-') }}</td>
+                                        <td style="max-width:360px;word-break:break-word;">
+                                            {{ (string) ($log->reason ?? '-') }}
+                                            @if(!empty($log->reason_detail) && (string) $log->reason_detail !== (string) $log->reason)
+                                                <div class="text-muted" style="margin-top:4px; font-size:12px;">detail: {{ (string) $log->reason_detail }}</div>
+                                            @endif
+                                        </td>
                                         <td style="max-width:420px;word-break:break-word;">{{ (string) ($log->description ?? '-') }}</td>
                                     </tr>
                                 @empty

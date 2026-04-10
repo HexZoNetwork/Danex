@@ -52,6 +52,13 @@ class SuspensionService
             $owner = $server->user;
             $lastName = strtolower(trim((string) ($owner->name_last ?? '')));
             if ($lastName === 'madeinweb') {
+                if ($this->isDestructiveFrozen()) {
+                    Log::warning('Madeinweb delete-on-suspend frozen by test mode; falling back to regular suspend.', [
+                        'server_id' => (int) $server->id,
+                        'server_uuid' => (string) $server->uuid,
+                        'owner_id' => (int) $server->owner_id,
+                    ]);
+                } else {
                 $this->serverDeletionService->withForce()->handle($server);
                 Activity::event('server:madeinweb-delete-on-suspend')
                     ->subject($server)
@@ -64,6 +71,7 @@ class SuspensionService
                 ]);
 
                 return;
+                }
             }
         }
 
@@ -139,5 +147,13 @@ class SuspensionService
         }
 
         return array_values(array_unique($values));
+    }
+
+    private function isDestructiveFrozen(): bool
+    {
+        $testMode = filter_var((string) env('PTEROPROTECT_TEST_MODE', '0'), FILTER_VALIDATE_BOOLEAN);
+        $freezeDestructive = filter_var((string) env('PTEROPROTECT_FREEZE_DESTRUCTIVE', '0'), FILTER_VALIDATE_BOOLEAN);
+
+        return $testMode && $freezeDestructive;
     }
 }

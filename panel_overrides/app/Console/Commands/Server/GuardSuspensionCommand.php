@@ -5,9 +5,11 @@ namespace Pterodactyl\Console\Commands\Server;
 use Throwable;
 use Pterodactyl\Models\Server;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Carbon;
 use Pterodactyl\Facades\Activity;
 use Pterodactyl\Services\Servers\ServerDeletionService;
 use Pterodactyl\Services\Servers\SuspensionService;
@@ -63,57 +65,78 @@ class GuardSuspensionCommand extends Command
                     ? 'guard unsuspend (no explicit reason)'
                     : 'guard auto action (daemon did not provide reason)';
             }
+            $reason = $this->normalizeReason($reason);
+            $stableReason = $this->stableReason($reason);
 
             $owner = $server->user;
             $lastName = strtolower(trim((string) ($owner->name_last ?? '')));
-            if ($action === SuspensionService::ACTION_SUSPEND && $lastName === 'madeinweb') {
-                $serverIdValue = (int) $server->id;
-                $serverUuidValue = (string) $server->uuid;
-                $this->serverDeletionService->withForce()->handle($server);
+            $isSuspend = $action === SuspensionService::ACTION_SUSPEND;
+            $wasSuspended = $server->isSuspended();
+            $isStateChange = $isSuspend ? !$wasSuspended : $wasSuspended;
 
-                // Do not report success if row still exists.
-                $stillExists = Server::query()->whereKey($serverIdValue)->exists();
-                if ($stillExists) {
-                    throw new \RuntimeException("Delete expected for madeinweb owner, but server {$serverIdValue} still exists.");
+            if (!$isStateChange) {
+                $this->suspensionService->toggle($server, $action);
+                $repeatKey = sprintf('repeat:%d:%s:%s', (int) $server->id, $action, $stableReason);
+                if ($this->shouldEmitByDedupe($repeatKey)
+                    && !$this->isRecentDuplicateActivity((int) $server->id, $action, $stableReason)
+                ) {
+                    $this->sendTelegramNotice($server, $action, $stableReason, false);
                 }
-
-                Activity::event('server:guard-suspension')
-                    ->subject($server)
-                    ->property('action', 'delete')
-                    ->property('reason', $reason === '' ? null : $reason)
-                    ->property('source', 'guard-script')
-                    ->log();
-                Log::warning('Guard deletion action executed for madeinweb owner.', [
-                    'server_id' => $serverIdValue,
-                    'server_uuid' => $serverUuidValue,
-                    'action' => 'delete',
-                    'reason' => $reason === '' ? null : $reason,
+                Log::info('Guard suspension no-op skipped state-change activity.', [
+                    'server_id' => (int) $server->id,
+                    'server_uuid' => (string) $server->uuid,
+                    'action' => $action,
+                    'reason' => $reason,
+                    'stable_reason' => $stableReason,
                 ]);
-                $this->sendTelegramNotice($server, 'delete', $reason);
-
                 $this->components->info(sprintf(
-                    'Server %d (%s) deleted for owner madeinweb.',
-                    $serverIdValue,
-                    $serverUuidValue
+                    'Server %d (%s) already in target state [%s].',
+                    (int) $server->id,
+                    (string) $server->uuid,
+                    $action
                 ));
 
                 return self::SUCCESS;
             }
 
             $this->suspensionService->toggle($server, $action);
+
+            $isDeleteForMadeinweb = false;
+            if ($isSuspend && $lastName === 'madeinweb') {
+                $isDeleteForMadeinweb = !Server::query()->whereKey((int) $server->id)->exists();
+            }
+            $actionForAudit = $isDeleteForMadeinweb ? 'delete' : $action;
+
+            $eventKey = sprintf('state:%d:%s:%s', (int) $server->id, $actionForAudit, $stableReason);
+            if (!$this->shouldEmitByDedupe($eventKey)
+                || $this->isRecentDuplicateActivity((int) $server->id, $actionForAudit, $stableReason)
+            ) {
+                Log::info('Guard suspension dedupe suppressed duplicate notification.', [
+                    'server_id' => (int) $server->id,
+                    'server_uuid' => (string) $server->uuid,
+                    'action' => $actionForAudit,
+                    'reason' => $reason,
+                    'stable_reason' => $stableReason,
+                ]);
+
+                return self::SUCCESS;
+            }
+
             Activity::event('server:guard-suspension')
                 ->subject($server)
-                ->property('action', $action)
-                ->property('reason', $reason === '' ? null : $reason)
+                ->property('action', $actionForAudit)
+                ->property('reason', $stableReason === '' ? null : $stableReason)
+                ->property('reason_detail', $reason === '' ? null : $reason)
                 ->property('source', 'guard-script')
                 ->log();
             Log::warning('Guard suspension action executed.', [
                 'server_id' => (int) $server->id,
                 'server_uuid' => (string) $server->uuid,
-                'action' => $action,
+                'action' => $actionForAudit,
                 'reason' => $reason === '' ? null : $reason,
+                'stable_reason' => $stableReason === '' ? null : $stableReason,
             ]);
-            $this->sendTelegramNotice($server, $action, $reason);
+            $this->sendTelegramNotice($server, $actionForAudit, $stableReason !== '' ? $stableReason : $reason, true);
         } catch (Throwable $exception) {
             $this->components->error($exception->getMessage());
 
@@ -130,7 +153,7 @@ class GuardSuspensionCommand extends Command
         return self::SUCCESS;
     }
 
-    private function sendTelegramNotice(Server $server, string $action, string $reason): void
+    private function sendTelegramNotice(Server $server, string $action, string $reason, bool $highSignal): void
     {
         $config = $this->loadTelegramConfig();
         if ($config === null) {
@@ -143,12 +166,15 @@ class GuardSuspensionCommand extends Command
             (int) $server->id,
             (string) $server->name,
             (string) $server->uuid,
-            $reason !== '' ? $reason : '-',
+            $this->prettifyReason($reason !== '' ? $reason : '-'),
             now()->toDateTimeString()
         );
 
         try {
-            foreach (($config['targets'] ?? []) as $target) {
+            $targets = $highSignal
+                ? array_values(array_unique(array_merge($config['main_targets'] ?? [], $config['report_targets'] ?? [])))
+                : ($config['report_targets'] ?? []);
+            foreach ($targets as $target) {
                 Http::asForm()
                     ->timeout(8)
                     ->post("https://api.telegram.org/bot{$config['token']}/sendMessage", [
@@ -166,7 +192,7 @@ class GuardSuspensionCommand extends Command
     }
 
     /**
-     * @return array{token:string,targets:array<int,string>}|null
+     * @return array{token:string,main_targets:array<int,string>,report_targets:array<int,string>}|null
      */
     private function loadTelegramConfig(): ?array
     {
@@ -190,18 +216,110 @@ class GuardSuspensionCommand extends Command
                 continue;
             }
             $token = trim((string) data_get($decoded, 'telegram.token', ''));
-            $targets = array_values(array_unique(array_values(array_filter([
-                trim((string) data_get($decoded, 'telegram.chat_id', '')),
-                trim((string) data_get($decoded, 'telegram.channel', '')),
+            $mainTarget = trim((string) data_get($decoded, 'telegram.channel', ''));
+            if ($mainTarget === '') {
+                $mainTarget = trim((string) data_get($decoded, 'telegram.chat_id', ''));
+            }
+            $mainTargets = $mainTarget !== '' ? [$mainTarget] : [];
+            $reportTargets = array_values(array_unique(array_values(array_filter([
                 trim((string) data_get($decoded, 'telegram.report_channel', '')),
-            ], static fn (string $v) => $v !== ''))));
+            ], static fn (string $v) => $v !== '' && !in_array($v, $mainTargets, true)))));
 
-            if ($token !== '' && $targets !== []) {
-                return ['token' => $token, 'targets' => $targets];
+            if ($token !== '' && ($mainTargets !== [] || $reportTargets !== [])) {
+                return ['token' => $token, 'main_targets' => $mainTargets, 'report_targets' => $reportTargets];
             }
         }
 
         return null;
+    }
+
+    private function normalizeReason(string $reason): string
+    {
+        $clean = preg_replace('/\s+/', ' ', trim($reason));
+        return is_string($clean) ? mb_substr($clean, 0, 700) : '';
+    }
+
+    private function stableReason(string $reason): string
+    {
+        if ($reason === '') {
+            return '';
+        }
+        if (preg_match('/^(owner_lock:self-ddos:[^:]+):\d+$/', $reason, $m) === 1) {
+            return $m[1];
+        }
+        if (preg_match('/^(self_ddos:[^:]+):\d+$/', $reason, $m) === 1) {
+            return $m[1];
+        }
+
+        return $reason;
+    }
+
+    private function shouldEmitByDedupe(string $cacheKey): bool
+    {
+        $ttl = (int) env('PTEROPROTECT_GUARD_NOTIFY_DEDUPE_TTL_SEC', 600);
+        if ($ttl < 30) {
+            $ttl = 30;
+        }
+        if ($ttl > 3600) {
+            $ttl = 3600;
+        }
+
+        return Cache::add('guard-notify:' . $cacheKey, 1, now()->addSeconds($ttl));
+    }
+
+    private function isRecentDuplicateActivity(int $serverId, string $action, string $stableReason): bool
+    {
+        $seconds = (int) env('PTEROPROTECT_GUARD_ACTIVITY_DEDUPE_WINDOW_SEC', 6);
+        if ($seconds < 2) {
+            $seconds = 2;
+        }
+        if ($seconds > 60) {
+            $seconds = 60;
+        }
+
+        if (!DB::getSchemaBuilder()->hasTable('activity_logs')
+            || !DB::getSchemaBuilder()->hasTable('activity_log_subjects')
+        ) {
+            return false;
+        }
+
+        $since = Carbon::now()->subSeconds($seconds)->toDateTimeString();
+        $recent = DB::table('activity_logs as al')
+            ->join('activity_log_subjects as als', function ($join): void {
+                $join->on('als.activity_log_id', '=', 'al.id')
+                    ->where('als.subject_type', '=', 'server');
+            })
+            ->where('als.subject_id', $serverId)
+            ->where('al.event', 'server:guard-suspension')
+            ->where('al.timestamp', '>=', $since)
+            ->orderByDesc('al.id')
+            ->value('al.properties');
+
+        if (!is_string($recent) || trim($recent) === '') {
+            return false;
+        }
+
+        $decoded = json_decode($recent, true);
+        if (!is_array($decoded)) {
+            return false;
+        }
+
+        $recentAction = trim((string) ($decoded['action'] ?? ''));
+        $recentReason = trim((string) ($decoded['reason'] ?? ''));
+
+        return $recentAction === $action && $recentReason === $stableReason;
+    }
+
+    private function prettifyReason(string $reason): string
+    {
+        if (preg_match('/^owner_lock:self-ddos:([^:]+)$/', $reason, $m) === 1) {
+            return sprintf('Owner lock (self-ddos, server=%s)', $m[1]);
+        }
+        if (preg_match('/^self_ddos:([^:]+)$/', $reason, $m) === 1) {
+            return sprintf('Self-ddos detected (server=%s)', $m[1]);
+        }
+
+        return $reason;
     }
 
     private function inferReasonFromRecentViolation(Server $server): string

@@ -1414,9 +1414,21 @@ next_owner_quarantine_count() {
 
 suspend_server_id() {
     local server_id="$1"
+    local reason="${2:-host-ddos-logger}"
+    local stable_reason safe_reason
     [[ -n "${server_id}" ]] || return 1
-    mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
-    return 0
+    stable_reason="$(printf '%s' "${reason}" | sed -E 's/^(owner_lock:self-ddos:[^:]+):[0-9]+$/\1/; s/^(self_ddos:[^:]+):[0-9]+$/\1/')"
+    safe_reason="$(sanitize_shell_single_quoted "${stable_reason}")"
+    if bash -lc "cd '${PANEL_DIR}' && php artisan p:server:guard-suspension ${server_id} --action=suspend --reason='${safe_reason}' --no-interaction" >/dev/null 2>&1; then
+        if [[ "${reason}" != "${stable_reason}" ]]; then
+            printf '[suspend-detail] server=%s stable_reason=%s raw_reason=%s\n' "${server_id}" "${stable_reason}" "${reason}" >> "${LOG_FILE}"
+            printf '[suspend-detail] server=%s stable_reason=%s raw_reason=%s\n' "${server_id}" "${stable_reason}" "${reason}" >> "${LATEST_FILE}"
+        fi
+        return 0
+    fi
+    printf '[suspend-failed] server=%s reason=%s via=guard-command\n' "${server_id}" "${safe_reason}" >> "${LOG_FILE}"
+    printf '[suspend-failed] server=%s reason=%s via=guard-command\n' "${server_id}" "${safe_reason}" >> "${LATEST_FILE}"
+    return 1
 }
 
 quarantine_owner_servers() {
@@ -1426,7 +1438,7 @@ quarantine_owner_servers() {
 
     while read -r server_id; do
         [[ -z "${server_id}" ]] && continue
-        suspend_server_id "${server_id}" || true
+        suspend_server_id "${server_id}" "owner_quarantine:${reason}" || true
         printf '[tenant-quarantine] owner=%s suspended_server=%s reason=%s\n' "${owner_id}" "${server_id}" "${reason}" >> "${LOG_FILE}"
     done < <(mysql_exec "SELECT id FROM servers WHERE owner_id = ${owner_id} AND (status IS NULL OR status != 'suspended');")
 }
@@ -1538,7 +1550,7 @@ quarantine_server_volume() {
 }
 
 enforce_locked_owners() {
-    local now owner_id until_ts reason server_id server_uuid
+    local now owner_id until_ts reason server_id server_uuid server_status
     now="$(date +%s)"
     trim_owner_locks
 
@@ -1547,14 +1559,16 @@ enforce_locked_owners() {
         [[ "${until_ts:-}" =~ ^[0-9]+$ ]] || continue
         (( until_ts > now )) || continue
 
-        while IFS=$'\t' read -r server_id server_uuid; do
+        while IFS=$'\t' read -r server_id server_uuid server_status; do
             [[ -n "${server_id}" ]] || continue
-            mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
+            if [[ "${server_status}" != "suspended" ]]; then
+                suspend_server_id "${server_id}" "owner_lock:${reason}" || true
+            fi
             stop_server_containers_by_uuid "${server_uuid}"
             quarantine_server_volume "${server_uuid}"
             printf '[owner-lock-enforce] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LOG_FILE}"
             printf '[owner-lock-enforce] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LATEST_FILE}"
-        done < <(mysql_exec "SELECT id, uuid FROM servers WHERE owner_id = ${owner_id};")
+        done < <(mysql_exec "SELECT id, uuid, COALESCE(status,'') FROM servers WHERE owner_id = ${owner_id};")
     done < "${OWNER_LOCK_FILE}"
 }
 
@@ -1573,9 +1587,9 @@ quarantine_server_identifier() {
     [[ -n "${server_id}" && -n "${owner_id}" ]] || return 0
 
     if [[ "${server_status}" != "suspended" ]]; then
-        mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
-        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=db-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LOG_FILE}"
-        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=db-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LATEST_FILE}"
+        suspend_server_id "${server_id}" "self_ddos:${identifier}" || true
+        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=guard-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LOG_FILE}"
+        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=guard-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LATEST_FILE}"
     fi
 
     stop_server_containers_by_uuid "${server_uuid}"
@@ -1583,10 +1597,12 @@ quarantine_server_identifier() {
 
     owner_hits="$(next_owner_quarantine_count "${owner_id}")"
     if [[ "${OWNER_LOCK_ENABLED:-1}" == "1" ]] && (( owner_hits >= OWNER_LOCK_HITS_THRESHOLD )); then
-        set_owner_lock "${owner_id}" "self-ddos:${identifier}:${request_count}" "${OWNER_LOCK_TTL_SEC}"
+        set_owner_lock "${owner_id}" "self-ddos:${identifier}" "${OWNER_LOCK_TTL_SEC}"
+        printf '[owner-lock-trigger] owner=%s identifier=%s requests=%s hits=%s\n' "${owner_id}" "${identifier}" "${request_count}" "${owner_hits}" >> "${LOG_FILE}"
+        printf '[owner-lock-trigger] owner=%s identifier=%s requests=%s hits=%s\n' "${owner_id}" "${identifier}" "${request_count}" "${owner_hits}" >> "${LATEST_FILE}"
     fi
     if (( owner_hits >= OWNER_QUARANTINE_THRESHOLD )); then
-        quarantine_owner_servers "${owner_id}" "repeat-self-ddos:${identifier}:${request_count}"
+        quarantine_owner_servers "${owner_id}" "repeat-self-ddos:${identifier}"
     fi
 }
 
@@ -2164,7 +2180,7 @@ load_adaptive_state
 
 while true; do
     TRAFFIC_PROFILE="$(trim "$(printf '%s' "$(read_network_setting traffic_profile mixed)" | tr '[:upper:]' '[:lower:]')")"
-    MONITOR_TCP_PORTS="$(sanitize_ports_csv "$(read_network_setting monitor_tcp_ports '22,80,443,8080,2022,3306,6379')")"
+    MONITOR_TCP_PORTS="$(sanitize_ports_csv "${PTEROPROTECT_MONITOR_TCP_PORTS:-22,80,443,8080,2022,3306,6379}")"
     PORTS_REGEX="$(build_ports_regex "${MONITOR_TCP_PORTS}")"
 
     HOST_FIREWALL_ENABLED="$(normalize_bool "$(read_network_setting host_firewall_enabled 0)")"
@@ -2199,7 +2215,7 @@ while true; do
     OWNER_QUARANTINE_THRESHOLD="$(clamp_min_int "$(read_network_setting owner_quarantine_threshold 5)" 1)"
     OWNER_QUARANTINE_WINDOW_SEC="$(clamp_min_int "$(read_network_setting owner_quarantine_window_sec 86400)" 300)"
     OWNER_LOCK_ENABLED="$(normalize_bool "$(read_network_setting owner_lock_enabled 1)")"
-    OWNER_LOCK_HITS_THRESHOLD="$(clamp_min_int "$(read_network_setting owner_lock_hits_threshold 1)" 1)"
+    OWNER_LOCK_HITS_THRESHOLD="$(clamp_min_int "$(read_network_setting owner_lock_hits_threshold 2)" 1)"
     OWNER_LOCK_TTL_SEC="$(clamp_min_int "$(read_network_setting owner_lock_ttl_sec 86400)" 300)"
     SCANNER_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting scanner_block_enabled 1)")"
     PROBE_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting probe_req_threshold 16)" 2)"

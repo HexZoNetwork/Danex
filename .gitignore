@@ -21,7 +21,7 @@ tesspace
 # Local-only secrets/config variants
 .env
 config.local.json
-
+abctes/
 # Security harness workspace runtime artifacts
 tesspace/runtime/
 tesspace/.env
