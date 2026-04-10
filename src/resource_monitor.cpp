@@ -82,8 +82,10 @@ struct EgressStats {
     int syn_sent = 0;
     int established = 0;
     int sensitive_port_conns = 0;
+    int local_sensitive_conns = 0;
     bool suspicious_scan = false;
     bool suspicious_flood = false;
+    bool suspicious_infra_local = false;
     std::string top_summary;
 };
 
@@ -95,6 +97,13 @@ struct WingsConfigSnapshot {
 
 struct ProcessAbuseInfo {
     bool suspicious = false;
+    std::string summary;
+};
+
+struct ScriptAbuseInfo {
+    bool suspicious = false;
+    bool hard = false;
+    int score = 0;
     std::string summary;
 };
 
@@ -406,13 +415,14 @@ ApiTrafficProfile get_api_profile(const ServerInfo& info, const PtlcServerEntry&
     p.enabled = looks_like_api_service(info, srv);
     if (!p.enabled) return p;
 
-    p.net_warning_conn = 700;
-    p.net_hard_conn = 1800;
-    p.net_warning_unique_ips = 120;
-    p.net_hard_unique_ips = 260;
-    p.self_ddos_conn = 260;
-    p.self_ddos_hard = 600;
-    p.net_hits_required = 3;
+    // Keep API workloads more tolerant than game servers, but not blind.
+    p.net_warning_conn = 320;
+    p.net_hard_conn = 900;
+    p.net_warning_unique_ips = 70;
+    p.net_hard_unique_ips = 180;
+    p.self_ddos_conn = 120;
+    p.self_ddos_hard = 280;
+    p.net_hits_required = 2;
     return p;
 }
 
@@ -591,6 +601,9 @@ long long parse_size_to_bytes(std::string text) {
     }
 
     std::string unit = trim_copy(text.substr(idx));
+    std::transform(unit.begin(), unit.end(), unit.begin(), [](unsigned char c) {
+        return (char)std::toupper(c);
+    });
     double mult = 1.0;
     if (unit == "K") mult = 1024.0;
     else if (unit == "M") mult = 1024.0 * 1024.0;
@@ -628,9 +641,10 @@ bool env_offline_enabled() {
 }
 
 std::string get_container_pid(const std::string& identifier) {
-    if (!is_safe_docker_ref_token(identifier)) return "";
+    std::string ref = resolve_local_container_ref(identifier);
+    if (!is_safe_docker_ref_token(ref)) return "";
     return trim_copy(exec_read_all(
-        "docker inspect --format '{{.State.Pid}}' " + shell_quote_single(identifier) + " 2>/dev/null"));
+        "docker inspect --format '{{.State.Pid}}' " + shell_quote_single(ref) + " 2>/dev/null"));
 }
 
 ProcessAbuseInfo collect_process_abuse(const std::string& identifier) {
@@ -738,6 +752,101 @@ std::string detect_dropper_artifact(const std::string& server_uuid) {
     return "";
 }
 
+int count_occurrences(const std::string& haystack, const std::string& needle) {
+    if (needle.empty()) return 0;
+    int count = 0;
+    size_t pos = 0;
+    while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+        ++count;
+        pos += needle.size();
+    }
+    return count;
+}
+
+ScriptAbuseInfo collect_script_abuse(const std::string& server_uuid) {
+    ScriptAbuseInfo info;
+    if (server_uuid.empty() || !is_safe_docker_ref_token(server_uuid)) return info;
+
+    std::string volume_root = "/var/lib/pterodactyl/volumes/" + server_uuid;
+    std::string list_cmd =
+        "find " + shell_quote_single(volume_root) +
+        " -maxdepth 3 -type f \\( -iname '*.js' -o -iname '*.mjs' -o -iname '*.cjs' \\)"
+        " -size +96k -print 2>/dev/null | head -n 8";
+    std::string files = exec_read_all(list_cmd);
+    if (files.empty()) return info;
+
+    std::stringstream ss(files);
+    std::string path;
+    std::vector<std::string> hits;
+    int best_score = 0;
+    bool hard = false;
+    while (std::getline(ss, path)) {
+        path = trim_copy(path);
+        if (path.empty()) continue;
+        if (path.find("/node_modules/") != std::string::npos) continue;
+        if (path.find("/dist/") != std::string::npos) continue;
+        if (path.find("/build/") != std::string::npos) continue;
+        if (path.find("/public/") != std::string::npos) continue;
+
+        std::ifstream f(path.c_str(), std::ios::binary);
+        if (!f.is_open()) continue;
+        std::string body;
+        body.reserve(600000);
+        char buf[8192];
+        while (f.good() && body.size() < 600000) {
+            f.read(buf, sizeof(buf));
+            std::streamsize got = f.gcount();
+            if (got > 0) body.append(buf, static_cast<size_t>(got));
+        }
+        if (body.empty()) continue;
+
+        int score = 0;
+        int from_char = count_occurrences(body, "fromCharCode(");
+        int fn_ctor = count_occurrences(body, "Function(");
+        int eval_count = count_occurrences(body, "eval(");
+        int cp_count = count_occurrences(body, "child_process");
+        int cluster_count = count_occurrences(body, "cluster");
+        int axios_count = count_occurrences(body, "axios");
+        int net_count = count_occurrences(body, "require(\"net\")") + count_occurrences(body, "require('net')");
+
+        if (from_char >= 3) score += 5;
+        if (fn_ctor >= 2) score += 3;
+        if (eval_count >= 1) score += 3;
+        if (cp_count >= 1) score += 5;
+        if (cluster_count >= 1) score += 2;
+        if (axios_count >= 1) score += 1;
+        if (net_count >= 1) score += 2;
+        if (body.size() >= 700000) score += 2;
+        if (contains_any(to_lower_copy_res(path), {"spiker", "ddos", "flood", "stress", "attack"})) score += 3;
+
+        bool this_hard = (from_char >= 3 && cp_count >= 1 && (fn_ctor >= 2 || eval_count >= 1));
+        if (this_hard) score += 8;
+
+        if (score > best_score) {
+            best_score = score;
+            hard = this_hard;
+            std::string file_name = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1);
+            std::ostringstream one;
+            one << "script=" << file_name
+                << " score=" << score
+                << " eval=" << eval_count
+                << " fn=" << fn_ctor
+                << " fcc=" << from_char
+                << " child_process=" << cp_count;
+            hits.clear();
+            hits.push_back(one.str());
+        }
+    }
+
+    if (best_score >= 12 || hard) {
+        info.suspicious = true;
+        info.hard = hard;
+        info.score = best_score;
+        info.summary = hits.empty() ? "obfuscated_js_runtime" : hits.front();
+    }
+    return info;
+}
+
 int quarantine_payload_artifacts(const std::string& server_uuid) {
     if (server_uuid.empty() || !is_safe_docker_ref_token(server_uuid)) return 0;
 
@@ -760,7 +869,8 @@ int quarantine_payload_artifacts(const std::string& server_uuid) {
         "  d=" + shell_quote_single(quarantine_dir) + "/$(date +%s)_${b}.quarantined; "
         "  mv -f \"$f\" \"$d\" >/dev/null 2>&1 && moved=$((moved+1)) || true; "
         "done < <(find " + shell_quote_single(volume_root) + " -maxdepth 3 -type f "
-        "\\( -iname 'spiker.js' -o -iname 'ddos.js' -o -iname 'flood.js' -o -iname 'attack.js' "
+        "\\( -iname 'spiker.js' -o -iname 'spiker*.js' -o -iname '*spiker*.js' -o -iname '*spike*.js' "
+        "-o -iname 'ddos.js' -o -iname 'flood.js' -o -iname 'attack.js' "
         "-o -iname 'stress.js' -o -iname 'cumm.js' -o -iname '*-ddos.js' -o -iname '*_ddos.js' "
         "-o -iname '*-flood.js' -o -iname '*_flood.js' \\) -print0 2>/dev/null); "
         "echo \"$moved\"";
@@ -799,7 +909,7 @@ bool read_local_resources(const std::string& identifier, const std::string& uuid
     snap.is_suspended = false;
 
     std::string stat_line = trim_copy(exec_read_all(
-        "docker stats --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}' " + shell_quote_single(ref) + " 2>/dev/null"));
+        "docker stats --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}' " + shell_quote_single(ref) + " 2>/dev/null"));
     std::vector<std::string> stat_parts = split_copy(stat_line, '|');
     if (stat_parts.size() < 2) return false;
 
@@ -813,6 +923,14 @@ bool read_local_resources(const std::string& identifier, const std::string& uuid
     snap.mem_bytes = parse_size_to_bytes(mem_text);
     snap.net_rx_bytes = 0;
     snap.net_tx_bytes = 0;
+    if (stat_parts.size() >= 3) {
+        std::string net_text = trim_copy(stat_parts[2]);
+        std::vector<std::string> io_parts = split_copy(net_text, '/');
+        if (io_parts.size() >= 2) {
+            snap.net_rx_bytes = parse_size_to_bytes(trim_copy(io_parts[0]));
+            snap.net_tx_bytes = parse_size_to_bytes(trim_copy(io_parts[1]));
+        }
+    }
     return true;
 }
 
@@ -1101,9 +1219,9 @@ EgressStats collect_egress_stats(const std::string& identifier) {
         if (!parse_socket_endpoint(peer_addr, peer_ip, peer_port)) continue;
         if (peer_ip.empty()) continue;
 
-        bool peer_local = is_private_or_local_ip(peer_ip) || is_host_ip(peer_ip) || is_wings_known_ip(peer_ip);
-        if (peer_local) continue; // external-only runtime behavior profile
         if (service_ports.count(local_port) > 0) continue; // likely inbound on service socket
+        bool peer_local = is_private_or_local_ip(peer_ip) || is_host_ip(peer_ip) || is_wings_known_ip(peer_ip);
+        if (peer_local && !is_sensitive_target_port(peer_port)) continue;
 
         stats.total_conns++;
         unique_ips.insert(peer_ip);
@@ -1114,6 +1232,7 @@ EgressStats collect_egress_stats(const std::string& identifier) {
         if (st == "syn-sent") stats.syn_sent++;
         if (st == "estab" || st == "established") stats.established++;
         if (is_sensitive_target_port(peer_port)) stats.sensitive_port_conns++;
+        if (peer_local && is_sensitive_target_port(peer_port)) stats.local_sensitive_conns++;
     }
 
     stats.unique_remote_ips = static_cast<int>(unique_ips.size());
@@ -1125,6 +1244,8 @@ EgressStats collect_egress_stats(const std::string& identifier) {
     stats.suspicious_flood =
         stats.total_conns >= EGRESS_FLOOD_CONN_THRESHOLD &&
         stats.unique_remote_ips >= EGRESS_FLOOD_UNIQUE_IPS;
+    stats.suspicious_infra_local =
+        stats.local_sensitive_conns >= 80;
 
     if (!ip_counts.empty()) {
         std::vector<std::pair<std::string, int> > items(ip_counts.begin(), ip_counts.end());
@@ -1460,52 +1581,62 @@ bool ResourceMonitor::refresh_server_list() {
     }
 
     std::vector<PtlcServerEntry> servers;
-    int page = 1;
 
-    while (true) {
-        std::string url = ptlc_url + "/api/client?type=admin&per_page=100&page=" +
-                          std::to_string(page);
-        std::string body = http_get(url);
-        if (body.empty()) return false;
+    auto fetch_from_client_api = [&](bool admin_mode) -> bool {
+        int page = 1;
+        while (true) {
+            std::string url = ptlc_url + "/api/client?";
+            if (admin_mode) url += "type=admin&";
+            url += "per_page=100&page=" + std::to_string(page);
 
-        try {
-            json j = json::parse(body);
-            if (!j.contains("data")) break;
+            std::string body = http_get(url);
+            if (body.empty()) return false;
 
-            for (auto& item : j["data"]) {
-                if (!item.contains("attributes")) continue;
-                auto& attr = item["attributes"];
+            try {
+                json j = json::parse(body);
+                if (!j.contains("data")) break;
 
-                PtlcServerEntry srv;
-                srv.identifier = attr.value("identifier", "");
-                srv.uuid       = attr.value("uuid",       "");
-                srv.name       = attr.value("name",       "");
+                for (auto& item : j["data"]) {
+                    if (!item.contains("attributes")) continue;
+                    auto& attr = item["attributes"];
 
-                if (attr.contains("limits")) {
-                    srv.cpu_limit       = attr["limits"].value("cpu", 100);
-                    long long mem_mb    = attr["limits"].value("memory", 512LL);
-                    srv.mem_limit_bytes = mem_mb * 1024LL * 1024LL;
-                } else {
-                    srv.cpu_limit       = 100;
-                    srv.mem_limit_bytes = 512LL * 1024LL * 1024LL;
+                    PtlcServerEntry srv;
+                    srv.identifier = attr.value("identifier", "");
+                    srv.uuid       = attr.value("uuid",       "");
+                    srv.name       = attr.value("name",       "");
+
+                    if (attr.contains("limits")) {
+                        srv.cpu_limit       = attr["limits"].value("cpu", 100);
+                        long long mem_mb    = attr["limits"].value("memory", 512LL);
+                        srv.mem_limit_bytes = mem_mb * 1024LL * 1024LL;
+                    } else {
+                        srv.cpu_limit       = 100;
+                        srv.mem_limit_bytes = 512LL * 1024LL * 1024LL;
+                    }
+
+                    if (!srv.identifier.empty() && !srv.uuid.empty())
+                        servers.push_back(srv);
                 }
 
-                if (!srv.identifier.empty() && !srv.uuid.empty())
-                    servers.push_back(srv);
+                int total_pages = 1;
+                if (j.contains("meta") && j["meta"].contains("pagination"))
+                    total_pages = j["meta"]["pagination"].value("total_pages", 1);
+
+                if (page >= total_pages) break;
+                page++;
+
+            } catch (...) {
+                logger.error("PTLC: failed to parse server list (page " + std::to_string(page) + ")");
+                return false;
             }
-
-            // Pagination
-            int total_pages = 1;
-            if (j.contains("meta") && j["meta"].contains("pagination"))
-                total_pages = j["meta"]["pagination"].value("total_pages", 1);
-
-            if (page >= total_pages) break;
-            page++;
-
-        } catch (...) {
-            logger.error("PTLC: failed to parse server list (page " + std::to_string(page) + ")");
-            return false;
         }
+        return true;
+    };
+
+    if (!fetch_from_client_api(true)) return false;
+    // Some deployments use non-admin API keys; fallback to regular client listing.
+    if (servers.empty()) {
+        if (!fetch_from_client_api(false)) return false;
     }
 
     std::lock_guard<std::mutex> lock(state_mutex);
@@ -1640,7 +1771,8 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     ResourceSnapshot snap{};
     if (!get_resources(srv.identifier, srv.uuid, snap)) {
         std::string offline_dropper = detect_dropper_artifact(srv.uuid);
-        if (offline_dropper.empty()) return;
+        ScriptAbuseInfo offline_script = collect_script_abuse(srv.uuid);
+        if (offline_dropper.empty() && !offline_script.suspicious) return;
 
         ServerInfo db_info = db.get_server_info(srv.uuid);
         if (db_info.id <= 0) return;
@@ -1664,7 +1796,11 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         }
         save_state();
 
-        std::string details = "offline_artifact=" + offline_dropper + " resources_api=unavailable";
+        std::string details = "resources_api=unavailable";
+        if (!offline_dropper.empty()) details += " offline_artifact=" + offline_dropper;
+        if (offline_script.suspicious) {
+            details += " offline_script=" + offline_script.summary;
+        }
         if (quarantined_files > 0) details += " quarantine=" + std::to_string(quarantined_files);
         db.log_user_violation(
             db_info.owner_id, db_info.username,
@@ -1789,6 +1925,8 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         std::lock_guard<std::mutex> lock(state_mutex);
         install_grace_until[srv.uuid] = now + 8 * 60;
     }
+    ScriptAbuseInfo script_abuse = collect_script_abuse(srv.uuid);
+    std::string dropper_artifact = detect_dropper_artifact(srv.uuid);
 
     time_t last_act = 0;
     {
@@ -1810,18 +1948,28 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     // Even if the container is already offline, suspicious panel activity should still be actionable.
     if (snap.state != "running" || snap.is_suspended) {
         bool activity_trigger = (cooldown_ok || activity_urgent) && activity_abuse.suspicious && !snap.is_suspended;
-        if (activity_trigger) {
+        bool payload_trigger = (cooldown_ok || activity_urgent) &&
+            (script_abuse.suspicious || !dropper_artifact.empty()) && !snap.is_suspended;
+        if (activity_trigger || payload_trigger) {
             bool suspended = db.suspend_server(db_info.id);
             int quarantined_files = quarantine_payload_artifacts(srv.uuid);
             std::ostringstream det;
-            det << "ACT score=" << activity_abuse.score;
-            if (!activity_abuse.summary.empty()) det << " " << activity_abuse.summary;
+            if (activity_trigger) {
+                det << "ACT score=" << activity_abuse.score;
+                if (!activity_abuse.summary.empty()) det << " " << activity_abuse.summary;
+            }
+            if (payload_trigger) {
+                if (!det.str().empty()) det << " | ";
+                det << "OFFLINE_PAYLOAD";
+                if (script_abuse.suspicious && !script_abuse.summary.empty()) det << " " << script_abuse.summary;
+                if (!dropper_artifact.empty()) det << " dropper_file=" << dropper_artifact;
+            }
             det << " | state=" << snap.state;
 
             db.log_user_violation(
                 db_info.owner_id, db_info.username,
                 db_info.id, db_info.uuid, db_info.name,
-                "activity_abuse", det.str(),
+                payload_trigger ? "process_abuse" : "activity_abuse", det.str(),
                 "", 0, 0.0, 0,
                 suspended ? "suspended" : (quarantined_files > 0 ? "quarantine" : "observe_only"),
                 8
@@ -1842,10 +1990,10 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             }
             save_state();
 
-            logger.info("🚨 CONSOLE / PAYLOAD ABUSE — " + srv.name + " (" + srv.uuid + ") | " +
+            logger.info("🚨 OFFLINE CONSOLE / PAYLOAD ABUSE — " + srv.name + " (" + srv.uuid + ") | " +
                         det.str() + (suspended ? " | SUSPENDED" : (quarantined_files > 0 ? " | QUARANTINED" : " | OBSERVED")));
             bot.send_report_message(build_alert(
-                "CONSOLE / PAYLOAD ABUSE", db_info,
+                payload_trigger ? "OFFLINE PAYLOAD ABUSE" : "CONSOLE / PAYLOAD ABUSE", db_info,
                 cpu_pct_raw_used, snap.cpu_absolute, srv.cpu_limit,
                 ram_pct_used, snap.mem_bytes, srv.mem_limit_bytes,
                 suspended ? "Server suspended via database ✅" : (quarantined_files > 0 ? "Payload quarantined locally ✅" : "Observed only ⚠️")
@@ -1866,10 +2014,14 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     }
 
     ApiTrafficProfile api_profile = get_api_profile(db_info, srv);
-    InboundStats inbound = offline_mode ? collect_inbound_stats(srv.identifier) : InboundStats{};
-    EgressStats egress = offline_mode ? collect_egress_stats(srv.identifier) : EgressStats{};
+    InboundStats inbound = collect_inbound_stats(srv.identifier);
+    EgressStats egress = collect_egress_stats(srv.identifier);
     ProcessAbuseInfo proc_abuse = collect_process_abuse(srv.identifier);
-    std::string dropper_artifact = detect_dropper_artifact(srv.uuid);
+    if (script_abuse.suspicious) {
+        proc_abuse.suspicious = true;
+        if (!proc_abuse.summary.empty()) proc_abuse.summary += " | ";
+        proc_abuse.summary += script_abuse.summary;
+    }
     if (!dropper_artifact.empty()) {
         proc_abuse.suspicious = true;
         if (!proc_abuse.summary.empty()) proc_abuse.summary += " | ";
@@ -1896,9 +2048,9 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         ram_hits = ram_hot ? (consecutive_ram_hit[srv.uuid] + 1) : 0;
         consecutive_cpu_hit[srv.uuid] = cpu_hits;
         consecutive_ram_hit[srv.uuid] = ram_hits;
-        net_hits = (offline_mode && (inbound.external_conns >= api_profile.net_warning_conn ||
-                                     inbound.local_conns >= api_profile.self_ddos_conn ||
-                                     inbound.unique_external_ips >= api_profile.net_warning_unique_ips))
+        net_hits = ((inbound.external_conns >= api_profile.net_warning_conn ||
+                     inbound.local_conns >= api_profile.self_ddos_conn ||
+                     inbound.unique_external_ips >= api_profile.net_warning_unique_ips))
             ? (consecutive_net_hit[srv.uuid] + 1)
             : 0;
         consecutive_net_hit[srv.uuid] = net_hits;
@@ -1995,15 +2147,20 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
                        inbound.unique_external_ips >= api_profile.net_warning_unique_ips;
     bool self_ddos = inbound.self_ddos;
     bool l7_pressure = inbound.l7_flood || self_ddos;
+    bool urgent_network = self_ddos ||
+                          (!inbound.infra_only_local && inbound.local_conns >= api_profile.self_ddos_hard) ||
+                          net_extreme ||
+                          egress.local_sensitive_conns >= 120 ||
+                          egress.total_conns >= EGRESS_FLOOD_CONN_THRESHOLD;
 
-    bool net_trigger = offline_mode && cooldown_ok && (
+    bool net_trigger = (cooldown_ok || urgent_network) && (
         (net_extreme && net_hits >= 1) ||
         (net_warning && net_hits >= api_profile.net_hits_required) ||
         (self_ddos && net_hits >= 1) ||
         (!inbound.infra_only_local && inbound.local_conns >= api_profile.self_ddos_hard)
     );
 
-    std::string blocked_ip = offline_mode && (net_trigger || net_extreme)
+    std::string blocked_ip = (net_trigger || net_extreme)
         ? block_abusive_inbound_ips(srv.identifier)
         : "";
     bool trust_trigger = cooldown_ok && (
@@ -2012,7 +2169,8 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     );
     bool process_trigger = cooldown_ok && proc_abuse.suspicious;
     bool activity_trigger = (cooldown_ok || activity_urgent) && activity_abuse.suspicious;
-    bool runtime_trigger = cooldown_ok && (egress.suspicious_scan || egress.suspicious_flood);
+    bool runtime_trigger = (cooldown_ok || urgent_network) &&
+        (egress.suspicious_scan || egress.suspicious_flood || egress.suspicious_infra_local);
 
     if (!cpu_trigger && !ram_trigger && !ram_oom_emergency && !net_trigger && !bw_trigger && !bw_spike_trigger && !trust_trigger && !process_trigger && !activity_trigger && !runtime_trigger) {
         if (activity_abuse.last_id > last_activity_id) save_state();
@@ -2153,7 +2311,8 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             << " unique_port=" << egress.unique_remote_ports
             << " syn_sent=" << egress.syn_sent
             << " estab=" << egress.established
-            << " sensitive_port_hits=" << egress.sensitive_port_conns;
+            << " sensitive_port_hits=" << egress.sensitive_port_conns
+            << " local_sensitive_hits=" << egress.local_sensitive_conns;
         if (!egress.top_summary.empty()) det << " | top=" << egress.top_summary;
     }
     if (startup_grace) {
@@ -2236,8 +2395,20 @@ void ResourceMonitor::check_all() {
         snapshot = server_cache;
     }
 
-    for (const auto& srv : snapshot)
+    for (const auto& srv : snapshot) {
+        int pre_moved = quarantine_payload_artifacts(srv.uuid);
+        ScriptAbuseInfo pre_script = collect_script_abuse(srv.uuid);
+        if (pre_moved > 0 || pre_script.suspicious) {
+            bool stopped = stop_container_now(srv.identifier, srv.uuid);
+            if (pre_moved > 0 || stopped) {
+                logger.warn("⚠️ PRECHECK PAYLOAD MITIGATION — " + srv.uuid +
+                            (pre_script.summary.empty() ? "" : (" | " + pre_script.summary)) +
+                            " | moved=" + std::to_string(pre_moved) +
+                            (stopped ? " | container_stopped=yes" : ""));
+            }
+        }
         handle_server(srv);
+    }
 }
 
 ResourceMonitor res_monitor;

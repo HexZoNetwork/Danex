@@ -84,7 +84,19 @@ class PteroProtectSessionBinding
 
             return $next($request);
         }
-        
+
+        // Soft-rebind for authenticated sessions to prevent random logout
+        // on mobile/operator IP rotation and proxy path changes.
+        if ($userId > 0) {
+            Cache::put($cacheKey, $current, $this->ttlSeconds());
+            Cache::forget($rebindKey);
+            if ($ipChallengeKey !== null) {
+                Cache::forget($ipChallengeKey);
+            }
+
+            return $next($request);
+        }
+
         Cache::put($rebindKey, true, $this->ttlSeconds());
         Cache::forget($cacheKey);
         if ($ipChallengeKey !== null) {
