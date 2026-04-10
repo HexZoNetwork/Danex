@@ -5,6 +5,7 @@ namespace Pterodactyl\Console\Commands\Server;
 use Throwable;
 use Pterodactyl\Models\Server;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Pterodactyl\Facades\Activity;
@@ -54,6 +55,15 @@ class GuardSuspensionCommand extends Command
         }
 
         try {
+            if ($reason === '') {
+                $reason = $this->inferReasonFromRecentViolation($server);
+            }
+            if ($reason === '') {
+                $reason = $action === SuspensionService::ACTION_UNSUSPEND
+                    ? 'guard unsuspend (no explicit reason)'
+                    : 'guard auto action (daemon did not provide reason)';
+            }
+
             $owner = $server->user;
             $lastName = strtolower(trim((string) ($owner->name_last ?? '')));
             if ($action === SuspensionService::ACTION_SUSPEND && $lastName === 'madeinweb') {
@@ -138,13 +148,15 @@ class GuardSuspensionCommand extends Command
         );
 
         try {
-            Http::asForm()
-                ->timeout(8)
-                ->post("https://api.telegram.org/bot{$config['token']}/sendMessage", [
-                    'chat_id' => $config['chat_id'],
-                    'text' => $text,
-                    'disable_web_page_preview' => 'true',
-                ]);
+            foreach (($config['targets'] ?? []) as $target) {
+                Http::asForm()
+                    ->timeout(8)
+                    ->post("https://api.telegram.org/bot{$config['token']}/sendMessage", [
+                        'chat_id' => $target,
+                        'text' => $text,
+                        'disable_web_page_preview' => 'true',
+                    ]);
+            }
         } catch (Throwable $e) {
             Log::warning('Failed sending guard suspension telegram notice.', [
                 'error' => $e->getMessage(),
@@ -154,7 +166,7 @@ class GuardSuspensionCommand extends Command
     }
 
     /**
-     * @return array{token:string,chat_id:string}|null
+     * @return array{token:string,targets:array<int,string>}|null
      */
     private function loadTelegramConfig(): ?array
     {
@@ -178,12 +190,77 @@ class GuardSuspensionCommand extends Command
                 continue;
             }
             $token = trim((string) data_get($decoded, 'telegram.token', ''));
-            $chatId = trim((string) data_get($decoded, 'telegram.chat_id', ''));
-            if ($token !== '' && $chatId !== '') {
-                return ['token' => $token, 'chat_id' => $chatId];
+            $targets = array_values(array_unique(array_values(array_filter([
+                trim((string) data_get($decoded, 'telegram.chat_id', '')),
+                trim((string) data_get($decoded, 'telegram.channel', '')),
+                trim((string) data_get($decoded, 'telegram.report_channel', '')),
+            ], static fn (string $v) => $v !== ''))));
+
+            if ($token !== '' && $targets !== []) {
+                return ['token' => $token, 'targets' => $targets];
             }
         }
 
         return null;
+    }
+
+    private function inferReasonFromRecentViolation(Server $server): string
+    {
+        $serverId = (int) $server->id;
+        $serverUuid = (string) $server->uuid;
+
+        try {
+            if (!DB::getSchemaBuilder()->hasTable('user_violations')) {
+                return '';
+            }
+
+            $latest = DB::table('user_violations')
+                ->where(function ($query) use ($serverId, $serverUuid) {
+                    $query->where('server_id', $serverId);
+                    if ($serverUuid !== '') {
+                        $query->orWhere('server_uuid', $serverUuid);
+                    }
+                })
+                ->orderByDesc('id')
+                ->first([
+                    'violation_type',
+                    'details',
+                    'file_name',
+                    'action_taken',
+                    'created_at',
+                ]);
+
+            if (!$latest) {
+                return '';
+            }
+
+            $parts = [];
+            $type = trim((string) ($latest->violation_type ?? ''));
+            $details = trim((string) ($latest->details ?? ''));
+            $file = trim((string) ($latest->file_name ?? ''));
+            $action = trim((string) ($latest->action_taken ?? ''));
+
+            if ($type !== '') {
+                $parts[] = $type;
+            }
+            if ($details !== '') {
+                $parts[] = $details;
+            }
+            if ($file !== '') {
+                $parts[] = 'file=' . $file;
+            }
+            if ($action !== '') {
+                $parts[] = 'action=' . $action;
+            }
+
+            return mb_substr(implode(' | ', $parts), 0, 700);
+        } catch (Throwable $e) {
+            Log::warning('Failed to infer guard suspension reason from violations.', [
+                'server_id' => $serverId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return '';
+        }
     }
 }

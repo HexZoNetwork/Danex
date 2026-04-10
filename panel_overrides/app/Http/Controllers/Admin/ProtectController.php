@@ -414,6 +414,22 @@ class ProtectController extends Controller
             }
 
             $activityLogs = $activityQuery->get($columns);
+            $activityLogs = $activityLogs->map(static function ($row) {
+                $reason = '';
+                $raw = (string) ($row->properties ?? '');
+                if ($raw !== '') {
+                    $decoded = json_decode($raw, true);
+                    if (is_array($decoded)) {
+                        $reason = trim((string) ($decoded['reason'] ?? ''));
+                        if ($reason === '') {
+                            $reason = trim((string) ($decoded['details'] ?? ''));
+                        }
+                    }
+                }
+
+                $row->reason = $reason;
+                return $row;
+            });
         }
 
         return view('admin.protect.timeline', [

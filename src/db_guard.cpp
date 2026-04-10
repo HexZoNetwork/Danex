@@ -30,12 +30,26 @@ std::string shell_quote(const std::string& value) {
     return escaped;
 }
 
-bool try_panel_suspend(int server_id) {
+std::string normalize_reason_for_cli(const std::string& reason) {
+    std::string out;
+    out.reserve(reason.size());
+    for (char c : reason) {
+        if (c == '\n' || c == '\r' || c == '\t') out.push_back(' ');
+        else out.push_back(c);
+    }
+    const size_t max_len = 512;
+    if (out.size() > max_len) out.resize(max_len);
+    return out;
+}
+
+bool try_panel_suspend(int server_id, const std::string& reason) {
     if (server_id <= 0) return false;
 
+    const std::string reason_arg = normalize_reason_for_cli(reason);
     std::ostringstream cmd;
     cmd << "cd " << shell_quote(get_panel_dir()) << " && php artisan p:server:guard-suspension "
         << server_id
+        << " --reason=" << shell_quote(reason_arg)
         << " --action=suspend --no-interaction >/dev/null 2>&1";
 
     int rc = std::system(cmd.str().c_str());
@@ -283,17 +297,24 @@ std::vector<ServerActivityEntry> DatabaseGuard::get_recent_server_activity(int s
     return rows;
 }
 
-bool DatabaseGuard::suspend_server(int server_id) {
+bool DatabaseGuard::suspend_server(int server_id, const std::string& reason) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (server_id <= 0) return false;
 
-    if (try_panel_suspend(server_id)) {
+    if (try_panel_suspend(server_id, reason)) {
         logger.warn("Server " + std::to_string(server_id) + " suspended via Pterodactyl service");
         return true;
     }
 
-    logger.warn("Pterodactyl suspension command failed for server " + std::to_string(server_id) + ", falling back to direct DB update");
+    logger.error("Pterodactyl suspension command failed for server " + std::to_string(server_id) + ", direct DB fallback disabled to preserve suspension policy");
 
+    const char* fallback_env = std::getenv("DANN_ALLOW_DIRECT_DB_SUSPEND_FALLBACK");
+    const bool allow_direct_fallback = fallback_env && std::string(fallback_env) == "1";
+    if (!allow_direct_fallback) {
+        return false;
+    }
+
+    logger.warn("Direct DB suspension fallback is enabled by DANN_ALLOW_DIRECT_DB_SUSPEND_FALLBACK=1");
     if (!ensure_connection()) return false;
 
     std::ostringstream query;

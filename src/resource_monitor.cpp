@@ -1788,7 +1788,13 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
 
         bool container_stopped = stop_container_now(srv.identifier, srv.uuid);
         int quarantined_files = quarantine_payload_artifacts(srv.uuid);
-        bool suspended = db.suspend_server(db_info.id);
+        std::string suspend_reason = "resources_api=unavailable";
+        if (!offline_dropper.empty()) suspend_reason += " | offline_artifact=" + offline_dropper;
+        if (offline_script.suspicious && !offline_script.summary.empty()) {
+            suspend_reason += " | offline_script=" + offline_script.summary;
+        }
+        if (quarantined_files > 0) suspend_reason += " | quarantine=" + std::to_string(quarantined_files);
+        bool suspended = db.suspend_server(db_info.id, suspend_reason);
         {
             std::lock_guard<std::mutex> lock(state_mutex);
             last_action[srv.uuid] = now;
@@ -1951,7 +1957,17 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         bool payload_trigger = (cooldown_ok || activity_urgent) &&
             (script_abuse.suspicious || !dropper_artifact.empty()) && !snap.is_suspended;
         if (activity_trigger || payload_trigger) {
-            bool suspended = db.suspend_server(db_info.id);
+            std::string offline_suspend_reason = "offline state=" + snap.state;
+            if (activity_trigger && !activity_abuse.summary.empty()) {
+                offline_suspend_reason += " | " + activity_abuse.summary;
+            }
+            if (payload_trigger && script_abuse.suspicious && !script_abuse.summary.empty()) {
+                offline_suspend_reason += " | " + script_abuse.summary;
+            }
+            if (payload_trigger && !dropper_artifact.empty()) {
+                offline_suspend_reason += " | dropper_file=" + dropper_artifact;
+            }
+            bool suspended = db.suspend_server(db_info.id, offline_suspend_reason);
             int quarantined_files = quarantine_payload_artifacts(srv.uuid);
             std::ostringstream det;
             if (activity_trigger) {
@@ -2199,6 +2215,12 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     else if (bw_trigger) abuse_type = "BANDWIDTH ABUSE";
     else if (bw_spike_trigger) abuse_type = "BANDWIDTH SPIKE ABUSE";
     else abuse_type = "TRUST SCORE ABUSE";
+    std::string suspend_context = abuse_type +
+        " | trust=" + std::to_string((int)score_now) +
+        " | cpu=" + std::to_string((int)cpu_pct_raw_used) +
+        " | ram=" + std::to_string((int)ram_pct_used) +
+        " | net_ext=" + std::to_string(inbound.external_conns) +
+        " | net_local=" + std::to_string(inbound.local_conns);
 
     bool restart_ok = false;
     bool suspended = false;
@@ -2221,7 +2243,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             enforcement_done = container_stopped || quarantined_files > 0;
         } else if (ram_oom_emergency || bw_spike_trigger) {
             container_stopped = stop_container_now(srv.identifier, srv.uuid);
-            suspended = db.suspend_server(db_info.id);
+            suspended = db.suspend_server(db_info.id, suspend_context + " | path=oom_or_bw_spike");
             enforcement_done = suspended || container_stopped;
         } else if (resource_sigterm_only) {
             sigterm_sent = send_sigterm_container(srv.identifier, srv.uuid);
@@ -2230,7 +2252,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             enforcement_done = sigterm_sent;
         } else {
             container_stopped = stop_container_now(srv.identifier, srv.uuid);
-            suspended = db.suspend_server(db_info.id);
+            suspended = db.suspend_server(db_info.id, suspend_context + " | path=standard_enforcement");
             enforcement_done = suspended || container_stopped;
         }
         if (enforcement_done) total_restarts++;
@@ -2242,7 +2264,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             if (restart_ok) total_restarts++;
         }
     } else {
-        suspended = db.suspend_server(db_info.id);
+        suspended = db.suspend_server(db_info.id, suspend_context + " | path=direct_suspend");
         if (suspended) total_restarts++;
     }
 

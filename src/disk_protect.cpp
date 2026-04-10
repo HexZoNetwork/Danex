@@ -1747,7 +1747,7 @@ void DiskProtector::check_server(const std::string& uuid) {
 
     if (need_action) {
         bool suspended = false;
-        if (info.id > 0 && auto_suspend) suspended = db.suspend_server(info.id);
+        if (info.id > 0 && auto_suspend) suspended = db.suspend_server(info.id, reason);
         bool hard_enforced = hard_delete_and_stop || (hard_quarantined_count > 0) || disk_hard || (disk_flood_filename_hits > 0);
         std::string action_label;
         if (hard_delete_and_stop) {
@@ -1768,7 +1768,7 @@ void DiskProtector::check_server(const std::string& uuid) {
 
         if (info.id > 0) {
             int severity = severity_from_metrics(disk_gb, disk_over_limit_gb, spike_disk, tcp_conns);
-            if (trust_now <= 40.0 && auto_suspend) suspended = db.suspend_server(info.id);
+            if (trust_now <= 40.0 && auto_suspend) suspended = db.suspend_server(info.id, reason + " | trust<=40");
             db.log_user_violation(
                 info.owner_id, info.username, info.id, info.uuid, info.name,
                 violation_type_from_reason(reason), reason, "",
@@ -1800,7 +1800,11 @@ void DiskProtector::check_server(const std::string& uuid) {
     if ((total_mb_deleted > 0 || quarantined_count > 0) && !need_action && !deleted.empty()) {
         bool suspended = false;
         if (info.id > 0 && auto_suspend && hard_quarantined_count > 0) {
-            suspended = db.suspend_server(info.id);
+            std::string cleanup_reason = "illegal_file cleanup";
+            if (!deleted.front().suspicion_reason.empty()) {
+                cleanup_reason += " | " + deleted.front().suspicion_reason;
+            }
+            suspended = db.suspend_server(info.id, cleanup_reason);
         }
 
         if (info.id > 0) {
@@ -1877,7 +1881,7 @@ void DiskProtector::scan_all() {
                 ServerInfo info = db.get_server_info(largest_uuid);
                 bool container_stopped = stop_container_by_uuid(largest_uuid);
                 bool suspended = false;
-                if (info.id > 0) suspended = db.suspend_server(info.id);
+                if (info.id > 0) suspended = db.suspend_server(info.id, "emergency host disk reclaim");
                 double freed_mb = 0.0;
                 std::vector<FileInfo> reclaimed_entries = reclaim_largest_entries(
                     largest_path,

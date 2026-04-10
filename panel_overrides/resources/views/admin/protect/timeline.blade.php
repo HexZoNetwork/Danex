@@ -162,6 +162,7 @@
                                     <th>Actor</th>
                                     <th>Server</th>
                                     <th>IP</th>
+                                    <th>Reason</th>
                                     <th>Description</th>
                                 </tr>
                             </thead>
@@ -174,11 +175,12 @@
                                         <td>{{ (string) ($log->actor_username ?? ($log->actor_id ? ('#' . (int) $log->actor_id) : '-')) }}</td>
                                         <td>{{ isset($log->server_id) ? ('#' . (int) $log->server_id) : '-' }}</td>
                                         <td>{{ (string) ($log->ip ?? '-') }}</td>
+                                        <td style="max-width:360px;word-break:break-word;">{{ (string) ($log->reason ?? '-') }}</td>
                                         <td style="max-width:420px;word-break:break-word;">{{ (string) ($log->description ?? '-') }}</td>
                                     </tr>
                                 @empty
                                     <tr>
-                                        <td colspan="7" class="text-center text-muted">No activity log data found.</td>
+                                        <td colspan="8" class="text-center text-muted">No activity log data found.</td>
                                     </tr>
                                 @endforelse
                             </tbody>
