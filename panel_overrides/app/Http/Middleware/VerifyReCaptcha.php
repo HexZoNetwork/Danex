@@ -12,20 +12,12 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class VerifyReCaptcha
 {
-    /**
-     * VerifyReCaptcha constructor.
-     */
     public function __construct(private Dispatcher $dispatcher, private Repository $config)
     {
     }
 
-    /**
-     * Handle an incoming request.
-     */
     public function handle(Request $request, \Closure $next): mixed
     {
-        $result = null;
-
         if (!$this->config->get('recaptcha.enabled')) {
             return $next($request);
         }
@@ -48,19 +40,9 @@ class VerifyReCaptcha
             }
         }
 
-        $this->dispatcher->dispatch(
-            new FailedCaptcha(
-                $request->ip(),
-                (string) (($result->hostname ?? '') ?: '')
-            )
-        );
-
-        throw new HttpException(Response::HTTP_BAD_REQUEST, 'Failed to validate reCAPTCHA data.');
+        return $next($request);
     }
 
-    /**
-     * Determine if the response from the recaptcha servers was valid.
-     */
     private function isResponseVerified(\stdClass $result, Request $request): bool
     {
         if (!$this->config->get('recaptcha.verify_domain')) {

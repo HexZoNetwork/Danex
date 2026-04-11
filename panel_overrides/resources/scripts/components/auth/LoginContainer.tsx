@@ -27,7 +27,10 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
 
     useEffect(() => {
         clearFlashes();
-    }, []);
+        if (recaptchaEnabled) {
+            loadRecaptcha();
+        }
+    }, [recaptchaEnabled, loadRecaptcha]);
 
     const loadRecaptcha = useCallback(() => {
         if (!recaptchaEnabled || ReaptchaComponent) return;
@@ -39,24 +42,6 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
                 // silent
             });
     }, [recaptchaEnabled, ReaptchaComponent]);
-
-    useEffect(() => {
-        if (!recaptchaEnabled) return;
-        let timer: number;
-        const schedule = () => {
-            timer = window.setTimeout(loadRecaptcha, 2500);
-        };
-
-        if ('requestIdleCallback' in window) {
-            (window as any).requestIdleCallback(schedule, { timeout: 4000 });
-        } else {
-            schedule();
-        }
-
-        return () => {
-            if (timer) window.clearTimeout(timer);
-        };
-    }, [recaptchaEnabled, loadRecaptcha]);
 
     const onSubmit = (values: Values, { setSubmitting }: FormikHelpers<Values>) => {
         clearFlashes();
