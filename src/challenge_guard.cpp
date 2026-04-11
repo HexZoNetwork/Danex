@@ -144,22 +144,18 @@ static std::string ua_binding_material(const std::string& ua_raw) {
         {"crios/", "chrome"},
         {"chrome/", "chrome"},
         {"version/", "safari"},
+        {"telegram", "telegram"},
+        {"fbav", "facebook"},
+        {"instagram", "instagram"},
     };
     for (const auto& r : rules) {
         const auto pos = ua.find(r.first);
         if (pos == std::string::npos) continue;
         browser = r.second;
-        std::size_t i = pos + r.first.size();
-        std::string digits;
-        while (i < ua.size() && std::isdigit(static_cast<unsigned char>(ua[i]))) {
-            digits.push_back(ua[i]);
-            ++i;
-        }
-        if (!digits.empty()) major = digits;
         break;
     }
 
-    return std::string("mobile|") + platform + "|" + browser + "|" + major;
+    return std::string("mobile|") + platform + "|" + browser;
 }
 
 static std::string to_lower(std::string s) {
@@ -722,9 +718,9 @@ static bool behavior_pass(const json& behavior, const NonceRec& rec) {
         return true;
     }
 
-    const bool pointer_ok = (pointer_moves >= 4 && pointer_distance >= 120 && pointer_dir_changes >= 1);
-    const bool touch_ok = (touch_moves >= 2);
-    const bool fallback_ok = (scroll_count >= 1 || key_count >= 1);
+    const bool pointer_ok = (pointer_moves >= 2 && pointer_distance >= 60);
+    const bool touch_ok = (touch_moves >= 1);
+    const bool fallback_ok = (scroll_count >= 1 || key_count >= 1 || pointer_moves >= 1);
     return pointer_ok || touch_ok || fallback_ok;
 }
 
@@ -1663,7 +1659,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "radial-gradient(1000px 620px at 95% 110%,#0f3954 0%,transparent 60%),"
             "linear-gradient(180deg,var(--bg),var(--bg2))}"
             ".card{width:min(840px,98vw);background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.015));"
-            "border:1px solid rgba(103,153,204,.36);border-radius:18px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.46)}"
+            "border:1px solid rgba(103,153,204,.36);border-radius:18px;box-shadow:0 30px 80px rgba(0,0,0,.46);overflow-y:auto;max-height:98vh}"
             ".head{padding:16px 18px;border-bottom:1px solid rgba(103,153,204,.28);display:flex;align-items:center;gap:10px}"
             ".dot{width:10px;height:10px;border-radius:999px;background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 0 20px rgba(75,184,255,.85)}"
             ".title{font-weight:800;letter-spacing:.25px}.sub{margin-left:auto;font-size:12px;color:var(--muted);font-weight:600}"
@@ -1746,7 +1742,9 @@ static void handle_client(int fd, std::string remote_ip) {
             "function randBtn(){if(!elHB||!elCW||!elHW)return;if(Date.now()<humanPauseUntil)return;const pad=14;const topMin=(elCW.clientWidth<640?76:90);const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=12){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
             "function fmtMs(ms){const t=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(t/60);const s=t%60;return String(m)+'m '+String(s).padStart(2,'0')+'s';}"
             "function updateWait(){const now=Date.now();if(now<hardPenaltyUntil){if(elHW)elHW.style.display='none';}else{if(elHW)elHW.style.display='';}const ms=unlockAt-now;if(ms<=0){elCT.textContent='OK';}else{elCT.textContent=fmtMs(ms);}if(uiLocked||hardOpened||enteredChallenge){showChal();elB.disabled=false;if(powTaskActive&&powReady){elS.textContent='PoW aktif terus di background sampai challenge selesai.';}else if(powReady){elS.textContent='Challenge ready. Tap Continue.';}else if(powTaskActive){elS.textContent='Preparing browser proof in background...';}else{elS.textContent='Preparing browser proof...';}if(ms<=0&&waitTimer&&powReady){clearInterval(waitTimer);waitTimer=null;}return;}if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elS.textContent='Connection check passed.';elB.disabled=false;if(elHW){elHW.style.display='';elHB.disabled=false;elHB.textContent='I am human, pass me';}return;}const label=fmtMs(ms);showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}"
-            "async function loadC(){elE.textContent='';elS.textContent='';elB.disabled=true;clickSamples=[];if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=true;elHB.textContent='Preparing challenge...';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},900);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new'+clientHintQuery(),{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error(String(j.error||'challenge unavailable'));"
+            "const showErr=(m)=>{elE.textContent=String(m||\"Unknown error\");elE.style.display=\"block\";elS.textContent=\"\";};"
+            "const hideErr=()=>{elE.textContent=\"\";elE.style.display=\"none\";};"
+            "async function loadC(){hideErr();elS.textContent=\"\";elB.disabled=true;clickSamples=[];if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=true;elHB.textContent='Preparing challenge...';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},900);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new'+clientHintQuery(),{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error(String(j.error||'challenge unavailable'));"
             "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';powSalt=String(j.pow_salt||'');powBits=Math.max(8,Math.min(24,Number(j.pow_bits||14)));powMemMb=Math.max(8,Math.min(192,Number(j.pow_mem_mb||48)));powCpuLevel=Math.max(1,Math.min(8,Number(j.pow_cpu_level||4)));powCounter=-1;powHash='';powReady=false;powTaskActive=false;pendingFinalSubmit=false;powLoopStop=false;challengeSolved=false;clickVerified=!!(clickVerified||hardOpened||enteredChallenge||humanReady||uiLocked);setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;phase2Hint='';elPQ.textContent='Tahap 1: selesaikan math dulu.';elPHint.textContent='';drawPattern();elQ.textContent=j.question;elHB.disabled=false;elHB.textContent='I am human, pass me';if(pendingHumanClick){pendingHumanClick=false;setTimeout(()=>{elHB.click();},0);}restartsLeft=3;elRB.disabled=true;elRB.textContent='Restart ('+String(restartsLeft)+')';"
             "elS.textContent='Running browser PoW (RAM '+String(powMemMb)+'MB, CPU L'+String(powCpuLevel)+') in background...';powTaskActive=true;(async()=>{try{let firstPass=true;while(!powLoopStop){const pow=await solvePow(nonce,powSalt,powBits,powMemMb,powCpuLevel);if(firstPass){powCounter=pow.counter;powHash=pow.hash;powReady=true;elRB.disabled=false;const usedMb=Number(pow.mem_mb||powMemMb);const usedCpu=Number(pow.cpu_level||powCpuLevel);elS.textContent='PoW passed in '+String(pow.ms)+'ms. RAM '+String(usedMb)+'MB, CPU L'+String(usedCpu)+'. PoW tetap berjalan sampai challenge selesai.';elB.disabled=false;if(pendingFinalSubmit&&phase===2&&clickVerified){pendingFinalSubmit=false;setTimeout(()=>{elB.click();},0);}}firstPass=false;if(challengeSolved||powLoopStop)break;await new Promise(r=>setTimeout(r,0));}powTaskActive=false;}catch(err){powReady=false;powTaskActive=false;const msg=String(err.message||err);elE.textContent=msg;elS.textContent='PoW failed. Restart challenge.';elB.disabled=false;}})();"
             "const raw=Number(j.connection_delay_ms||0);const baseDelay=Math.min(21600000,Math.max(0,raw));const penaltyLeft=Math.max(0,hardPenaltyUntil-Date.now());const d=Math.max(baseDelay,penaltyLeft);const keepOpened=(uiLocked||hardOpened||clickVerified||enteredChallenge||humanReady||phase===2)&&penaltyLeft<=0;started=Date.now();unlockAt=Date.now()+d;if(keepOpened){lockChallengeUI();elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();}else{humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';if(penaltyLeft>0&&elHW)elHW.style.display='none';}updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,1000);}"
@@ -1758,7 +1756,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "if(phase===1){const m={nonce:nonce};m[ak]=normAns(elA.value||'');const mr=await fetch('/__pteroprotect/challenge/verify-math',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)});const mj=await mr.json();if(!mj.ok){if(mj.error==='answer_wrong'&&Number.isFinite(Number(mj.attempts_left))){elS.textContent='Salah. Sisa percobaan math: '+String(Math.max(0,Number(mj.attempts_left)));}throw new Error(mj.error||'math_failed');}setPhasePattern();pseq=Array.isArray(mj.pattern_points)?mj.pattern_points:[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 2: klik angka sesuai urutan.';phase2Hint=sanitizeHint(String(mj.pattern_hint||''));elPHint.textContent=phase2Hint;drawPattern();elB.disabled=false;return;}"
             "if(!powReady){pendingFinalSubmit=true;elS.textContent='PoW masih berjalan di background... auto lanjut saat selesai.';elB.disabled=true;return;}const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=normAns(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
             "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');challengeSolved=true;powLoopStop=true;location.href=j.redirect||'" + rd + "';}"
-            "catch(err){const msg=String(err.message||err);elS.textContent='';elE.textContent=msg;if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
+            "catch(err){const msg=String(err.message||err);showErr(msg);if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
             "async function cleanupOldChallengeCaches(){try{if(window.caches&&caches.keys){const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}if('serviceWorker' in navigator&&navigator.serviceWorker.getRegistrations){const regs=await navigator.serviceWorker.getRegistrations();await Promise.all(regs.filter(r=>{const s=String(r.scope||'');return s===location.origin+'/'||s.includes('/__pteroprotect/challenge/');}).map(r=>r.unregister()));}}catch(_e){}}"
             "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/__pteroprotect/challenge/'});}catch(_e){}}"
             "document.addEventListener('visibilitychange',()=>{if(document.hidden&&powTaskActive){elS.textContent='PoW tetap jalan di background tab...';}});window.addEventListener('beforeunload',()=>{powLoopStop=true;});cleanupOldChallengeCaches().finally(()=>registerChallengeSW().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));}));</script></body></html>";
