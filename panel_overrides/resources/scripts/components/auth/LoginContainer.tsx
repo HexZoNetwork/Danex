@@ -22,8 +22,23 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
 
     const { clearFlashes, clearAndAddHttpError } = useFlash();
     const recaptcha = useStoreState((state) => state.settings.data?.recaptcha);
-    const recaptchaEnabled = !!recaptcha?.enabled;
     const siteKey = recaptcha?.siteKey ?? '';
+    // Only enable recaptcha if it's enabled in settings and a site key is provided.
+    const recaptchaEnabled = !!recaptcha?.enabled && !!siteKey;
+
+    const loadRecaptcha = useCallback(() => {
+        if (!recaptchaEnabled || ReaptchaComponent) return;
+        void import('reaptcha')
+            .then((mod) => {
+                // Support both default and named exports from the module.
+                const m: any = mod;
+                const Comp = (m && (m.default || m.Reaptcha || m));
+                setReaptchaComponent(() => Comp);
+            })
+            .catch((e: any) => {
+                // silent
+            });
+    }, [recaptchaEnabled, ReaptchaComponent]);
 
     useEffect(() => {
         clearFlashes();
@@ -32,29 +47,18 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
         }
     }, [recaptchaEnabled, loadRecaptcha]);
 
-    const loadRecaptcha = useCallback(() => {
-        if (!recaptchaEnabled || ReaptchaComponent) return;
-        void import('reaptcha')
-            .then((mod) => {
-                setReaptchaComponent(() => mod.default);
-            })
-            .catch(() => {
-                // silent
-            });
-    }, [recaptchaEnabled, ReaptchaComponent]);
-
     const onSubmit = (values: Values, { setSubmitting }: FormikHelpers<Values>) => {
         clearFlashes();
 
         // If there is no token in the state yet, request the token and then abort this submit request
         // since it will be re-submitted when the recaptcha data is returned by the component.
-        if (recaptchaEnabled && !token) {
+            if (recaptchaEnabled && !token) {
             if (!ref.current) {
                 loadRecaptcha();
                 setSubmitting(false);
                 return;
             }
-            ref.current!.execute().catch((error) => {
+            ref.current!.execute().catch((error: any) => {
                 console.error(error);
 
                 setSubmitting(false);
@@ -109,8 +113,8 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
                         <ReaptchaComponent
                             ref={ref}
                             size={'invisible'}
-                            sitekey={siteKey || '_invalid_key'}
-                            onVerify={(response) => {
+                            sitekey={siteKey}
+                            onVerify={(response: string) => {
                                 setToken(response);
                                 submitForm();
                             }}
