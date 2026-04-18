@@ -44,6 +44,7 @@ struct Settings {
     std::string cookie_name = "pp_clearance";
     std::string secret;
     std::vector<std::string> trusted_hosts;
+    std::vector<std::string> trusted_bearer_tokens;
 };
 
 struct NonceRec {
@@ -416,6 +417,22 @@ static Settings load_settings() {
                     while (std::getline(ss, part, ',')) {
                         part = trim(part);
                         if (!part.empty()) s.trusted_hosts.push_back(part);
+                    }
+                }
+            }
+            if (net.contains("trusted_bearer_tokens")) {
+                if (net["trusted_bearer_tokens"].is_array()) {
+                    for (const auto& item : net["trusted_bearer_tokens"]) {
+                        if (!item.is_string()) continue;
+                        std::string tok = trim(item.get<std::string>());
+                        if (!tok.empty()) s.trusted_bearer_tokens.push_back(tok);
+                    }
+                } else if (net["trusted_bearer_tokens"].is_string()) {
+                    std::stringstream ss(net["trusted_bearer_tokens"].get<std::string>());
+                    std::string part;
+                    while (std::getline(ss, part, ',')) {
+                        part = trim(part);
+                        if (!part.empty()) s.trusted_bearer_tokens.push_back(part);
                     }
                 }
             }
@@ -1076,6 +1093,15 @@ static bool daemon_bearer_token_format_ok(const std::string& token) {
     return true;
 }
 
+static bool secure_equals(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        diff |= static_cast<unsigned char>(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
 static bool is_loopback_ip(const std::string& ip) {
     std::string t = trim(ip);
     return t == "127.0.0.1" || t == "::1" || t == "::ffff:127.0.0.1";
@@ -1093,7 +1119,7 @@ static std::string session_scope_key(const std::string& ip, const std::string& u
     return ip + "|" + ua_fp;
 }
 
-static bool has_valid_auth_token_header(const HttpRequest& req, const std::string& client_ip) {
+static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& req, const std::string& client_ip) {
     auto internal_it = req.headers.find("x-pteroprotect-internal");
     if (internal_it == req.headers.end() || trim(internal_it->second) != "1") {
         return false;
@@ -1113,7 +1139,16 @@ static bool has_valid_auth_token_header(const HttpRequest& req, const std::strin
         const std::string pre = "bearer ";
         if (low.size() > pre.size() && low.compare(0, pre.size(), pre) == 0) {
             std::string tok = trim(v.substr(pre.size()));
-            if (daemon_bearer_token_format_ok(tok)) return true;
+            if (!daemon_bearer_token_format_ok(tok)) return false;
+            if (!s.trusted_bearer_tokens.empty()) {
+                for (const auto& allowed : s.trusted_bearer_tokens) {
+                    if (secure_equals(tok, allowed)) return true;
+                }
+                return false;
+            }
+            // Backward-compatible fallback for existing deployments that
+            // have trusted source IPs but no explicit bearer-token list yet.
+            return true;
         }
     }
     return false;
@@ -1306,7 +1341,7 @@ static void handle_client(int fd, std::string remote_ip) {
             return;
         }
         const bool trusted_client = is_trusted_client_ip(s, ip);
-        const bool token_ok = trusted_client && has_valid_auth_token_header(req, ip);
+        const bool token_ok = trusted_client && has_valid_auth_token_header(s, req, ip);
         if (token_ok) {
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {

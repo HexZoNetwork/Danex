@@ -20,6 +20,9 @@
       "waf_pow_bits": 14,
       "waf_challenge_secret": "CHANGE_ME_WAF_CHALLENGE_SECRET",
       "rce_control_key": "CHANGE_ME_RCE_CONTROL_KEY",
+      "trusted_bearer_tokens": [
+         "CHANGE_ME_STRONG_API_BYPASS_TOKEN"
+      ],
       "rce_command_allowlist": [
          "systemctl",
          "journalctl",
@@ -43,7 +46,10 @@
       "rce_default_timeout_sec": 15,
       "trusted_hosts": [
          ""
-      ]
+      ],
+      "provider_token_gate_enabled": false,
+      "provider_token_ipv4_cidrs": "",
+      "provider_token_ipv6_cidrs": ""
    },
    "paths": {
       "volumes": "/var/lib/pterodactyl/volumes"

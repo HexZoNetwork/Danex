@@ -1599,6 +1599,9 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     REAL_IP_RECURSIVE_RAW="$(read_network_setting real_ip_recursive true)"
     TRUSTED_PROXY_IPV4_CIDRS="$(read_network_setting trusted_proxy_ipv4_cidrs "")"
     TRUSTED_PROXY_IPV6_CIDRS="$(read_network_setting trusted_proxy_ipv6_cidrs "")"
+    PROVIDER_TOKEN_GATE_ENABLED_RAW="$(read_network_setting provider_token_gate_enabled 0)"
+    PROVIDER_TOKEN_IPV4_CIDRS="$(read_network_setting provider_token_ipv4_cidrs "")"
+    PROVIDER_TOKEN_IPV6_CIDRS="$(read_network_setting provider_token_ipv6_cidrs "")"
     AUTH_CONN_LIMIT=20
     WEBSOCKET_CONN_LIMIT="$(read_network_setting websocket_conn_limit "")"
     WEBSOCKET_GLOBAL_CONN_LIMIT="$(read_network_setting websocket_global_conn_limit "")"
@@ -1678,6 +1681,7 @@ PY
     mkdir -p "${NGINX_DIR}/conf.d" "${NGINX_DIR}/snippets"
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_http_zones.conf" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_realip.conf" "${NGINX_DIR}/conf.d/pteroprotect_realip.conf"
+    cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_provider_gate.conf" "${NGINX_DIR}/conf.d/pteroprotect_provider_gate.conf"
     cp "${INSTALL_DIR}/host_overrides/nginx/snippets/pteroprotect_server.conf" "${NGINX_DIR}/snippets/pteroprotect_server.conf"
     if [[ ! "${CDN_STATIC_CACHE_TTL}" =~ ^[0-9]+[smhdw]$ ]]; then
         CDN_STATIC_CACHE_TTL="7d"
@@ -1783,6 +1787,98 @@ else:
             "# no set_real_ip_from entries were applied",
         ]
     )
+
+path.write_text("\n".join(lines) + "\n")
+PY
+
+    python3 - "${NGINX_DIR}/conf.d/pteroprotect_provider_gate.conf" "${PROVIDER_TOKEN_GATE_ENABLED_RAW}" "${PROVIDER_TOKEN_IPV4_CIDRS}" "${PROVIDER_TOKEN_IPV6_CIDRS}" <<'PY'
+import ipaddress
+import pathlib
+import sys
+
+
+def as_bool(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_csv(value: str):
+    out = []
+    for item in str(value).split(","):
+        item = item.strip()
+        if item:
+            out.append(item)
+    return out
+
+
+def normalize_cidrs(raw_list, version: int):
+    normalized = []
+    seen = set()
+    for item in raw_list:
+        try:
+            net = ipaddress.ip_network(item, strict=False)
+        except Exception:
+            continue
+        if net.version != version:
+            continue
+        text = net.with_prefixlen
+        if text not in seen:
+            seen.add(text)
+            normalized.append(text)
+    return normalized
+
+
+path = pathlib.Path(sys.argv[1])
+enabled = as_bool(sys.argv[2])
+v4 = normalize_cidrs(parse_csv(sys.argv[3]), 4)
+v6 = normalize_cidrs(parse_csv(sys.argv[4]), 6)
+
+lines = [
+    "# managed by pteroprotect setup.sh",
+    "# Provider-range token gate:",
+    "# if client IP is in listed provider CIDR and request has no token -> block.",
+    "",
+    "map $http_authorization $pteroprotect_req_has_bearer {",
+    "    default 0;",
+    "    ~*^Bearer\\s+.+$ 1;",
+    "}",
+    "",
+    "map $http_x_api_key $pteroprotect_req_has_x_api_key {",
+    "    default 0;",
+    "    ~.+ 1;",
+    "}",
+    "",
+    "map $arg_token $pteroprotect_req_has_arg_token {",
+    "    default 0;",
+    "    ~.+ 1;",
+    "}",
+    "",
+    "map \"$pteroprotect_req_has_bearer$pteroprotect_req_has_x_api_key$pteroprotect_req_has_arg_token\" $pteroprotect_req_has_any_token {",
+    "    default 0;",
+    "    ~1 1;",
+    "}",
+    "",
+    "geo $pteroprotect_provider_token_range {",
+    "    default 0;",
+]
+
+if enabled:
+    for cidr in v4:
+        lines.append(f"    {cidr} 1;")
+    for cidr in v6:
+        lines.append(f"    {cidr} 1;")
+
+lines += [
+    "}",
+    "",
+    "map \"$pteroprotect_provider_token_range:$pteroprotect_req_has_any_token\" $pteroprotect_provider_token_block {",
+    "    default 0;",
+    "    \"1:0\" 1;",
+    "}",
+]
+
+if not enabled:
+    lines.append("")
+    lines.append("# disabled (set network.provider_token_gate_enabled=true and add CIDRs)")
 
 path.write_text("\n".join(lines) + "\n")
 PY
