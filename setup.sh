@@ -272,6 +272,91 @@ panel_env_has_database_credentials() {
     ' "${env_file}" >/dev/null 2>&1
 }
 
+sync_config_database_from_panel_env() {
+    local config_file="${1:-${INSTALL_DIR}/config.json}"
+    local env_file="${2:-${PANEL_ENV_FILE}}"
+
+    [[ -f "${config_file}" ]] || return 0
+    [[ -f "${env_file}" ]] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    python3 - "${config_file}" "${env_file}" <<'PY'
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1])
+env_path = Path(sys.argv[2])
+
+try:
+    cfg = json.loads(cfg_path.read_text())
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(cfg, dict):
+    cfg = {}
+db = cfg.get("database")
+if not isinstance(db, dict):
+    db = {}
+    cfg["database"] = db
+
+env = {}
+key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$")
+for raw in env_path.read_text().splitlines():
+    line = raw.rstrip("\r")
+    if not line or line.lstrip().startswith("#"):
+        continue
+    m = key_re.match(line)
+    if not m:
+        continue
+    k, v = m.group(1), m.group(2)
+    if len(v) >= 2 and ((v[0] == '"' and v[-1] == '"') or (v[0] == "'" and v[-1] == "'")):
+        v = v[1:-1]
+    env[k] = v
+
+required = {
+    "host": env.get("DB_HOST", ""),
+    "name": env.get("DB_DATABASE", ""),
+    "user": env.get("DB_USERNAME", ""),
+    "password": env.get("DB_PASSWORD", ""),
+}
+
+if not all(isinstance(v, str) and v.strip() != "" for v in required.values()):
+    raise SystemExit(0)
+
+placeholder_values = {"", "panel_db", "panel_user", "replace_me", "changeme", "change_me"}
+force_sync_raw = str(os.environ.get("PTEROPROTECT_FORCE_PANEL_DB_SYNC", "")).strip().lower()
+force_sync = force_sync_raw not in {"0", "false", "no", "off"}
+
+def is_placeholder(v: object) -> bool:
+    if not isinstance(v, str):
+        return True
+    return v.strip().lower() in placeholder_values
+
+should_sync = force_sync
+if not should_sync:
+    # Even in preserve mode, still replace obvious template placeholders.
+    for key in ("name", "user", "password"):
+        if is_placeholder(db.get(key, "")):
+            should_sync = True
+            break
+
+if not should_sync:
+    raise SystemExit(0)
+
+changed = False
+for key, new_val in required.items():
+    if db.get(key) != new_val:
+        db[key] = new_val
+        changed = True
+
+if changed:
+    cfg_path.write_text(json.dumps(cfg, indent=3, sort_keys=True) + "\n")
+PY
+}
+
 ensure_panel_runtime_dirs() {
     local panel_dir="$1"
     local owner_user="www-data"
@@ -677,6 +762,8 @@ else
     warn "database credentials lengkap tidak ditemukan di ${PANEL_ENV_FILE}; fallback ke config.json/config.example.json."
 fi
 
+sync_config_database_from_panel_env "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}"
+
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
     perl -MJSON::PP -e '
         my ($f, $env_file, $config_example_file)=@ARGV;
@@ -907,6 +994,10 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         open my $out, ">", $f or die;
         print $out JSON::PP->new->ascii->pretty->canonical->encode($j);
     ' "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" "${INSTALL_DIR}/config.example.json"
+
+    # Final safeguard: ensure database section reflects panel .env (or at least
+    # replaces obvious template placeholders) before service startup.
+    sync_config_database_from_panel_env "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}"
 
     # Source of truth flow:
     # 1) panel .env -> config.json (database keys only)
