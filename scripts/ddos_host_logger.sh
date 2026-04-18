@@ -203,6 +203,29 @@ adaptive_trigger_brownout() {
     fi
 }
 
+cleanup_stale_brownout_state() {
+    local flag_file state_file now until enabled
+    flag_file="${RUNTIME_DIR}/brownout.flag"
+    state_file="${RUNTIME_DIR}/brownout.state.json"
+
+    [[ -f "${flag_file}" ]] || return 0
+    if [[ ! -f "${state_file}" ]]; then
+        rm -f "${flag_file}" >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    now="$(date +%s)"
+    until="$(awk -F'"until":' '{print $2}' "${state_file}" 2>/dev/null | awk -F',' '{print $1}' | tr -cd '0-9' || true)"
+    enabled="$(awk -F'"enabled":' '{print $2}' "${state_file}" 2>/dev/null | awk -F',' '{print $1}' | tr -d '[:space:]' || true)"
+    [[ "${until}" =~ ^[0-9]+$ ]] || until=0
+
+    if [[ "${enabled}" == "false" ]] || (( until > 0 && until <= now )); then
+        rm -f "${flag_file}" "${state_file}" >/dev/null 2>&1 || true
+        printf '[brownout] stale-runtime-cleared until=%s enabled=%s now=%s\n' "${until}" "${enabled:-unknown}" "${now}" >> "${LOG_FILE}"
+        printf '[brownout] stale-runtime-cleared until=%s enabled=%s now=%s\n' "${until}" "${enabled:-unknown}" "${now}" >> "${LATEST_FILE}"
+    fi
+}
+
 sanitize_ports_csv() {
     local raw="$1"
     local cleaned
@@ -2298,6 +2321,7 @@ while true; do
     SWARM_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_req_threshold 240)" 40)"
     SWARM_UNIQUE_IP_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_unique_ip_threshold 24)" 4)"
     SWARM_PER_IP_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_per_ip_req_threshold 24)" 4)"
+    SWARM_MODE_MIN_TOP_HTTP="$(clamp_min_int "$(read_network_setting swarm_mode_min_top_http 80)" 10)"
     ADAPTIVE_GUARD_ENABLED="$(normalize_bool "$(read_network_setting adaptive_guard_enabled 1)")"
     ADAPTIVE_ALPHA_PCT="$(clamp_percentage "$(read_network_setting adaptive_alpha_pct 12)" 2 60)"
     ADAPTIVE_MIN_SAMPLES="$(clamp_min_int "$(read_network_setting adaptive_min_samples 20)" 5)"
@@ -2459,6 +2483,7 @@ while true; do
     ensure_whitelist_not_blocked
     ensure_lightweight_block_hooks
     ip_trust_restore_once
+    cleanup_stale_brownout_state
 
     timestamp="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
@@ -2579,6 +2604,7 @@ while true; do
     desired_ttl=0
     if [[ "${AUTO_MODE_ENABLED}" == "1" ]]; then
         aggressive_signal=0
+        swarm_mode_signal=0
         http_only_est_floor=$(( MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD / 4 ))
         http_only_syn_floor=$(( MODE_AGGRESSIVE_SYN_RECV_THRESHOLD / 4 ))
         http_only_service_floor=$(( SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD / 2 ))
@@ -2604,7 +2630,17 @@ while true; do
             desired_reason="adaptive-shock established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},samples=${ADAPTIVE_SAMPLES}"
             desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
         else
-            if (( established >= MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) || (( service_pulse_count >= SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) || (( service_pulse_delta >= SERVICE_ACTIVITY_DELTA_AGGRESSIVE )) || (( swarm_hits >= 1 )); then
+            if (( swarm_hits >= 1 )) && {
+                (( top_http_count >= SWARM_MODE_MIN_TOP_HTTP )) ||
+                (( top_http_count >= MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )) ||
+                (( established >= http_only_est_floor )) ||
+                (( syn_recv >= http_only_syn_floor )) ||
+                (( service_pulse_count >= http_only_service_floor ));
+            }; then
+                swarm_mode_signal=1
+            fi
+
+            if (( established >= MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) || (( service_pulse_count >= SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) || (( service_pulse_delta >= SERVICE_ACTIVITY_DELTA_AGGRESSIVE )) || (( swarm_mode_signal == 1 )); then
                 aggressive_signal=1
             elif (( top_http_count >= MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )); then
                 # Avoid false-positive aggressive mode when only a single high-HTTP
@@ -2617,7 +2653,7 @@ while true; do
 
         if (( aggressive_signal == 1 )); then
             desired_mode="aggressive"
-            desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta},swarm=${swarm_hits}"
+            desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},top_http_raw=${top_http_count_raw},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta},swarm=${swarm_hits},swarm_mode=${swarm_mode_signal}"
             desired_ttl="${MODE_AGGRESSIVE_TTL_SEC}"
         elif (( adaptive_aggressive_signal == 1 )); then
             desired_mode="aggressive"
