@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, RouteComponentProps } from 'react-router-dom';
 import login from '@/api/auth/login';
 import LoginFormContainer from '@/components/auth/LoginFormContainer';
@@ -9,6 +9,7 @@ import Field from '@/components/elements/Field';
 import tw from 'twin.macro';
 import Button from '@/components/elements/Button';
 import useFlash from '@/plugins/useFlash';
+import Reaptcha from 'reaptcha';
 
 interface Values {
     username: string;
@@ -18,49 +19,38 @@ interface Values {
 const LoginContainer = ({ history }: RouteComponentProps) => {
     const ref = useRef<any>(null);
     const [token, setToken] = useState('');
-    const [ReaptchaComponent, setReaptchaComponent] = useState<React.ComponentType<any> | null>(null);
+    const [captchaLoadError, setCaptchaLoadError] = useState(false);
 
-    const { clearFlashes, clearAndAddHttpError } = useFlash();
+    const { clearFlashes, clearAndAddHttpError, addFlash } = useFlash();
     const recaptcha = useStoreState((state) => state.settings.data?.recaptcha);
     const siteKey = recaptcha?.siteKey ?? '';
     // Only enable recaptcha if it's enabled in settings and a site key is provided.
     const recaptchaEnabled = !!recaptcha?.enabled && !!siteKey;
 
-    const loadRecaptcha = useCallback(() => {
-        if (!recaptchaEnabled || ReaptchaComponent) return;
-        void import('reaptcha')
-            .then((mod) => {
-                // Support both default and named exports from the module.
-                const m: any = mod;
-                const Comp = (m && (m.default || m.Reaptcha || m));
-                setReaptchaComponent(() => Comp);
-            })
-            .catch((e: any) => {
-                // silent
-            });
-    }, [recaptchaEnabled, ReaptchaComponent]);
-
     useEffect(() => {
         clearFlashes();
-        if (recaptchaEnabled) {
-            loadRecaptcha();
-        }
-    }, [recaptchaEnabled, loadRecaptcha]);
+    }, [clearFlashes]);
 
     const onSubmit = (values: Values, { setSubmitting }: FormikHelpers<Values>) => {
         clearFlashes();
 
         // If there is no token in the state yet, request the token and then abort this submit request
         // since it will be re-submitted when the recaptcha data is returned by the component.
-            if (recaptchaEnabled && !token) {
+        if (recaptchaEnabled && !token) {
             if (!ref.current) {
-                loadRecaptcha();
+                setCaptchaLoadError(true);
                 setSubmitting(false);
+                addFlash({
+                    type: 'error',
+                    title: 'Captcha Error',
+                    message: 'Captcha gagal dimuat. Refresh halaman lalu coba lagi.',
+                });
                 return;
             }
             ref.current!.execute().catch((error: any) => {
                 console.error(error);
 
+                setCaptchaLoadError(true);
                 setSubmitting(false);
                 clearAndAddHttpError({ error });
             });
@@ -99,7 +89,7 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
             })}
         >
             {({ isSubmitting, setSubmitting, submitForm }) => (
-                <LoginFormContainer title={'Login to Continue'} css={tw`w-full flex`} onFocusCapture={loadRecaptcha}>
+                <LoginFormContainer title={'Login to Continue'} css={tw`w-full flex`}>
                     <Field light type={'text'} label={'Username or Email'} name={'username'} disabled={isSubmitting} />
                     <div css={tw`mt-6`}>
                         <Field light type={'password'} label={'Password'} name={'password'} disabled={isSubmitting} />
@@ -109,8 +99,8 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
                             Login
                         </Button>
                     </div>
-                    {recaptchaEnabled && ReaptchaComponent && (
-                        <ReaptchaComponent
+                    {recaptchaEnabled && (
+                        <Reaptcha
                             ref={ref}
                             size={'invisible'}
                             sitekey={siteKey}
@@ -123,6 +113,11 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
                                 setToken('');
                             }}
                         />
+                    )}
+                    {captchaLoadError && (
+                        <p css={tw`mt-3 text-center text-xs text-red-500`}>
+                            Captcha gagal dimuat. Refresh halaman atau nonaktifkan extension pemblokir script.
+                        </p>
                     )}
                     <div css={tw`mt-6 text-center`}>
                         <Link
