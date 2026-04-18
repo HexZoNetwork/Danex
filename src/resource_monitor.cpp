@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
+#include <cstdio>
 #include <fstream>
 #include <set>
 #include <regex>
@@ -105,6 +106,7 @@ struct ScriptAbuseInfo {
     bool hard = false;
     int score = 0;
     std::string summary;
+    std::string suspect_path;
 };
 
 struct ActivityAbuseInfo {
@@ -763,6 +765,18 @@ int count_occurrences(const std::string& haystack, const std::string& needle) {
     return count;
 }
 
+std::string fingerprint64_hex(const std::string& data) {
+    // Stable lightweight fingerprint for alert correlation.
+    unsigned long long h = 1469598103934665603ULL;
+    for (unsigned char c : data) {
+        h ^= static_cast<unsigned long long>(c);
+        h *= 1099511628211ULL;
+    }
+    std::ostringstream out;
+    out << std::hex << std::setw(16) << std::setfill('0') << h;
+    return out.str();
+}
+
 ScriptAbuseInfo collect_script_abuse(const std::string& server_uuid) {
     ScriptAbuseInfo info;
     if (server_uuid.empty() || !is_safe_docker_ref_token(server_uuid)) return info;
@@ -778,6 +792,7 @@ ScriptAbuseInfo collect_script_abuse(const std::string& server_uuid) {
     std::stringstream ss(files);
     std::string path;
     std::vector<std::string> hits;
+    std::string best_path;
     int best_score = 0;
     bool hard = false;
     while (std::getline(ss, path)) {
@@ -825,14 +840,19 @@ ScriptAbuseInfo collect_script_abuse(const std::string& server_uuid) {
         if (score > best_score) {
             best_score = score;
             hard = this_hard;
+            best_path = path;
             std::string file_name = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1);
+            std::string rel_path = file_name;
+            std::string prefix = volume_root + "/";
+            if (path.find(prefix) == 0) rel_path = path.substr(prefix.size());
             std::ostringstream one;
-            one << "script=" << file_name
+            one << "script=" << rel_path
                 << " score=" << score
                 << " eval=" << eval_count
                 << " fn=" << fn_ctor
                 << " fcc=" << from_char
-                << " child_process=" << cp_count;
+                << " child_process=" << cp_count
+                << " fp=" << fingerprint64_hex(body);
             hits.clear();
             hits.push_back(one.str());
         }
@@ -843,11 +863,12 @@ ScriptAbuseInfo collect_script_abuse(const std::string& server_uuid) {
         info.hard = hard;
         info.score = best_score;
         info.summary = hits.empty() ? "obfuscated_js_runtime" : hits.front();
+        info.suspect_path = best_path;
     }
     return info;
 }
 
-int quarantine_payload_artifacts(const std::string& server_uuid) {
+int quarantine_payload_artifacts(const std::string& server_uuid, const std::string& suspicious_script_path = "") {
     if (server_uuid.empty() || !is_safe_docker_ref_token(server_uuid)) return 0;
 
     std::string volume_root = "/var/lib/pterodactyl/volumes/" + server_uuid;
@@ -878,7 +899,30 @@ int quarantine_payload_artifacts(const std::string& server_uuid) {
     std::string out = trim_copy(exec_read_all("bash -lc " + shell_quote_single(script)));
     if (out.empty()) return 0;
     int moved = std::atoi(out.c_str());
-    return moved > 0 ? moved : 0;
+    if (moved < 0) moved = 0;
+
+    std::string suspect = trim_copy(suspicious_script_path);
+    if (!suspect.empty()) {
+        std::string allowed_prefix = volume_root + "/";
+        if (suspect.find(allowed_prefix) == 0 &&
+            suspect.find(quarantine_dir + "/") != 0) {
+            struct stat st{};
+            if (stat(suspect.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+                std::string base = suspect.substr(suspect.find_last_of('/') == std::string::npos ? 0 : suspect.find_last_of('/') + 1);
+                std::string base_lower = to_lower_copy_res(base);
+                if (!(base_lower == "package.json" || base_lower == "package-lock.json" ||
+                      base_lower == "pnpm-lock.yaml" || base_lower == "yarn.lock" ||
+                      base_lower == "tsconfig.json" || base_lower == "webpack.config.js" ||
+                      base_lower == "vite.config.ts" || base_lower == "dockerfile" ||
+                      base_lower == "readme.md")) {
+                    std::string dest = quarantine_dir + "/" + std::to_string((long long)time(nullptr)) + "_" + base + ".quarantined";
+                    if (std::rename(suspect.c_str(), dest.c_str()) == 0) moved++;
+                }
+            }
+        }
+    }
+
+    return moved;
 }
 
 bool stop_container_now(const std::string& identifier, const std::string& uuid = "") {
@@ -1787,7 +1831,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         if (!cooldown_ok) return;
 
         bool container_stopped = stop_container_now(srv.identifier, srv.uuid);
-        int quarantined_files = quarantine_payload_artifacts(srv.uuid);
+        int quarantined_files = quarantine_payload_artifacts(srv.uuid, offline_script.suspect_path);
         std::string suspend_reason = "resources_api=unavailable";
         if (!offline_dropper.empty()) suspend_reason += " | offline_artifact=" + offline_dropper;
         if (offline_script.suspicious && !offline_script.summary.empty()) {
@@ -1968,7 +2012,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
                 offline_suspend_reason += " | dropper_file=" + dropper_artifact;
             }
             bool suspended = db.suspend_server(db_info.id, offline_suspend_reason);
-            int quarantined_files = quarantine_payload_artifacts(srv.uuid);
+            int quarantined_files = quarantine_payload_artifacts(srv.uuid, script_abuse.suspect_path);
             std::ostringstream det;
             if (activity_trigger) {
                 det << "ACT score=" << activity_abuse.score;
@@ -2238,7 +2282,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         if (self_ddos || runtime_trigger) {
             // Self-DDoS path: enforce locally, do not rely on DB suspend.
             container_stopped = stop_container_now(srv.identifier, srv.uuid);
-            quarantined_files = quarantine_payload_artifacts(srv.uuid);
+            quarantined_files = quarantine_payload_artifacts(srv.uuid, script_abuse.suspect_path);
             suspended = false;
             enforcement_done = container_stopped || quarantined_files > 0;
         } else if (ram_oom_emergency || bw_spike_trigger) {
@@ -2418,8 +2462,8 @@ void ResourceMonitor::check_all() {
     }
 
     for (const auto& srv : snapshot) {
-        int pre_moved = quarantine_payload_artifacts(srv.uuid);
         ScriptAbuseInfo pre_script = collect_script_abuse(srv.uuid);
+        int pre_moved = quarantine_payload_artifacts(srv.uuid, pre_script.suspect_path);
         if (pre_moved > 0 || pre_script.suspicious) {
             bool stopped = stop_container_now(srv.identifier, srv.uuid);
             if (pre_moved > 0 || stopped) {
