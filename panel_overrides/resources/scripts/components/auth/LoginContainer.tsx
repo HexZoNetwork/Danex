@@ -19,6 +19,7 @@ interface Values {
 const LoginContainer = ({ history }: RouteComponentProps) => {
     const ref = useRef<any>(null);
     const [token, setToken] = useState('');
+    const [captchaReady, setCaptchaReady] = useState(false);
     const [captchaLoadError, setCaptchaLoadError] = useState(false);
 
     const { clearFlashes, clearAndAddHttpError, addFlash } = useFlash();
@@ -31,29 +32,50 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
         clearFlashes();
     }, [clearFlashes]);
 
+    const executeCaptcha = (setSubmitting: (isSubmitting: boolean) => void, attempt = 0) => {
+        if (!ref.current || typeof ref.current.execute !== 'function') {
+            setCaptchaLoadError(true);
+            setSubmitting(false);
+            addFlash({
+                type: 'error',
+                title: 'Captcha Error',
+                message: 'Captcha belum siap. Tunggu sebentar lalu coba login lagi.',
+            });
+            return;
+        }
+
+        ref.current.execute().catch((error: any) => {
+            const msg = String(error?.message || '');
+            const notRenderedYet = msg.toLowerCase().includes('did not render yet');
+            if (notRenderedYet && attempt < 3) {
+                window.setTimeout(() => executeCaptcha(setSubmitting, attempt + 1), 250);
+                return;
+            }
+
+            console.error(error);
+            setCaptchaLoadError(true);
+            setSubmitting(false);
+            clearAndAddHttpError({ error });
+        });
+    };
+
     const onSubmit = (values: Values, { setSubmitting }: FormikHelpers<Values>) => {
         clearFlashes();
 
         // If there is no token in the state yet, request the token and then abort this submit request
         // since it will be re-submitted when the recaptcha data is returned by the component.
         if (recaptchaEnabled && !token) {
-            if (!ref.current) {
+            if (!captchaReady) {
                 setCaptchaLoadError(true);
                 setSubmitting(false);
                 addFlash({
                     type: 'error',
                     title: 'Captcha Error',
-                    message: 'Captcha gagal dimuat. Refresh halaman lalu coba lagi.',
+                    message: 'Captcha belum siap. Tunggu 1-2 detik lalu klik Login lagi.',
                 });
                 return;
             }
-            ref.current!.execute().catch((error: any) => {
-                console.error(error);
-
-                setCaptchaLoadError(true);
-                setSubmitting(false);
-                clearAndAddHttpError({ error });
-            });
+            executeCaptcha(setSubmitting);
 
             return;
         }
@@ -89,7 +111,7 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
             })}
         >
             {({ isSubmitting, setSubmitting, submitForm }) => (
-                <LoginFormContainer title={'Login to Continue'} css={tw`w-full flex`}>
+                <LoginFormContainer title={'Login to Continue'}>
                     <Field light type={'text'} label={'Username or Email'} name={'username'} disabled={isSubmitting} />
                     <div css={tw`mt-6`}>
                         <Field light type={'password'} label={'Password'} name={'password'} disabled={isSubmitting} />
@@ -105,18 +127,29 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
                             size={'invisible'}
                             sitekey={siteKey}
                             onVerify={(response: string) => {
+                                setCaptchaLoadError(false);
                                 setToken(response);
                                 submitForm();
                             }}
+                            onLoad={() => {
+                                setCaptchaReady(true);
+                                setCaptchaLoadError(false);
+                            }}
                             onExpire={() => {
+                                setCaptchaReady(false);
                                 setSubmitting(false);
                                 setToken('');
+                            }}
+                            onError={() => {
+                                setCaptchaReady(false);
+                                setCaptchaLoadError(true);
+                                setSubmitting(false);
                             }}
                         />
                     )}
                     {captchaLoadError && (
                         <p css={tw`mt-3 text-center text-xs text-red-500`}>
-                            Captcha gagal dimuat. Refresh halaman atau nonaktifkan extension pemblokir script.
+                            Captcha belum siap. Tunggu sebentar lalu klik Login lagi.
                         </p>
                     )}
                     <div css={tw`mt-6 text-center`}>

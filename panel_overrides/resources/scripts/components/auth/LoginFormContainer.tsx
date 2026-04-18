@@ -9,11 +9,14 @@ type Props = React.DetailedHTMLProps<React.FormHTMLAttributes<HTMLFormElement>, 
     title?: string;
     compact?: boolean;
     hideLogo?: boolean;
+    className?: string;
 };
 
 const Container = styled.div`
+    ${tw`w-full mx-auto px-2`};
+
     ${breakpoint('sm')`
-        ${tw`w-4/5 mx-auto`}
+        ${tw`w-4/5 px-0`}
     `};
 
     ${breakpoint('md')`
@@ -30,8 +33,8 @@ const Container = styled.div`
     `};
 `;
 
-export default forwardRef<HTMLFormElement, Props>(({ title, compact, hideLogo, ...props }, ref) => (
-    <Container>
+export default forwardRef<HTMLFormElement, Props>(({ title, compact, hideLogo, className, ...props }, ref) => (
+    <Container className={className}>
         {title && <h2 css={tw`text-3xl text-center text-neutral-100 font-medium py-4`}>{title}</h2>}
         <FlashMessageRender css={tw`mb-2 px-1`} />
         <Form {...props} ref={ref}>

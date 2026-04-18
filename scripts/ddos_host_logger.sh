@@ -366,6 +366,34 @@ append_csv_unique() {
     esac
 }
 
+filter_whitelist_ip_counts() {
+    local counts="$1"
+    local whitelist_csv="${WHITELIST_IPS:-}"
+
+    if [[ -z "${whitelist_csv}" ]]; then
+        printf '%s\n' "${counts}"
+        return 0
+    fi
+
+    awk -v wl="${whitelist_csv}" '
+        BEGIN {
+            split(wl, arr, ",");
+            for (i in arr) {
+                ip = arr[i];
+                gsub(/^[ \t]+|[ \t]+$/, "", ip);
+                if (ip != "") {
+                    allow[ip] = 1;
+                }
+            }
+        }
+        {
+            ip = $2;
+            if (ip == "" || ip in allow) next;
+            print $0;
+        }
+    ' <<< "${counts}"
+}
+
 is_valid_ip() {
     local ip
     ip="$(normalize_ip "$1")"
@@ -2442,7 +2470,8 @@ while true; do
     established_ip_counts="$(extract_remote_ip_counts established)"
     top_established="$(sed -n '1,10p' <<< "${established_ip_counts}")"
     top_syn="$(sed -n '1,10p' <<< "${syn_ip_counts}")"
-    access_ip_counts="$(safe_cmd "tail -n ${LOG_TAIL_LINES} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${HTTP_IGNORE_PATH_REGEX}' 'NF >= 7 && \$7 !~ ignore_re {print \$1}' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr")"
+    access_ip_counts_raw="$(safe_cmd "tail -n ${LOG_TAIL_LINES} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${HTTP_IGNORE_PATH_REGEX}' 'NF >= 7 && \$7 !~ ignore_re {print \$1}' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr")"
+    access_ip_counts="$(filter_whitelist_ip_counts "${access_ip_counts_raw}")"
     server_identifier_counts="$(extract_server_identifier_counts "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
     server_identifier_ip_stats="$(extract_server_identifier_ip_stats "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
     probe_ip_counts="$(extract_probe_ip_counts "${LOG_TAIL_LINES}" "${PROBE_PATH_REGEX}")"
@@ -2453,6 +2482,7 @@ while true; do
     BEHAVIOR_IP_STATS="${behavior_ip_stats}"
     path_swarm_stats="$(extract_path_swarm_stats "${LOG_TAIL_LINES}" "${HTTP_IGNORE_PATH_REGEX}")"
     top_http_access="$(sed -n '1,10p' <<< "${access_ip_counts}")"
+    top_http_access_raw="$(sed -n '1,10p' <<< "${access_ip_counts_raw}")"
     top_server_identifiers="$(sed -n '1,10p' <<< "${server_identifier_counts}")"
     top_probe_ips="$(sed -n '1,10p' <<< "${probe_ip_counts}")"
     top_sqli_probe_ips="$(sed -n '1,10p' <<< "${sqli_probe_ip_counts}")"
@@ -2488,6 +2518,8 @@ while true; do
     update_ip_trust_from_rate_samples "${syn_ip_counts}" "${established_ip_counts}" "${access_ip_counts}" "${probe_ip_counts}" "${sqli_probe_ip_counts}"
     update_ip_trust_from_behavior_samples "${behavior_ip_stats}"
 
+    top_http_count_raw="$(awk 'NF >= 1 {print $1; exit}' <<< "${access_ip_counts_raw}" 2>/dev/null || true)"
+    [[ "${top_http_count_raw}" =~ ^[0-9]+$ ]] || top_http_count_raw=0
     top_http_count="$(awk 'NF >= 1 {print $1; exit}' <<< "${access_ip_counts}" 2>/dev/null || true)"
     [[ "${top_http_count}" =~ ^[0-9]+$ ]] || top_http_count=0
 
@@ -2618,8 +2650,10 @@ while true; do
         echo "${top_established:-none}"
         echo "--- top_syn_recv ---"
         echo "${top_syn:-none}"
-        echo "--- top_http_access ---"
+        echo "--- top_http_access_effective(non-whitelist) ---"
         echo "${top_http_access:-none}"
+        echo "--- top_http_access_raw(all) ---"
+        echo "${top_http_access_raw:-none}"
         echo "--- top_server_identifiers ---"
         echo "${top_server_identifiers:-none}"
         echo "--- top_probe_ips ---"
@@ -2663,8 +2697,10 @@ while true; do
         echo "${top_established:-none}"
         echo "--- top_syn_recv ---"
         echo "${top_syn:-none}"
-        echo "--- top_http_access ---"
+        echo "--- top_http_access_effective(non-whitelist) ---"
         echo "${top_http_access:-none}"
+        echo "--- top_http_access_raw(all) ---"
+        echo "${top_http_access_raw:-none}"
         echo "--- top_server_identifiers ---"
         echo "${top_server_identifiers:-none}"
         echo "--- top_probe_ips ---"

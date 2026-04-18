@@ -38,11 +38,12 @@ class SetSecurityHeaders
         $csp = implode('; ', [
             "default-src 'self'",
             // Existing templates still use inline scripts/styles. Keep functionality while blocking third-party script injection.
-            "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://rum.corewebvitals.io",
+            "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://rum.corewebvitals.io https://www.google.com https://www.gstatic.com https://recaptcha.net",
             "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
-            "img-src 'self' data: blob: https://www.gravatar.com",
+            "img-src 'self' data: blob: https://www.gravatar.com https://www.google.com https://www.gstatic.com https://recaptcha.net",
             "font-src 'self' data: https://cdnjs.cloudflare.com",
             "connect-src 'self' wss: https:",
+            "frame-src 'self' https://www.google.com https://www.gstatic.com https://recaptcha.net",
             "frame-ancestors 'none'",
             "object-src 'none'",
             "base-uri 'self'",
