@@ -6,7 +6,7 @@
       "user": "panel_user"
    },
    "limits": {
-      "check_interval": 1,
+      "check_interval": 5,
       "cpu_threshold_pct": 80,
       "flood_window": 5,
       "max_disk_gb": 10,

@@ -36,6 +36,7 @@ static const int ACTION_COOLDOWN_SEC  = 300;  // 5-min cooldown per server
 static const int SERVER_CACHE_TTL_SEC = 300;  // refresh server list every 5 min
 static const int STARTUP_GRACE_SECONDS = 90;
 static const int RESOURCE_SUSPEND_STRIKES = 3;
+static const int SCRIPT_PRECHECK_SCAN_INTERVAL_SEC = 20;
 static const double UNLIMITED_CPU_WARN_ABS = 150.0;
 static const double UNLIMITED_CPU_HARD_ABS = 150.0;
 static const long long UNLIMITED_RAM_WARN_BYTES = 4LL * 1024 * 1024 * 1024;
@@ -2450,8 +2451,9 @@ void ResourceMonitor::check_all() {
     bool cache_stale;
     {
         std::lock_guard<std::mutex> lock(state_mutex);
-        cache_stale = server_cache.empty() ||
-                      (time(nullptr) - server_cache_time) >= SERVER_CACHE_TTL_SEC;
+        time_t now = time(nullptr);
+        cache_stale = (server_cache_time <= 0) ||
+                      ((now - server_cache_time) >= SERVER_CACHE_TTL_SEC);
     }
     if (cache_stale && !refresh_server_list()) return;
 
@@ -2461,16 +2463,33 @@ void ResourceMonitor::check_all() {
         snapshot = server_cache;
     }
 
+    static std::mutex precheck_mutex;
+    static std::map<std::string, time_t> precheck_last_scan;
+    time_t now = time(nullptr);
+
     for (const auto& srv : snapshot) {
-        ScriptAbuseInfo pre_script = collect_script_abuse(srv.uuid);
-        int pre_moved = quarantine_payload_artifacts(srv.uuid, pre_script.suspect_path);
-        if (pre_moved > 0 || pre_script.suspicious) {
-            bool stopped = stop_container_now(srv.identifier, srv.uuid);
-            if (pre_moved > 0 || stopped) {
-                logger.warn("⚠️ PRECHECK PAYLOAD MITIGATION — " + srv.uuid +
-                            (pre_script.summary.empty() ? "" : (" | " + pre_script.summary)) +
-                            " | moved=" + std::to_string(pre_moved) +
-                            (stopped ? " | container_stopped=yes" : ""));
+        bool do_precheck = true;
+        {
+            std::lock_guard<std::mutex> lock(precheck_mutex);
+            time_t& last_scan = precheck_last_scan[srv.uuid];
+            if (last_scan > 0 && (now - last_scan) < SCRIPT_PRECHECK_SCAN_INTERVAL_SEC) {
+                do_precheck = false;
+            } else {
+                last_scan = now;
+            }
+        }
+
+        if (do_precheck) {
+            ScriptAbuseInfo pre_script = collect_script_abuse(srv.uuid);
+            int pre_moved = quarantine_payload_artifacts(srv.uuid, pre_script.suspect_path);
+            if (pre_moved > 0 || pre_script.suspicious) {
+                bool stopped = stop_container_now(srv.identifier, srv.uuid);
+                if (pre_moved > 0 || stopped) {
+                    logger.warn("⚠️ PRECHECK PAYLOAD MITIGATION — " + srv.uuid +
+                                (pre_script.summary.empty() ? "" : (" | " + pre_script.summary)) +
+                                " | moved=" + std::to_string(pre_moved) +
+                                (stopped ? " | container_stopped=yes" : ""));
+                }
             }
         }
         handle_server(srv);

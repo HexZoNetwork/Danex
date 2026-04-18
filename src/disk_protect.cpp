@@ -34,8 +34,9 @@ const double DISK_SPIKE_HARD_GB = 5.0;
 const int CONSECUTIVE_TRIGGER_REQUIRED = 2;
 const int ALERT_COOLDOWN_SECONDS = 120;
 const int ALERT_DEDUP_SECONDS = 1800;
-const int FILE_SCAN_INTERVAL_SECONDS = 5;
+const int FILE_SCAN_INTERVAL_SECONDS = 15;
 const int SOFT_QUARANTINE_ALLOW_SECONDS = 86400;
+const size_t CONTENT_SCAN_CACHE_MAX_ENTRIES = 50000;
 
 // network flood thresholds
 const int TCP_CONN_WARNING = 300;
@@ -267,6 +268,14 @@ ContentScanCacheEntry make_content_cache_entry(long long size, time_t modified,
     entry.suspicious = suspicious;
     entry.reason = reason;
     return entry;
+}
+
+void put_content_scan_cache(const std::string& path, const ContentScanCacheEntry& entry) {
+    content_scan_cache[path] = entry;
+    if (content_scan_cache.size() > CONTENT_SCAN_CACHE_MAX_ENTRIES) {
+        // Hard cap to avoid monitor RAM growth on massive file churn.
+        content_scan_cache.clear();
+    }
 }
 
 std::string build_alert_signature(const std::string& type,
@@ -1194,7 +1203,7 @@ bool DiskProtector::is_suspicious_file(const FileInfo& file, std::string& reason
 
     if (!has_text_like_extension(file.name) && printable_ratio < MIN_PRINTABLE_RATIO) {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        content_scan_cache[file.path] = make_content_cache_entry(file.size, file.modified, false, "");
+        put_content_scan_cache(file.path, make_content_cache_entry(file.size, file.modified, false, ""));
         return false;
     }
 
@@ -1207,7 +1216,7 @@ bool DiskProtector::is_suspicious_file(const FileInfo& file, std::string& reason
             if (is_known_safe_runtime_path_literal(lc)) continue;
             reason = "Content matches critical pattern: " + k;
             std::lock_guard<std::mutex> lock(cache_mutex);
-            content_scan_cache[file.path] = make_content_cache_entry(file.size, file.modified, true, reason);
+            put_content_scan_cache(file.path, make_content_cache_entry(file.size, file.modified, true, reason));
             return true;
         }
     }
@@ -1223,7 +1232,7 @@ bool DiskProtector::is_suspicious_file(const FileInfo& file, std::string& reason
                 if (hit >= 2) {
                     reason = "Content has multiple suspicious patterns (e.g. \"" + first_match + "\")";
                     std::lock_guard<std::mutex> lock(cache_mutex);
-                    content_scan_cache[file.path] = make_content_cache_entry(file.size, file.modified, true, reason);
+                    put_content_scan_cache(file.path, make_content_cache_entry(file.size, file.modified, true, reason));
                     return true;
                 }
             }
@@ -1241,7 +1250,7 @@ bool DiskProtector::is_suspicious_file(const FileInfo& file, std::string& reason
                 if (hit >= 3) {
                     reason = "Content shows obfuscation/encoding cluster (e.g. \"" + first_match + "\")";
                     std::lock_guard<std::mutex> lock(cache_mutex);
-                    content_scan_cache[file.path] = make_content_cache_entry(file.size, file.modified, true, reason);
+                    put_content_scan_cache(file.path, make_content_cache_entry(file.size, file.modified, true, reason));
                     return true;
                 }
             }
@@ -1250,7 +1259,7 @@ bool DiskProtector::is_suspicious_file(const FileInfo& file, std::string& reason
 
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        content_scan_cache[file.path] = make_content_cache_entry(file.size, file.modified, false, "");
+        put_content_scan_cache(file.path, make_content_cache_entry(file.size, file.modified, false, ""));
     }
 
     return false;
@@ -1452,12 +1461,14 @@ void DiskProtector::check_server(const std::string& uuid) {
     int prev_hit = 0;
     time_t now = time(nullptr), last_action = 0;
 
+    time_t prev_file_scan = 0;
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (cache_ukuran.count(uuid)) prev_disk = cache_ukuran[uuid];
         if (cache_ukuran_apparent.count(uuid)) prev_apparent_disk = cache_ukuran_apparent[uuid];
         if (cache_consecutive_hit.count(uuid)) prev_hit = cache_consecutive_hit[uuid];
         if (cache_last_action.count(uuid)) last_action = cache_last_action[uuid];
+        if (cache_last_file_scan.count(uuid)) prev_file_scan = cache_last_file_scan[uuid];
         cache_ukuran[uuid] = disk_gb;
         cache_ukuran_apparent[uuid] = apparent_disk_gb;
     }
@@ -1485,9 +1496,8 @@ void DiskProtector::check_server(const std::string& uuid) {
     bool hard_trigger   = disk_hard || net_critical;
     bool normal_trigger = anomaly && hit >= CONSECUTIVE_TRIGGER_REQUIRED;
     bool need_action    = hard_trigger || (cooldown_ok && normal_trigger);
-    // Always scan file contents every guard cycle so short-lived droppers
-    // cannot slip through between anomaly-triggered passes.
-    bool should_scan_files = true;
+    bool periodic_scan_due = (now - prev_file_scan) >= FILE_SCAN_INTERVAL_SECONDS;
+    bool should_scan_files = anomaly || periodic_scan_due;
 
     std::string reason = "ANOMALY";
     if (net_critical) reason = "NETWORK FLOOD " + std::to_string(tcp_conns) + " TCP CONNS";
