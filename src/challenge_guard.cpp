@@ -718,7 +718,7 @@ static bool behavior_pass(const json& behavior, const NonceRec& rec) {
         return true;
     }
 
-    const bool pointer_ok = (pointer_moves >= 2 && pointer_distance >= 60);
+    const bool pointer_ok = (pointer_moves >= 2 && pointer_distance >= 60 && pointer_dir_changes >= 1);
     const bool touch_ok = (touch_moves >= 1);
     const bool fallback_ok = (scroll_count >= 1 || key_count >= 1 || pointer_moves >= 1);
     return pointer_ok || touch_ok || fallback_ok;
