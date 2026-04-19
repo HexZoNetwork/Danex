@@ -106,9 +106,8 @@ class UserController extends ApplicationApiController
         return $this->fractal->item($user)
             ->transformWith($this->getTransformer(UserTransformer::class))
             ->addMeta([
-                'resource' => route('api.application.users.view', [
-                    'user' => $user->id,
-                ]),
+                // Build resource URL directly so user creation does not depend on named route availability.
+                'resource' => rtrim($request->root(), '/') . '/api/application/users/' . $user->id,
             ])
             ->respond(201);
     }
