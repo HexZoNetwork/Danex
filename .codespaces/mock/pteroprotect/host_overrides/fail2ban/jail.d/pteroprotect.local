@@ -1,0 +1,53 @@
+[DEFAULT]
+banaction = iptables-multiport
+banaction_allports = iptables-allports
+backend = auto
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+findtime = 600
+bantime = 3600
+bantime.increment = true
+bantime.rndtime = 120
+bantime.maxtime = 604800
+maxretry = 12
+
+[sshd]
+enabled = true
+port = 22,2022
+filter = sshd[mode=aggressive]
+backend = systemd
+findtime = 300
+maxretry = 4
+bantime = 172800
+bantime.increment = true
+bantime.maxtime = 1209600
+
+[pteroprotect-waf-deny]
+enabled = true
+filter = pteroprotect-waf-deny
+logpath = /dev/shm/pteroprotect/waf.log
+findtime = 300
+maxretry = 60
+bantime = 7200
+
+[pteroprotect-nginx-sqli]
+enabled = true
+filter = pteroprotect-nginx-sqli
+logpath = /var/log/nginx/pteroprotect.sqli.log
+findtime = 600
+maxretry = 4
+bantime = 172800
+
+[pteroprotect-auth-abuse]
+enabled = true
+filter = pteroprotect-auth-abuse
+logpath = /var/log/nginx/pteroprotect.access.log
+findtime = 300
+maxretry = 20
+bantime = 7200
+
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+findtime = 86400
+maxretry = 5
+bantime = 604800

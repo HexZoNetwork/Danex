@@ -1,0 +1,18 @@
+[Unit]
+Description=PteroProtect Panel Overrides Live Sync
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/tmp/pteroprotect-mock
+Environment=PANEL_DIR=/var/www/pterodactyl
+Environment=OVERRIDES_DIR=/tmp/pteroprotect-mock/panel_overrides
+Environment=SYNC_SCRIPT=/tmp/pteroprotect-mock/scripts/sync_panel_overrides.sh
+ExecStart=/tmp/pteroprotect-mock/scripts/watch_panel_overrides.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

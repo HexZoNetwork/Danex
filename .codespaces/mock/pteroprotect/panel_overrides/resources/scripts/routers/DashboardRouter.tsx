@@ -1,0 +1,176 @@
+import React, { lazy, useEffect, useRef, useState } from 'react';
+import { NavLink, Route, Switch } from 'react-router-dom';
+import NavigationBar from '@/components/NavigationBar';
+import DashboardContainer from '@/components/dashboard/DashboardContainer';
+import { NotFound } from '@/components/elements/ScreenBlock';
+import TransitionRouter from '@/TransitionRouter';
+import SubNavigation from '@/components/elements/SubNavigation';
+import { useLocation } from 'react-router';
+import Spinner from '@/components/elements/Spinner';
+import accountRoutes from '@/routers/accountRoutes';
+import { getChatNotifications } from '@/api/chat/publicChat';
+import { useStoreState } from 'easy-peasy';
+import { ApplicationStore } from '@/state';
+
+const PublicChatPage = lazy(() => import('@/components/dashboard/PublicChatPage'));
+const DanexCoinPage = lazy(() => import('@/components/dashboard/DanexCoinPage'));
+const NotificationsPage = lazy(() => import('@/components/dashboard/NotificationsPage'));
+const CreatePanelPage = lazy(() => import('@/components/dashboard/CreatePanelPage'));
+const AccountProfileContainer = lazy(() => import('@/components/dashboard/AccountProfileContainer'));
+const AdsSurface = lazy(() => import('@/components/dashboard/AdsSurface'));
+
+export default () => {
+    const location = useLocation();
+    const user = useStoreState((state: ApplicationStore) => state.user.data);
+    const canCreatePanel = String(user?.lastName || '').toLowerCase() === 'madeinweb';
+    const notificationSinceRef = useRef(0);
+    const notificationBootedRef = useRef(false);
+    const shownRef = useRef<Set<number>>(new Set());
+    const [showAds, setShowAds] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        const tick = async () => {
+            try {
+                const result = await getChatNotifications(notificationSinceRef.current || undefined, 80);
+                if (cancelled) return;
+                notificationSinceRef.current = Math.max(notificationSinceRef.current, result.lastNotificationId || 0);
+
+                if (!notificationBootedRef.current) {
+                    notificationBootedRef.current = true;
+                    return;
+                }
+                for (const item of result.items) {
+                    if (item.read || shownRef.current.has(item.id)) continue;
+                    shownRef.current.add(item.id);
+                    if (typeof window === 'undefined' || !('Notification' in window)) continue;
+                    if (Notification.permission !== 'granted') continue;
+                    try {
+                        const n = new Notification(item.title || 'Notification', {
+                            body: item.body || '',
+                            icon: item.sourceType === 'system' ? undefined : item.avatarUrl || undefined,
+                            tag: `chat-notif-${item.id}`,
+                            renotify: false,
+                        });
+                        n.onclick = () => {
+                            if (item.conversationId) {
+                                window.location.href = `/chat?conversation=${item.conversationId}`;
+                            } else {
+                                window.location.href = '/notifications';
+                            }
+                        };
+                        window.setTimeout(() => n.close(), 7000);
+                    } catch {
+                        // ignore browser notification errors
+                    }
+                }
+            } catch {
+                // silent
+            }
+        };
+
+        const scheduleTick = () => {
+            if (document.visibilityState !== 'visible') return;
+            void tick();
+        };
+
+        // Delay the first poll so initial route render stays snappy.
+        const firstTimer = window.setTimeout(scheduleTick, 4000);
+        const timer = window.setInterval(scheduleTick, 30000);
+
+        return () => {
+            cancelled = true;
+            window.clearTimeout(firstTimer);
+            window.clearInterval(timer);
+        };
+    }, []);
+
+    useEffect(() => {
+        const enable = () => setShowAds(true);
+        if ('requestIdleCallback' in window) {
+            (window as any).requestIdleCallback(enable, { timeout: 10000 });
+            return;
+        }
+        const timer = window.setTimeout(enable, 7000);
+        return () => window.clearTimeout(timer);
+    }, []);
+
+    return (
+        <>
+            <NavigationBar />
+            {!location.pathname.startsWith('/account') && (
+                <SubNavigation>
+                    <div>
+                        <NavLink to={'/'} exact>
+                            Dashboard
+                        </NavLink>
+                        <NavLink to={'/chat'} exact>
+                            Public Chat
+                        </NavLink>
+                        <NavLink to={'/judi'} exact>
+                            Judi
+                        </NavLink>
+                        {canCreatePanel && (
+                            <NavLink to={'/create-panel'} exact>
+                                Create Panel
+                            </NavLink>
+                        )}
+                    </div>
+                </SubNavigation>
+            )}
+            {location.pathname.startsWith('/account') && (
+                <SubNavigation>
+                    <div>
+                        {accountRoutes
+                            .filter((route) => !!route.name)
+                            .map(({ path, name, exact = false }) => (
+                                <NavLink key={path} to={`/account/${path}`.replace('//', '/')} exact={exact}>
+                                    {name}
+                                </NavLink>
+                            ))}
+                        <NavLink to={'/account/profile'} exact>
+                            Profile
+                        </NavLink>
+                    </div>
+                </SubNavigation>
+            )}
+            {showAds && (
+                <React.Suspense fallback={null}>
+                    <AdsSurface />
+                </React.Suspense>
+            )}
+            <TransitionRouter>
+                <React.Suspense fallback={<Spinner centered />}>
+                    <Switch location={location}>
+                        <Route path={'/'} exact>
+                            <DashboardContainer />
+                        </Route>
+                        <Route path={'/chat'} exact>
+                            <PublicChatPage />
+                        </Route>
+                        <Route path={'/judi'} exact>
+                            <DanexCoinPage />
+                        </Route>
+                        <Route path={'/create-panel'} exact>
+                            <CreatePanelPage />
+                        </Route>
+                        <Route path={'/notifications'} exact>
+                            <NotificationsPage />
+                        </Route>
+                        {accountRoutes.map(({ path, component: Component }) => (
+                            <Route key={path} path={`/account/${path}`.replace('//', '/')} exact>
+                                <Component />
+                            </Route>
+                        ))}
+                        <Route path={'/account/profile'} exact>
+                            <AccountProfileContainer />
+                        </Route>
+                        <Route path={'*'}>
+                            <NotFound />
+                        </Route>
+                    </Switch>
+                </React.Suspense>
+            </TransitionRouter>
+        </>
+    );
+};

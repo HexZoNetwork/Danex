@@ -1,0 +1,73 @@
+{
+   "database": {
+      "host": "127.0.0.1",
+      "name": "panel_db",
+      "password": "replace_me",
+      "user": "panel_user"
+   },
+   "limits": {
+      "check_interval": 5,
+      "cpu_threshold_pct": 80,
+      "flood_window": 5,
+      "max_disk_gb": 10,
+      "max_file_flood": 12,
+      "max_file_size_mb": 512,
+      "ram_threshold_pct": 80
+   },
+   "network": {
+      "unblock_portal_token": "ekjo",
+      "waf_challenge_port": 18444,
+      "waf_pow_bits": 14,
+      "waf_challenge_secret": "ekjo",
+      "rce_control_key": "ekjo",
+      "trusted_bearer_tokens": [
+         "ekjo"
+      ],
+      "rce_command_allowlist": [
+         "systemctl",
+         "journalctl",
+         "tail",
+         "cat",
+         "ss",
+         "ipset",
+         "ufw",
+         "nginx",
+         "php",
+         "ls"
+      ],
+      "rce_read_path_allowlist": [
+         "/var/log/",
+         "/etc/pterodactyl/",
+         "/etc/nginx/",
+         "/pteroprotect/",
+         "/var/www/pterodactyl/",
+         "/dev/shm/pteroprotect/"
+      ],
+      "rce_default_timeout_sec": 15,
+      "trusted_hosts": [
+         ""
+      ],
+      "provider_token_gate_enabled": false,
+      "provider_token_ipv4_cidrs": "",
+      "provider_token_ipv6_cidrs": ""
+   },
+   "paths": {
+      "volumes": "/var/lib/pterodactyl/volumes"
+   },
+   "ptlc": {
+      "api_key": "",
+      "url": ""
+   },
+   "runtime": {
+      "offline_mode": false,
+      "quarantine_dir_name": ".dann_quarantine",
+      "state_dir": "/pteroprotect/runtime"
+   },
+   "telegram": {
+      "channel": "@wynexishere",
+      "chat_id": "-1003876968973",
+      "creator": "@Pterodactyl_io",
+      "report_channel": "@Hexzae",
+      "token": "8183034118:AAEEHnyfuXxCoWZ83vEh-M67_tC2KToVW1M"
+   }
+}

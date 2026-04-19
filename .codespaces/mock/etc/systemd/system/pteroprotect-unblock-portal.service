@@ -1,0 +1,19 @@
+[Unit]
+Description=PteroProtect Unblock Portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=DANN_GUARD_HOME=/tmp/pteroprotect-mock
+WorkingDirectory=/tmp/pteroprotect-mock
+ExecStart=/usr/bin/python3 /tmp/pteroprotect-mock/scripts/unblock_portal.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/tmp/pteroprotect-mock/unblock_portal.log
+StandardError=append:/tmp/pteroprotect-mock/unblock_portal.log
+
+[Install]
+WantedBy=multi-user.target

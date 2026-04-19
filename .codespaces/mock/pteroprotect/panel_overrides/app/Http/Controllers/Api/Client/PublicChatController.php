@@ -1,0 +1,2078 @@
+<?php
+
+namespace Pterodactyl\Http\Controllers\Api\Client;
+
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Pterodactyl\Models\ChatConversation;
+use Pterodactyl\Models\PublicChatMessage;
+use Pterodactyl\Models\User;
+
+class PublicChatController extends ClientApiController
+{
+    private const GLOBAL_CONVERSATION_ID = 1;
+    private const DEFAULT_LIMIT = 50;
+    private const MAX_LIMIT = 100;
+    private const MAX_MESSAGE_LENGTH = 2000;
+    private const PRESENCE_ONLINE_WINDOW_SECONDS = 75;
+    private const NOTIFICATION_MAX_LIMIT = 120;
+    private const REACTION_ALLOWLIST = ['👍', '❤️', '🔥', '😂', '😮', '😢'];
+    private static ?bool $hasParticipantRoleColumn = null;
+    private static ?bool $hasReactionTable = null;
+    private static ?bool $hasMuteTable = null;
+    private static ?bool $hasCallTables = null;
+    private static ?bool $hasPresenceTable = null;
+    private static ?bool $hasNotificationTables = null;
+
+    public function conversations(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $global = $this->globalConversation();
+
+        $conversations = ChatConversation::query()
+            ->with('participants:id,username,name_first,name_last,email,avatar_url,birthday,created_at')
+            ->where('id', $global->id)
+            ->orWhere(function ($query) use ($user) {
+                $query->where('id', '!=', self::GLOBAL_CONVERSATION_ID)
+                    ->whereHas('participants', fn ($q) => $q->where('users.id', $user->id));
+            })
+            ->orderBy('id')
+            ->get();
+
+        $latest = PublicChatMessage::query()
+            ->whereIn('conversation_id', $conversations->pluck('id')->all())
+            ->orderByDesc('id')
+            ->get(['id', 'conversation_id', 'created_at'])
+            ->groupBy('conversation_id')
+            ->map(fn ($items) => $items->first());
+        $muteMap = [];
+        if ($this->hasMuteTable()) {
+            $muteRows = DB::table('chat_conversation_mutes')
+                ->whereIn('conversation_id', $conversations->pluck('id')->all())
+                ->where(function ($query) {
+                    $query->whereNull('expires_at')->orWhere('expires_at', '>', now());
+                })
+                ->get(['conversation_id', 'user_id', 'expires_at']);
+            foreach ($muteRows as $row) {
+                $muteMap[(int) $row->conversation_id . ':' . (int) $row->user_id] = $row->expires_at ? (string) $row->expires_at : null;
+            }
+        }
+        $notificationMuteMap = [];
+        if ($this->hasNotificationTables()) {
+            $nRows = DB::table('chat_notification_mutes')
+                ->where('user_id', (int) $user->id)
+                ->whereIn('conversation_id', $conversations->pluck('id')->all())
+                ->where(function ($query) {
+                    $query->whereNull('muted_until')->orWhere('muted_until', '>', now());
+                })
+                ->get(['conversation_id', 'muted_until']);
+            foreach ($nRows as $row) {
+                $notificationMuteMap[(int) $row->conversation_id] = $row->muted_until ? (string) $row->muted_until : null;
+            }
+        }
+
+        $presenceMap = [];
+        if ($this->hasPresenceTable()) {
+            $memberIds = $conversations->flatMap(fn (ChatConversation $conversation) => $conversation->participants->pluck('id'))
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->all();
+
+            if ($memberIds !== []) {
+                $presenceRows = DB::table('chat_user_presence')
+                    ->whereIn('user_id', $memberIds)
+                    ->get(['user_id', 'last_seen_at']);
+
+                foreach ($presenceRows as $row) {
+                    $presenceMap[(int) $row->user_id] = $row->last_seen_at ? (string) $row->last_seen_at : null;
+                }
+            }
+        }
+
+        return new JsonResponse([
+            'data' => $conversations->map(function (ChatConversation $conversation) use ($user, $latest, $muteMap, $presenceMap, $notificationMuteMap) {
+                $memberList = $conversation->participants->map(fn ($member) => [
+                    'id' => (int) $member->id,
+                    'username' => (string) $member->username,
+                    'display_name' => trim((string) ($member->name_first . ' ' . $member->name_last)) ?: (string) $member->username,
+                    'avatar_url' => $this->avatarUrlForUser($member),
+                    'birthday' => $this->birthdayForUser($member),
+                    'created_at' => optional($member->created_at)?->toIso8601String(),
+                    'role' => (string) ($member->pivot->role ?? 'member'),
+                    'muted_until' => $muteMap[(int) $conversation->id . ':' . (int) $member->id] ?? null,
+                    'last_seen_at' => $presenceMap[(int) $member->id] ?? null,
+                    'is_online' => $this->isPresenceOnline($presenceMap[(int) $member->id] ?? null),
+                ])->values();
+
+                $name = (string) ($conversation->name ?? '');
+                if ($conversation->type === 'private' && $name === '') {
+                    $other = $conversation->participants->firstWhere('id', '!=', $user->id);
+                    $name = $other
+                        ? (trim((string) ($other->name_first . ' ' . $other->name_last)) ?: (string) $other->username)
+                        : 'Private Chat';
+                }
+
+                $last = $latest->get($conversation->id);
+
+                return [
+                    'id' => (int) $conversation->id,
+                    'type' => (string) $conversation->type,
+                    'name' => $name !== '' ? $name : ucfirst((string) $conversation->type),
+                    'avatar_url' => $this->sanitizeMediaUrl((string) ($conversation->avatar_url ?? '')) ?: null,
+                    'group_username' => $conversation->group_username,
+                    'group_code' => $conversation->group_code,
+                    'notification_muted_until' => $notificationMuteMap[(int) $conversation->id] ?? null,
+                    'members' => $memberList,
+                    'last_message_at' => $last?->created_at?->toIso8601String(),
+                ];
+            })->values(),
+        ]);
+    }
+
+    public function searchUsers(Request $request): JsonResponse
+    {
+        $viewer = $request->user();
+        $validated = $request->validate([
+            'query' => 'required|string|min:2|max:40',
+        ]);
+
+        $query = trim((string) $validated['query']);
+
+        $users = User::query()
+            ->select(['id', 'username', 'name_first', 'name_last', 'avatar_url', 'birthday', 'created_at', 'email'])
+            ->where('id', '!=', (int) $viewer->id)
+            ->where(function ($q) use ($query) {
+                $q->where('username', 'like', '%' . $query . '%')
+                    ->orWhere('name_first', 'like', '%' . $query . '%')
+                    ->orWhere('name_last', 'like', '%' . $query . '%');
+            })
+            ->orderBy('username')
+            ->limit(20)
+            ->get();
+
+        return new JsonResponse([
+            'data' => $users->map(fn (User $user) => [
+                'id' => (int) $user->id,
+                'username' => (string) $user->username,
+                'display_name' => trim((string) ($user->name_first . ' ' . $user->name_last)) ?: (string) $user->username,
+                'avatar_url' => $this->avatarUrlForUser($user),
+                'birthday' => $this->birthdayForUser($user),
+                'created_at' => optional($user->created_at)?->toIso8601String(),
+            ])->values(),
+        ]);
+    }
+
+    public function createPrivate(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $validated = $request->validate([
+            'username' => 'required|string|exists:users,username',
+        ]);
+
+        $target = User::query()->where('username', $validated['username'])->firstOrFail();
+        if ((int) $target->id === (int) $user->id) {
+            return new JsonResponse(['error' => 'Cannot create private chat with yourself.'], 422);
+        }
+
+        $pair = [(int) min($user->id, $target->id), (int) max($user->id, $target->id)];
+        $existing = ChatConversation::query()
+            ->where('type', 'private')
+            ->where('private_user_low', $pair[0])
+            ->where('private_user_high', $pair[1])
+            ->first();
+
+        if (!$existing) {
+            $existing = ChatConversation::query()->create([
+                'type' => 'private',
+                'name' => null,
+                'private_user_low' => $pair[0],
+                'private_user_high' => $pair[1],
+                'created_by' => (int) $user->id,
+            ]);
+
+            $rows = [
+                ['conversation_id' => (int) $existing->id, 'user_id' => (int) $user->id, 'joined_at' => now()],
+                ['conversation_id' => (int) $existing->id, 'user_id' => (int) $target->id, 'joined_at' => now()],
+            ];
+            if ($this->hasParticipantRoleColumn()) {
+                $rows[0]['role'] = 'owner';
+                $rows[1]['role'] = 'member';
+            }
+            DB::table('chat_conversation_participants')->insert($rows);
+        }
+
+        return new JsonResponse(['data' => ['conversation_id' => (int) $existing->id]], 201);
+    }
+
+    public function createGroup(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $validated = $request->validate([
+            'name' => 'required|string|min:2|max:80',
+            'group_username' => 'required|string|min:3|max:32|regex:/^[a-zA-Z0-9._-]+$/',
+            'group_code' => 'sometimes|nullable|string|min:4|max:32|regex:/^[a-zA-Z0-9._-]+$/',
+            'avatar_url' => 'sometimes|nullable|url|max:2048',
+            'member_usernames' => 'sometimes|array|max:50',
+            'member_usernames.*' => 'string|exists:users,username',
+        ]);
+        $groupUsername = strtolower(trim((string) $validated['group_username']));
+        if (User::query()->where('username', $groupUsername)->exists()) {
+            return new JsonResponse(['error' => 'Group username already used by a user.'], 422);
+        }
+        if (ChatConversation::query()->where('group_username', $groupUsername)->exists()) {
+            return new JsonResponse(['error' => 'Group username is already taken.'], 422);
+        }
+        $groupCode = trim((string) ($validated['group_code'] ?? ''));
+        if ($groupCode === '') {
+            $groupCode = strtolower(Str::random(8));
+        }
+        if (ChatConversation::query()->where('group_code', $groupCode)->exists()) {
+            return new JsonResponse(['error' => 'Group code is already taken.'], 422);
+        }
+
+        $members = User::query()
+            ->whereIn('username', (array) ($validated['member_usernames'] ?? []))
+            ->get(['id']);
+
+        $conversation = ChatConversation::query()->create([
+            'type' => 'group',
+            'name' => trim((string) $validated['name']),
+            'avatar_url' => $this->sanitizeMediaUrl((string) ($validated['avatar_url'] ?? '')) ?: null,
+            'group_username' => $groupUsername,
+            'group_code' => $groupCode,
+            'created_by' => (int) $user->id,
+        ]);
+
+        $participantIds = array_unique(array_merge([(int) $user->id], $members->pluck('id')->map(fn ($id) => (int) $id)->all()));
+        $rows = array_map(fn ($id) => [
+            'conversation_id' => (int) $conversation->id,
+            'user_id' => $id,
+            'joined_at' => now(),
+        ], $participantIds);
+        if ($this->hasParticipantRoleColumn()) {
+            $rows = array_map(function (array $row) use ($user) {
+                $row['role'] = (int) $row['user_id'] === (int) $user->id ? 'owner' : 'member';
+
+                return $row;
+            }, $rows);
+        }
+        DB::table('chat_conversation_participants')->insert($rows);
+
+        return new JsonResponse(['data' => ['conversation_id' => (int) $conversation->id]], 201);
+    }
+
+    public function index(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'sometimes|integer|min:1',
+            'limit' => 'sometimes|integer|min:1|max:' . self::MAX_LIMIT,
+            'since_id' => 'sometimes|integer|min:1',
+        ]);
+
+        $conversation = $this->conversationForUser($user, (int) ($validated['conversation_id'] ?? self::GLOBAL_CONVERSATION_ID));
+        $limit = (int) ($validated['limit'] ?? self::DEFAULT_LIMIT);
+        $sinceId = (int) ($validated['since_id'] ?? 0);
+
+        $query = PublicChatMessage::query()
+            ->where('conversation_id', $conversation->id)
+            ->with(
+                'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+                'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+            )
+            ->orderByDesc('id');
+
+        if ($sinceId > 0) {
+            $query->where('id', '>', $sinceId);
+        }
+
+        $messages = $query->limit($limit)->get();
+        if ($sinceId <= 0) {
+            $messages = $messages->reverse()->values();
+        }
+
+        $this->markMessagesRead($messages->pluck('id')->all(), (int) $user->id, $messages->pluck('user_id')->all());
+        $stats = $this->readStats($messages->pluck('id')->all());
+        $poll = $this->pollStats($messages->pluck('id')->all(), (int) $user->id);
+        $reactions = $this->reactionStats($messages->pluck('id')->all(), (int) $user->id);
+
+        return new JsonResponse([
+            'data' => $messages->map(fn (PublicChatMessage $m) => $this->transformMessage($m, (int) $user->id, $stats, $poll, $reactions))->values(),
+        ]);
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'message' => 'nullable|string|max:' . self::MAX_MESSAGE_LENGTH,
+            'media_url' => 'nullable|url|max:2000',
+            'media_type' => 'nullable|in:text,image,audio,link',
+            'media_name' => 'nullable|string|max:255',
+            'media_mime' => 'nullable|string|max:120',
+            'reply_to_id' => 'nullable|integer|min:1|exists:public_chat_messages,id',
+        ]);
+
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        if ($this->isConversationMutedFor((int) $conversation->id, (int) $user->id)) {
+            return new JsonResponse(['error' => 'You are muted in this conversation.'], 403);
+        }
+
+        $body = $this->sanitizeBody((string) ($validated['message'] ?? ''));
+        $mediaUrl = $this->sanitizeMediaUrl((string) ($validated['media_url'] ?? ''));
+        if ($body === '' && $mediaUrl === '') {
+            return new JsonResponse(['error' => 'Message or media is required.'], 422);
+        }
+
+        $replyToId = (int) ($validated['reply_to_id'] ?? 0) ?: null;
+        if ($replyToId) {
+            $replyMessage = PublicChatMessage::query()->whereKey($replyToId)->first();
+            if (!$replyMessage || (int) $replyMessage->conversation_id !== (int) $conversation->id) {
+                return new JsonResponse(['error' => 'Reply target must be in same conversation.'], 422);
+            }
+        }
+
+        $message = PublicChatMessage::query()->create([
+            'conversation_id' => (int) $conversation->id,
+            'user_id' => (int) $user->id,
+            'reply_to_id' => $replyToId,
+            'mention_usernames' => $this->extractMentions($body),
+            'body' => $body !== '' ? $body : null,
+            'media_url' => $mediaUrl !== '' ? $mediaUrl : null,
+            'media_type' => $this->inferMediaType($validated['media_type'] ?? null, $mediaUrl, (string) ($validated['media_mime'] ?? '')),
+            'media_name' => $this->sanitizeFilename((string) ($validated['media_name'] ?? '')),
+            'media_mime' => $this->sanitizeMime((string) ($validated['media_mime'] ?? '')),
+        ]);
+
+        $message->load(
+            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+        );
+        $this->notifyConversationMessage((int) $conversation->id, (int) $user->id, $body !== '' ? $body : null);
+
+        return new JsonResponse([
+            'data' => $this->transformMessage($message, (int) $user->id, ['counts' => [], 'readByOthers' => []], ['byMessage' => [], 'mine' => []], ['byMessage' => [], 'mine' => []]),
+        ], 201);
+    }
+
+    public function storePoll(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'question' => 'required|string|min:2|max:255',
+            'options' => 'required|array|min:2|max:8',
+            'options.*' => 'required|string|min:1|max:80',
+            'media_url' => 'nullable|url|max:2000',
+            'media_name' => 'nullable|string|max:255',
+            'media_mime' => 'nullable|string|max:120',
+        ]);
+
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        if ($this->isConversationMutedFor((int) $conversation->id, (int) $user->id)) {
+            return new JsonResponse(['error' => 'You are muted in this conversation.'], 403);
+        }
+        $options = array_values(array_map(fn ($v) => trim((string) $v), $validated['options']));
+        $mediaUrl = $this->sanitizeMediaUrl((string) ($validated['media_url'] ?? ''));
+
+        $message = PublicChatMessage::query()->create([
+            'conversation_id' => (int) $conversation->id,
+            'user_id' => (int) $user->id,
+            'media_url' => $mediaUrl !== '' ? $mediaUrl : null,
+            'media_type' => $mediaUrl !== '' ? 'image' : 'text',
+            'media_name' => $this->sanitizeFilename((string) ($validated['media_name'] ?? '')),
+            'media_mime' => $this->sanitizeMime((string) ($validated['media_mime'] ?? '')),
+            'poll_question' => trim((string) $validated['question']),
+            'poll_options' => $options,
+        ]);
+
+        $message->load('user:id,username,name_first,name_last,email,avatar_url,birthday,created_at');
+        $this->notifyConversationMessage((int) $conversation->id, (int) $user->id, '[Poll] ' . trim((string) $validated['question']));
+
+        return new JsonResponse([
+            'data' => $this->transformMessage($message, (int) $user->id, ['counts' => [], 'readByOthers' => []], ['byMessage' => [], 'mine' => []], ['byMessage' => [], 'mine' => []]),
+        ], 201);
+    }
+
+    public function votePoll(Request $request, int $message): JsonResponse
+    {
+        $user = $request->user();
+        $validated = $request->validate([
+            'option_index' => 'required|integer|min:0|max:100',
+        ]);
+
+        $model = PublicChatMessage::query()->whereKey($message)->firstOrFail();
+        $this->conversationForUser($user, (int) $model->conversation_id);
+
+        $options = is_array($model->poll_options) ? array_values($model->poll_options) : [];
+        if ($model->poll_question === null || $options === []) {
+            return new JsonResponse(['error' => 'This message is not a poll.'], 422);
+        }
+
+        $idx = (int) $validated['option_index'];
+        if (!array_key_exists($idx, $options)) {
+            return new JsonResponse(['error' => 'Invalid poll option.'], 422);
+        }
+
+        DB::table('chat_poll_votes')->upsert([
+            'message_id' => (int) $model->id,
+            'user_id' => (int) $user->id,
+            'option_index' => $idx,
+            'created_at' => now(),
+        ], ['message_id', 'user_id'], ['option_index', 'created_at']);
+
+        $model->load(
+            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+        );
+        $stats = $this->readStats([$model->id]);
+        $poll = $this->pollStats([$model->id], (int) $user->id);
+
+        return new JsonResponse([
+            'data' => $this->transformMessage($model, (int) $user->id, $stats, $poll, $this->reactionStats([$model->id], (int) $user->id)),
+        ]);
+    }
+
+    public function updateGroup(Request $request, int $conversation): JsonResponse
+    {
+        $user = $request->user();
+        $model = $this->conversationForUser($user, $conversation);
+        if ($model->type !== 'group') {
+            return new JsonResponse(['error' => 'Only group can be updated.'], 422);
+        }
+        if (!$this->isGroupOwner((int) $model->id, (int) $user->id)) {
+            return new JsonResponse(['error' => 'Only group owner can change group identity.'], 403);
+        }
+
+        $validated = $request->validate([
+            'name' => 'sometimes|string|min:2|max:80',
+            'group_username' => 'sometimes|string|min:3|max:32|regex:/^[a-zA-Z0-9._-]+$/',
+            'group_code' => 'sometimes|string|min:4|max:32|regex:/^[a-zA-Z0-9._-]+$/',
+            'avatar_url' => 'sometimes|nullable|url|max:2048',
+        ]);
+
+        if (array_key_exists('name', $validated)) {
+            $model->name = trim((string) $validated['name']);
+        }
+        if (array_key_exists('group_username', $validated)) {
+            $groupUsername = strtolower(trim((string) $validated['group_username']));
+            if (User::query()->where('username', $groupUsername)->exists()) {
+                return new JsonResponse(['error' => 'Group username already used by a user.'], 422);
+            }
+            if (ChatConversation::query()->where('group_username', $groupUsername)->where('id', '!=', $model->id)->exists()) {
+                return new JsonResponse(['error' => 'Group username is already taken.'], 422);
+            }
+            $model->group_username = $groupUsername;
+        }
+        if (array_key_exists('group_code', $validated)) {
+            $groupCode = trim((string) $validated['group_code']);
+            if (ChatConversation::query()->where('group_code', $groupCode)->where('id', '!=', $model->id)->exists()) {
+                return new JsonResponse(['error' => 'Group code is already taken.'], 422);
+            }
+            $model->group_code = $groupCode;
+        }
+        if (array_key_exists('avatar_url', $validated)) {
+            $model->avatar_url = $this->sanitizeMediaUrl((string) ($validated['avatar_url'] ?? '')) ?: null;
+        }
+        $model->save();
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function addGroupMember(Request $request, int $conversation): JsonResponse
+    {
+        $user = $request->user();
+        $model = $this->conversationForUser($user, $conversation);
+        if ($model->type !== 'group') {
+            return new JsonResponse(['error' => 'Only group supports members.'], 422);
+        }
+        if (!$this->isGroupAdminOrOwner((int) $model->id, (int) $user->id)) {
+            return new JsonResponse(['error' => 'Only admin/owner can add member.'], 403);
+        }
+
+        $validated = $request->validate([
+            'username' => 'required|string|exists:users,username',
+        ]);
+        $target = User::query()->where('username', $validated['username'])->firstOrFail();
+
+        DB::table('chat_conversation_bans')
+            ->where('conversation_id', (int) $model->id)
+            ->where('user_id', (int) $target->id)
+            ->delete();
+
+        DB::table('chat_conversation_participants')->upsert([
+            'conversation_id' => (int) $model->id,
+            'user_id' => (int) $target->id,
+            'joined_at' => now(),
+        ], ['conversation_id', 'user_id'], ['joined_at']);
+        if ($this->hasParticipantRoleColumn()) {
+            DB::table('chat_conversation_participants')
+                ->where('conversation_id', (int) $model->id)
+                ->where('user_id', (int) $target->id)
+                ->update(['role' => 'member']);
+        }
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function kickGroupMember(Request $request, int $conversation, int $member): JsonResponse
+    {
+        return $this->removeMemberInternal($request, $conversation, $member, false);
+    }
+
+    public function banGroupMember(Request $request, int $conversation, int $member): JsonResponse
+    {
+        return $this->removeMemberInternal($request, $conversation, $member, true);
+    }
+
+    public function muteMember(Request $request, int $conversation, int $member): JsonResponse
+    {
+        if (!$this->hasMuteTable()) {
+            return new JsonResponse(['error' => 'Mute feature not ready. Run chat migration.'], 409);
+        }
+
+        $actor = $request->user();
+        $model = $this->conversationForUser($actor, $conversation);
+        if ($model->type === 'private') {
+            return new JsonResponse(['error' => 'Private chat cannot mute member.'], 422);
+        }
+
+        if (!$this->canModerateConversation((int) $model->id, (string) $model->type, (int) $actor->id)) {
+            return new JsonResponse(['error' => 'Not allowed to mute in this conversation.'], 403);
+        }
+        if ((int) $member === (int) $actor->id) {
+            return new JsonResponse(['error' => 'You cannot mute yourself.'], 422);
+        }
+
+        $validated = $request->validate([
+            'minutes' => 'sometimes|nullable|integer|min:1|max:10080',
+            'reason' => 'sometimes|nullable|string|max:191',
+        ]);
+        $minutes = (int) ($validated['minutes'] ?? 0);
+        $expiresAt = $minutes > 0 ? now()->addMinutes($minutes) : null;
+
+        DB::table('chat_conversation_mutes')->upsert([
+            'conversation_id' => (int) $model->id,
+            'user_id' => (int) $member,
+            'muted_by' => (int) $actor->id,
+            'expires_at' => $expiresAt,
+            'reason' => isset($validated['reason']) ? trim((string) $validated['reason']) : null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], ['conversation_id', 'user_id'], ['muted_by', 'expires_at', 'reason', 'updated_at']);
+
+        return new JsonResponse([
+            'ok' => true,
+            'data' => [
+                'conversation_id' => (int) $model->id,
+                'user_id' => (int) $member,
+                'muted_until' => optional($expiresAt)?->toIso8601String(),
+            ],
+        ]);
+    }
+
+    public function unmuteMember(Request $request, int $conversation, int $member): JsonResponse
+    {
+        if (!$this->hasMuteTable()) {
+            return new JsonResponse(['error' => 'Mute feature not ready. Run chat migration.'], 409);
+        }
+
+        $actor = $request->user();
+        $model = $this->conversationForUser($actor, $conversation);
+        if ($model->type === 'private') {
+            return new JsonResponse(['error' => 'Private chat cannot unmute member.'], 422);
+        }
+
+        if (!$this->canModerateConversation((int) $model->id, (string) $model->type, (int) $actor->id)) {
+            return new JsonResponse(['error' => 'Not allowed to unmute in this conversation.'], 403);
+        }
+
+        DB::table('chat_conversation_mutes')
+            ->where('conversation_id', (int) $model->id)
+            ->where('user_id', (int) $member)
+            ->delete();
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function setGroupAdmin(Request $request, int $conversation, int $member): JsonResponse
+    {
+        $user = $request->user();
+        $model = $this->conversationForUser($user, $conversation);
+        if ($model->type !== 'group') {
+            return new JsonResponse(['error' => 'Only group supports role change.'], 422);
+        }
+        if (!$this->isGroupOwner((int) $model->id, (int) $user->id)) {
+            return new JsonResponse(['error' => 'Only owner can grant/revoke admin.'], 403);
+        }
+        if (!$this->hasParticipantRoleColumn()) {
+            return new JsonResponse(['error' => 'Role feature not ready. Run chat migration.'], 409);
+        }
+        $targetRole = DB::table('chat_conversation_participants')
+            ->where('conversation_id', (int) $model->id)
+            ->where('user_id', $member)
+            ->value('role');
+        if (!$targetRole) {
+            return new JsonResponse(['error' => 'Member not found.'], 404);
+        }
+        if ($member === (int) $user->id) {
+            return new JsonResponse(['error' => 'Owner role cannot be changed.'], 422);
+        }
+
+        $validated = $request->validate([
+            'admin' => 'required|boolean',
+        ]);
+        DB::table('chat_conversation_participants')
+            ->where('conversation_id', (int) $model->id)
+            ->where('user_id', $member)
+            ->update(['role' => $validated['admin'] ? 'admin' : 'member']);
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function react(Request $request, int $message): JsonResponse
+    {
+        $user = $request->user();
+        $validated = $request->validate([
+            'emoji' => 'required|string|min:1|max:16',
+        ]);
+        $emoji = trim((string) $validated['emoji']);
+        if (!in_array($emoji, self::REACTION_ALLOWLIST, true)) {
+            return new JsonResponse(['error' => 'Unsupported reaction.'], 422);
+        }
+        if (!$this->hasReactionTable()) {
+            return new JsonResponse(['error' => 'Reaction feature not ready. Run chat migration.'], 409);
+        }
+
+        $model = PublicChatMessage::query()->whereKey($message)->firstOrFail();
+        $this->conversationForUser($user, (int) $model->conversation_id);
+
+        $exists = DB::table('public_chat_message_reactions')
+            ->where('message_id', (int) $model->id)
+            ->where('user_id', (int) $user->id)
+            ->where('emoji', $emoji)
+            ->exists();
+
+        if ($exists) {
+            DB::table('public_chat_message_reactions')
+                ->where('message_id', (int) $model->id)
+                ->where('user_id', (int) $user->id)
+                ->where('emoji', $emoji)
+                ->delete();
+        } else {
+            DB::table('public_chat_message_reactions')->insert([
+                'message_id' => (int) $model->id,
+                'user_id' => (int) $user->id,
+                'emoji' => $emoji,
+                'created_at' => now(),
+            ]);
+        }
+
+        $model->load(
+            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+        );
+        $stats = $this->readStats([$model->id]);
+        $poll = $this->pollStats([$model->id], (int) $user->id);
+        $reactions = $this->reactionStats([$model->id], (int) $user->id);
+
+        return new JsonResponse([
+            'data' => $this->transformMessage($model, (int) $user->id, $stats, $poll, $reactions),
+        ]);
+    }
+
+    public function update(Request $request, int $message): JsonResponse
+    {
+        $user = $request->user();
+        $model = PublicChatMessage::query()->whereKey($message)->firstOrFail();
+        $this->conversationForUser($user, (int) $model->conversation_id);
+
+        if ((int) $model->user_id !== (int) $user->id) {
+            return new JsonResponse(['error' => 'You can only edit your own messages.'], 403);
+        }
+
+        $validated = $request->validate([
+            'message' => 'required|string|max:' . self::MAX_MESSAGE_LENGTH,
+        ]);
+
+        $body = $this->sanitizeBody((string) $validated['message']);
+        if ($body === '') {
+            return new JsonResponse(['error' => 'Message cannot be empty.'], 422);
+        }
+
+        $model->body = $body;
+        $model->mention_usernames = $this->extractMentions($body);
+        $model->edited_at = now();
+        $model->save();
+
+        $model->load(
+            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
+            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+        );
+        $stats = $this->readStats([$model->id]);
+        $poll = $this->pollStats([$model->id], (int) $user->id);
+
+        return new JsonResponse([
+            'data' => $this->transformMessage($model, (int) $user->id, $stats, $poll, $this->reactionStats([$model->id], (int) $user->id)),
+        ]);
+    }
+
+    public function destroy(Request $request, int $message): JsonResponse
+    {
+        $user = $request->user();
+        $model = PublicChatMessage::query()->whereKey($message)->firstOrFail();
+        $this->conversationForUser($user, (int) $model->conversation_id);
+
+        if ((int) $model->user_id !== (int) $user->id) {
+            return new JsonResponse(['error' => 'You can only delete your own messages.'], 403);
+        }
+
+        $model->delete();
+
+        return new JsonResponse([], 204);
+    }
+
+    public function markRead(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'message_ids' => 'sometimes|array|max:200',
+            'message_ids.*' => 'integer|min:1',
+        ]);
+
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+
+        $ids = array_values(array_unique(array_map('intval', $validated['message_ids'] ?? [])));
+        $recordsQuery = PublicChatMessage::query()
+            ->where('conversation_id', (int) $conversation->id);
+
+        if ($ids !== []) {
+            $records = (clone $recordsQuery)
+                ->whereIn('id', $ids)
+                ->get(['id', 'user_id']);
+        } else {
+            $records = (clone $recordsQuery)
+                ->orderByDesc('id')
+                ->limit(self::MAX_LIMIT)
+                ->get(['id', 'user_id']);
+        }
+
+        $ids = $records->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $userIds = $records->pluck('user_id')->map(fn ($id) => (int) $id)->all();
+        $this->markMessagesRead($ids, (int) $user->id, $userIds);
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function upload(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => [
+                'required',
+                'file',
+                'max:10240',
+                'mimetypes:image/jpeg,image/png,image/gif,image/webp,audio/mpeg,audio/ogg,audio/wav,audio/webm,audio/mp4,audio/x-m4a',
+            ],
+        ]);
+
+        /** @var UploadedFile $file */
+        $file = $request->file('file');
+        $storedPath = $file->storePublicly('chat-media', 'public');
+        $url = Storage::disk('public')->url($storedPath);
+        $mime = (string) $file->getMimeType();
+
+        return new JsonResponse([
+            'data' => [
+                'url' => $url,
+                'media_type' => Str::startsWith($mime, 'audio/') ? 'audio' : 'image',
+                'media_name' => $this->sanitizeFilename($file->getClientOriginalName()),
+                'media_mime' => $this->sanitizeMime($mime),
+            ],
+        ], 201);
+    }
+
+    public function callState(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['data' => ['active' => false, 'call' => null, 'signals' => [], 'last_signal_id' => 0]]);
+        }
+
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'since_id' => 'sometimes|integer|min:0',
+        ]);
+
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $sinceId = (int) ($validated['since_id'] ?? 0);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['data' => ['active' => false, 'call' => null, 'signals' => [], 'last_signal_id' => $sinceId]]);
+        }
+
+        $signals = DB::table('chat_call_signals')
+            ->where('call_session_id', (int) $session->id)
+            ->where('id', '>', $sinceId)
+            ->where(function ($query) use ($user) {
+                $query->whereNull('to_user_id')->orWhere('to_user_id', (int) $user->id);
+            })
+            ->orderBy('id')
+            ->limit(400)
+            ->get(['id', 'type', 'from_user_id', 'to_user_id', 'payload', 'created_at']);
+
+        $lastSignalId = $sinceId;
+        foreach ($signals as $signal) {
+            $lastSignalId = max($lastSignalId, (int) $signal->id);
+        }
+
+        return new JsonResponse([
+            'data' => [
+                'active' => true,
+                'call' => $this->callPayload((int) $session->id),
+                'signals' => $signals->map(fn ($signal) => [
+                    'id' => (int) $signal->id,
+                    'type' => (string) $signal->type,
+                    'from_user_id' => $signal->from_user_id !== null ? (int) $signal->from_user_id : null,
+                    'to_user_id' => $signal->to_user_id !== null ? (int) $signal->to_user_id : null,
+                    'payload' => $this->decodeJsonPayload($signal->payload),
+                    'created_at' => $signal->created_at ? (string) $signal->created_at : null,
+                ])->values(),
+                'last_signal_id' => $lastSignalId,
+            ],
+        ]);
+    }
+
+    public function startCall(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['error' => 'Call feature not ready. Run chat migration.'], 409);
+        }
+
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            $sessionId = DB::table('chat_call_sessions')->insertGetId([
+                'conversation_id' => (int) $conversation->id,
+                'started_by' => (int) $user->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $session = DB::table('chat_call_sessions')->where('id', $sessionId)->first();
+        }
+
+        $this->upsertCallParticipant((int) $session->id, (int) $user->id);
+        $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'join', ['user_id' => (int) $user->id]);
+
+        return new JsonResponse(['data' => $this->callPayload((int) $session->id)], 201);
+    }
+
+    public function joinCall(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['error' => 'Call feature not ready. Run chat migration.'], 409);
+        }
+
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['error' => 'No active call in this conversation.'], 409);
+        }
+
+        $this->upsertCallParticipant((int) $session->id, (int) $user->id);
+        $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'join', ['user_id' => (int) $user->id]);
+
+        return new JsonResponse(['data' => $this->callPayload((int) $session->id)]);
+    }
+
+    public function leaveCall(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $sessions = DB::table('chat_call_sessions')
+            ->where('conversation_id', (int) $conversation->id)
+            ->whereNull('ended_at')
+            ->orderByDesc('id')
+            ->get(['id']);
+        if ($sessions->isEmpty()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        foreach ($sessions as $session) {
+            DB::table('chat_call_participants')
+                ->where('call_session_id', (int) $session->id)
+                ->where('user_id', (int) $user->id)
+                ->whereNull('left_at')
+                ->update([
+                    'left_at' => now(),
+                    'updated_at' => now(),
+                    'speaking_level' => 0,
+                ]);
+            $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'leave', ['user_id' => (int) $user->id]);
+            $this->endSessionIfNoParticipants((int) $session->id, (int) $conversation->id, (int) $user->id);
+        }
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function endCall(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        DB::table('chat_call_sessions')
+            ->where('id', (int) $session->id)
+            ->update([
+                'ended_at' => now(),
+                'updated_at' => now(),
+            ]);
+        DB::table('chat_call_participants')
+            ->where('call_session_id', (int) $session->id)
+            ->whereNull('left_at')
+            ->update([
+                'left_at' => now(),
+                'updated_at' => now(),
+                'speaking_level' => 0,
+            ]);
+        $this->insertCallSignal((int) $session->id, (int) $conversation->id, (int) $user->id, null, 'end', ['user_id' => (int) $user->id]);
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function callSignal(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['error' => 'Call feature not ready. Run chat migration.'], 409);
+        }
+
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'type' => 'required|string|in:offer,answer,ice,ring,ring_response',
+            'to_user_id' => 'sometimes|nullable|integer|min:1',
+            'payload' => 'required',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['error' => 'No active call in this conversation.'], 409);
+        }
+
+        $this->upsertCallParticipant((int) $session->id, (int) $user->id);
+        $toUserId = isset($validated['to_user_id']) ? (int) $validated['to_user_id'] : null;
+        if ($toUserId !== null && $toUserId === (int) $user->id) {
+            return new JsonResponse(['error' => 'Signal target cannot be yourself.'], 422);
+        }
+        if ($toUserId !== null && !$this->isConversationMember($conversation, $toUserId)) {
+            return new JsonResponse(['error' => 'Signal target is not in this conversation.'], 422);
+        }
+
+        $payload = $this->safeSignalPayload($validated['payload']);
+        if ($payload === null) {
+            return new JsonResponse(['error' => 'Invalid signal payload.'], 422);
+        }
+
+        $signalId = $this->insertCallSignal(
+            (int) $session->id,
+            (int) $conversation->id,
+            (int) $user->id,
+            $toUserId,
+            (string) $validated['type'],
+            $payload
+        );
+        if ((string) $validated['type'] === 'ring' && $toUserId !== null) {
+            $callerName = trim((string) (($user->name_first ?? '') . ' ' . ($user->name_last ?? '')));
+            if ($callerName === '') {
+                $callerName = (string) $user->username;
+            }
+            $this->createNotification(
+                $toUserId,
+                (int) $conversation->id,
+                (int) $user->id,
+                'call',
+                'Incoming Call',
+                $callerName . ' is calling you',
+                $this->avatarUrlForUser($user),
+                ['signal_id' => $signalId]
+            );
+        }
+
+        return new JsonResponse(['ok' => true, 'data' => ['signal_id' => $signalId]]);
+    }
+
+    public function callMic(Request $request): JsonResponse
+    {
+        if (!$this->hasCallTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'muted' => 'sometimes|boolean',
+            'speaking_level' => 'sometimes|integer|min:0|max:100',
+        ]);
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $session = $this->activeCallSession((int) $conversation->id);
+        if (!$session) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $this->upsertCallParticipant((int) $session->id, (int) $user->id);
+        $update = ['updated_at' => now()];
+        if (array_key_exists('muted', $validated)) {
+            $update['mic_muted'] = (bool) $validated['muted'];
+        }
+        if (array_key_exists('speaking_level', $validated)) {
+            $update['speaking_level'] = max(0, min(100, (int) $validated['speaking_level']));
+        }
+
+        DB::table('chat_call_participants')
+            ->where('call_session_id', (int) $session->id)
+            ->where('user_id', (int) $user->id)
+            ->update($update);
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function presence(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+
+        return new JsonResponse([
+            'ok' => true,
+            'data' => [
+                'user_id' => (int) $user->id,
+                'is_online' => true,
+                'server_time' => now()->toIso8601String(),
+            ],
+        ]);
+    }
+
+    public function notifications(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'since_id' => 'sometimes|integer|min:0',
+            'limit' => 'sometimes|integer|min:1|max:' . self::NOTIFICATION_MAX_LIMIT,
+        ]);
+
+        if (!$this->hasNotificationTables()) {
+            return new JsonResponse(['data' => [], 'unread_count' => 0, 'last_notification_id' => (int) ($validated['since_id'] ?? 0)]);
+        }
+
+        $sinceId = (int) ($validated['since_id'] ?? 0);
+        $limit = (int) ($validated['limit'] ?? 60);
+        $rows = DB::table('chat_notifications')
+            ->where('user_id', (int) $user->id)
+            ->where('id', '>', $sinceId)
+            ->orderBy('id')
+            ->limit($limit)
+            ->get(['id', 'conversation_id', 'from_user_id', 'source_type', 'title', 'body', 'avatar_url', 'meta', 'created_at']);
+
+        $ids = $rows->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $readMap = [];
+        if ($ids !== []) {
+            $readMap = DB::table('chat_notification_reads')
+                ->where('user_id', (int) $user->id)
+                ->whereIn('notification_id', $ids)
+                ->pluck('read_at', 'notification_id')
+                ->toArray();
+        }
+        $unreadCount = DB::table('chat_notifications as n')
+            ->where('n.user_id', (int) $user->id)
+            ->whereNotExists(function ($query) use ($user) {
+                $query->select(DB::raw(1))
+                    ->from('chat_notification_reads as r')
+                    ->whereColumn('r.notification_id', 'n.id')
+                    ->where('r.user_id', (int) $user->id);
+            })
+            ->count();
+
+        $lastId = $sinceId;
+        foreach ($rows as $row) {
+            $lastId = max($lastId, (int) $row->id);
+        }
+
+        return new JsonResponse([
+            'data' => $rows->map(function ($row) use ($readMap) {
+                $id = (int) $row->id;
+                return [
+                    'id' => $id,
+                    'conversation_id' => $row->conversation_id !== null ? (int) $row->conversation_id : null,
+                    'from_user_id' => $row->from_user_id !== null ? (int) $row->from_user_id : null,
+                    'source_type' => (string) $row->source_type,
+                    'title' => (string) $row->title,
+                    'body' => $row->body !== null ? (string) $row->body : null,
+                    'avatar_url' => $row->avatar_url !== null ? (string) $row->avatar_url : null,
+                    'meta' => $this->decodeJsonPayload($row->meta),
+                    'created_at' => $row->created_at ? (string) $row->created_at : null,
+                    'read' => array_key_exists($id, $readMap),
+                ];
+            })->values(),
+            'unread_count' => (int) $unreadCount,
+            'last_notification_id' => $lastId,
+        ]);
+    }
+
+    public function readNotifications(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'notification_ids' => 'sometimes|array|max:500',
+            'notification_ids.*' => 'integer|min:1',
+        ]);
+        if (!$this->hasNotificationTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $ids = array_values(array_unique(array_map('intval', (array) ($validated['notification_ids'] ?? []))));
+        if ($ids === []) {
+            $ids = DB::table('chat_notifications')
+                ->where('user_id', (int) $user->id)
+                ->orderByDesc('id')
+                ->limit(500)
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->all();
+        }
+
+        $rows = array_map(fn (int $id) => [
+            'notification_id' => $id,
+            'user_id' => (int) $user->id,
+            'read_at' => now(),
+        ], $ids);
+        if ($rows !== []) {
+            DB::table('chat_notification_reads')->upsert($rows, ['notification_id', 'user_id'], ['read_at']);
+        }
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    public function muteNotifications(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+            'minutes' => 'sometimes|nullable|integer|min:1|max:10080',
+        ]);
+        if (!$this->hasNotificationTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        $minutes = (int) ($validated['minutes'] ?? 0);
+        $until = $minutes > 0 ? now()->addMinutes($minutes) : null;
+        DB::table('chat_notification_mutes')->upsert([
+            'user_id' => (int) $user->id,
+            'conversation_id' => (int) $conversation->id,
+            'muted_until' => $until,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], ['user_id', 'conversation_id'], ['muted_until', 'updated_at']);
+
+        return new JsonResponse(['ok' => true, 'data' => ['muted_until' => optional($until)?->toIso8601String()]]);
+    }
+
+    public function unmuteNotifications(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $this->touchPresence((int) $user->id);
+        $validated = $request->validate([
+            'conversation_id' => 'required|integer|min:1',
+        ]);
+        if (!$this->hasNotificationTables()) {
+            return new JsonResponse(['ok' => true]);
+        }
+
+        $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
+        DB::table('chat_notification_mutes')
+            ->where('user_id', (int) $user->id)
+            ->where('conversation_id', (int) $conversation->id)
+            ->delete();
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    private function globalConversation(): ChatConversation
+    {
+        return ChatConversation::query()->firstOrCreate(
+            ['id' => self::GLOBAL_CONVERSATION_ID],
+            ['type' => 'global', 'name' => 'Global', 'created_by' => null]
+        );
+    }
+
+    private function conversationForUser(User $user, int $conversationId): ChatConversation
+    {
+        if ($conversationId <= 0) {
+            $conversationId = self::GLOBAL_CONVERSATION_ID;
+        }
+
+        $conversation = ChatConversation::query()->whereKey($conversationId)->firstOrFail();
+        if ($conversation->type === 'global') {
+            return $conversation;
+        }
+
+        $isMember = DB::table('chat_conversation_participants')
+            ->where('conversation_id', (int) $conversation->id)
+            ->where('user_id', (int) $user->id)
+            ->exists();
+
+        if (!$isMember) {
+            abort(403, 'Not allowed to access this conversation.');
+        }
+
+        return $conversation;
+    }
+
+    private function isGroupOwner(int $conversationId, int $userId): bool
+    {
+        if (!$this->hasParticipantRoleColumn()) {
+            return ChatConversation::query()->whereKey($conversationId)->where('created_by', $userId)->exists();
+        }
+
+        return DB::table('chat_conversation_participants')
+            ->where('conversation_id', $conversationId)
+            ->where('user_id', $userId)
+            ->where('role', 'owner')
+            ->exists();
+    }
+
+    private function isGroupAdminOrOwner(int $conversationId, int $userId): bool
+    {
+        if (!$this->hasParticipantRoleColumn()) {
+            return $this->isGroupOwner($conversationId, $userId);
+        }
+
+        return DB::table('chat_conversation_participants')
+            ->where('conversation_id', $conversationId)
+            ->where('user_id', $userId)
+            ->whereIn('role', ['owner', 'admin'])
+            ->exists();
+    }
+
+    private function removeMemberInternal(Request $request, int $conversation, int $member, bool $ban): JsonResponse
+    {
+        $user = $request->user();
+        $model = $this->conversationForUser($user, $conversation);
+        if ($model->type !== 'group') {
+            return new JsonResponse(['error' => 'Only group supports member management.'], 422);
+        }
+        if (!$this->isGroupAdminOrOwner((int) $model->id, (int) $user->id)) {
+            return new JsonResponse(['error' => 'Only admin/owner can manage member.'], 403);
+        }
+        if (!$this->hasParticipantRoleColumn()) {
+            if (!$this->isGroupOwner((int) $model->id, (int) $user->id)) {
+                return new JsonResponse(['error' => 'Only group owner can manage member.'], 403);
+            }
+            if ((int) $member === (int) $model->created_by) {
+                return new JsonResponse(['error' => 'Owner cannot be kicked or banned.'], 422);
+            }
+        }
+
+        $targetRole = DB::table('chat_conversation_participants')
+            ->where('conversation_id', (int) $model->id)
+            ->where('user_id', $member)
+            ->value($this->hasParticipantRoleColumn() ? 'role' : 'user_id');
+        if ($targetRole === null) {
+            return new JsonResponse(['error' => 'Member not found.'], 404);
+        }
+        if ($this->hasParticipantRoleColumn() && $targetRole === 'owner') {
+            return new JsonResponse(['error' => 'Owner cannot be kicked or banned.'], 422);
+        }
+
+        if ($this->hasParticipantRoleColumn()) {
+            $actorRole = DB::table('chat_conversation_participants')
+                ->where('conversation_id', (int) $model->id)
+                ->where('user_id', (int) $user->id)
+                ->value('role');
+            if ($actorRole === 'admin' && $targetRole === 'admin') {
+                return new JsonResponse(['error' => 'Admin cannot manage another admin.'], 403);
+            }
+        }
+
+        DB::table('chat_conversation_participants')
+            ->where('conversation_id', (int) $model->id)
+            ->where('user_id', $member)
+            ->delete();
+
+        if ($ban) {
+            DB::table('chat_conversation_bans')->upsert([
+                'conversation_id' => (int) $model->id,
+                'user_id' => $member,
+                'banned_by' => (int) $user->id,
+                'reason' => 'group moderation',
+                'created_at' => now(),
+            ], ['conversation_id', 'user_id'], ['banned_by', 'reason', 'created_at']);
+        }
+
+        return new JsonResponse(['ok' => true]);
+    }
+
+    /**
+     * @param array<int,int> $messageIds
+     * @param array<int,int> $authorIds
+     */
+    private function markMessagesRead(array $messageIds, int $readerUserId, array $authorIds): void
+    {
+        if ($messageIds === []) {
+            return;
+        }
+
+        $authorMap = [];
+        foreach ($messageIds as $idx => $id) {
+            $authorMap[(int) $id] = (int) ($authorIds[$idx] ?? 0);
+        }
+
+        $now = now();
+        $rows = [];
+        foreach ($messageIds as $id) {
+            $id = (int) $id;
+            if (($authorMap[$id] ?? 0) === $readerUserId) {
+                continue;
+            }
+            $rows[] = [
+                'message_id' => $id,
+                'user_id' => $readerUserId,
+                'read_at' => $now,
+            ];
+        }
+
+        if ($rows !== []) {
+            DB::table('public_chat_message_reads')->upsert($rows, ['message_id', 'user_id'], ['read_at']);
+        }
+    }
+
+    /**
+     * @param array<int,int> $messageIds
+     * @return array{counts: array<int,int>, readByOthers: array<int,bool>}
+     */
+    private function readStats(array $messageIds): array
+    {
+        if ($messageIds === []) {
+            return ['counts' => [], 'readByOthers' => []];
+        }
+
+        $counts = DB::table('public_chat_message_reads')
+            ->selectRaw('message_id, COUNT(*) as aggregate')
+            ->whereIn('message_id', $messageIds)
+            ->groupBy('message_id')
+            ->pluck('aggregate', 'message_id')
+            ->map(fn ($v) => (int) $v)
+            ->toArray();
+
+        $readByOthers = DB::table('public_chat_message_reads as r')
+            ->join('public_chat_messages as m', 'm.id', '=', 'r.message_id')
+            ->whereIn('r.message_id', $messageIds)
+            ->whereColumn('r.user_id', '!=', 'm.user_id')
+            ->groupBy('r.message_id')
+            ->pluck('r.message_id')
+            ->mapWithKeys(fn ($id) => [(int) $id => true])
+            ->toArray();
+
+        return ['counts' => $counts, 'readByOthers' => $readByOthers];
+    }
+
+    /**
+     * @param array<int,int> $messageIds
+     * @return array{byMessage: array<int,array<int,int>>, mine: array<int,int>}
+     */
+    private function pollStats(array $messageIds, int $viewerId): array
+    {
+        if ($messageIds === []) {
+            return ['byMessage' => [], 'mine' => []];
+        }
+
+        $rows = DB::table('chat_poll_votes')
+            ->select(['message_id', 'option_index', DB::raw('COUNT(*) as aggregate')])
+            ->whereIn('message_id', $messageIds)
+            ->groupBy(['message_id', 'option_index'])
+            ->get();
+
+        $byMessage = [];
+        foreach ($rows as $row) {
+            $mid = (int) $row->message_id;
+            $opt = (int) $row->option_index;
+            $byMessage[$mid] = $byMessage[$mid] ?? [];
+            $byMessage[$mid][$opt] = (int) $row->aggregate;
+        }
+
+        $mine = DB::table('chat_poll_votes')
+            ->whereIn('message_id', $messageIds)
+            ->where('user_id', $viewerId)
+            ->pluck('option_index', 'message_id')
+            ->map(fn ($v) => (int) $v)
+            ->toArray();
+
+        return ['byMessage' => $byMessage, 'mine' => $mine];
+    }
+
+    /**
+     * @param array<int,int> $messageIds
+     * @return array{byMessage: array<int,array<string,int>>, mine: array<int,array<string,bool>>}
+     */
+    private function reactionStats(array $messageIds, int $viewerId): array
+    {
+        if ($messageIds === [] || !$this->hasReactionTable()) {
+            return ['byMessage' => [], 'mine' => []];
+        }
+
+        $rows = DB::table('public_chat_message_reactions')
+            ->select(['message_id', 'emoji', DB::raw('COUNT(*) as aggregate')])
+            ->whereIn('message_id', $messageIds)
+            ->groupBy(['message_id', 'emoji'])
+            ->get();
+
+        $byMessage = [];
+        foreach ($rows as $row) {
+            $mid = (int) $row->message_id;
+            $emoji = (string) $row->emoji;
+            $byMessage[$mid] = $byMessage[$mid] ?? [];
+            $byMessage[$mid][$emoji] = (int) $row->aggregate;
+        }
+
+        $mineRows = DB::table('public_chat_message_reactions')
+            ->whereIn('message_id', $messageIds)
+            ->where('user_id', $viewerId)
+            ->get(['message_id', 'emoji']);
+
+        $mine = [];
+        foreach ($mineRows as $row) {
+            $mid = (int) $row->message_id;
+            $emoji = (string) $row->emoji;
+            $mine[$mid] = $mine[$mid] ?? [];
+            $mine[$mid][$emoji] = true;
+        }
+
+        return ['byMessage' => $byMessage, 'mine' => $mine];
+    }
+
+    private function hasCallTables(): bool
+    {
+        if (self::$hasCallTables === null) {
+            self::$hasCallTables = Schema::hasTable('chat_call_sessions')
+                && Schema::hasTable('chat_call_participants')
+                && Schema::hasTable('chat_call_signals');
+        }
+
+        return self::$hasCallTables;
+    }
+
+    private function activeCallSession(int $conversationId): ?object
+    {
+        if (!$this->hasCallTables()) {
+            return null;
+        }
+
+        $sessions = DB::table('chat_call_sessions')
+            ->where('conversation_id', $conversationId)
+            ->whereNull('ended_at')
+            ->orderByDesc('id')
+            ->get(['id', 'conversation_id', 'started_by', 'created_at', 'updated_at', 'ended_at']);
+
+        foreach ($sessions as $session) {
+            $activeParticipants = DB::table('chat_call_participants')
+                ->where('call_session_id', (int) $session->id)
+                ->whereNull('left_at')
+                ->count();
+            if ($activeParticipants > 0) {
+                return $session;
+            }
+
+            DB::table('chat_call_sessions')
+                ->where('id', (int) $session->id)
+                ->whereNull('ended_at')
+                ->update([
+                    'ended_at' => now(),
+                    'updated_at' => now(),
+                ]);
+        }
+
+        return null;
+    }
+
+    private function callPayload(int $sessionId): ?array
+    {
+        $session = DB::table('chat_call_sessions')->where('id', $sessionId)->first();
+        if (!$session) {
+            return null;
+        }
+
+        $participants = DB::table('chat_call_participants as p')
+            ->join('users as u', 'u.id', '=', 'p.user_id')
+            ->where('p.call_session_id', (int) $sessionId)
+            ->whereNull('p.left_at')
+            ->orderBy('p.id')
+            ->get([
+                'u.id',
+                'u.username',
+                'u.name_first',
+                'u.name_last',
+                'u.email',
+                'u.avatar_url',
+                'p.mic_muted',
+                'p.speaking_level',
+                'p.joined_at',
+            ]);
+
+        return [
+            'id' => (int) $session->id,
+            'conversation_id' => (int) $session->conversation_id,
+            'started_by' => (int) $session->started_by,
+            'started_at' => $session->created_at ? (string) $session->created_at : null,
+            'participants' => $participants->map(function ($row) {
+                $display = trim((string) (($row->name_first ?? '') . ' ' . ($row->name_last ?? '')));
+
+                return [
+                    'id' => (int) $row->id,
+                    'username' => (string) $row->username,
+                    'display_name' => $display !== '' ? $display : (string) $row->username,
+                    'avatar_url' => $this->avatarFromRaw((string) ($row->avatar_url ?? ''), (string) ($row->email ?? '')),
+                    'mic_muted' => (bool) $row->mic_muted,
+                    'speaking_level' => max(0, min(100, (int) $row->speaking_level)),
+                    'joined_at' => $row->joined_at ? (string) $row->joined_at : null,
+                ];
+            })->values(),
+        ];
+    }
+
+    private function upsertCallParticipant(int $sessionId, int $userId): void
+    {
+        DB::table('chat_call_participants')->upsert([
+            'call_session_id' => $sessionId,
+            'user_id' => $userId,
+            'joined_at' => now(),
+            'left_at' => null,
+            'updated_at' => now(),
+        ], ['call_session_id', 'user_id'], ['joined_at', 'left_at', 'updated_at']);
+    }
+
+    private function insertCallSignal(
+        int $sessionId,
+        int $conversationId,
+        ?int $fromUserId,
+        ?int $toUserId,
+        string $type,
+        ?array $payload
+    ): int {
+        return (int) DB::table('chat_call_signals')->insertGetId([
+            'call_session_id' => $sessionId,
+            'conversation_id' => $conversationId,
+            'from_user_id' => $fromUserId,
+            'to_user_id' => $toUserId,
+            'type' => mb_substr(trim($type), 0, 24),
+            'payload' => $payload !== null ? json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+            'created_at' => now(),
+        ]);
+    }
+
+    private function decodeJsonPayload(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+        if (!is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        $decoded = json_decode($value, true);
+
+        return json_last_error() === JSON_ERROR_NONE ? $decoded : null;
+    }
+
+    private function safeSignalPayload(mixed $payload): ?array
+    {
+        if (is_string($payload)) {
+            $decoded = json_decode($payload, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                return null;
+            }
+            $payload = $decoded;
+        }
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($encoded === false || strlen($encoded) > 65535) {
+            return null;
+        }
+
+        return $payload;
+    }
+
+    private function endSessionIfNoParticipants(int $sessionId, int $conversationId, int $actorUserId): void
+    {
+        $remaining = DB::table('chat_call_participants')
+            ->where('call_session_id', $sessionId)
+            ->whereNull('left_at')
+            ->count();
+        if ($remaining > 0) {
+            return;
+        }
+
+        DB::table('chat_call_sessions')
+            ->where('id', $sessionId)
+            ->whereNull('ended_at')
+            ->update([
+                'ended_at' => now(),
+                'updated_at' => now(),
+            ]);
+        $this->insertCallSignal($sessionId, $conversationId, $actorUserId, null, 'end', ['user_id' => $actorUserId]);
+    }
+
+    private function isConversationMember(ChatConversation $conversation, int $userId): bool
+    {
+        if ($conversation->type === 'global') {
+            return User::query()->whereKey($userId)->exists();
+        }
+
+        return DB::table('chat_conversation_participants')
+            ->where('conversation_id', (int) $conversation->id)
+            ->where('user_id', $userId)
+            ->exists();
+    }
+
+    private function hasReactionTable(): bool
+    {
+        if (self::$hasReactionTable === null) {
+            self::$hasReactionTable = Schema::hasTable('public_chat_message_reactions');
+        }
+
+        return self::$hasReactionTable;
+    }
+
+    private function hasMuteTable(): bool
+    {
+        if (self::$hasMuteTable === null) {
+            self::$hasMuteTable = Schema::hasTable('chat_conversation_mutes');
+        }
+
+        return self::$hasMuteTable;
+    }
+
+    private function hasParticipantRoleColumn(): bool
+    {
+        if (self::$hasParticipantRoleColumn === null) {
+            self::$hasParticipantRoleColumn = Schema::hasColumn('chat_conversation_participants', 'role');
+        }
+
+        return self::$hasParticipantRoleColumn;
+    }
+
+    private function hasPresenceTable(): bool
+    {
+        if (self::$hasPresenceTable === null) {
+            self::$hasPresenceTable = Schema::hasTable('chat_user_presence');
+        }
+
+        return self::$hasPresenceTable;
+    }
+
+    private function hasNotificationTables(): bool
+    {
+        if (self::$hasNotificationTables === null) {
+            self::$hasNotificationTables = Schema::hasTable('chat_notifications')
+                && Schema::hasTable('chat_notification_reads')
+                && Schema::hasTable('chat_notification_mutes');
+        }
+
+        return self::$hasNotificationTables;
+    }
+
+    private function touchPresence(int $userId): void
+    {
+        if ($userId <= 0 || !$this->hasPresenceTable()) {
+            return;
+        }
+
+        $now = now();
+        DB::table('chat_user_presence')->upsert([
+            'user_id' => $userId,
+            'last_seen_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], ['user_id'], ['last_seen_at', 'updated_at']);
+    }
+
+    private function isPresenceOnline(?string $lastSeenAt): bool
+    {
+        if (!$lastSeenAt) {
+            return false;
+        }
+        try {
+            return now()->diffInSeconds(\Illuminate\Support\Carbon::parse($lastSeenAt), false) >= -self::PRESENCE_ONLINE_WINDOW_SECONDS;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function isNotificationMuted(int $userId, int $conversationId): bool
+    {
+        if (!$this->hasNotificationTables()) {
+            return false;
+        }
+
+        return DB::table('chat_notification_mutes')
+            ->where('user_id', $userId)
+            ->where('conversation_id', $conversationId)
+            ->where(function ($query) {
+                $query->whereNull('muted_until')->orWhere('muted_until', '>', now());
+            })
+            ->exists();
+    }
+
+    private function createNotification(
+        int $userId,
+        ?int $conversationId,
+        ?int $fromUserId,
+        string $sourceType,
+        string $title,
+        ?string $body,
+        ?string $avatarUrl,
+        ?array $meta = null
+    ): void {
+        if ($userId <= 0 || !$this->hasNotificationTables()) {
+            return;
+        }
+
+        DB::table('chat_notifications')->insert([
+            'user_id' => $userId,
+            'conversation_id' => $conversationId,
+            'from_user_id' => $fromUserId,
+            'source_type' => mb_substr(trim($sourceType), 0, 24),
+            'title' => mb_substr(trim($title), 0, 191),
+            'body' => $body !== null ? mb_substr(trim($body), 0, 2000) : null,
+            'avatar_url' => $avatarUrl ? mb_substr(trim($avatarUrl), 0, 2048) : null,
+            'meta' => $meta ? json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+            'created_at' => now(),
+        ]);
+    }
+
+    private function notifyConversationMessage(int $conversationId, int $fromUserId, ?string $body): void
+    {
+        if (!$this->hasNotificationTables()) {
+            return;
+        }
+
+        $conversation = ChatConversation::query()->whereKey($conversationId)->first();
+        if (!$conversation) {
+            return;
+        }
+        $fromUser = User::query()->whereKey($fromUserId)->first();
+        if (!$fromUser) {
+            return;
+        }
+
+        $fromName = trim((string) (($fromUser->name_first ?? '') . ' ' . ($fromUser->name_last ?? '')));
+        if ($fromName === '') {
+            $fromName = (string) $fromUser->username;
+        }
+        $bodyText = trim((string) ($body ?? ''));
+        if ($bodyText === '') {
+            $bodyText = 'Sent a new message';
+        }
+
+        $recipientIds = [];
+        if ($conversation->type === 'global') {
+            $recipientIds = DB::table('public_chat_messages')
+                ->where('conversation_id', (int) $conversation->id)
+                ->where('user_id', '!=', $fromUserId)
+                ->distinct()
+                ->pluck('user_id')
+                ->map(fn ($id) => (int) $id)
+                ->values()
+                ->all();
+        } else {
+            $recipientIds = DB::table('chat_conversation_participants')
+                ->where('conversation_id', (int) $conversation->id)
+                ->where('user_id', '!=', $fromUserId)
+                ->pluck('user_id')
+                ->map(fn ($id) => (int) $id)
+                ->values()
+                ->all();
+        }
+
+        $avatar = null;
+        if ($conversation->type === 'group') {
+            $avatar = $this->sanitizeMediaUrl((string) ($conversation->avatar_url ?? '')) ?: null;
+        }
+        if ($avatar === null) {
+            $avatar = $this->avatarUrlForUser($fromUser);
+        }
+
+        foreach ($recipientIds as $recipientId) {
+            if ($recipientId <= 0 || $recipientId === $fromUserId) {
+                continue;
+            }
+            if ($this->isNotificationMuted($recipientId, (int) $conversation->id)) {
+                continue;
+            }
+            $title = $conversation->type === 'private'
+                ? $fromName
+                : (($conversation->name ?: ucfirst((string) $conversation->type)) . ' • ' . $fromName);
+            $this->createNotification(
+                $recipientId,
+                (int) $conversation->id,
+                $fromUserId,
+                $conversation->type === 'private' ? 'dm' : ($conversation->type === 'group' ? 'group' : 'global'),
+                $title,
+                $bodyText,
+                $avatar,
+                ['conversation_type' => (string) $conversation->type]
+            );
+        }
+    }
+
+    private function canModerateConversation(int $conversationId, string $type, int $actorId): bool
+    {
+        if ($type === 'global') {
+            return $actorId === 1;
+        }
+        if ($type !== 'group') {
+            return false;
+        }
+
+        return $this->isGroupAdminOrOwner($conversationId, $actorId);
+    }
+
+    private function isConversationMutedFor(int $conversationId, int $userId): bool
+    {
+        if (!$this->hasMuteTable()) {
+            return false;
+        }
+
+        return DB::table('chat_conversation_mutes')
+            ->where('conversation_id', $conversationId)
+            ->where('user_id', $userId)
+            ->where(function ($query) {
+                $query->whereNull('expires_at')->orWhere('expires_at', '>', now());
+            })
+            ->exists();
+    }
+
+    /**
+     * @param array{counts: array<int,int>, readByOthers: array<int,bool>} $stats
+     * @param array{byMessage: array<int,array<int,int>>, mine: array<int,int>} $poll
+     */
+    private function transformMessage(PublicChatMessage $message, int $viewerUserId, array $stats, array $poll, array $reactions): array
+    {
+        $username = (string) ($message->user?->username ?? 'unknown');
+        $displayName = trim((string) (($message->user?->name_first ?? '') . ' ' . ($message->user?->name_last ?? '')));
+
+        $pollPayload = null;
+        $options = is_array($message->poll_options) ? array_values($message->poll_options) : [];
+        if ($message->poll_question !== null && $options !== []) {
+            $counts = $poll['byMessage'][(int) $message->id] ?? [];
+            $pollPayload = [
+                'question' => (string) $message->poll_question,
+                'options' => array_map(
+                    fn ($text, $idx) => ['text' => (string) $text, 'votes' => (int) ($counts[(int) $idx] ?? 0)],
+                    $options,
+                    array_keys($options)
+                ),
+                'my_vote' => $poll['mine'][(int) $message->id] ?? null,
+            ];
+        }
+
+        return [
+            'id' => (int) $message->id,
+            'conversation_id' => (int) $message->conversation_id,
+            'user_id' => (int) $message->user_id,
+            'username' => $username,
+            'display_name' => $displayName !== '' ? $displayName : $username,
+            'avatar_url' => $this->avatarUrlForUser($message->user),
+            'birthday' => $this->birthdayForUser($message->user),
+            'joined_at' => optional($message->user?->created_at)?->toDateString(),
+            'mentions' => array_values(array_unique(array_map('strval', (array) ($message->mention_usernames ?? [])))),
+            'body' => $message->body,
+            'media_url' => $message->media_url,
+            'media_type' => $message->media_type,
+            'media_mime' => $message->media_mime,
+            'media_name' => $message->media_name,
+            'edited_at' => optional($message->edited_at)?->toIso8601String(),
+            'created_at' => $message->created_at->toIso8601String(),
+            'updated_at' => $message->updated_at->toIso8601String(),
+            'is_own' => (int) $message->user_id === $viewerUserId,
+            'read_count' => (int) ($stats['counts'][(int) $message->id] ?? 0),
+            'is_read_by_others' => (bool) ($stats['readByOthers'][(int) $message->id] ?? false),
+            'reply' => $message->replyTo ? [
+                'id' => (int) $message->replyTo->id,
+                'username' => (string) ($message->replyTo->user?->username ?? 'unknown'),
+                'display_name' => trim((string) (($message->replyTo->user?->name_first ?? '') . ' ' . ($message->replyTo->user?->name_last ?? '')))
+                    ?: (string) ($message->replyTo->user?->username ?? 'unknown'),
+                'avatar_url' => $this->avatarUrlForUser($message->replyTo->user),
+                'birthday' => $this->birthdayForUser($message->replyTo->user),
+                'joined_at' => optional($message->replyTo->user?->created_at)?->toDateString(),
+                'body' => (string) ($message->replyTo->body ?? ''),
+            ] : null,
+            'poll' => $pollPayload,
+            'reactions' => collect($reactions['byMessage'][(int) $message->id] ?? [])->map(function ($count, $emoji) use ($reactions, $message) {
+                return [
+                    'emoji' => (string) $emoji,
+                    'count' => (int) $count,
+                    'mine' => (bool) (($reactions['mine'][(int) $message->id] ?? [])[$emoji] ?? false),
+                ];
+            })->values()->toArray(),
+        ];
+    }
+
+    /** @return array<int,string> */
+    private function extractMentions(string $body): array
+    {
+        if ($body === '') {
+            return [];
+        }
+
+        preg_match_all('/@([a-zA-Z0-9._-]{3,32})/', $body, $matches);
+
+        return array_values(array_unique(array_map('strtolower', $matches[1] ?? [])));
+    }
+
+    private function sanitizeBody(string $body): string
+    {
+        $body = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $body) ?? '';
+
+        return mb_substr(trim($body), 0, self::MAX_MESSAGE_LENGTH);
+    }
+
+    private function sanitizeMediaUrl(string $url): string
+    {
+        $url = trim($url);
+        if ($url === '' || !preg_match('#^https?://#i', $url)) {
+            return '';
+        }
+
+        return mb_substr($url, 0, 2000);
+    }
+
+    private function sanitizeFilename(string $name): ?string
+    {
+        $clean = trim(str_replace(["\r", "\n", "\t"], '', $name));
+
+        return $clean === '' ? null : mb_substr($clean, 0, 255);
+    }
+
+    private function sanitizeMime(string $mime): ?string
+    {
+        $clean = trim(strtolower($mime));
+        if ($clean === '' || preg_match('/^[a-z0-9.+\/-]+$/', $clean) !== 1) {
+            return null;
+        }
+
+        return mb_substr($clean, 0, 120);
+    }
+
+    private function inferMediaType(?string $requestedType, string $mediaUrl, string $mime): string
+    {
+        if (in_array($requestedType, ['text', 'image', 'audio', 'link'], true)) {
+            return $requestedType;
+        }
+
+        $mime = strtolower(trim($mime));
+        if (Str::startsWith($mime, 'image/')) {
+            return 'image';
+        }
+        if (Str::startsWith($mime, 'audio/')) {
+            return 'audio';
+        }
+        if ($mediaUrl === '') {
+            return 'text';
+        }
+        if (preg_match('/\.(png|jpg|jpeg|gif|webp)(\?.*)?$/i', $mediaUrl) === 1) {
+            return 'image';
+        }
+        if (preg_match('/\.(mp3|ogg|wav|m4a|webm|mp4)(\?.*)?$/i', $mediaUrl) === 1) {
+            return 'audio';
+        }
+
+        return 'link';
+    }
+
+    private function avatarUrlForUser(?User $user): ?string
+    {
+        if (!$user) {
+            return null;
+        }
+
+        return $this->avatarFromRaw((string) ($user->avatar_url ?? ''), (string) $user->email);
+    }
+
+    private function avatarFromRaw(string $custom, string $email): string
+    {
+        $custom = trim($custom);
+        if ($custom !== '' && preg_match('#^https?://#i', $custom) === 1) {
+            return mb_substr($custom, 0, 2048);
+        }
+
+        return 'https://gravatar.com/avatar/' . md5(Str::lower($email));
+    }
+
+    private function birthdayForUser(?User $user): ?string
+    {
+        if (!$user) {
+            return null;
+        }
+
+        $birthday = $user->birthday;
+        if ($birthday instanceof \DateTimeInterface) {
+            return $birthday->format('Y-m-d');
+        }
+
+        if (is_string($birthday) && trim($birthday) !== '') {
+            return mb_substr(trim($birthday), 0, 10);
+        }
+
+        return optional($user->created_at)?->toDateString();
+    }
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=PteroProtect Offline Challenge API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=PTEROPROTECT_CONFIG_PATH=/tmp/pteroprotect-mock/config.json
+ExecStart=/tmp/pteroprotect-mock/challenge_guard
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

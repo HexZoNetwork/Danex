@@ -1,0 +1,6 @@
+{
+  "name": "codespaces/pterodactyl-dummy",
+  "description": "Dummy Pterodactyl panel for Codespaces testing",
+  "type": "project",
+  "require": {}
+}

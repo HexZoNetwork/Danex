@@ -1,0 +1,9 @@
+{
+    "makefile.launchConfigurations": [
+        {
+            "cwd": "/root/Danex",
+            "binaryPath": "/root/Danex/dann_guard",
+            "binaryArgs": []
+        }
+    ]
+}

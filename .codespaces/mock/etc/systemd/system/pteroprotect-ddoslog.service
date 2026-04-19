@@ -1,0 +1,16 @@
+[Unit]
+Description=PteroProtect Host DDoS RAM Logger
+After=network-online.target nginx.service pteroprotect.service pteroprotect-hostguard.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=PTEROPROTECT_MONITOR_TCP_PORTS=22,80,443,8080,2022,3306,6379
+ExecStart=/tmp/pteroprotect-mock/scripts/ddos_host_logger.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
