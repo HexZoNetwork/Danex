@@ -27,3 +27,5 @@ tesspace/runtime/
 tesspace/.env
 tesspace/.venv/
 tesspace/*.local.json
+.codespaces/mock/var/www/pterodactyl/node_modules
+
