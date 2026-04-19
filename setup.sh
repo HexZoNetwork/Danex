@@ -756,6 +756,11 @@ elif [[ -f "${INSTALL_DIR}/config.json" ]]; then
     echo "[setup] config source: existing ${INSTALL_DIR}/config.json"
 fi
 
+# Keep workspace runtime config pointed at active install config so edits are
+# always reflected in the running service config path.
+ln -sfn "${INSTALL_DIR}/config.json" "${PROJECT_DIR}/config.runtime.json"
+echo "[setup] runtime config symlink: ${PROJECT_DIR}/config.runtime.json -> ${INSTALL_DIR}/config.json"
+
 if panel_env_has_database_credentials "${PANEL_ENV_FILE}"; then
     echo "[setup] database source: ${PANEL_ENV_FILE} -> ${INSTALL_DIR}/config.json"
 else
