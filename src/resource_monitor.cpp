@@ -359,9 +359,9 @@ ActivityAbuseInfo collect_recent_activity_abuse(int server_id, long long after_i
             }
 
             if (command.find("./") != std::string::npos &&
-                !contains_any(command, {"./start.sh", "./entrypoint.sh", "./run.sh"})) {
-                score += looks_like_suspicious_exec_target(command) ? 5 : 3;
-                if (looks_like_suspicious_exec_target(command)) hard = true;
+                looks_like_suspicious_exec_target(command)) {
+                score += 5;
+                hard = true;
                 hits.push_back("exec:" + trim_copy(command));
             }
         } else if (event == "server:file.pull") {
@@ -661,28 +661,45 @@ ProcessAbuseInfo collect_process_abuse(const std::string& identifier) {
     std::string body = exec_read_all(cmd);
     if (body.empty()) return info;
 
-    static const std::vector<std::string> critical_patterns = {
-        " masscan", "zmap", "zgrab", "nmap ", "nmap-", "hping3", "nping",
+    static const std::vector<std::string> hard_patterns = {
+        " masscan", "zmap", "zgrab", "hping3", "nping",
         "slowhttptest", "goldeneye", "xerxes", "torshammer",
-        "locust ", "medusa ", "hydra ",
-        "tmate ", "ngrok ", "cloudflared tunnel",
         "socat tcp", "nc -e ", "ncat -e ",
         "169.254.169.254", "169.254.170.2", "100.100.100.200",
         "metadata.google.internal", "latest/meta-data", "computeMetadata/v1",
         "/var/lib/cloud/", "/run/cloud-init", "/etc/cloud/"
     };
+    static const std::vector<std::string> soft_patterns = {
+        "nmap ", "nmap-", "locust ", "medusa ", "hydra ",
+        "tmate ", "ngrok ", "cloudflared tunnel"
+    };
 
     std::stringstream ss(body);
     std::string line;
     std::vector<std::string> hits;
+    int hard_hits = 0;
+    int soft_hits = 0;
     while (std::getline(ss, line)) {
         std::string lc = to_lower_copy_res(trim_copy(line));
         if (lc.empty()) continue;
 
-        for (const auto& pattern : critical_patterns) {
+        bool matched = false;
+        for (const auto& pattern : hard_patterns) {
             if (lc.find(pattern) != std::string::npos) {
                 hits.push_back(trim_copy(line));
+                hard_hits++;
+                matched = true;
                 break;
+            }
+        }
+        if (!matched) {
+            for (const auto& pattern : soft_patterns) {
+                if (lc.find(pattern) != std::string::npos) {
+                    hits.push_back(trim_copy(line));
+                    soft_hits++;
+                    matched = true;
+                    break;
+                }
             }
         }
 
@@ -690,6 +707,7 @@ ProcessAbuseInfo collect_process_abuse(const std::string& identifier) {
     }
 
     if (hits.empty()) return info;
+    if (hard_hits == 0 && (soft_hits < 3 || (int)hits.size() < 3)) return info;
 
     info.suspicious = true;
     std::ostringstream out;
@@ -742,7 +760,7 @@ bool restart_container(const std::string& identifier, const std::string& uuid = 
 std::string detect_dropper_artifact(const std::string& server_uuid) {
     if (server_uuid.empty()) return "";
     static const std::vector<std::string> suspects = {
-        "x86_64", "a.out", "bot", "miner", "scan", "upd", "update", "ramabypass.jar"
+        "x86_64", "a.out", "ramabypass.jar"
     };
 
     for (const auto& name : suspects) {
@@ -2221,7 +2239,10 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         (!inbound.infra_only_local && inbound.local_conns >= api_profile.self_ddos_hard)
     );
 
-    std::string blocked_ip = (net_trigger || net_extreme)
+    const bool should_block_ip = (net_trigger || net_extreme) &&
+                                 !api_profile.enabled &&
+                                 inbound.unique_external_ips >= NET_WARNING_UNIQUE_IPS;
+    std::string blocked_ip = should_block_ip
         ? block_abusive_inbound_ips(srv.identifier)
         : "";
     bool trust_trigger = cooldown_ok && (

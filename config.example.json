@@ -46,7 +46,15 @@
       ],
       "provider_token_gate_enabled": false,
       "provider_token_ipv4_cidrs": "",
-      "provider_token_ipv6_cidrs": ""
+      "provider_token_ipv6_cidrs": "",
+      "provider_token_bootstrap_enabled": false,
+      "provider_token_bootstrap_on_empty_cache": true,
+      "provider_token_bootstrap_asns": "",
+      "provider_token_bootstrap_ips": "",
+      "provider_token_cache_file": "/pteroprotect/cache/provider_ranges.txt",
+      "provider_token_ip_cache_file": "/pteroprotect/cache/provider_ip_cache.json",
+      "provider_token_ip_cache_ttl_sec": 604800,
+      "provider_token_provider_keywords": "digitalocean,microsoft,azure,upcloud,hostinger,idwebhost,linode,akamai,vultr,choopa,hetzner,ovh,contabo,oracle,google,google cloud,amazon,aws,alibaba,tencent"
    },
    "paths": {
       "volumes": "/var/lib/pterodactyl/volumes"

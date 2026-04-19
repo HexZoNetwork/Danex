@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cctype>
 #include <cerrno>
+#include <cstdint>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -48,6 +49,10 @@ struct Settings {
     std::string secret;
     std::vector<std::string> trusted_hosts;
     std::vector<std::string> provider_token_cidrs;
+    std::string provider_token_cache_file;
+    std::string provider_token_ip_cache_file;
+    int provider_token_ip_cache_ttl_sec = 604800;
+    std::vector<std::string> provider_token_provider_keywords;
     std::string db_host = "127.0.0.1";
     std::string db_user;
     std::string db_password;
@@ -132,6 +137,29 @@ static std::map<std::string, std::string> parse_env_file(const std::string& path
         if (!key.empty()) out[key] = value;
     }
     return out;
+}
+
+static void append_csv_parts(const std::string& text, std::vector<std::string>& out) {
+    std::stringstream ss(text);
+    std::string part;
+    while (std::getline(ss, part, ',')) {
+        part = trim(part);
+        if (!part.empty()) out.push_back(part);
+    }
+}
+
+static void append_provider_cidrs_from_file(const std::string& path, std::vector<std::string>& out) {
+    std::ifstream f(path);
+    if (!f.is_open()) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::string cleaned = trim(line);
+        std::size_t hash = cleaned.find('#');
+        if (hash != std::string::npos) cleaned = trim(cleaned.substr(0, hash));
+        if (cleaned.empty()) continue;
+        append_csv_parts(cleaned, out);
+    }
 }
 
 static bool begins_with(const std::string& value, const std::string& prefix) {
@@ -551,11 +579,76 @@ static int json_get_int(const json& root, const std::string& key, int fallback) 
     return fallback;
 }
 
+static bool parse_cidr_bits(const std::string& text, int& bits_out) {
+    try {
+        std::size_t idx = 0;
+        int bits = std::stoi(trim(text), &idx);
+        if (idx != trim(text).size()) return false;
+        bits_out = bits;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static bool ipv4_in_cidr(const in_addr& net, int bits, const in_addr& ip) {
+    if (bits <= 0) return true;
+    if (bits > 32) return false;
+    const uint32_t net_v = ntohl(net.s_addr);
+    const uint32_t ip_v = ntohl(ip.s_addr);
+    const uint32_t mask = (bits == 32) ? 0xFFFFFFFFu : (0xFFFFFFFFu << (32 - bits));
+    return (net_v & mask) == (ip_v & mask);
+}
+
+static bool ipv6_in_cidr(const in6_addr& net, int bits, const in6_addr& ip) {
+    if (bits <= 0) return true;
+    if (bits > 128) return false;
+    const int full_bytes = bits / 8;
+    const int rem_bits = bits % 8;
+    for (int i = 0; i < full_bytes; ++i) {
+        if (net.s6_addr[i] != ip.s6_addr[i]) return false;
+    }
+    if (rem_bits == 0) return true;
+    const unsigned char mask = static_cast<unsigned char>(0xFFu << (8 - rem_bits));
+    return (net.s6_addr[full_bytes] & mask) == (ip.s6_addr[full_bytes] & mask);
+}
+
+static bool ip_or_cidr_matches_ip(const std::string& spec, const std::string& ip) {
+    std::string s = trim(spec);
+    std::string c = trim(ip);
+    if (s.empty() || c.empty()) return false;
+    if (s == c) return true;
+
+    const std::size_t slash = s.find('/');
+    if (slash == std::string::npos) return false;
+    const std::string net_part = trim(s.substr(0, slash));
+    const std::string bits_part = trim(s.substr(slash + 1));
+    if (net_part.empty() || bits_part.empty()) return false;
+
+    int bits = 0;
+    if (!parse_cidr_bits(bits_part, bits)) return false;
+
+    in_addr net4{}, ip4{};
+    if (inet_pton(AF_INET, net_part.c_str(), &net4) == 1 &&
+        inet_pton(AF_INET, c.c_str(), &ip4) == 1) {
+        return ipv4_in_cidr(net4, bits, ip4);
+    }
+
+    in6_addr net6{}, ip6{};
+    if (inet_pton(AF_INET6, net_part.c_str(), &net6) == 1 &&
+        inet_pton(AF_INET6, c.c_str(), &ip6) == 1) {
+        return ipv6_in_cidr(net6, bits, ip6);
+    }
+
+    return false;
+}
+
 static bool host_or_cidr_matches_ip(const std::string& host_or_ip, const std::string& ip) {
     std::string h = trim(host_or_ip);
     std::string c = trim(ip);
     if (h.empty() || c.empty()) return false;
     if (h == c) return true;
+    if (ip_or_cidr_matches_ip(h, c)) return true;
 
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -637,16 +730,30 @@ static Settings load_settings() {
                         if (!cidr.empty()) s.provider_token_cidrs.push_back(cidr);
                     }
                 } else if (node.is_string()) {
-                    std::stringstream ss(node.get<std::string>());
-                    std::string part;
-                    while (std::getline(ss, part, ',')) {
-                        part = trim(part);
-                        if (!part.empty()) s.provider_token_cidrs.push_back(part);
-                    }
+                    append_csv_parts(node.get<std::string>(), s.provider_token_cidrs);
                 }
             };
             if (net.contains("provider_token_ipv4_cidrs")) append_provider_cidrs(net["provider_token_ipv4_cidrs"]);
             if (net.contains("provider_token_ipv6_cidrs")) append_provider_cidrs(net["provider_token_ipv6_cidrs"]);
+            s.provider_token_cache_file = trim(json_get_string(net, "provider_token_cache_file", "/pteroprotect/cache/provider_ranges.txt"));
+            s.provider_token_ip_cache_file = trim(json_get_string(net, "provider_token_ip_cache_file", "/pteroprotect/cache/provider_ip_cache.json"));
+            s.provider_token_ip_cache_ttl_sec = std::max(300, std::min(2592000, json_get_int(net, "provider_token_ip_cache_ttl_sec", 604800)));
+            if (net.contains("provider_token_provider_keywords")) {
+                if (net["provider_token_provider_keywords"].is_array()) {
+                    for (const auto& item : net["provider_token_provider_keywords"]) {
+                        if (!item.is_string()) continue;
+                        std::string keyword = to_lower(trim(item.get<std::string>()));
+                        if (!keyword.empty()) s.provider_token_provider_keywords.push_back(keyword);
+                    }
+                } else if (net["provider_token_provider_keywords"].is_string()) {
+                    std::vector<std::string> parts;
+                    append_csv_parts(net["provider_token_provider_keywords"].get<std::string>(), parts);
+                    for (const auto& part : parts) s.provider_token_provider_keywords.push_back(to_lower(part));
+                }
+            }
+            if (!s.provider_token_cache_file.empty()) {
+                append_provider_cidrs_from_file(s.provider_token_cache_file, s.provider_token_cidrs);
+            }
             s.db_host = trim(db.value("host", std::string("127.0.0.1")));
             if (s.db_host.empty()) s.db_host = "127.0.0.1";
             s.db_user = trim(db.value("user", std::string("")));
@@ -980,7 +1087,7 @@ static bool ua_declared_browser(const std::string& ua) {
     if (ua.size() < 8 || ua.size() > 1200) return false;
     const std::string low = to_lower(ua);
     static const std::vector<std::string> blocked = {
-        "curl/", "wget/", "python-requests", "go-http-client", "okhttp", "libwww-perl",
+        "curl/", "wget/", "python-requests", "go-http-client", "libwww-perl",
         "java/", "aiohttp", "httpclient", "axios/", "node-fetch", "scrapy", "postmanruntime",
         "headless", "headlesschrome", "puppeteer", "playwright", "selenium", "phantomjs"
     };
@@ -1342,20 +1449,25 @@ static bool is_loopback_ip(const std::string& ip) {
     return t == "127.0.0.1" || t == "::1" || t == "::ffff:127.0.0.1";
 }
 
-static bool is_trusted_client_ip(const Settings& s, const std::string& ip) {
-    if (is_loopback_ip(ip)) return true;
-    for (const auto& host : s.trusted_hosts) {
-        if (host_or_cidr_matches_ip(host, ip)) return true;
-    }
-    return false;
-}
-
 static bool is_provider_range_ip(const Settings& s, const std::string& ip) {
     if (!s.provider_token_gate_enabled) return false;
     for (const auto& cidr : s.provider_token_cidrs) {
         if (host_or_cidr_matches_ip(cidr, ip)) return true;
     }
-    return false;
+    if (is_loopback_ip(ip)) return false;
+    for (char c : ip) {
+        const bool ok = std::isdigit(static_cast<unsigned char>(c)) ||
+            (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '.' || c == ':';
+        if (!ok) return false;
+    }
+    std::string cmd = "/usr/bin/python3 /pteroprotect/scripts/provider_ip_lookup.py " + g_cfg_path + " " + ip + " 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return false;
+    char buf[64] = {0};
+    std::string output;
+    if (fgets(buf, sizeof(buf), pipe) != nullptr) output = trim(buf);
+    pclose(pipe);
+    return output == "provider";
 }
 
 static std::string session_scope_key(const std::string& ip, const std::string& ua_fp) {
@@ -1364,17 +1476,16 @@ static std::string session_scope_key(const std::string& ip, const std::string& u
 
 static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& req, const std::string& client_ip) {
     auto internal_it = req.headers.find("x-pteroprotect-internal");
-    if (internal_it == req.headers.end() || trim(internal_it->second) != "1") {
-        return false;
-    }
+    const bool internal_marked = (internal_it != req.headers.end() && trim(internal_it->second) == "1");
 
     // Allow panel->wings internal daemon polling only when real client IP is localhost.
     auto ua_it = req.headers.find("user-agent");
     std::string ua = (ua_it != req.headers.end()) ? to_lower(ua_it->second) : "";
-    if (is_loopback_ip(client_ip) && ua.find("guzzlehttp/") != std::string::npos) {
+    if (internal_marked && is_loopback_ip(client_ip) && ua.find("guzzlehttp/") != std::string::npos) {
         return true;
     }
 
+    // Accept valid panel API bearer even if x-pteroprotect-internal header is missing.
     auto it = req.headers.find("authorization");
     if (it != req.headers.end()) {
         std::string v = trim(it->second);
@@ -1596,8 +1707,7 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        const bool trusted_client = is_trusted_client_ip(s, ip);
-        const bool token_ok = trusted_client && has_valid_auth_token_header(s, req, ip);
+        const bool token_ok = has_valid_auth_token_header(s, req, ip);
         if (token_ok) {
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
@@ -1618,8 +1728,7 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        const bool trusted_client = is_trusted_client_ip(s, ip);
-        const bool token_ok = trusted_client && has_valid_auth_token_header(s, req, ip);
+        const bool token_ok = has_valid_auth_token_header(s, req, ip);
         if (token_ok) {
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
@@ -1827,10 +1936,24 @@ static void handle_client(int fd, std::string remote_ip) {
                 found = true;
             }
         }
-        if (!found || rec.exp < std::time(nullptr) || rec.ip != ip || rec.ua != ua_fp) {
+        if (!found || rec.exp < std::time(nullptr) || rec.ua != ua_fp) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"nonce_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);
             return;
+        }
+        if (rec.ip != ip) {
+            // Mobile/CDN paths can shift IP during the challenge window.
+            if (!rec.click_verified) {
+                send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"nonce_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+                close(fd);
+                return;
+            }
+            std::lock_guard<std::mutex> lock(g_nonce_mu);
+            auto it = g_nonce_map.find(nonce);
+            if (it != g_nonce_map.end() && it->second.ua == ua_fp) {
+                it->second.ip = ip;
+                rec.ip = ip;
+            }
         }
         if (rec.answer_key.empty() || !in.contains(rec.answer_key)) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"answer_key_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
@@ -2160,10 +2283,23 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        if (rec.ip != ip || rec.ua != ua_fp) {
+        if (rec.ua != ua_fp) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"fingerprint_mismatch\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);
             return;
+        }
+        if (rec.ip != ip) {
+            if (!rec.click_verified) {
+                send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"fingerprint_mismatch\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+                close(fd);
+                return;
+            }
+            std::lock_guard<std::mutex> lock(g_nonce_mu);
+            auto it = g_nonce_map.find(nonce);
+            if (it != g_nonce_map.end() && it->second.ua == ua_fp) {
+                it->second.ip = ip;
+                rec.ip = ip;
+            }
         }
         if (!rec.click_verified) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"click_required\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);

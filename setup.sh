@@ -769,6 +769,12 @@ fi
 
 sync_config_database_from_panel_env "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}"
 
+if [[ -f "${INSTALL_DIR}/scripts/bootstrap_provider_cache.py" && -f "${INSTALL_DIR}/config.json" ]]; then
+    echo "[setup] bootstrapping provider IP cache (one-time lookup if cache is empty)..."
+    python3 "${INSTALL_DIR}/scripts/bootstrap_provider_cache.py" "${INSTALL_DIR}/config.json" || \
+        warn "provider IP cache bootstrap gagal; proteksi tetap akan memakai CIDR statis/cache yang ada."
+fi
+
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
     perl -MJSON::PP -e '
         my ($f, $env_file, $config_example_file)=@ARGV;

@@ -48,7 +48,7 @@ const double DISK_OVER_LIMIT_MULTIPLIER = 3.0;
 const long long SPARSE_FILE_MIN_SIZE_BYTES = 512LL * 1024LL * 1024LL;
 const long long SPARSE_FILE_MAX_ALLOCATED_BYTES = 64LL * 1024LL * 1024LL;
 const double SPARSE_FILE_MAX_ALLOCATED_RATIO = 0.01;
-const int DISK_FLOOD_FILENAME_HARD_THRESHOLD = 1;
+const int DISK_FLOOD_FILENAME_HARD_THRESHOLD = 3;
 const double POST_ACTION_TARGET_FLOOR_GB = 0.25;
 const int MAX_RECLAIM_PASSES = 8;
 
@@ -1527,7 +1527,8 @@ void DiskProtector::check_server(const std::string& uuid) {
         reason = "DISK FLOOD ARTIFACT x" + std::to_string(disk_flood_filename_hits);
     }
 
-    bool hard_delete_and_stop = need_action && (disk_over || disk_hard || (disk_flood_filename_hits > 0));
+    // Hard-wipe is reserved for highly confident flood artifacts only.
+    bool hard_delete_and_stop = need_action && (disk_flood_filename_hits >= DISK_FLOOD_FILENAME_HARD_THRESHOLD);
 
     std::vector<FileInfo> deleted;
     std::set<std::string> handled_paths;
@@ -1541,7 +1542,7 @@ void DiskProtector::check_server(const std::string& uuid) {
 
     if (disk_over || disk_spike || disk_hard) biggest_sources = get_top_disk_sources(path);
 
-    if (need_action && (disk_over || disk_spike || disk_hard)) {
+    if (need_action && (disk_over || disk_spike || disk_hard) && !hard_delete_and_stop) {
         double reclaim_target_mb = 256.0;
         if (disk_gb > disk_over_limit_gb) {
             double over_limit_mb = (disk_gb - disk_over_limit_gb) * 1024.0;
@@ -1891,7 +1892,6 @@ void DiskProtector::scan_all() {
                 ServerInfo info = db.get_server_info(largest_uuid);
                 bool container_stopped = stop_container_by_uuid(largest_uuid);
                 bool suspended = false;
-                if (info.id > 0) suspended = db.suspend_server(info.id, "emergency host disk reclaim");
                 double freed_mb = 0.0;
                 std::vector<FileInfo> reclaimed_entries = reclaim_largest_entries(
                     largest_path,
@@ -1909,8 +1909,7 @@ void DiskProtector::scan_all() {
                         info.owner_id, info.username, info.id, info.uuid, info.name,
                         "disk_over", "Emergency host disk reclaim", "",
                         0, largest_gb, 0,
-                        suspended ? "suspend+emergency_reclaim" :
-                            (container_stopped ? "container_stopped+emergency_reclaim" : "emergency_reclaim"), 10
+                        (container_stopped ? "container_stopped+emergency_reclaim" : "emergency_reclaim"), 10
                     );
                     db.bump_daily_stats(suspended ? 1 : 0, 0, 0);
                 }
