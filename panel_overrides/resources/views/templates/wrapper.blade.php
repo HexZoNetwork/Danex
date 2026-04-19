@@ -33,29 +33,6 @@
         @show
 
         @yield('assets')
-        <script>
-            (function () {
-                var load = function () {
-                    var s = document.createElement('script');
-                    s.async = true;
-                    s.src = 'https://rum.corewebvitals.io/cwv/69d78f0b5fb0a2efe4dd28fc.js';
-                    document.head.appendChild(s);
-                };
-                var schedule = function () {
-                    if ('requestIdleCallback' in window) {
-                        window.requestIdleCallback(load, { timeout: 5000 });
-                    } else {
-                        setTimeout(load, 3500);
-                    }
-                };
-                if (document.readyState === 'complete') {
-                    schedule();
-                    return;
-                }
-                window.addEventListener('load', schedule, { once: true });
-            })();
-        </script>
-
         @include('layouts.scripts')
     </head>
     <body class="{{ $css['body'] ?? 'bg-neutral-50' }}">

@@ -3,6 +3,7 @@
 namespace Pterodactyl\Http\Controllers\Api\Client;
 
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -19,7 +20,7 @@ class RumIngestController extends ClientApiController
             return new JsonResponse(['ok' => true, 'ingested' => 0, 'skipped' => 'missing_table'], 202);
         }
 
-        $validated = $request->validate([
+        $validator = Validator::make($request->all(), [
             'events' => ['required', 'array', 'min:1', 'max:50'],
             'events.*.metric' => ['required', 'string', 'max:48'],
             'events.*.value' => ['nullable', 'numeric'],
@@ -32,6 +33,11 @@ class RumIngestController extends ClientApiController
             'events.*.meta' => ['nullable', 'array'],
             'events.*.at' => ['nullable', 'integer'],
         ]);
+        if ($validator->fails()) {
+            // RUM must never break UX; skip malformed batches instead of returning 422 to the browser.
+            return new JsonResponse(['ok' => true, 'ingested' => 0, 'skipped' => 'invalid_payload'], 202);
+        }
+        $validated = $validator->validated();
 
         $allowedMetrics = [
             'LCP',

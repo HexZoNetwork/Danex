@@ -2307,6 +2307,12 @@ PY
         WINGS_USERNS_MODE="host"
         WINGS_ENABLE_ICC="$(read_network_setting wings_enable_icc false)"
         WINGS_IGNORE_PANEL_CONFIG_UPDATES="$(read_network_setting wings_ignore_panel_config_updates true)"
+        # wings-guard requires Wings to stay on localhost:18080; allowing panel-driven
+        # config overwrites can revert host/port and break all daemon endpoints with 502.
+        if [[ "${WINGS_IGNORE_PANEL_CONFIG_UPDATES,,}" != "true" && "${WINGS_IGNORE_PANEL_CONFIG_UPDATES}" != "1" ]]; then
+            echo "[setup] forcing wings_ignore_panel_config_updates=true for wings-guard stability."
+            WINGS_IGNORE_PANEL_CONFIG_UPDATES="true"
+        fi
         WINGS_OPENAT_MODE="compat"
         [[ "${CHALLENGE_PORT}" =~ ^[0-9]+$ ]] || CHALLENGE_PORT="18444"
         [[ "${WINGS_ROOTLESS_CONTAINER_UID}" =~ ^[0-9]+$ ]] || WINGS_ROOTLESS_CONTAINER_UID="1000"
