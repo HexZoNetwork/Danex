@@ -155,6 +155,12 @@ class GuardSuspensionCommand extends Command
 
     private function sendTelegramNotice(Server $server, string $action, string $reason, bool $highSignal): void
     {
+        // Keep channel noise low: unsuspend actions are operational cleanup and
+        // should not be broadcast to Telegram.
+        if ($action === SuspensionService::ACTION_UNSUSPEND) {
+            return;
+        }
+
         $config = $this->loadTelegramConfig();
         if ($config === null) {
             return;

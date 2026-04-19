@@ -1511,6 +1511,19 @@ stop_server_containers_by_uuid() {
     done < <(docker ps -aq --filter "name=${server_uuid}" 2>/dev/null)
 }
 
+has_running_container_for_uuid() {
+    local server_uuid="$1"
+    [[ -n "${server_uuid}" ]] || return 1
+
+    if docker ps -q --filter "label=service_uuid=${server_uuid}" 2>/dev/null | grep -q .; then
+        return 0
+    fi
+    if docker ps -q --filter "name=${server_uuid}" 2>/dev/null | grep -q .; then
+        return 0
+    fi
+    return 1
+}
+
 quarantine_server_volume() {
     local server_uuid="$1"
     local volume_root quarantine_root moved_count
@@ -1561,6 +1574,11 @@ enforce_locked_owners() {
 
         while IFS=$'\t' read -r server_id server_uuid server_status; do
             [[ -n "${server_id}" ]] || continue
+            if ! has_running_container_for_uuid "${server_uuid}"; then
+                printf '[owner-lock-skip-offline] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LOG_FILE}"
+                printf '[owner-lock-skip-offline] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LATEST_FILE}"
+                continue
+            fi
             if [[ "${server_status}" != "suspended" ]]; then
                 suspend_server_id "${server_id}" "owner_lock:${reason}" || true
             fi
@@ -1585,6 +1603,12 @@ quarantine_server_identifier() {
 
     IFS=$'\t' read -r server_id owner_id server_uuid server_name server_status <<< "${row}"
     [[ -n "${server_id}" && -n "${owner_id}" ]] || return 0
+
+    if ! has_running_container_for_uuid "${server_uuid}"; then
+        printf '[self-ddos-skip-offline] server=%s owner=%s uuid=%s identifier=%s requests=%s\n' "${server_id}" "${owner_id}" "${server_uuid}" "${identifier}" "${request_count}" >> "${LOG_FILE}"
+        printf '[self-ddos-skip-offline] server=%s owner=%s uuid=%s identifier=%s requests=%s\n' "${server_id}" "${owner_id}" "${server_uuid}" "${identifier}" "${request_count}" >> "${LATEST_FILE}"
+        return 0
+    fi
 
     if [[ "${server_status}" != "suspended" ]]; then
         suspend_server_id "${server_id}" "self_ddos:${identifier}" || true

@@ -175,14 +175,14 @@ class CreatePanelController extends ClientApiController
                 }
             }
 
-            return [
+            return new JsonResponse([
                 'data' => [
                     'server_id' => (int) $server->id,
                     'server_uuid' => (string) $server->uuid,
                     'server_identifier' => (string) $server->uuidShort,
                     'auto_suspended' => $autoSuspended,
                 ],
-            ];
+            ], 201);
         } catch (Throwable $exception) {
             report($exception);
             // Roll back one-time lock if creation failed and user still has no server.
@@ -201,9 +201,7 @@ class CreatePanelController extends ClientApiController
             ], 500);
         }
 
-        return new JsonResponse([
-            'data' => $result['data'],
-        ], 201);
+        return $result;
     }
 
     private function isMadeInWeb(?string $nameLast): bool
