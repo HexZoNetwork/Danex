@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <mysql/mysql.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
@@ -17,6 +18,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <csignal>
 #include <cstring>
@@ -37,6 +39,7 @@ using json = nlohmann::json;
 struct Settings {
     bool enabled = true;
     bool strict_mode = true;
+    bool provider_token_gate_enabled = false;
     std::string bind = "127.0.0.1";
     int port = 18444;
     int ttl = 1800;
@@ -44,7 +47,12 @@ struct Settings {
     std::string cookie_name = "pp_clearance";
     std::string secret;
     std::vector<std::string> trusted_hosts;
-    std::vector<std::string> trusted_bearer_tokens;
+    std::vector<std::string> provider_token_cidrs;
+    std::string db_host = "127.0.0.1";
+    std::string db_user;
+    std::string db_password;
+    std::string db_name;
+    std::string panel_app_key;
 };
 
 struct NonceRec {
@@ -84,7 +92,14 @@ static Settings g_cached_cfg;
 static std::time_t g_cached_cfg_at = 0;
 static std::string g_cfg_path = "/pteroprotect/config.json";
 static std::string g_ephemeral_secret;
+static std::mutex g_api_token_cache_mu;
+static std::map<std::string, std::time_t> g_valid_api_token_cache;
 static std::string random_nonce();
+static std::string to_lower(std::string s);
+static bool base64_decode(const std::string& in, std::string& out);
+static std::string hmac_sha256_hex(const std::string& key, const std::string& data);
+static bool secure_equals(const std::string& a, const std::string& b);
+static bool daemon_bearer_token_format_ok(const std::string& token);
 
 static inline std::string trim(const std::string& in) {
     std::size_t b = 0;
@@ -92,6 +107,197 @@ static inline std::string trim(const std::string& in) {
     std::size_t e = in.size();
     while (e > b && std::isspace(static_cast<unsigned char>(in[e - 1]))) e--;
     return in.substr(b, e - b);
+}
+
+static std::map<std::string, std::string> parse_env_file(const std::string& path) {
+    std::map<std::string, std::string> out;
+    std::ifstream f(path);
+    if (!f.is_open()) return out;
+
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::string t = trim(line);
+        if (t.empty() || t[0] == '#') continue;
+        std::size_t eq = t.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = trim(t.substr(0, eq));
+        std::string value = trim(t.substr(eq + 1));
+        if (value.size() >= 2) {
+            char q = value.front();
+            if ((q == '"' || q == '\'') && value.back() == q) {
+                value = value.substr(1, value.size() - 2);
+            }
+        }
+        if (!key.empty()) out[key] = value;
+    }
+    return out;
+}
+
+static bool begins_with(const std::string& value, const std::string& prefix) {
+    return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+}
+
+static bool base64_decode(const std::string& in, std::string& out) {
+    out.clear();
+    if (in.empty()) return true;
+    BIO* b64 = BIO_new(BIO_f_base64());
+    BIO* bio = BIO_new_mem_buf(in.data(), static_cast<int>(in.size()));
+    if (!b64 || !bio) {
+        if (b64) BIO_free(b64);
+        if (bio) BIO_free(bio);
+        return false;
+    }
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+    bio = BIO_push(b64, bio);
+    std::string buf(in.size(), '\0');
+    int n = BIO_read(bio, &buf[0], static_cast<int>(buf.size()));
+    BIO_free_all(bio);
+    if (n < 0) return false;
+    buf.resize(static_cast<std::size_t>(n));
+    out.swap(buf);
+    return true;
+}
+
+static std::string hmac_sha256_hex(const std::string& key, const std::string& data) {
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int len = 0;
+    HMAC(EVP_sha256(),
+         reinterpret_cast<const unsigned char*>(key.data()), static_cast<int>(key.size()),
+         reinterpret_cast<const unsigned char*>(data.data()), data.size(),
+         digest, &len);
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.resize(static_cast<std::size_t>(len) * 2);
+    for (unsigned int i = 0; i < len; ++i) {
+        out[2 * i] = kHex[(digest[i] >> 4) & 0x0F];
+        out[2 * i + 1] = kHex[digest[i] & 0x0F];
+    }
+    return out;
+}
+
+static bool is_panel_api_token_format(const std::string& token) {
+    if (!(begins_with(token, "ptla_") || begins_with(token, "ptlc_"))) return false;
+    if (token.size() <= 16 || token.size() > 255) return false;
+    for (char c : token) {
+        const bool ok = std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+static bool parse_laravel_app_key(const std::string& app_key, std::string& out_key) {
+    std::string raw = trim(app_key);
+    if (raw.empty()) return false;
+    if (begins_with(raw, "base64:")) {
+        return base64_decode(raw.substr(7), out_key);
+    }
+    out_key = raw;
+    return !out_key.empty();
+}
+
+static bool php_unserialize_string(const std::string& input, std::string& out) {
+    if (input.size() < 6 || input[0] != 's' || input[1] != ':') return false;
+    std::size_t len_start = 2;
+    std::size_t len_end = input.find(':', len_start);
+    if (len_end == std::string::npos) return false;
+    std::size_t quote = len_end + 1;
+    if (quote >= input.size() || input[quote] != '"') return false;
+    std::size_t end_quote = input.rfind("\";");
+    if (end_quote == std::string::npos || end_quote <= quote) return false;
+    out = input.substr(quote + 1, end_quote - quote - 1);
+    return true;
+}
+
+static bool laravel_decrypt_string(const std::string& app_key, const std::string& payload_b64, std::string& out) {
+    std::string key;
+    if (!parse_laravel_app_key(app_key, key)) return false;
+
+    std::string payload_json;
+    if (!base64_decode(payload_b64, payload_json)) return false;
+
+    json payload = json::parse(payload_json, nullptr, false);
+    if (payload.is_discarded() || !payload.is_object()) return false;
+
+    const std::string iv_b64 = trim(payload.value("iv", ""));
+    const std::string value_b64 = trim(payload.value("value", ""));
+    const std::string mac = to_lower(trim(payload.value("mac", "")));
+    if (iv_b64.empty() || value_b64.empty() || mac.empty()) return false;
+
+    std::string expected_mac = to_lower(hmac_sha256_hex(key, iv_b64 + value_b64));
+    if (!secure_equals(expected_mac, mac)) return false;
+
+    std::string iv;
+    if (!base64_decode(iv_b64, iv)) return false;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return false;
+
+    const EVP_CIPHER* cipher = nullptr;
+    if (key.size() == 32) cipher = EVP_aes_256_cbc();
+    else if (key.size() == 16) cipher = EVP_aes_128_cbc();
+    if (!cipher) {
+        EVP_CIPHER_CTX_free(ctx);
+        return false;
+    }
+
+    std::string ciphertext;
+    if (!base64_decode(value_b64, ciphertext)) {
+        EVP_CIPHER_CTX_free(ctx);
+        return false;
+    }
+
+    bool ok = false;
+    int out_len1 = 0;
+    int out_len2 = 0;
+    std::string plain(ciphertext.size() + EVP_CIPHER_block_size(cipher), '\0');
+    if (EVP_DecryptInit_ex(ctx, cipher, nullptr,
+            reinterpret_cast<const unsigned char*>(key.data()),
+            reinterpret_cast<const unsigned char*>(iv.data())) == 1 &&
+        EVP_DecryptUpdate(ctx,
+            reinterpret_cast<unsigned char*>(&plain[0]), &out_len1,
+            reinterpret_cast<const unsigned char*>(ciphertext.data()),
+            static_cast<int>(ciphertext.size())) == 1 &&
+        EVP_DecryptFinal_ex(ctx,
+            reinterpret_cast<unsigned char*>(&plain[0]) + out_len1, &out_len2) == 1) {
+        plain.resize(static_cast<std::size_t>(out_len1 + out_len2));
+        ok = php_unserialize_string(plain, out);
+    }
+
+    EVP_CIPHER_CTX_free(ctx);
+    return ok;
+}
+
+static bool token_cache_contains_valid_api_token(const std::string& token) {
+    std::lock_guard<std::mutex> lock(g_api_token_cache_mu);
+    auto it = g_valid_api_token_cache.find(token);
+    if (it == g_valid_api_token_cache.end()) return false;
+    std::time_t now = std::time(nullptr);
+    if (it->second < now) {
+        g_valid_api_token_cache.erase(it);
+        return false;
+    }
+    return true;
+}
+
+static void token_cache_store_valid_api_token(const std::string& token, int ttl_sec = 30) {
+    std::lock_guard<std::mutex> lock(g_api_token_cache_mu);
+    g_valid_api_token_cache[token] = std::time(nullptr) + ttl_sec;
+}
+
+static bool is_valid_panel_api_bearer(const Settings& s, const std::string& token) {
+    if (!is_panel_api_token_format(token)) return false;
+    if (token_cache_contains_valid_api_token(token)) return true;
+    std::string cmd = "/usr/bin/php /pteroprotect/scripts/validate_api_key.php " + token + " 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return false;
+    char buf[64] = {0};
+    std::string output;
+    if (fgets(buf, sizeof(buf), pipe) != nullptr) output = trim(buf);
+    const int rc = pclose(pipe);
+    const bool ok = (rc == 0 && output == "valid");
+    if (ok) token_cache_store_valid_api_token(token);
+    return ok;
 }
 
 static bool ua_mobile_like(const std::string& ua) {
@@ -392,8 +598,11 @@ static Settings load_settings() {
             json j;
             f >> j;
             json net = j.value("network", json::object());
+            json db = j.value("database", json::object());
+            json ptlc = j.value("ptlc", json::object());
             s.enabled = parse_bool(net.value("waf_challenge_enabled", json(true)), true);
             s.strict_mode = parse_bool(net.value("waf_challenge_strict_mode", json(true)), true);
+            s.provider_token_gate_enabled = parse_bool(net.value("provider_token_gate_enabled", json(false)), false);
             s.bind = json_get_string(net, "waf_challenge_bind", "127.0.0.1");
             s.port = std::max(1, std::min(65535, json_get_int(net, "waf_challenge_port", 18444)));
             s.ttl = std::max(60, std::min(86400, json_get_int(net, "waf_challenge_ttl_sec", 1800)));
@@ -420,25 +629,51 @@ static Settings load_settings() {
                     }
                 }
             }
-            if (net.contains("trusted_bearer_tokens")) {
-                if (net["trusted_bearer_tokens"].is_array()) {
-                    for (const auto& item : net["trusted_bearer_tokens"]) {
+            auto append_provider_cidrs = [&](const json& node) {
+                if (node.is_array()) {
+                    for (const auto& item : node) {
                         if (!item.is_string()) continue;
-                        std::string tok = trim(item.get<std::string>());
-                        if (!tok.empty()) s.trusted_bearer_tokens.push_back(tok);
+                        std::string cidr = trim(item.get<std::string>());
+                        if (!cidr.empty()) s.provider_token_cidrs.push_back(cidr);
                     }
-                } else if (net["trusted_bearer_tokens"].is_string()) {
-                    std::stringstream ss(net["trusted_bearer_tokens"].get<std::string>());
+                } else if (node.is_string()) {
+                    std::stringstream ss(node.get<std::string>());
                     std::string part;
                     while (std::getline(ss, part, ',')) {
                         part = trim(part);
-                        if (!part.empty()) s.trusted_bearer_tokens.push_back(part);
+                        if (!part.empty()) s.provider_token_cidrs.push_back(part);
                     }
                 }
-            }
+            };
+            if (net.contains("provider_token_ipv4_cidrs")) append_provider_cidrs(net["provider_token_ipv4_cidrs"]);
+            if (net.contains("provider_token_ipv6_cidrs")) append_provider_cidrs(net["provider_token_ipv6_cidrs"]);
+            s.db_host = trim(db.value("host", std::string("127.0.0.1")));
+            if (s.db_host.empty()) s.db_host = "127.0.0.1";
+            s.db_user = trim(db.value("user", std::string("")));
+            s.db_password = db.value("password", std::string(""));
+            s.db_name = trim(db.value("name", std::string("")));
+            s.panel_app_key = trim(ptlc.value("app_key", std::string("")));
         } catch (...) {
             // keep defaults
         }
+    }
+    std::map<std::string, std::string> panel_env = parse_env_file("/var/www/pterodactyl/.env");
+    if (s.db_host.empty()) s.db_host = "127.0.0.1";
+    if (s.db_user.empty()) {
+        auto it = panel_env.find("DB_USERNAME");
+        if (it != panel_env.end()) s.db_user = trim(it->second);
+    }
+    if (s.db_password.empty()) {
+        auto it = panel_env.find("DB_PASSWORD");
+        if (it != panel_env.end()) s.db_password = it->second;
+    }
+    if (s.db_name.empty()) {
+        auto it = panel_env.find("DB_DATABASE");
+        if (it != panel_env.end()) s.db_name = trim(it->second);
+    }
+    if (s.panel_app_key.empty()) {
+        auto it = panel_env.find("APP_KEY");
+        if (it != panel_env.end()) s.panel_app_key = trim(it->second);
     }
     if (s.secret.empty()) {
         const char* env_secret = std::getenv("PTEROPROTECT_WAF_CHALLENGE_SECRET");
@@ -1115,6 +1350,14 @@ static bool is_trusted_client_ip(const Settings& s, const std::string& ip) {
     return false;
 }
 
+static bool is_provider_range_ip(const Settings& s, const std::string& ip) {
+    if (!s.provider_token_gate_enabled) return false;
+    for (const auto& cidr : s.provider_token_cidrs) {
+        if (host_or_cidr_matches_ip(cidr, ip)) return true;
+    }
+    return false;
+}
+
 static std::string session_scope_key(const std::string& ip, const std::string& ua_fp) {
     return ip + "|" + ua_fp;
 }
@@ -1139,16 +1382,7 @@ static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& re
         const std::string pre = "bearer ";
         if (low.size() > pre.size() && low.compare(0, pre.size(), pre) == 0) {
             std::string tok = trim(v.substr(pre.size()));
-            if (!daemon_bearer_token_format_ok(tok)) return false;
-            if (!s.trusted_bearer_tokens.empty()) {
-                for (const auto& allowed : s.trusted_bearer_tokens) {
-                    if (secure_equals(tok, allowed)) return true;
-                }
-                return false;
-            }
-            // Backward-compatible fallback for existing deployments that
-            // have trusted source IPs but no explicit bearer-token list yet.
-            return true;
+            return is_valid_panel_api_bearer(s, tok);
         }
     }
     return false;
@@ -1334,8 +1568,52 @@ static void handle_client(int fd, std::string remote_ip) {
         return;
     }
 
+    if (req.path == "/check-web") {
+        if (!s.enabled) {
+            send_response(fd, 204, "No Content", "", {}, head_only);
+            close(fd);
+            return;
+        }
+        if (is_provider_range_ip(s, ip)) {
+            send_response(fd, 403, "Forbidden", "", {}, head_only);
+            close(fd);
+            return;
+        }
+        std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
+        std::string tok = read_cookie(cookie, s.cookie_name);
+        if (!tok.empty() && verify_token(s, tok, ip, ua_fp)) {
+            send_response(fd, 204, "No Content", "", {}, head_only);
+        } else {
+            send_response(fd, 401, "Unauthorized", "", {}, head_only);
+        }
+        close(fd);
+        return;
+    }
+
     if (req.path == "/check-token") {
         if (!s.enabled) {
+            send_response(fd, 204, "No Content", "", {}, head_only);
+            close(fd);
+            return;
+        }
+        const bool trusted_client = is_trusted_client_ip(s, ip);
+        const bool token_ok = trusted_client && has_valid_auth_token_header(s, req, ip);
+        if (token_ok) {
+            send_response(fd, 204, "No Content", "", {}, head_only);
+        } else {
+            send_response(fd, 401, "Unauthorized", "", {}, head_only);
+        }
+        close(fd);
+        return;
+    }
+
+    if (req.path == "/check-provider-api") {
+        if (!s.enabled) {
+            send_response(fd, 204, "No Content", "", {}, head_only);
+            close(fd);
+            return;
+        }
+        if (!is_provider_range_ip(s, ip)) {
             send_response(fd, 204, "No Content", "", {}, head_only);
             close(fd);
             return;

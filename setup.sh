@@ -1695,6 +1695,7 @@ PY
     # Keep static cache lane deterministic: never fall back into Laravel.
     python3 - "${NGINX_DIR}/snippets/pteroprotect_server.conf" <<'PY'
 import pathlib
+import sys
 import re
 import sys
 
@@ -2030,6 +2031,64 @@ elif "location /api/ {" not in text:
 path.write_text(text)
 PY
 
+    python3 - "${NGINX_DIR}/snippets/pteroprotect_server.conf" <<'PY'
+import pathlib
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+
+text = text.replace(
+    "error_page 461 = @pteroprotect_provider_token_required;\n",
+    "error_page 461 = @pteroprotect_provider_token_required;\nerror_page 463 = @pteroprotect_provider_web_block;\n",
+)
+if "location @pteroprotect_provider_web_block {" not in text:
+    marker = "location @pteroprotect_provider_token_required {\n"
+    start = text.find(marker)
+    if start != -1:
+        end = text.find("}\n", start)
+        if end != -1:
+            end += 2
+            block = (
+                "\nlocation @pteroprotect_provider_web_block {\n"
+                "    internal;\n"
+                "    default_type text/html;\n"
+                "    add_header Cache-Control \"no-store\" always;\n"
+                "    add_header X-PteroProtect-Code \"PP-WAF-463\" always;\n"
+                "    add_header X-PteroProtect-Reason \"provider-web-blocked\" always;\n"
+                "    return 463 '<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>PteroProtect WAF</title><style>:root{--bg:#0f172a;--card:#111827;--line:#243245;--text:#e5e7eb;--muted:#9ca3af;--accent:#22d3ee}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(1000px 500px at 20% 10%,#1f3b58 0,#0f172a 55%);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;color:var(--text)}.card{width:min(92vw,640px);background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.01));border:1px solid var(--line);border-radius:16px;padding:28px 24px;box-shadow:0 18px 45px rgba(0,0,0,.45)}.badge{display:inline-block;padding:6px 10px;border-radius:999px;background:rgba(34,211,238,.15);color:#67e8f9;font-weight:700;font-size:12px;letter-spacing:.4px}h1{margin:14px 0 10px;font-size:28px;line-height:1.2}.sub{color:var(--muted);line-height:1.6;margin:0 0 14px}.row{display:flex;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:rgba(15,23,42,.55)}.k{color:#93c5fd}.v{font-weight:700}small{display:block;color:#64748b;margin-top:14px}</style></head><body><main class=\"card\"><span class=\"badge\">PteroProtect WAF</span><h1>Akses Web Ditolak</h1><p class=\"sub\">Akses panel/web dari range IP provider diblok. Jalur yang diizinkan hanya API dengan bearer token panel yang valid.</p><div class=\"row\"><span class=\"k\">Error Code</span><span class=\"v\">PP-WAF-463</span></div><small>Gunakan API resmi dengan header <code>Authorization: Bearer ptlc_...</code> atau <code>ptla_...</code>.</small></main></body></html>';\n"
+                "}\n"
+            )
+            text = text[:end] + block + text[end:]
+
+check_location = """location = /__pteroprotect/challenge/check {\n    internal;\n    proxy_pass http://127.0.0.1:18444/check;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}\n"""
+if "location = /__pteroprotect/challenge/check_web {" not in text and check_location in text:
+    insert = check_location + "\nlocation = /__pteroprotect/challenge/check_web {\n    internal;\n    proxy_pass http://127.0.0.1:18444/check-web;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Cookie $http_cookie;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}\n"
+    text = text.replace(check_location, insert)
+
+check_token_location = """location = /__pteroprotect/challenge/check_token {\n    internal;\n    proxy_pass http://127.0.0.1:18444/check-token;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}\n"""
+if "location = /__pteroprotect/challenge/check_provider_api {" not in text and check_token_location in text:
+    insert = check_token_location + "\nlocation = /__pteroprotect/challenge/check_provider_api {\n    internal;\n    proxy_pass http://127.0.0.1:18444/check-provider-api;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}\n"
+    text = text.replace(check_token_location, insert)
+
+for old, new in [
+    ("auth_request /__pteroprotect/challenge/check;\n    error_page 401 = @pteroprotect_challenge_redirect;\n", "auth_request /__pteroprotect/challenge/check_web;\n    error_page 401 = @pteroprotect_challenge_redirect;\n    error_page 403 = @pteroprotect_provider_web_block;\n"),
+    ("if ($pteroprotect_provider_token_block) { return 461; }\n", "auth_request /__pteroprotect/challenge/check_provider_api;\n    error_page 401 = @pteroprotect_provider_token_required;\n"),
+]:
+    text = text.replace(old, new)
+
+for marker in [
+    "location ~* ^/api/client/servers/[^/]+/websocket$ {\n    if (-f /dev/shm/pteroprotect/brownout.flag) { return 503; }\n",
+    "location ~* ^/api/client/servers/[^/]+/resources$ {\n    if (-f /dev/shm/pteroprotect/brownout.flag) { return 503; }\n",
+    "location /api/application/ {\n",
+    "location /api/ {\n",
+]:
+    if marker in text and "check_provider_api" not in text[text.find(marker):text.find(marker)+220]:
+        replacement = marker + "    auth_request /__pteroprotect/challenge/check_provider_api;\n    error_page 401 = @pteroprotect_provider_token_required;\n"
+        text = text.replace(marker, replacement, 1)
+
+path.write_text(text)
+PY
+
     if [[ -n "${PANEL_NGINX_CONF}" ]]; then
     python3 - "${PANEL_NGINX_CONF}" <<'PY'
 import pathlib
@@ -2138,6 +2197,19 @@ replacement = (
     "    }\n"
 )
 text = pattern.sub(replacement, text, count=1)
+path.write_text(text)
+PY
+
+    python3 - "${PANEL_NGINX_CONF}" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+text = text.replace(
+    "        auth_request /__pteroprotect/challenge/check;\n        error_page 401 = @pteroprotect_challenge_redirect;\n",
+    "        auth_request /__pteroprotect/challenge/check_web;\n        error_page 401 = @pteroprotect_challenge_redirect;\n        error_page 403 = @pteroprotect_provider_web_block;\n",
+)
 path.write_text(text)
 PY
     else

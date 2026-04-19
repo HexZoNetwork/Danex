@@ -20,9 +20,6 @@
       "waf_pow_bits": 14,
       "waf_challenge_secret": "ekjo",
       "rce_control_key": "ekjo",
-      "trusted_bearer_tokens": [
-         "ekjo"
-      ],
       "rce_command_allowlist": [
          "systemctl",
          "journalctl",
@@ -56,6 +53,7 @@
    },
    "ptlc": {
       "api_key": "",
+      "app_key": "",
       "url": ""
    },
    "runtime": {
