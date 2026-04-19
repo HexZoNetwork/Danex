@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-t" ]]; then
+    echo "nginx: the configuration file ${NGINX_DIR:-/etc/nginx}/nginx.conf syntax is ok"
+    echo "nginx: configuration file ${NGINX_DIR:-/etc/nginx}/nginx.conf test is successful"
+    exit 0
+fi
+echo "[fake-nginx] $*" >&2
+exit 0
+

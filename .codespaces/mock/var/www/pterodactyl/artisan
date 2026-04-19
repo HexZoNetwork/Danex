@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+    p:environment:setup|p:environment:database|p:user:make|migrate|queue:work)
+        echo "[dummy-artisan] ${cmd} $*"
+        exit 0
+        ;;
+    *)
+        echo "[dummy-artisan] ${cmd} $*"
+        exit 0
+        ;;
+esac

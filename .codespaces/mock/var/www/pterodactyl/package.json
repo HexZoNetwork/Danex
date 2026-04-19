@@ -1,0 +1,8 @@
+{
+  "name": "pterodactyl-panel-dummy",
+  "private": true,
+  "scripts": {
+    "dev": "echo dummy-panel",
+    "build": "echo dummy-panel"
+  }
+}

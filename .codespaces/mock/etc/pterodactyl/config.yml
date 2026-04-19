@@ -1,0 +1,11 @@
+remote: 'http://10.0.11.196:8080'
+api:
+  host: 0.0.0.0
+system:
+  data: /var/lib/pterodactyl/volumes
+docker:
+  network:
+    interface: pterodactyl_nw
+  container_pid_limit: 512
+  container_uid: 1000
+  container_gid: 1000

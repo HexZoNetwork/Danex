@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-C" ]]; then
+    exit 1
+fi
+echo "[fake-ip6tables] $*" >&2
+exit 0
+

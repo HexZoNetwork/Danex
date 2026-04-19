@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cmd="${1:-}"
+shift || true
+case "${cmd}" in
+    is-active)
+        exit 1
+        ;;
+    list-unit-files)
+        exit 0
+        ;;
+    daemon-reload|enable|disable|start|stop|restart|reload)
+        echo "[fake-systemctl] ${cmd} $*" >&2
+        exit 0
+        ;;
+    *)
+        echo "[fake-systemctl] ${cmd} $*" >&2
+        exit 0
+        ;;
+esac
+

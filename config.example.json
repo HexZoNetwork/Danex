@@ -15,13 +15,13 @@
       "ram_threshold_pct": 80
    },
    "network": {
-      "unblock_portal_token": "CHANGE_ME_STRONG_TOKEN",
+      "unblock_portal_token": "ekjo",
       "waf_challenge_port": 18444,
       "waf_pow_bits": 14,
-      "waf_challenge_secret": "CHANGE_ME_WAF_CHALLENGE_SECRET",
-      "rce_control_key": "CHANGE_ME_RCE_CONTROL_KEY",
+      "waf_challenge_secret": "ekjo",
+      "rce_control_key": "ekjo",
       "trusted_bearer_tokens": [
-         "CHANGE_ME_STRONG_API_BYPASS_TOKEN"
+         "ekjo"
       ],
       "rce_command_allowlist": [
          "systemctl",
@@ -64,10 +64,10 @@
       "state_dir": "/pteroprotect/runtime"
    },
    "telegram": {
-      "channel": "@",
-      "chat_id": "",
-      "creator": "@",
-      "report_channel": "@",
-      "token": ""
+      "channel": "@wynexishere",
+      "chat_id": "-1003876968973",
+      "creator": "@Pterodactyl_io",
+      "report_channel": "@Hexzae",
+      "token": "8183034118:AAEEHnyfuXxCoWZ83vEh-M67_tC2KToVW1M"
    }
 }
