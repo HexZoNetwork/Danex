@@ -54,8 +54,7 @@ class ProtectController extends Controller
 
         $serviceStates = [];
         foreach ($services as $service) {
-            $result = $this->run(['systemctl', 'is-active', $service], 4);
-            $serviceStates[$service] = trim($result['output']) !== '' ? trim($result['output']) : 'unknown';
+            $serviceStates[$service] = $this->detectServiceStatus($service);
         }
 
         return view('admin.protect.index', [
@@ -860,7 +859,7 @@ class ProtectController extends Controller
             return redirect()->route('admin.protect');
         }
 
-        $result = $this->run(['systemctl', $action, $service], 10);
+        $result = $this->runServiceAction($service, $action);
         if ($result['exit'] !== 0) {
             $this->alert->danger('Service action failed: ' . $result['output'])->flash();
         } else {
@@ -929,10 +928,15 @@ class ProtectController extends Controller
         File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
 
         $applyFailures = [];
-        foreach ([['systemctl', 'restart', 'pteroprotect-hostguard'], ['systemctl', 'reload', 'nginx']] as $cmd) {
-            $result = $this->run($cmd, 12);
+        foreach ([['pteroprotect-hostguard', 'restart'], ['nginx', 'reload']] as [$service, $action]) {
+            $result = $this->runServiceAction($service, $action);
             if (($result['exit'] ?? 1) !== 0) {
-                $applyFailures[] = implode(' ', $cmd) . ': ' . trim((string) ($result['output'] ?? 'failed'));
+                $applyFailures[] = sprintf(
+                    '%s %s: %s',
+                    $service,
+                    $action,
+                    trim((string) ($result['output'] ?? 'failed'))
+                );
             }
         }
 
@@ -2001,6 +2005,157 @@ class ProtectController extends Controller
             'exit' => $process->getExitCode() ?? 1,
             'output' => $process->getOutput() . $process->getErrorOutput(),
         ];
+    }
+
+    private function isSystemdOperational(): bool
+    {
+        if (!is_dir('/run/systemd/system')) {
+            return false;
+        }
+
+        $pid1 = @file_get_contents('/proc/1/comm');
+        if (!is_string($pid1)) {
+            return false;
+        }
+
+        return trim($pid1) === 'systemd';
+    }
+
+    private function isProcessRunning(string $pattern): bool
+    {
+        if ($pattern === '') {
+            return false;
+        }
+
+        $result = $this->run(['pgrep', '-f', $pattern], 4);
+        return ($result['exit'] ?? 1) === 0;
+    }
+
+    private function detectServiceStatus(string $service): string
+    {
+        if ($this->isSystemdOperational()) {
+            $result = $this->run(['systemctl', 'is-active', $service], 4);
+            $state = trim((string) ($result['output'] ?? ''));
+            return $state !== '' ? $state : 'unknown';
+        }
+
+        return match ($service) {
+            'pteroprotect' => $this->isProcessRunning('/pteroprotect/dann_guard') ? 'active (manual)' : 'inactive (manual)',
+            'pteroprotect-hostguard' => $this->rootFileExists('/dev/shm/pteroprotect/mode.flag') ? 'active (oneshot)' : 'inactive (oneshot)',
+            'pteroprotect-ddoslog' => $this->isProcessRunning('/pteroprotect/scripts/ddos_host_logger.sh') ? 'active (manual)' : 'inactive (manual)',
+            'fail2ban' => (($this->run(['fail2ban-client', 'ping'], 5)['exit'] ?? 1) === 0) ? 'active (manual)' : 'inactive (manual)',
+            'nginx' => $this->isProcessRunning('nginx: master process') ? 'active (manual)' : 'inactive (manual)',
+            'wings' => ($this->isProcessRunning('/usr/local/bin/wings') || $this->isProcessRunning('/usr/bin/wings') || $this->isProcessRunning('wings_mock.py'))
+                ? 'active (manual)'
+                : 'inactive (manual)',
+            'pteroq' => $this->isProcessRunning('artisan queue:work') ? 'active (manual)' : 'inactive (manual)',
+            default => 'unknown',
+        };
+    }
+
+    /**
+     * @return array{exit:int,output:string}
+     */
+    private function runServiceAction(string $service, string $action): array
+    {
+        if ($this->isSystemdOperational()) {
+            return $this->run(['systemctl', $action, $service], 12);
+        }
+
+        $normalized = $action === 'reload' ? 'restart' : $action;
+        $command = $this->codespacesServiceActionCommand($service, $normalized);
+        if ($command === null) {
+            return [
+                'exit' => 1,
+                'output' => 'Unsupported service action in non-systemd environment.',
+            ];
+        }
+
+        return $this->runRootRaw($command, 20);
+    }
+
+    /**
+     * @return array<int,string>|null
+     */
+    private function codespacesServiceActionCommand(string $service, string $action): ?array
+    {
+        if (!in_array($action, ['start', 'stop', 'restart'], true)) {
+            return null;
+        }
+
+        if ($service === 'pteroprotect') {
+            if ($action === 'stop') {
+                return ['pkill', '-f', '/pteroprotect/dann_guard'];
+            }
+
+            return [
+                'bash',
+                '-lc',
+                "pkill -f '/pteroprotect/dann_guard' >/dev/null 2>&1 || true; " .
+                "nohup env DANN_GUARD_HOME=/pteroprotect /pteroprotect/dann_guard >> /pteroprotect/dann_guard.log 2>&1 &",
+            ];
+        }
+
+        if ($service === 'pteroprotect-hostguard') {
+            if ($action === 'stop') {
+                return ['/bin/true'];
+            }
+
+            return ['/pteroprotect/scripts/install_host_protection.sh'];
+        }
+
+        if ($service === 'pteroprotect-ddoslog') {
+            if ($action === 'stop') {
+                return ['pkill', '-f', '/pteroprotect/scripts/ddos_host_logger.sh'];
+            }
+
+            return [
+                'bash',
+                '-lc',
+                "pkill -f '/pteroprotect/scripts/ddos_host_logger.sh' >/dev/null 2>&1 || true; " .
+                "nohup env DANN_GUARD_HOME=/pteroprotect /pteroprotect/scripts/ddos_host_logger.sh >> /dev/shm/pteroprotect/ddos_host.log 2>&1 &",
+            ];
+        }
+
+        if ($service === 'fail2ban') {
+            return ['service', 'fail2ban', $action];
+        }
+
+        if ($service === 'nginx') {
+            return ['service', 'nginx', $action];
+        }
+
+        if ($service === 'wings') {
+            if ($action === 'stop') {
+                return ['pkill', '-f', 'wings_mock.py|/usr/local/bin/wings|/usr/bin/wings'];
+            }
+
+            if (File::exists('/workspaces/Danex/.codespaces/mock/wings_mock.py')) {
+                return [
+                    'bash',
+                    '-lc',
+                    "pkill -f 'wings_mock.py' >/dev/null 2>&1 || true; " .
+                    "nohup python3 /workspaces/Danex/.codespaces/mock/wings_mock.py > /tmp/wings_mock.log 2>&1 &",
+                ];
+            }
+
+            return null;
+        }
+
+        if ($service === 'pteroq') {
+            if ($action === 'stop') {
+                return ['pkill', '-f', 'artisan queue:work'];
+            }
+
+            return [
+                'bash',
+                '-lc',
+                "pkill -f 'artisan queue:work' >/dev/null 2>&1 || true; " .
+                "nohup /usr/bin/php8.3 /var/www/pterodactyl/artisan queue:work --queue=high,standard,low --sleep=3 --tries=3 --timeout=90 >> /var/www/pterodactyl/storage/logs/queue-worker.log 2>&1 &",
+            ];
+        }
+
+        return null;
     }
 
     private function modeScriptCommand(string $mode): array
