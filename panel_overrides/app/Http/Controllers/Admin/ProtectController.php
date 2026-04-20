@@ -445,6 +445,25 @@ class ProtectController extends Controller
         ]);
     }
 
+    public function challengeIndex(Request $request): View|RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $currentType = $this->challengeType();
+        $profiles = $this->challengeTypeProfiles();
+
+        return view('admin.protect.challenge', [
+            'postProtectToken' => $this->expectedToken(),
+            'challengeType' => $currentType,
+            'challengeProfiles' => $profiles,
+            'challengeSettings' => $this->challengeSettings(),
+            'challengePreviewBaseUrl' => '/__pteroprotect/challenge/page?rd=%2F',
+        ]);
+    }
+
     public function adsIndex(Request $request): View|RedirectResponse
     {
         $guard = $this->requireVerified($request);
@@ -457,6 +476,65 @@ class ProtectController extends Controller
             'adsItems' => $this->ads->all(),
             'adsServiceEnabled' => $this->ads->serviceEnabled(),
         ]);
+    }
+
+    public function challengeUpdate(Request $request): RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $type = (int) $request->input('waf_challenge_type', 1);
+        if ($type < 1 || $type > 66) {
+            $this->alert->danger('Challenge type must be between 1 and 66.')->flash();
+            return redirect()->route('admin.protect.challenge');
+        }
+
+        $enabled = $request->boolean('waf_challenge_enabled');
+        $strictMode = $request->boolean('waf_challenge_strict_mode');
+        $powBits = max(8, min(24, (int) $request->input('waf_pow_bits', 14)));
+        $ttlSec = max(60, min(86400, (int) $request->input('waf_challenge_ttl_sec', 1800)));
+        $themeCustomEnabled = $request->boolean('waf_challenge_theme_custom_enabled');
+        $themeGradientStart = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_gradient_start', '#0d1b2a'), '#0d1b2a');
+        $themeGradientEnd = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_gradient_end', '#132a45'), '#132a45');
+        $themeAccent = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_accent', '#2e9cff'), '#2e9cff');
+
+        $configPath = (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
+        if (!File::exists($configPath) || !File::isWritable($configPath) || !File::isReadable($configPath)) {
+            $this->alert->danger('Cannot write config.json from panel user. Grant write permission or use root CLI.')->flash();
+            return redirect()->route('admin.protect.challenge');
+        }
+
+        $raw = File::get($configPath);
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            $this->alert->danger('config.json is invalid.')->flash();
+            return redirect()->route('admin.protect.challenge');
+        }
+
+        $data['network'] = is_array($data['network'] ?? null) ? $data['network'] : [];
+        $data['network']['waf_challenge_type'] = $type;
+        $data['network']['waf_challenge_enabled'] = $enabled;
+        $data['network']['waf_challenge_strict_mode'] = $strictMode;
+        $data['network']['waf_pow_bits'] = $powBits;
+        $data['network']['waf_challenge_ttl_sec'] = $ttlSec;
+        $data['network']['waf_challenge_theme_custom_enabled'] = $themeCustomEnabled;
+        $data['network']['waf_challenge_theme_gradient_start'] = $themeGradientStart;
+        $data['network']['waf_challenge_theme_gradient_end'] = $themeGradientEnd;
+        $data['network']['waf_challenge_theme_accent'] = $themeAccent;
+        File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+
+        $restart = $this->run(['systemctl', 'restart', 'pteroprotect-challenge.service'], 8);
+        if (($restart['exit'] ?? 1) !== 0) {
+            $this->alert->danger(
+                'Challenge type saved, but challenge service restart failed: ' . trim((string) ($restart['output'] ?? 'unknown error'))
+            )->flash();
+        } else {
+            $this->alert->success('Challenge settings updated. Active type #' . $type . '.')->flash();
+        }
+
+        return redirect()->route('admin.protect.challenge');
     }
 
     public function adsService(Request $request): RedirectResponse
@@ -1766,6 +1844,81 @@ class ProtectController extends Controller
     private function createPanelAutoSuspendEnabled(): bool
     {
         return (bool) ($this->networkConfig()['create_panel_auto_suspend_enabled'] ?? false);
+    }
+
+    private function challengeType(): int
+    {
+        $raw = (int) ($this->networkConfig()['waf_challenge_type'] ?? 1);
+        if ($raw < 1) return 1;
+        if ($raw > 66) return 66;
+        return $raw;
+    }
+
+    /**
+     * @return array{
+     *   enabled:bool,
+     *   strict_mode:bool,
+     *   pow_bits:int,
+     *   ttl_sec:int,
+     *   theme_custom_enabled:bool,
+     *   theme_gradient_start:string,
+     *   theme_gradient_end:string,
+     *   theme_accent:string
+     * }
+     */
+    private function challengeSettings(): array
+    {
+        $net = $this->networkConfig();
+        return [
+            'enabled' => (bool) ($net['waf_challenge_enabled'] ?? true),
+            'strict_mode' => (bool) ($net['waf_challenge_strict_mode'] ?? true),
+            'pow_bits' => max(8, min(24, (int) ($net['waf_pow_bits'] ?? 14))),
+            'ttl_sec' => max(60, min(86400, (int) ($net['waf_challenge_ttl_sec'] ?? 1800))),
+            'theme_custom_enabled' => (bool) ($net['waf_challenge_theme_custom_enabled'] ?? false),
+            'theme_gradient_start' => $this->sanitizeHexColor((string) ($net['waf_challenge_theme_gradient_start'] ?? '#0d1b2a'), '#0d1b2a'),
+            'theme_gradient_end' => $this->sanitizeHexColor((string) ($net['waf_challenge_theme_gradient_end'] ?? '#132a45'), '#132a45'),
+            'theme_accent' => $this->sanitizeHexColor((string) ($net['waf_challenge_theme_accent'] ?? '#2e9cff'), '#2e9cff'),
+        ];
+    }
+
+    /**
+     * @return array<int,array{id:int,name:string}>
+     */
+    private function challengeTypeProfiles(): array
+    {
+        $names = [
+            'Type 01 Equation Gate', 'Type 02 Icon Census', 'Type 03 Word Forge', 'Type 04 Number Trail', 'Type 05 Code Mirror', 'Type 06 Voice Echo',
+            'Type 07 Formula Weave', 'Type 08 Glyph Tally', 'Type 09 Lexi Shuffle', 'Type 10 Delta Ladder', 'Type 11 Cipher Trace', 'Type 12 Audio Phrase',
+            'Type 13 Symbol Chain', 'Type 14 Pixel Count', 'Type 15 Token Builder', 'Type 16 Pulse Sequence', 'Type 17 Key Replay', 'Type 18 Mic Relay',
+            'Type 19 Operand Quest', 'Type 20 Emoji Sweep', 'Type 21 Anagram Lock', 'Type 22 Step Progression', 'Type 23 Code Relay', 'Type 24 Voice Relay',
+            'Type 25 Bracket Logic', 'Type 26 Target Counter', 'Type 27 Word Rewire', 'Type 28 Pattern Rise', 'Type 29 String Match', 'Type 30 Speech Match',
+            'Type 31 Grid Solver', 'Type 32 Icon Merge', 'Type 33 Phrase Puzzle', 'Type 34 Gap Sequence', 'Type 35 Signature Copy', 'Type 36 Vocal Token',
+            'Type 37 Compute Path', 'Type 38 Marker Count', 'Type 39 Letter Craft', 'Type 40 Increment Path', 'Type 41 Passcode Echo', 'Type 42 Voice Token',
+            'Type 43 Numeric Blend', 'Type 44 Icon Blend', 'Type 45 Jumble Decode', 'Type 46 Ladder Guess', 'Type 47 Checksum Copy', 'Type 48 Speech Decode',
+            'Type 49 Operand Shift', 'Type 50 Focus Count', 'Type 51 Syntax Puzzle', 'Type 52 Offset Sequence', 'Type 53 Tag Replay', 'Type 54 Audio Verify',
+            'Type 55 Chain Compute', 'Type 56 Visual Count', 'Type 57 Lexicon Twist', 'Type 58 Orbit Sequence', 'Type 59 Keyframe Copy', 'Type 60 Mic Verify',
+            'Type 61 Logic Mix', 'Type 62 Visual Sweep', 'Type 63 Puzzle Mesh', 'Type 64 Sequence Mesh', 'Type 65 Code Mesh', 'Type 66 Voice Mesh',
+        ];
+
+        $profiles = [];
+        foreach ($names as $idx => $name) {
+            $profiles[] = [
+                'id' => $idx + 1,
+                'name' => $name,
+            ];
+        }
+
+        return $profiles;
+    }
+
+    private function sanitizeHexColor(string $value, string $fallback): string
+    {
+        $v = trim($value);
+        if (preg_match('/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', $v) === 1) {
+            return strtolower($v);
+        }
+
+        return strtolower($fallback);
     }
 
     /**

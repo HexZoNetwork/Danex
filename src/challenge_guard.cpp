@@ -45,6 +45,11 @@ struct Settings {
     int port = 18444;
     int ttl = 1800;
     int pow_bits = 14;
+    int challenge_type = 1;
+    bool challenge_theme_custom_enabled = false;
+    std::string challenge_theme_gradient_start = "#0d1b2a";
+    std::string challenge_theme_gradient_end = "#132a45";
+    std::string challenge_theme_accent = "#2e9cff";
     std::string cookie_name = "pp_clearance";
     std::string secret;
     std::vector<std::string> trusted_hosts;
@@ -71,6 +76,9 @@ struct NonceRec {
     std::string pattern_key;
     std::string pow_salt;
     std::string pattern_seq;
+    int challenge_mode = 0;
+    bool voice_mode = false;
+    bool answer_numeric = true;
     bool click_verified = false;
     bool math_verified = false;
     int math_fail_count = 0;
@@ -444,6 +452,249 @@ static std::string normalize_numeric_answer(const std::string& input) {
     return out.empty() ? s : out;
 }
 
+static std::string normalize_text_answer(const std::string& input) {
+    std::string s = to_lower(trim(input));
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        unsigned char u = static_cast<unsigned char>(c);
+        if (std::isalnum(u)) out.push_back(static_cast<char>(u));
+    }
+    return out.empty() ? s : out;
+}
+
+static std::string normalize_speech_friendly_text_answer(const std::string& input) {
+    std::string s = to_lower(trim(input));
+    for (char& c : s) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (!std::isalnum(u)) c = ' ';
+    }
+    std::stringstream ss(s);
+    std::string tok;
+    std::string out;
+    auto map_number_word = [](const std::string& w) -> std::string {
+        if (w == "nol" || w == "zero") return "0";
+        if (w == "satu" || w == "one") return "1";
+        if (w == "dua" || w == "two") return "2";
+        if (w == "tiga" || w == "three") return "3";
+        if (w == "empat" || w == "four") return "4";
+        if (w == "lima" || w == "five") return "5";
+        if (w == "enam" || w == "six") return "6";
+        if (w == "tujuh" || w == "seven") return "7";
+        if (w == "delapan" || w == "eight") return "8";
+        if (w == "sembilan" || w == "nine") return "9";
+        if (w == "sepuluh" || w == "ten") return "10";
+        return w;
+    };
+    while (ss >> tok) {
+        out += map_number_word(tok);
+    }
+    return out.empty() ? normalize_text_answer(input) : out;
+}
+
+static std::string normalize_expected_answer(const std::string& value, bool numeric_mode, bool voice_mode) {
+    if (numeric_mode) return normalize_numeric_answer(value);
+    if (voice_mode) return normalize_speech_friendly_text_answer(value);
+    return normalize_text_answer(value);
+}
+
+static std::string sanitize_hex_color(const std::string& value, const std::string& fallback) {
+    const std::string v = trim(value);
+    auto is_hex = [](char c) -> bool {
+        return (c >= '0' && c <= '9') ||
+               (c >= 'a' && c <= 'f') ||
+               (c >= 'A' && c <= 'F');
+    };
+    if (v.size() == 7 && v[0] == '#') {
+        for (std::size_t i = 1; i < v.size(); ++i) {
+            if (!is_hex(v[i])) return fallback;
+        }
+        return v;
+    }
+    if (v.size() == 4 && v[0] == '#') {
+        for (std::size_t i = 1; i < v.size(); ++i) {
+            if (!is_hex(v[i])) return fallback;
+        }
+        std::string out = "#";
+        out.push_back(v[1]); out.push_back(v[1]);
+        out.push_back(v[2]); out.push_back(v[2]);
+        out.push_back(v[3]); out.push_back(v[3]);
+        return out;
+    }
+    return fallback;
+}
+
+struct Phase1ChallengeSpec {
+    std::string question;
+    std::string answer;
+    std::string label;
+    std::string hint;
+    std::string input_placeholder;
+    bool answer_numeric = true;
+    bool voice_enabled = false;
+};
+
+static Phase1ChallengeSpec build_phase1_challenge(std::mt19937& gen, int challenge_mode, int challenge_type) {
+    (void)challenge_mode;
+    Phase1ChallengeSpec spec;
+    int safe_type = challenge_type;
+    if (safe_type < 1) safe_type = 1;
+    if (safe_type > 66) safe_type = 66;
+
+    auto to_upper_ascii = [](std::string s) -> std::string {
+        for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        return s;
+    };
+    auto reverse_str = [](std::string s) -> std::string {
+        std::reverse(s.begin(), s.end());
+        return s;
+    };
+    auto rotate_left = [](const std::string& s, int n) -> std::string {
+        if (s.empty()) return s;
+        int k = n % static_cast<int>(s.size());
+        if (k < 0) k += static_cast<int>(s.size());
+        return s.substr(static_cast<std::size_t>(k)) + s.substr(0, static_cast<std::size_t>(k));
+    };
+    auto caesar_encode = [](std::string s, int sh) -> std::string {
+        for (char& c : s) {
+            if (c >= 'a' && c <= 'z') c = static_cast<char>('a' + ((c - 'a' + sh) % 26));
+            else if (c >= 'A' && c <= 'Z') c = static_cast<char>('A' + ((c - 'A' + sh) % 26));
+        }
+        return s;
+    };
+    auto remove_vowels = [](const std::string& s) -> std::string {
+        std::string o;
+        for (char c : s) {
+            char l = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (l == 'a' || l == 'e' || l == 'i' || l == 'o' || l == 'u') continue;
+            o.push_back(c);
+        }
+        return o.empty() ? s : o;
+    };
+
+    // Exactly one numeric challenge.
+    if (safe_type == 1) {
+        std::uniform_int_distribution<int> d2(12, 39);
+        std::uniform_int_distribution<int> d3(5, 21);
+        int a = d2(gen);
+        int b = d3(gen);
+        int c = d3(gen);
+        long long ans = static_cast<long long>(a) * b - c;
+        spec.question = "(" + std::to_string(a) + " × " + std::to_string(b) + ") - " + std::to_string(c) + " = ?";
+        spec.answer = std::to_string(ans);
+        spec.label = "Tahap 1: hitung hasil operasi.";
+        spec.hint = "Ini satu-satunya type numeric.";
+        spec.input_placeholder = "Jawaban angka";
+        spec.answer_numeric = true;
+        return spec;
+    }
+
+    // Dedicated voice type.
+    if (safe_type == 66) {
+        static const std::vector<std::string> voice_codes = {
+            "MERAH SATU", "BIRU TUJUH", "ALFA LIMA", "NOVA DUA", "DELTA TIGA", "TITAN SEMBILAN"
+        };
+        std::uniform_int_distribution<int> voice_dis(0, static_cast<int>(voice_codes.size()) - 1);
+        const std::string voice_code = voice_codes[static_cast<std::size_t>(voice_dis(gen))];
+        spec.question = "Mode voice unik (type 66): tekan tombol mic, ucapkan frasa ini, lalu submit:\n" + voice_code;
+        spec.answer = voice_code;
+        spec.label = "Tahap 1: voice challenge.";
+        spec.hint = "Boleh ketik manual; angka kata/digit dianggap setara.";
+        spec.input_placeholder = "Hasil suara / ketik manual";
+        spec.answer_numeric = false;
+        spec.voice_enabled = true;
+        return spec;
+    }
+
+    // Types 2..65: each type has a unique non-repeating recipe (64 unique recipes).
+    const int rid = safe_type - 2; // 0..63
+    static const std::vector<std::string> roots = {
+        "shield","matrix","cipher","anchor","signal","portal","token","radius",
+        "syntax","bridge","kernel","router","daemon","buffer","stream","module"
+    };
+    std::string token = roots[static_cast<std::size_t>(rid % static_cast<int>(roots.size()))];
+    token.push_back(static_cast<char>('a' + ((rid * 11) % 26)));
+    token += std::to_string((rid * 17 + 13) % 97);
+
+    auto swap_halves = [](const std::string& s) -> std::string {
+        if (s.size() < 2) return s;
+        const std::size_t m = s.size() / 2;
+        return s.substr(m) + s.substr(0, m);
+    };
+    auto keep_even_pos = [](const std::string& s) -> std::string {
+        std::string o;
+        for (std::size_t i = 0; i < s.size(); ++i) if ((i % 2) == 0) o.push_back(s[i]);
+        return o.empty() ? s : o;
+    };
+    auto keep_odd_pos = [](const std::string& s) -> std::string {
+        std::string o;
+        for (std::size_t i = 0; i < s.size(); ++i) if ((i % 2) == 1) o.push_back(s[i]);
+        return o.empty() ? s : o;
+    };
+    auto sort_chars = [](std::string s) -> std::string {
+        std::sort(s.begin(), s.end());
+        return s;
+    };
+    auto dedup_keep_order = [](const std::string& s) -> std::string {
+        bool seen[256] = {false};
+        std::string o;
+        for (unsigned char c : s) {
+            if (!seen[c]) { seen[c] = true; o.push_back(static_cast<char>(c)); }
+        }
+        return o.empty() ? s : o;
+    };
+    auto append_checksum = [](const std::string& s) -> std::string {
+        int sum = 0;
+        for (unsigned char c : s) sum += c;
+        return s + static_cast<char>('0' + (sum % 10));
+    };
+    auto apply_op = [&](const std::string& s, int op) -> std::string {
+        switch (op) {
+            case 0: return reverse_str(s);
+            case 1: return remove_vowels(s);
+            case 2: return rotate_left(s, 1 + (rid % 5));
+            case 3: return swap_halves(s);
+            case 4: return keep_even_pos(s);
+            case 5: return keep_odd_pos(s);
+            case 6: return caesar_encode(s, 1 + (rid % 4));
+            case 7: return sort_chars(s);
+            case 8: return dedup_keep_order(s);
+            case 9: return append_checksum(s);
+            case 10: return to_upper_ascii(s);
+            case 11: return s + "x";
+            default: return s;
+        }
+    };
+    static const std::vector<std::string> op_name = {
+        "reverse","hapus vokal","rotate kiri","swap half","ambil posisi genap","ambil posisi ganjil",
+        "caesar encode","urutkan karakter","hapus duplikat","append checksum","uppercase","append x"
+    };
+
+    // 64 unique recipes: pair (A,B) where A in [0..7], B in [0..7] plus post-variant id.
+    const int op_a = rid % 8;
+    const int op_b = (rid / 8) % 8;
+    const int post = rid / 32; // 0 or 1
+
+    std::string ans = apply_op(token, op_a);
+    ans = apply_op(ans, op_b);
+    if (post == 1) ans = apply_op(ans, 8 + (rid % 4));
+
+    std::string rule = op_name[static_cast<std::size_t>(op_a)] + " -> " + op_name[static_cast<std::size_t>(op_b)];
+    if (post == 1) rule += " -> " + op_name[static_cast<std::size_t>(8 + (rid % 4))];
+
+    spec.question =
+        "Type " + std::to_string(safe_type) + " recipe unik.\n"
+        "Token awal: " + token + "\n"
+        "Rule: " + rule + "\n"
+        "Ketik hasil akhir.";
+    spec.answer = ans;
+    spec.label = "Tahap 1: recipe unik per-type.";
+    spec.hint = "Setiap type punya kombinasi rule berbeda dan tidak diulang.";
+    spec.input_placeholder = "Hasil akhir";
+    spec.answer_numeric = false;
+    return spec;
+}
+
 static std::string sha256_hex(const std::string& input) {
     unsigned char digest[SHA256_DIGEST_LENGTH];
     SHA256(reinterpret_cast<const unsigned char*>(input.data()), input.size(), digest);
@@ -700,6 +951,20 @@ static Settings load_settings() {
             s.port = std::max(1, std::min(65535, json_get_int(net, "waf_challenge_port", 18444)));
             s.ttl = std::max(60, std::min(86400, json_get_int(net, "waf_challenge_ttl_sec", 1800)));
             s.pow_bits = std::max(8, std::min(24, json_get_int(net, "waf_pow_bits", 14)));
+            s.challenge_type = std::max(1, std::min(66, json_get_int(net, "waf_challenge_type", 1)));
+            s.challenge_theme_custom_enabled = parse_bool(net.value("waf_challenge_theme_custom_enabled", json(false)), false);
+            s.challenge_theme_gradient_start = sanitize_hex_color(
+                json_get_string(net, "waf_challenge_theme_gradient_start", "#0d1b2a"),
+                "#0d1b2a"
+            );
+            s.challenge_theme_gradient_end = sanitize_hex_color(
+                json_get_string(net, "waf_challenge_theme_gradient_end", "#132a45"),
+                "#132a45"
+            );
+            s.challenge_theme_accent = sanitize_hex_color(
+                json_get_string(net, "waf_challenge_theme_accent", "#2e9cff"),
+                "#2e9cff"
+            );
             s.cookie_name = trim(json_get_string(net, "waf_challenge_cookie_name", "pp_clearance"));
             if (s.cookie_name.empty()) s.cookie_name = "pp_clearance";
             s.secret = trim(json_get_string(net, "waf_challenge_secret", ""));
@@ -823,6 +1088,122 @@ static std::map<std::string, std::string> parse_query(const std::string& q) {
         i = amp + 1;
     }
     return out;
+}
+
+static int clamp_challenge_type(int value) {
+    if (value < 1) return 1;
+    if (value > 66) return 66;
+    return value;
+}
+
+static int resolve_challenge_type(const Settings& s, const std::map<std::string, std::string>& q) {
+    int t = clamp_challenge_type(s.challenge_type);
+    auto parse = [&](const std::string& raw, int fallback) -> int {
+        try {
+            return clamp_challenge_type(std::stoi(trim(raw)));
+        } catch (...) {
+            return fallback;
+        }
+    };
+    auto it = q.find("type");
+    if (it != q.end()) return parse(it->second, t);
+    it = q.find("ct");
+    if (it != q.end()) return parse(it->second, t);
+    return t;
+}
+
+static std::string challenge_type_name(int type) {
+    static const std::vector<std::string> names = {
+        "Type 01 Equation Gate", "Type 02 Icon Census", "Type 03 Word Forge", "Type 04 Number Trail", "Type 05 Code Mirror", "Type 06 Voice Echo",
+        "Type 07 Formula Weave", "Type 08 Glyph Tally", "Type 09 Lexi Shuffle", "Type 10 Delta Ladder", "Type 11 Cipher Trace", "Type 12 Audio Phrase",
+        "Type 13 Symbol Chain", "Type 14 Pixel Count", "Type 15 Token Builder", "Type 16 Pulse Sequence", "Type 17 Key Replay", "Type 18 Mic Relay",
+        "Type 19 Operand Quest", "Type 20 Emoji Sweep", "Type 21 Anagram Lock", "Type 22 Step Progression", "Type 23 Code Relay", "Type 24 Voice Relay",
+        "Type 25 Bracket Logic", "Type 26 Target Counter", "Type 27 Word Rewire", "Type 28 Pattern Rise", "Type 29 String Match", "Type 30 Speech Match",
+        "Type 31 Grid Solver", "Type 32 Icon Merge", "Type 33 Phrase Puzzle", "Type 34 Gap Sequence", "Type 35 Signature Copy", "Type 36 Vocal Token",
+        "Type 37 Compute Path", "Type 38 Marker Count", "Type 39 Letter Craft", "Type 40 Increment Path", "Type 41 Passcode Echo", "Type 42 Voice Token",
+        "Type 43 Numeric Blend", "Type 44 Icon Blend", "Type 45 Jumble Decode", "Type 46 Ladder Guess", "Type 47 Checksum Copy", "Type 48 Speech Decode",
+        "Type 49 Operand Shift", "Type 50 Focus Count", "Type 51 Syntax Puzzle", "Type 52 Offset Sequence", "Type 53 Tag Replay", "Type 54 Audio Verify",
+        "Type 55 Chain Compute", "Type 56 Visual Count", "Type 57 Lexicon Twist", "Type 58 Orbit Sequence", "Type 59 Keyframe Copy", "Type 60 Mic Verify",
+        "Type 61 Logic Mix", "Type 62 Visual Sweep", "Type 63 Puzzle Mesh", "Type 64 Sequence Mesh", "Type 65 Code Mesh", "Type 66 Voice Mesh"
+    };
+    int t = clamp_challenge_type(type) - 1;
+    return names[static_cast<std::size_t>(t)];
+}
+
+static int challenge_mode_for_type(int type) {
+    return clamp_challenge_type(type) - 1; // unique mode id per type
+}
+
+static std::string challenge_mode_name(int challenge_type) {
+    return std::string("variant_") + std::to_string(clamp_challenge_type(challenge_type));
+}
+
+static std::string challenge_theme_css_vars(const Settings& s, int type) {
+    (void)type;
+    if (!s.challenge_theme_custom_enabled) {
+        return "--bg:#0d1b2a;"
+               "--bg2:#132a45;"
+               "--card:#10233a;"
+               "--line:#325b8a;"
+               "--text:#e8f2ff;"
+               "--muted:#a9c4e4;"
+               "--acc:#2e9cff;"
+               "--acc2:#67b6ff;"
+               "--err:#ff8f8f;"
+               "--radius:10px;";
+    }
+    const std::string gs = sanitize_hex_color(s.challenge_theme_gradient_start, "#0d1b2a");
+    const std::string ge = sanitize_hex_color(s.challenge_theme_gradient_end, "#132a45");
+    const std::string ac = sanitize_hex_color(s.challenge_theme_accent, "#2e9cff");
+    return "--bg:" + gs + ";"
+           "--bg2:" + ge + ";"
+           "--card:#10233a;"
+           "--line:#325b8a;"
+           "--text:#e8f2ff;"
+           "--muted:#a9c4e4;"
+           "--acc:" + ac + ";"
+           "--acc2:" + ac + ";"
+           "--err:#ff8f8f;"
+           "--radius:10px;";
+}
+
+static void apply_challenge_profile_tuning(
+    int type,
+    int& adaptive_pow_bits,
+    int& wait_min_ms,
+    int& wait_max_ms,
+    int& adaptive_pow_mem_mb,
+    int& adaptive_pow_cpu_level
+) {
+    int t = clamp_challenge_type(type);
+    int family = (t - 1) / 6; // 0..10
+    int slot = (t - 1) % 6;   // 0..5
+
+    // Family controls global hardness trend.
+    adaptive_pow_bits += (family / 2) - 1;     // -1..+4
+    adaptive_pow_cpu_level += family / 3;      // 0..3
+    wait_min_ms += family * 350;
+    wait_max_ms += family * 700;
+
+    // Slot controls fine-grained behavior diversity.
+    adaptive_pow_bits += (slot >= 3 ? 1 : 0) - (slot == 0 ? 1 : 0);
+    adaptive_pow_mem_mb += ((slot % 4) - 1) * 8; // -8,0,+8,+16
+    adaptive_pow_cpu_level += (slot % 2 == 0 ? 1 : 0);
+
+    if (slot == 4 || slot == 5) {
+        wait_min_ms += 900;
+        wait_max_ms += 1400;
+    }
+    if (slot == 2) {
+        wait_min_ms = std::max(2500, wait_min_ms - 700);
+        wait_max_ms = std::max(wait_min_ms + 1200, wait_max_ms - 1200);
+    }
+
+    adaptive_pow_bits = std::max(8, std::min(24, adaptive_pow_bits));
+    adaptive_pow_mem_mb = std::max(8, std::min(192, adaptive_pow_mem_mb));
+    adaptive_pow_cpu_level = std::max(1, std::min(8, adaptive_pow_cpu_level));
+    wait_min_ms = std::max(2500, std::min(22000, wait_min_ms));
+    wait_max_ms = std::max(wait_min_ms + 1000, std::min(26000, wait_max_ms));
 }
 
 static std::string random_nonce() {
@@ -1825,6 +2206,7 @@ static void handle_client(int fd, std::string remote_ip) {
         }
 
         std::map<std::string, std::string> nq = parse_query(req.query);
+        const int challenge_type = resolve_challenge_type(s, nq);
         int hinted_hc = 0;
         double hinted_dm = 0.0;
         bool hinted_mobile = false;
@@ -1905,43 +2287,26 @@ static void handle_client(int fd, std::string remote_ip) {
         if (suspicious_low_power_hint) adaptive_pow_cpu_level = std::max(adaptive_pow_cpu_level, 5);
         if (s.strict_mode) adaptive_pow_cpu_level = std::max(adaptive_pow_cpu_level, hinted_mobile ? 3 : 4);
         adaptive_pow_cpu_level = std::max(1, std::min(8, adaptive_pow_cpu_level));
+        apply_challenge_profile_tuning(
+            challenge_type,
+            adaptive_pow_bits,
+            wait_min_ms,
+            wait_max_ms,
+            adaptive_pow_mem_mb,
+            adaptive_pow_cpu_level
+        );
 
         std::random_device rd;
         std::mt19937 gen(rd());
-        std::uniform_int_distribution<int> num_a(250, 2800);
-        std::uniform_int_distribution<int> num_b(250, 2800);
-        std::uniform_int_distribution<int> num_c(120, 1800);
-        std::uniform_int_distribution<int> opdis(0, 1);
         std::uniform_int_distribution<int> wait_human_ms(wait_min_ms, wait_max_ms);
-        int a = 0, b = 0, c = 0;
-        bool plus = true;
-        long long ans = 0;
-        bool picked = false;
-        for (int tries = 0; tries < 128; ++tries) {
-            a = num_a(gen);
-            b = num_b(gen);
-            c = num_c(gen);
-            plus = opdis(gen) == 0;
-            ans = plus ? (static_cast<long long>(a) + static_cast<long long>(b) - c)
-                       : (static_cast<long long>(a) - static_cast<long long>(b) + c);
-            if (ans >= 100 && ans <= 9999) {
-                picked = true;
-                break;
-            }
-        }
-        if (!picked) {
-            a = 1500;
-            b = 900;
-            c = 400;
-            plus = true;
-            ans = static_cast<long long>(a) + static_cast<long long>(b) - c; // 2000
-        }
+        const int challenge_mode = challenge_mode_for_type(challenge_type);
+        const Phase1ChallengeSpec spec = build_phase1_challenge(gen, challenge_mode, challenge_type);
         std::string nonce = random_nonce();
         NonceRec rec;
         std::vector<int> pattern_nodes = generate_pattern_nodes(gen);
         {
             std::lock_guard<std::mutex> lock(g_nonce_mu);
-            rec.ans = std::to_string(ans);
+            rec.ans = spec.answer;
             rec.ip = ip;
             rec.ua = ua_fp;
             rec.answer_key = "ans_" + random_token(6);
@@ -1950,6 +2315,9 @@ static void handle_client(int fd, std::string remote_ip) {
             rec.connection_key = "conn_" + random_token(6);
             rec.pattern_key = "pat_" + random_token(6);
             rec.pow_salt = "pow_" + random_token(12);
+            rec.challenge_mode = challenge_mode;
+            rec.voice_mode = spec.voice_enabled;
+            rec.answer_numeric = spec.answer_numeric;
             rec.pow_bits = adaptive_pow_bits;
             rec.pattern_seq = join_ints_dash(pattern_nodes);
             rec.min_connection_ms = wait_human_ms(gen);
@@ -1962,7 +2330,7 @@ static void handle_client(int fd, std::string remote_ip) {
         json out;
         out["ok"] = true;
         out["nonce"] = nonce;
-        out["question"] = "(" + std::to_string(a) + (plus ? " + " : " - ") + std::to_string(b) + ") " + (plus ? "- " : "+ ") + std::to_string(c) + " = ?";
+        out["question"] = spec.question;
         out["answer_key"] = rec.answer_key;
         out["click_key"] = rec.click_key;
         out["behavior_key"] = rec.behavior_key;
@@ -1973,6 +2341,14 @@ static void handle_client(int fd, std::string remote_ip) {
         out["pow_mem_mb"] = adaptive_pow_mem_mb;
         out["pow_cpu_level"] = adaptive_pow_cpu_level;
         out["connection_delay_ms"] = rec.min_connection_ms;
+        out["challenge_type"] = challenge_type;
+        out["challenge_profile"] = challenge_type_name(challenge_type);
+        out["challenge_mode"] = challenge_mode_name(challenge_type);
+        out["phase1_numeric"] = rec.answer_numeric;
+        out["phase1_voice_enabled"] = rec.voice_mode;
+        out["phase1_label"] = spec.label;
+        out["phase1_hint"] = spec.hint;
+        out["phase1_input_placeholder"] = spec.input_placeholder;
         send_response(fd, 200, "OK", out.dump(), {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
         close(fd);
         return;
@@ -2057,8 +2433,8 @@ static void handle_client(int fd, std::string remote_ip) {
         if (in[rec.answer_key].is_string()) answer = trim(in[rec.answer_key].get<std::string>());
         else if (in[rec.answer_key].is_number_integer()) answer = std::to_string(in[rec.answer_key].get<long long>());
         else if (in[rec.answer_key].is_number_float()) answer = std::to_string(static_cast<long long>(in[rec.answer_key].get<double>()));
-        answer = normalize_numeric_answer(answer);
-        const std::string expected_answer = normalize_numeric_answer(rec.ans);
+        answer = normalize_expected_answer(answer, rec.answer_numeric, rec.voice_mode);
+        const std::string expected_answer = normalize_expected_answer(rec.ans, rec.answer_numeric, rec.voice_mode);
         if (answer != expected_answer) {
             int attempts_left = 0;
             bool exceeded = false;
@@ -2176,18 +2552,21 @@ static void handle_client(int fd, std::string remote_ip) {
         std::map<std::string, std::string> q = parse_query(req.query);
         std::string rd = q.count("rd") ? q["rd"] : "/";
         if (rd.empty() || rd[0] != '/') rd = "/";
+        const int challenge_type = resolve_challenge_type(s, q);
+        const std::string challenge_profile = challenge_type_name(challenge_type);
+        const std::string challenge_theme_vars = challenge_theme_css_vars(s, challenge_type);
         std::string html =
             "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<title>PteroProtect Challenge</title>"
             "<style>"
-            ":root{--bg:#070d18;--bg2:#09182d;--card:#0e1f36;--line:#1f3f66;--text:#e8f3ff;--muted:#9fc0dd;--acc:#2f88ff;--acc2:#6be0ff;--err:#ff9a9a;}"
+            ":root{" + challenge_theme_vars + "}"
             "*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:18px;"
             "font-family:'Trebuchet MS','Segoe UI',Tahoma,sans-serif;color:var(--text);"
             "background:radial-gradient(1200px 580px at 5% -5%,#17365e 0%,transparent 62%),"
             "radial-gradient(1000px 620px at 95% 110%,#0f3954 0%,transparent 60%),"
             "linear-gradient(180deg,var(--bg),var(--bg2))}"
             ".card{width:min(840px,98vw);background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.015));"
-            "border:1px solid rgba(103,153,204,.36);border-radius:18px;box-shadow:0 30px 80px rgba(0,0,0,.46);overflow-y:auto;max-height:98vh}"
+            "border:1px solid rgba(103,153,204,.36);border-radius:var(--radius,12px);box-shadow:0 30px 80px rgba(0,0,0,.46);overflow-y:auto;max-height:98vh}"
             ".head{padding:16px 18px;border-bottom:1px solid rgba(103,153,204,.28);display:flex;align-items:center;gap:10px}"
             ".dot{width:10px;height:10px;border-radius:999px;background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 0 20px rgba(75,184,255,.85)}"
             ".title{font-weight:800;letter-spacing:.25px}.sub{margin-left:auto;font-size:12px;color:var(--muted);font-weight:600}"
@@ -2198,7 +2577,7 @@ static void handle_client(int fd, std::string remote_ip) {
             ".phase-ind.p2{border-color:#7a2db3;background:#2a1440;color:#f2d9ff;box-shadow:0 0 14px rgba(196,103,255,.24)}"
             ".connbox{position:relative;min-height:56vh;max-height:74vh;padding:16px}.human-wrap{position:absolute;left:16px;top:16px;display:block}"
             ".timer{font-size:32px;font-weight:900;letter-spacing:.7px;color:#d2eaff;text-shadow:0 0 14px rgba(83,171,255,.35)}.q{margin:0 0 10px;color:var(--muted);font-size:14px;line-height:1.5}"
-            ".qa{margin:0 0 12px;padding:12px;border:1px solid rgba(103,153,204,.3);border-radius:10px;background:#0a1a2d;color:#cae6ff;font-weight:700}"
+            ".qa{margin:0 0 12px;padding:12px;border:1px solid rgba(103,153,204,.3);border-radius:10px;background:#0a1a2d;color:#cae6ff;font-weight:700;white-space:pre-wrap}"
             ".pat{margin:0 0 12px;padding:12px;border:1px solid rgba(103,153,204,.3);border-radius:10px;background:#07172a;display:none}"
             ".pat canvas{display:block;width:100%;max-width:300px;aspect-ratio:1/1;background:#061221;border:1px solid #2a5279;border-radius:10px;touch-action:none;margin:0 auto}"
             ".row{display:flex;gap:10px}.row input{flex:1}"
@@ -2210,7 +2589,6 @@ static void handle_client(int fd, std::string remote_ip) {
             "button:hover{filter:brightness(1.07)}button:disabled{opacity:.66;cursor:not-allowed}"
             ".hint{margin-top:10px;color:var(--muted);font-size:12px}.status{margin-top:10px;color:#9fd2ff;min-height:18px;font-size:13px}.err{margin-top:6px;color:var(--err);min-height:18px;font-size:13px}"
             "@media (max-width:640px){.connbox{min-height:52vh}.row{flex-direction:column}button{width:100%}#human_btn{width:142px;min-height:30px;font-size:10px;padding:6px 8px}}"
-            ":root{--bg:#1f2933;--bg2:#263445;--card:#2f3b4d;--line:#42536b;--text:#e5edf7;--muted:#9fb0c7;--acc:#3b82f6;--err:#fca5a5}"
             "body{background:linear-gradient(180deg,var(--bg),var(--bg2));font-family:'Segoe UI',Tahoma,sans-serif;padding:14px}"
             ".card{width:min(760px,98vw);background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.22)}"
             ".head{padding:12px 14px;border-bottom:1px solid var(--line)}.title{font-size:15px}.sub{font-size:12px}.dot{background:var(--acc);box-shadow:none}"
@@ -2229,15 +2607,20 @@ static void handle_client(int fd, std::string remote_ip) {
             "button:hover{filter:brightness(1.03)}.hint{font-size:13px;color:var(--muted)}.status{color:#9fc5ff}.err{color:var(--err)}.timer{text-shadow:none;font-size:24px}"
             "@media (max-width:640px){.card{width:100%}.body{padding:12px}.tab{padding:7px 8px}.q{font-size:13px}.row{flex-direction:column}button{width:100%}.connbox{min-height:200px;padding-top:8px}.human-wrap{top:76px}#human_btn{width:auto!important;min-width:120px;min-height:30px;font-size:10px;padding:0 8px}}"
             "</style></head><body><div class=\"card\">"
-            "<div class=\"head\"><span class=\"dot\"></span><span class=\"title\">PteroProtect Verification</span><span class=\"sub\">30m clearance</span></div>"
+            "<div class=\"head\"><span class=\"dot\"></span><span class=\"title\">PteroProtect Verification</span><span class=\"sub\">Type #" + std::to_string(challenge_type) + " • " + challenge_profile + " • 30m clearance</span></div>"
             "<div class=\"body\"><div class=\"tabs\"><div class=\"tab on\" id=\"tab_conn\">Connection</div><div class=\"tab\" id=\"tab_chal\">Challenge</div></div>"
             "<div class=\"pane on\" id=\"pane_conn\"><div class=\"big connbox\" id=\"connbox\"><p class=\"q\">Checking connection integrity...</p><div class=\"timer\" id=\"ctimer\">--</div><p class=\"q\">Klik tombol untuk buka challenge manual. Session tetap dikunci ke IP + User-Agent.</p><div class=\"human-wrap\" id=\"human_wrap\"><button id=\"human_btn\" type=\"button\" disabled>Preparing challenge...</button></div></div></div>"
-            "<div class=\"pane\" id=\"pane_chal\"><div class=\"phase-ind p1\" id=\"phase_ind\">PHASE 1</div><p class=\"q\" id=\"phaseq\">Tahap 1: selesaikan math dulu.</p><p class=\"q\" id=\"phint\"></p>"
-            "<p class=\"qa\" id=\"q\">Memuat challenge...</p><div class=\"pat\" id=\"patbox\"><canvas id=\"pc\" width=\"280\" height=\"280\"></canvas></div><div class=\"row\" id=\"ainput_wrap\"><input id=\"a\" placeholder=\"Masukkan jawaban\"/></div><div class=\"row\"><button id=\"b\">Continue</button><button id=\"rb\" type=\"button\" class=\"secondary\">Restart (3)</button></div>"
+            "<div class=\"pane\" id=\"pane_chal\"><div class=\"phase-ind p1\" id=\"phase_ind\">PHASE 1</div><p class=\"q\" id=\"phaseq\">Tahap 1: selesaikan challenge.</p><p class=\"q\" id=\"phint\"></p>"
+            "<p class=\"qa\" id=\"q\">Memuat challenge...</p><div class=\"pat\" id=\"phase1_widget\" style=\"display:block\"></div><div class=\"pat\" id=\"patbox\"><canvas id=\"pc\" width=\"280\" height=\"280\"></canvas></div><div class=\"row\" id=\"ainput_wrap\"><input id=\"a\" placeholder=\"Masukkan jawaban\"/><button id=\"mic_btn\" type=\"button\" class=\"secondary\" style=\"display:none;min-width:120px;\">Use Mic</button></div><div class=\"row\"><button id=\"b\">Continue</button><button id=\"rb\" type=\"button\" class=\"secondary\">Restart (3)</button></div>"
             "<div class=\"hint\">Tip: gunakan perangkat normal (mouse/touch/scroll) agar lolos validasi anti-bot.</div></div><div class=\"status\" id=\"s\"></div><div class=\"err\" id=\"e\"></div></div></div>"
-            "<script>let nonce=\"\",ak=\"\",hk=\"\",bk=\"\",ck=\"\",pk=\"\",powSalt=\"\",powHash=\"\";let powBits=14,powMemMb=48,powCpuLevel=4,powCounter=-1,powReady=false;let phase=1;let pseq=[];let clicked=[];let pTrace=[];let pStart=0;let pDir=0;let pActive=false;let ppx=null,ppy=null,pvdx=0,pvdy=0;let started=Date.now();let unlockAt=0;let waitTimer=null;let humanMoveTimer=null;let humanReady=false;let enteredChallenge=false;let clickVerified=false;let hardOpened=false;let uiLocked=false;let pm=0,pd=0,pdc=0,tm=0,sc=0,kc=0,px=null,py=null,pvx=0,pvy=0;let lastBX=-1,lastBY=-1;let humanPauseUntil=0;let phase2Hint='';let restartsLeft=3;let clickSamples=[];let clickResetBusy=false;let clickLastMark=0;let hardPenaltyUntil=0;let pendingHumanClick=false;let powTaskActive=false,pendingFinalSubmit=false,powLoopStop=false,challengeSolved=false;const HARD_PENALTY_MS=9*60*60*1000;const CLICK_LIMIT_PER_SEC=(((navigator&&navigator.maxTouchPoints)||0)>=1||/android|iphone|ipad|ipod|mobile/i.test(String((navigator&&navigator.userAgent)||'')))?30:10;"
-            "const elQ=document.getElementById('q'),elA=document.getElementById('a'),elB=document.getElementById('b'),elRB=document.getElementById('rb'),elS=document.getElementById('s'),elE=document.getElementById('e'),elCT=document.getElementById('ctimer'),elHB=document.getElementById('human_btn'),elCW=document.getElementById('connbox'),elHW=document.getElementById('human_wrap'),elPC=document.getElementById('pane_conn'),elPH=document.getElementById('pane_chal'),elTC=document.getElementById('tab_conn'),elTH=document.getElementById('tab_chal'),elPI=document.getElementById('phase_ind'),elPQ=document.getElementById('phaseq'),elPHint=document.getElementById('phint'),elPat=document.getElementById('patbox'),elInputWrap=document.getElementById('ainput_wrap'),pc=document.getElementById('pc'),ctx=pc.getContext('2d');"
+            "<script>const CHALLENGE_TYPE=" + std::to_string(challenge_type) + ";let nonce=\"\",ak=\"\",hk=\"\",bk=\"\",ck=\"\",pk=\"\",powSalt=\"\",powHash=\"\";let powBits=14,powMemMb=48,powCpuLevel=4,powCounter=-1,powReady=false;let phase=1;let pseq=[];let clicked=[];let pTrace=[];let pStart=0;let pDir=0;let pActive=false;let ppx=null,ppy=null,pvdx=0,pvdy=0;let started=Date.now();let unlockAt=0;let waitTimer=null;let humanMoveTimer=null;let humanReady=false;let enteredChallenge=false;let clickVerified=false;let hardOpened=false;let uiLocked=false;let pm=0,pd=0,pdc=0,tm=0,sc=0,kc=0,px=null,py=null,pvx=0,pvy=0;let lastBX=-1,lastBY=-1;let humanPauseUntil=0;let phase2Hint='';let phase1Label='Tahap 1: selesaikan challenge.';let phase1Hint='';let phase1Placeholder='Masukkan jawaban';let phase1Mode='variant_1';let phase1Numeric=true;let phase1VoiceEnabled=false;let phase1ConceptPassed=false;let phase1ConceptType=0;let voiceListening=false;let restartsLeft=3;let clickSamples=[];let clickResetBusy=false;let clickLastMark=0;let hardPenaltyUntil=0;let pendingHumanClick=false;let powTaskActive=false,pendingFinalSubmit=false,powLoopStop=false,challengeSolved=false;const HARD_PENALTY_MS=9*60*60*1000;const CLICK_LIMIT_PER_SEC=(((navigator&&navigator.maxTouchPoints)||0)>=1||/android|iphone|ipad|ipod|mobile/i.test(String((navigator&&navigator.userAgent)||'')))?30:10;"
+            "const elQ=document.getElementById('q'),elA=document.getElementById('a'),elB=document.getElementById('b'),elRB=document.getElementById('rb'),elS=document.getElementById('s'),elE=document.getElementById('e'),elCT=document.getElementById('ctimer'),elHB=document.getElementById('human_btn'),elCW=document.getElementById('connbox'),elHW=document.getElementById('human_wrap'),elPC=document.getElementById('pane_conn'),elPH=document.getElementById('pane_chal'),elTC=document.getElementById('tab_conn'),elTH=document.getElementById('tab_chal'),elPI=document.getElementById('phase_ind'),elPQ=document.getElementById('phaseq'),elPHint=document.getElementById('phint'),elPat=document.getElementById('patbox'),elW=document.getElementById('phase1_widget'),elInputWrap=document.getElementById('ainput_wrap'),elMic=document.getElementById('mic_btn'),pc=document.getElementById('pc'),ctx=pc.getContext('2d');"
             "function normAns(v){let s=String(v||'').trim();if(!s)return s;s=s.replace(/[−–—﹣－]/g,'-').replace(/[＋]/g,'+');const sign=(s[0]==='+'||s[0]==='-')?s[0]:'';if(sign)s=s.slice(1);s=s.replace(/[\\s,._'\\u00A0\\u202F]/g,'');return sign+s;}"
+            "function phase1Value(v){const raw=String(v||'').trim();return phase1Numeric?normAns(raw):raw;}"
+            "const SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition||null;"
+            "function configureVoiceUI(){if(!elMic)return;const isVoice=!!phase1VoiceEnabled;if(!isVoice){elMic.style.display='none';elMic.disabled=true;return;}elMic.style.display='';if(!SpeechRec){elMic.disabled=true;elMic.textContent='Mic N/A';if(elPHint){elPHint.textContent=(phase1Hint?phase1Hint+' ':'')+'Mic tidak didukung browser ini, ketik manual.';}return;}elMic.disabled=false;elMic.textContent=voiceListening?'Listening...':'Use Mic';}"
+            "async function captureVoiceInput(){if(!SpeechRec||voiceListening||!elMic)return;voiceListening=true;configureVoiceUI();try{const rec=new SpeechRec();rec.lang='id-ID';rec.interimResults=false;rec.maxAlternatives=1;await new Promise((resolve,reject)=>{let done=false;rec.onresult=(ev)=>{try{const tx=String((((ev||{}).results||[])[0]||[])[0]?.transcript||'').trim();if(elA&&tx)elA.value=tx;done=true;resolve();}catch(_e){reject(new Error('voice_parse_failed'));}};rec.onerror=()=>{if(!done)reject(new Error('voice_failed'));};rec.onend=()=>{if(!done)resolve();};rec.start();setTimeout(()=>{try{rec.stop();}catch(_e){}},6500);});if(elS){elS.textContent='Voice input captured.';}}catch(_e){if(elE){elE.textContent='Voice input gagal, ketik manual.';}}voiceListening=false;configureVoiceUI();}"
+            "function setupPhase1Concept(){if(!elW){phase1ConceptPassed=true;return;}elW.style.display='block';if(CHALLENGE_TYPE===1||phase1VoiceEnabled){elW.innerHTML='';phase1ConceptPassed=true;return;}phase1ConceptType=((CHALLENGE_TYPE-2)%10+10)%10;phase1ConceptPassed=false;const done=()=>{phase1ConceptPassed=true;if(elS)elS.textContent='Concept check passed.';};if(phase1ConceptType===0){const target=((CHALLENGE_TYPE*7)%91)+5;elW.innerHTML='<div style=\"margin-bottom:6px\">Geser slider ke '+String(target)+'</div><input id=\"w_slider\" type=\"range\" min=\"0\" max=\"100\" value=\"0\" style=\"width:100%\"><div id=\"w_sv\">0</div>';const sl=document.getElementById('w_slider');const sv=document.getElementById('w_sv');if(sl&&sv){sl.oninput=()=>{const v=Number(sl.value||0);sv.textContent=String(v);if(Math.abs(v-target)<=2)done();};}return;}if(phase1ConceptType===1){elW.innerHTML='<div style=\"margin-bottom:6px\">Drag tile ke slot 1,2,3 (kiri ke kanan).</div><div id=\"w_slots\" style=\"display:flex;gap:6px;margin-bottom:6px\"><div data-s=\"1\" style=\"flex:1;border:1px dashed #4da0ff;min-height:34px;padding:6px\"></div><div data-s=\"2\" style=\"flex:1;border:1px dashed #4da0ff;min-height:34px;padding:6px\"></div><div data-s=\"3\" style=\"flex:1;border:1px dashed #4da0ff;min-height:34px;padding:6px\"></div></div><div id=\"w_tiles\" style=\"display:flex;gap:6px\"><div draggable=\"true\" data-v=\"1\" style=\"padding:6px 10px;border:1px solid #4da0ff;cursor:grab\">A</div><div draggable=\"true\" data-v=\"2\" style=\"padding:6px 10px;border:1px solid #4da0ff;cursor:grab\">B</div><div draggable=\"true\" data-v=\"3\" style=\"padding:6px 10px;border:1px solid #4da0ff;cursor:grab\">C</div></div>';const tiles=Array.from(elW.querySelectorAll('[draggable=\"true\"]'));for(let i=tiles.length-1;i>0;i--){const j=(CHALLENGE_TYPE+i)%tiles.length;const p=tiles[i].parentNode;if(p&&tiles[j])p.insertBefore(tiles[j],tiles[i]);}let drag=null;elW.querySelectorAll('[draggable=\"true\"]').forEach(t=>{t.addEventListener('dragstart',()=>{drag=t;});});elW.querySelectorAll('[data-s]').forEach(s=>{s.addEventListener('dragover',e=>e.preventDefault());s.addEventListener('drop',e=>{e.preventDefault();if(!drag)return;s.innerHTML='';s.appendChild(drag);const ok=Array.from(elW.querySelectorAll('[data-s]')).every(x=>{const c=x.querySelector('[data-v]');return c&&String(c.getAttribute('data-v'))===String(x.getAttribute('data-s'));});if(ok)done();});});return;}if(phase1ConceptType===2){const seq=[((CHALLENGE_TYPE*3)%5)+1,((CHALLENGE_TYPE*5)%5)+1,((CHALLENGE_TYPE*7)%5)+1].map(v=>((v-1)%5)+1);let pos=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Tap urutan: '+seq.join('-')+'</div><div style=\"display:flex;gap:6px\">'+[1,2,3,4,5].map(n=>'<button type=\"button\" class=\"secondary\" data-n=\"'+n+'\" style=\"min-width:44px\">'+n+'</button>').join('')+'</div>';elW.querySelectorAll('[data-n]').forEach(b=>{b.addEventListener('click',()=>{const n=Number(b.getAttribute('data-n'));if(n===seq[pos]){pos++;if(pos>=seq.length)done();}else{pos=0;}});});return;}if(phase1ConceptType===3){const target=['🐶','🐱','🐼','🦊'][CHALLENGE_TYPE%4];let hit=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Klik semua '+target+' (2x).</div><div style=\"display:flex;gap:6px;font-size:24px;flex-wrap:wrap\">'+[0,1,2,3,4,5].map(i=>{const e=(i%3===0)?target:['🐶','🐱','🐼','🦊'][(CHALLENGE_TYPE+i)%4];return '<span data-e=\"'+e+'\" style=\"cursor:pointer;padding:2px 6px;border:1px solid #355c84\">'+e+'</span>';}).join('')+'</div>';elW.querySelectorAll('[data-e]').forEach(x=>{x.addEventListener('click',()=>{if(x.getAttribute('data-e')===target){x.style.opacity='0.35';x.style.pointerEvents='none';hit++;if(hit>=2)done();}});});return;}if(phase1ConceptType===4){const hold=1300+((CHALLENGE_TYPE%5)*450);let t0=0,ok=false;elW.innerHTML='<div style=\"margin-bottom:6px\">Tekan & tahan '+String((hold/1000).toFixed(1))+' detik.</div><button id=\"w_hold\" type=\"button\" class=\"secondary\" style=\"min-width:160px\">Hold</button><div id=\"w_hs\" style=\"margin-top:6px\">0%</div>';const hb=document.getElementById('w_hold');const hs=document.getElementById('w_hs');const start=()=>{t0=Date.now();ok=false;};const stop=()=>{if(!t0)return;const dt=Date.now()-t0;t0=0;if(dt>=hold&&dt<hold+900){ok=true;done();}if(hs)hs.textContent=ok?'OK':'Ulangi';};const tick=()=>{if(!t0||!hs||ok)return;const p=Math.max(0,Math.min(100,Math.floor(((Date.now()-t0)/hold)*100)));hs.textContent=String(p)+'%';if(p>=100){hs.textContent='Lepas sekarang';}};if(hb){hb.addEventListener('mousedown',start);hb.addEventListener('touchstart',start,{passive:true});hb.addEventListener('mouseup',stop);hb.addEventListener('mouseleave',stop);hb.addEventListener('touchend',stop);setInterval(tick,80);}return;}if(phase1ConceptType===5){const target=((CHALLENGE_TYPE*37)%16);let val=0;const bstr=(n)=>n.toString(2).padStart(4,'0');elW.innerHTML='<div style=\"margin-bottom:6px\">Atur bit ke '+bstr(target)+'</div><div id=\"w_bits\" style=\"display:flex;gap:6px\">'+[8,4,2,1].map(v=>'<button type=\"button\" class=\"secondary\" data-b=\"'+v+'\" style=\"min-width:48px\">0</button>').join('')+'</div><div id=\"w_bv\" style=\"margin-top:6px\">'+bstr(0)+'</div>';const bv=document.getElementById('w_bv');elW.querySelectorAll('[data-b]').forEach(b=>{b.addEventListener('click',()=>{const bit=Number(b.getAttribute('data-b')||0);val=(val^bit);b.textContent=((val&bit)!==0)?'1':'0';if(bv)bv.textContent=bstr(val);if(val===target)done();});});return;}if(phase1ConceptType===6){const gx=((CHALLENGE_TYPE*3)%4)+1,gy=((CHALLENGE_TYPE*5)%4)+1;let x=0,y=0,steps=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Pindah titik ke G ('+gx+','+gy+').</div><div id=\"w_grid\" style=\"display:grid;grid-template-columns:repeat(5,28px);gap:4px;margin-bottom:8px\"></div><div style=\"display:flex;gap:6px;flex-wrap:wrap\"><button type=\"button\" class=\"secondary\" data-m=\"U\">Up</button><button type=\"button\" class=\"secondary\" data-m=\"L\">Left</button><button type=\"button\" class=\"secondary\" data-m=\"D\">Down</button><button type=\"button\" class=\"secondary\" data-m=\"R\">Right</button></div>';const g=document.getElementById('w_grid');const paint=()=>{if(!g)return;g.innerHTML='';for(let iy=0;iy<5;iy++){for(let ix=0;ix<5;ix++){const c=document.createElement('div');c.style.width='28px';c.style.height='28px';c.style.border='1px solid #355c84';c.style.display='flex';c.style.alignItems='center';c.style.justifyContent='center';if(ix===gx&&iy===gy)c.style.background='#194f2c';if(ix===x&&iy===y){c.style.background='#1f5e9a';c.textContent='●';}g.appendChild(c);}}};const mv=(m)=>{if(m==='U'&&y>0)y--;if(m==='D'&&y<4)y++;if(m==='L'&&x>0)x--;if(m==='R'&&x<4)x++;steps++;paint();if(x===gx&&y===gy&&steps>=4)done();};paint();elW.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>mv(String(b.getAttribute('data-m')||''))));return;}if(phase1ConceptType===7){const vals=['A','B','C','A','B','C'];for(let i=vals.length-1;i>0;i--){const j=(CHALLENGE_TYPE+i*3)%vals.length;const t=vals[i];vals[i]=vals[j];vals[j]=t;}let open=[],locked=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Memory pair: buka 3 pasang.</div><div id=\"w_mem\" style=\"display:grid;grid-template-columns:repeat(3,52px);gap:6px\">'+vals.map((_,i)=>'<button type=\"button\" class=\"secondary\" data-i=\"'+i+'\" style=\"height:42px\">?</button>').join('')+'</div>';const btns=Array.from(elW.querySelectorAll('[data-i]'));const show=(idx,on)=>{const b=btns[idx];if(!b)return;b.textContent=on?vals[idx]:'?';};btns.forEach(b=>b.addEventListener('click',()=>{const i=Number(b.getAttribute('data-i'));if(open.includes(i)||b.disabled)return;show(i,true);open.push(i);if(open.length<2)return;const a=open[0],c=open[1];if(vals[a]===vals[c]){btns[a].disabled=true;btns[c].disabled=true;locked++;open=[];if(locked>=3)done();}else{setTimeout(()=>{show(a,false);show(c,false);open=[];},450);}}));return;}if(phase1ConceptType===8){const target=((CHALLENGE_TYPE*41)%360);elW.innerHTML='<div style=\"margin-bottom:6px\">Putar ke sudut '+String(target)+'° (toleransi 6°).</div><input id=\"w_rot\" type=\"range\" min=\"0\" max=\"359\" value=\"0\" style=\"width:100%\"><div id=\"w_rv\">0°</div>';const ro=document.getElementById('w_rot');const rv=document.getElementById('w_rv');if(ro&&rv){ro.oninput=()=>{const v=Number(ro.value||0);rv.textContent=String(v)+'°';let d=Math.abs(v-target);if(d>180)d=360-d;if(d<=6)done();};}return;}const order=['1','2','3','4'];for(let i=order.length-1;i>0;i--){const j=(CHALLENGE_TYPE+i)%order.length;const t=order[i];order[i]=order[j];order[j]=t;}elW.innerHTML='<div style=\"margin-bottom:6px\">Puzzle mini: taruh potongan 1-4 ke slot yang sama.</div><div id=\"w_pz_slots\" style=\"display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:6px\"><div data-s=\"1\" style=\"min-height:34px;border:1px dashed #4da0ff;padding:6px\"></div><div data-s=\"2\" style=\"min-height:34px;border:1px dashed #4da0ff;padding:6px\"></div><div data-s=\"3\" style=\"min-height:34px;border:1px dashed #4da0ff;padding:6px\"></div><div data-s=\"4\" style=\"min-height:34px;border:1px dashed #4da0ff;padding:6px\"></div></div><div id=\"w_pz_tiles\" style=\"display:flex;gap:6px;flex-wrap:wrap\">'+order.map(v=>'<div draggable=\"true\" data-v=\"'+v+'\" style=\"padding:6px 10px;border:1px solid #4da0ff;cursor:grab\">'+v+'</div>').join('')+'</div>';let drag=null;elW.querySelectorAll('[draggable=\"true\"]').forEach(t=>t.addEventListener('dragstart',()=>{drag=t;}));elW.querySelectorAll('[data-s]').forEach(s=>{s.addEventListener('dragover',e=>e.preventDefault());s.addEventListener('drop',e=>{e.preventDefault();if(!drag)return;s.innerHTML='';s.appendChild(drag);const ok=Array.from(elW.querySelectorAll('[data-s]')).every(x=>{const c=x.querySelector('[data-v]');return c&&String(c.getAttribute('data-v'))===String(x.getAttribute('data-s'));});if(ok)done();});});}"
             "async function sha256Hex(text){const enc=new TextEncoder();const buf=await crypto.subtle.digest('SHA-256',enc.encode(text));const arr=new Uint8Array(buf);let out='';for(const b of arr){out+=b.toString(16).padStart(2,'0');}return out;}"
             "function hasLeadingZeroBits(hex,bits){if(bits<=0)return true;const n=Math.floor(bits/4),r=bits%4;for(let i=0;i<n;i++){if(hex[i]!=='0')return false;}if(r===0)return true;const v=parseInt(hex[n]||'f',16);if(Number.isNaN(v))return false;return v<(1<<(4-r));}"
             "async function solvePow(nonce,salt,bits,memMb,cpuLvl){if(!nonce||!salt)throw new Error('pow_invalid');const start=Date.now();const n=navigator||{};const hc=Math.max(1,Math.min(64,Number(n.hardwareConcurrency||2)));const mobile=((Number(n.maxTouchPoints||0)>0)||/android|iphone|ipad|ipod|mobile/i.test(String(n.userAgent||'')));const cpuLevel=Math.max(1,Math.min(8,Number(cpuLvl||4)));const baseBatch=(hc<=2?48:(hc<=4?84:(hc<=6?132:220)));const batch=mobile?Math.max(28,Math.floor(baseBatch*0.72)):baseBatch;const sleepBase=(hc<=2?8:(hc<=4?5:(hc<=6?2:1)));const sleepMs=Math.max(0,sleepBase-Math.floor(cpuLevel/2))+(mobile?1:0);let targetMb=Math.max(8,Math.min(mobile?64:192,Number(memMb||48)));let memBytes=Math.max(8*1024*1024,Math.floor(targetMb*1024*1024));let mem=null;while(memBytes>=8*1024*1024){try{mem=new Uint8Array(memBytes);break;}catch(_e){memBytes=Math.floor(memBytes/2);}}if(!mem)throw new Error('pow_mem_alloc_failed');const stride=4096;for(let i=0;i<mem.length;i+=stride){mem[i]=(i^bits)&255;}const touchPerIter=(hc<=2?2:(hc<=4?3:4))+cpuLevel;const cpuMixRounds=(cpuLevel*6)+(hc>=8?4:0);let mix=bits&255;let c=0;while(c<200000000){let idx=((c*1103515245)^(mix*2654435761))>>>0;if(mem.length>0){for(let t=0;t<touchPerIter;t++){idx=(idx+4099+((mix+13*t)&255))%mem.length;const v=mem[idx];mix=(mix+v+c+t)&255;mem[idx]=mix^((idx>>>5)&255);}for(let r=0;r<cpuMixRounds;r++){mix=(mix*33+r+c)&255;idx=(idx+mix+17+r)%mem.length;mem[idx]=(mem[idx]^mix^r)&255;}}const h=await sha256Hex(nonce+'|'+salt+'|'+String(c));if(hasLeadingZeroBits(h,bits)){return{counter:c,hash:h,ms:Date.now()-start,mem_mb:Math.floor(mem.length/1048576),cpu_level:cpuLevel};}c++;if((c%batch)===0){await new Promise(r=>setTimeout(r,sleepMs));}}throw new Error('pow_timeout');}"
@@ -2261,30 +2644,30 @@ static void handle_client(int fd, std::string remote_ip) {
             "function patternPayload(){const dur=pStart?Date.now()-pStart:0;return{duration_ms:dur,dir_changes:pDir,trace:pTrace,clicked_nodes:clicked};}"
             "function connectionInfo(){const n=navigator||{};const s=screen||{};const tz=(Intl&&Intl.DateTimeFormat)?(Intl.DateTimeFormat().resolvedOptions().timeZone||''):'unknown';"
             "return{webdriver:!!n.webdriver,ua_len:String(n.userAgent||'').length,lang_len:String(n.language||'').length,tz_len:String(tz||'').length,max_touch_points:Number(n.maxTouchPoints||0),hardware_concurrency:Number(n.hardwareConcurrency||0),screen_w:Number(s.width||0),screen_h:Number(s.height||0),color_depth:Number(s.colorDepth||0)};}"
-            "function clientHintQuery(){const n=navigator||{};const hc=Math.max(0,Math.min(64,Number(n.hardwareConcurrency||0)));const dm=Math.max(0,Math.min(64,Number(n.deviceMemory||0)));const mobile=((Number(n.maxTouchPoints||0)>0)||/android|iphone|ipad|ipod|mobile/i.test(String(n.userAgent||'')))?1:0;return'?hc='+encodeURIComponent(String(hc))+'&dm='+encodeURIComponent(String(dm))+'&m='+String(mobile);}"
+            "function clientHintQuery(){const n=navigator||{};const hc=Math.max(0,Math.min(64,Number(n.hardwareConcurrency||0)));const dm=Math.max(0,Math.min(64,Number(n.deviceMemory||0)));const mobile=((Number(n.maxTouchPoints||0)>0)||/android|iphone|ipad|ipod|mobile/i.test(String(n.userAgent||'')))?1:0;return'?hc='+encodeURIComponent(String(hc))+'&dm='+encodeURIComponent(String(dm))+'&m='+String(mobile)+'&ct='+String(CHALLENGE_TYPE);}"
             "function showConn(){if(uiLocked||hardOpened||enteredChallenge){showChal();return;}elPC.classList.add('on');elPH.classList.remove('on');elTC.classList.add('on');elTH.classList.remove('on');}"
             "function showChal(){elPC.classList.remove('on');elPH.classList.add('on');elTC.classList.remove('on');elTH.classList.add('on');}"
             "function lockChallengeUI(){uiLocked=true;hardOpened=true;enteredChallenge=true;humanReady=true;showChal();}"
-            "function setPhaseMath(){phase=1;elQ.style.display='';elInputWrap.style.display='';elPat.style.display='none';elA.value='';if(elPI){elPI.textContent='PHASE 1';elPI.className='phase-ind p1';}}"
-            "function setPhasePattern(){phase=2;lockChallengeUI();elQ.style.display='';elQ.textContent='Ikuti urutan titik sesuai petunjuk, lalu tekan Continue.';elInputWrap.style.display='none';elPat.style.display='block';if(elPI){elPI.textContent='PHASE 2';elPI.className='phase-ind p2';}}"
+            "function setPhaseMath(){phase=1;elQ.style.display='';elInputWrap.style.display='';elPat.style.display='none';elA.value='';if(elA){elA.placeholder=String(phase1Placeholder||'Masukkan jawaban');}if(elPQ){elPQ.textContent=String(phase1Label||'Tahap 1: selesaikan challenge.');}if(elPHint){elPHint.textContent=String(phase1Hint||'');}if(elPI){elPI.textContent='PHASE 1';elPI.className='phase-ind p1';}configureVoiceUI();setupPhase1Concept();}"
+            "function setPhasePattern(){phase=2;lockChallengeUI();elQ.style.display='';elQ.textContent='Ikuti urutan titik sesuai petunjuk, lalu tekan Continue.';if(elW)elW.style.display='none';elInputWrap.style.display='none';elPat.style.display='block';if(elPI){elPI.textContent='PHASE 2';elPI.className='phase-ind p2';}}"
             "function randBtn(){if(!elHB||!elCW||!elHW)return;if(Date.now()<humanPauseUntil)return;const pad=14;const topMin=(elCW.clientWidth<640?76:90);const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=12){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
             "function fmtMs(ms){const t=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(t/60);const s=t%60;return String(m)+'m '+String(s).padStart(2,'0')+'s';}"
             "function updateWait(){const now=Date.now();if(now<hardPenaltyUntil){if(elHW)elHW.style.display='none';}else{if(elHW)elHW.style.display='';}const ms=unlockAt-now;if(ms<=0){elCT.textContent='OK';}else{elCT.textContent=fmtMs(ms);}if(uiLocked||hardOpened||enteredChallenge){showChal();elB.disabled=false;if(powTaskActive&&powReady){elS.textContent='PoW aktif terus di background sampai challenge selesai.';}else if(powReady){elS.textContent='Challenge ready. Tap Continue.';}else if(powTaskActive){elS.textContent='Preparing browser proof in background...';}else{elS.textContent='Preparing browser proof...';}if(ms<=0&&waitTimer&&powReady){clearInterval(waitTimer);waitTimer=null;}return;}if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elS.textContent='Connection check passed.';elB.disabled=false;if(elHW){elHW.style.display='';elHB.disabled=false;elHB.textContent='I am human, pass me';}return;}const label=fmtMs(ms);showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}"
             "const showErr=(m)=>{elE.textContent=String(m||\"Unknown error\");elE.style.display=\"block\";elS.textContent=\"\";};"
             "const hideErr=()=>{elE.textContent=\"\";elE.style.display=\"none\";};"
             "async function loadC(){hideErr();elS.textContent=\"\";elB.disabled=true;clickSamples=[];if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=true;elHB.textContent='Preparing challenge...';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},900);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new'+clientHintQuery(),{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error(String(j.error||'challenge unavailable'));"
-            "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';powSalt=String(j.pow_salt||'');powBits=Math.max(8,Math.min(24,Number(j.pow_bits||14)));powMemMb=Math.max(8,Math.min(192,Number(j.pow_mem_mb||48)));powCpuLevel=Math.max(1,Math.min(8,Number(j.pow_cpu_level||4)));powCounter=-1;powHash='';powReady=false;powTaskActive=false;pendingFinalSubmit=false;powLoopStop=false;challengeSolved=false;clickVerified=!!(clickVerified||hardOpened||enteredChallenge||humanReady||uiLocked);setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;phase2Hint='';elPQ.textContent='Tahap 1: selesaikan math dulu.';elPHint.textContent='';drawPattern();elQ.textContent=j.question;elHB.disabled=false;elHB.textContent='I am human, pass me';if(pendingHumanClick){pendingHumanClick=false;setTimeout(()=>{elHB.click();},0);}restartsLeft=3;elRB.disabled=true;elRB.textContent='Restart ('+String(restartsLeft)+')';"
+            "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';powSalt=String(j.pow_salt||'');powBits=Math.max(8,Math.min(24,Number(j.pow_bits||14)));powMemMb=Math.max(8,Math.min(192,Number(j.pow_mem_mb||48)));powCpuLevel=Math.max(1,Math.min(8,Number(j.pow_cpu_level||4)));powCounter=-1;powHash='';powReady=false;powTaskActive=false;pendingFinalSubmit=false;powLoopStop=false;challengeSolved=false;phase1Mode=String(j.challenge_mode||'variant_1');phase1Label=String(j.phase1_label||'Tahap 1: selesaikan challenge.');phase1Hint=String(j.phase1_hint||'');phase1Placeholder=String(j.phase1_input_placeholder||'Masukkan jawaban');phase1Numeric=!!j.phase1_numeric;phase1VoiceEnabled=!!j.phase1_voice_enabled;clickVerified=!!(clickVerified||hardOpened||enteredChallenge||humanReady||uiLocked);setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;phase2Hint='';drawPattern();elQ.textContent=j.question;if(elA){elA.placeholder=phase1Placeholder;}elHB.disabled=false;elHB.textContent='I am human, pass me';if(pendingHumanClick){pendingHumanClick=false;setTimeout(()=>{elHB.click();},0);}restartsLeft=3;elRB.disabled=true;elRB.textContent='Restart ('+String(restartsLeft)+')';"
             "elS.textContent='Running browser PoW (RAM '+String(powMemMb)+'MB, CPU L'+String(powCpuLevel)+') in background...';powTaskActive=true;(async()=>{try{let firstPass=true;while(!powLoopStop){const pow=await solvePow(nonce,powSalt,powBits,powMemMb,powCpuLevel);if(firstPass){powCounter=pow.counter;powHash=pow.hash;powReady=true;elRB.disabled=false;const usedMb=Number(pow.mem_mb||powMemMb);const usedCpu=Number(pow.cpu_level||powCpuLevel);elS.textContent='PoW passed in '+String(pow.ms)+'ms. RAM '+String(usedMb)+'MB, CPU L'+String(usedCpu)+'. PoW tetap berjalan sampai challenge selesai.';elB.disabled=false;if(pendingFinalSubmit&&phase===2&&clickVerified){pendingFinalSubmit=false;setTimeout(()=>{elB.click();},0);}}firstPass=false;if(challengeSolved||powLoopStop)break;await new Promise(r=>setTimeout(r,0));}powTaskActive=false;}catch(err){powReady=false;powTaskActive=false;const msg=String(err.message||err);elE.textContent=msg;elS.textContent='PoW failed. Restart challenge.';elB.disabled=false;}})();"
             "const raw=Number(j.connection_delay_ms||0);const baseDelay=Math.min(21600000,Math.max(0,raw));const penaltyLeft=Math.max(0,hardPenaltyUntil-Date.now());const d=Math.max(baseDelay,penaltyLeft);const keepOpened=(uiLocked||hardOpened||clickVerified||enteredChallenge||humanReady||phase===2)&&penaltyLeft<=0;started=Date.now();unlockAt=Date.now()+d;if(keepOpened){lockChallengeUI();elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();}else{humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';if(penaltyLeft>0&&elHW)elHW.style.display='none';}updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,1000);}"
             "elHB.onclick=async()=>{try{if(!nonce||!hk){pendingHumanClick=true;elHB.disabled=true;elHB.textContent='Preparing challenge...';elS.textContent='Preparing challenge...';return;}const c={nonce:nonce,click:hk};const cr=await fetch('/__pteroprotect/challenge/click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});const cj=await cr.json();if(!cj.ok){throw new Error(cj.error||'click_invalid');}lockChallengeUI();clickVerified=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();if(powReady){elA.focus();}updateWait();}catch(err){const msg=String(err.message||err);if(msg==='click_rate_limited'){resetToConnectionRateLimited();return;}elE.textContent=msg;}};"
-            "const pauseHumanBtn=(ms)=>{humanPauseUntil=Math.max(humanPauseUntil,Date.now()+ms);};elHB.addEventListener('pointerenter',()=>pauseHumanBtn(120));elHB.addEventListener('pointerdown',()=>pauseHumanBtn(120));elHB.addEventListener('touchstart',()=>pauseHumanBtn(120),{passive:true});elHB.addEventListener('focus',()=>pauseHumanBtn(120));window.addEventListener('resize',()=>{if(!humanReady)randBtn();});"
+            "const pauseHumanBtn=(ms)=>{humanPauseUntil=Math.max(humanPauseUntil,Date.now()+ms);};elHB.addEventListener('pointerenter',()=>pauseHumanBtn(120));elHB.addEventListener('pointerdown',()=>pauseHumanBtn(120));elHB.addEventListener('touchstart',()=>pauseHumanBtn(120),{passive:true});elHB.addEventListener('focus',()=>pauseHumanBtn(120));window.addEventListener('resize',()=>{if(!humanReady)randBtn();});if(elMic){elMic.addEventListener('click',()=>{captureVoiceInput();});}"
             "elA.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();elB.click();}});"
-            "elRB.onclick=async()=>{if(restartsLeft<=0){elRB.disabled=true;return;}restartsLeft-=1;elRB.textContent='Restart ('+String(restartsLeft)+')';if(restartsLeft<=0)elRB.disabled=true;elE.textContent='';if(phase===1){elS.textContent='Math di-reset.';elA.value='';elA.focus();elB.disabled=false;return;}if(phase===2){elS.textContent='Pattern di-reset.';clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;drawPattern();elB.disabled=false;return;}elS.textContent='Challenge di-reset.';elB.disabled=false;};"
+            "elRB.onclick=async()=>{if(restartsLeft<=0){elRB.disabled=true;return;}restartsLeft-=1;elRB.textContent='Restart ('+String(restartsLeft)+')';if(restartsLeft<=0)elRB.disabled=true;elE.textContent='';if(phase===1){elS.textContent='Step-1 di-reset.';elA.value='';elA.focus();elB.disabled=false;return;}if(phase===2){elS.textContent='Pattern di-reset.';clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;drawPattern();elB.disabled=false;return;}elS.textContent='Challenge di-reset.';elB.disabled=false;};"
             "elB.onclick=async()=>{try{if(Date.now()<unlockAt&&!enteredChallenge){updateWait();return;}if(!clickVerified){throw new Error('click_required');}elE.textContent='';elB.disabled=true;"
-            "if(phase===1){const m={nonce:nonce};m[ak]=normAns(elA.value||'');const mr=await fetch('/__pteroprotect/challenge/verify-math',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)});const mj=await mr.json();if(!mj.ok){if(mj.error==='answer_wrong'&&Number.isFinite(Number(mj.attempts_left))){elS.textContent='Salah. Sisa percobaan math: '+String(Math.max(0,Number(mj.attempts_left)));}throw new Error(mj.error||'math_failed');}setPhasePattern();pseq=Array.isArray(mj.pattern_points)?mj.pattern_points:[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 2: klik angka sesuai urutan.';phase2Hint=sanitizeHint(String(mj.pattern_hint||''));elPHint.textContent=phase2Hint;drawPattern();elB.disabled=false;return;}"
-            "if(!powReady){pendingFinalSubmit=true;elS.textContent='PoW masih berjalan di background... auto lanjut saat selesai.';elB.disabled=true;return;}const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=normAns(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
+            "if(phase===1){if(!phase1ConceptPassed){throw new Error('phase1_widget_required');}const m={nonce:nonce};m[ak]=phase1Value(elA.value||'');const mr=await fetch('/__pteroprotect/challenge/verify-math',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)});const mj=await mr.json();if(!mj.ok){if(mj.error==='answer_wrong'&&Number.isFinite(Number(mj.attempts_left))){elS.textContent='Salah. Sisa percobaan step-1: '+String(Math.max(0,Number(mj.attempts_left)));}throw new Error(mj.error||'phase1_failed');}setPhasePattern();pseq=Array.isArray(mj.pattern_points)?mj.pattern_points:[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 2: klik angka sesuai urutan.';phase2Hint=sanitizeHint(String(mj.pattern_hint||''));elPHint.textContent=phase2Hint;drawPattern();elB.disabled=false;return;}"
+            "if(!powReady){pendingFinalSubmit=true;elS.textContent='PoW masih berjalan di background... auto lanjut saat selesai.';elB.disabled=true;return;}const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=phase1Value(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
             "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');challengeSolved=true;powLoopStop=true;location.href=j.redirect||'" + rd + "';}"
-            "catch(err){const msg=String(err.message||err);showErr(msg);if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
+            "catch(err){const msg=String(err.message||err);showErr(msg);if(msg==='phase1_widget_required'){elS.textContent='Selesaikan captcha interaktif phase-1 dulu.';}else if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
             "async function cleanupOldChallengeCaches(){try{if(window.caches&&caches.keys){const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}if('serviceWorker' in navigator&&navigator.serviceWorker.getRegistrations){const regs=await navigator.serviceWorker.getRegistrations();await Promise.all(regs.filter(r=>{const s=String(r.scope||'');return s===location.origin+'/'||s.includes('/__pteroprotect/challenge/');}).map(r=>r.unregister()));}}catch(_e){}}"
             "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/__pteroprotect/challenge/'});}catch(_e){}}"
             "document.addEventListener('visibilitychange',()=>{if(document.hidden&&powTaskActive){elS.textContent='PoW tetap jalan di background tab...';}});window.addEventListener('beforeunload',()=>{powLoopStop=true;});cleanupOldChallengeCaches().finally(()=>registerChallengeSW().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));}));</script></body></html>";
@@ -2463,8 +2846,8 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        answer = normalize_numeric_answer(answer);
-        const std::string expected_answer = normalize_numeric_answer(rec.ans);
+        answer = normalize_expected_answer(answer, rec.answer_numeric, rec.voice_mode);
+        const std::string expected_answer = normalize_expected_answer(rec.ans, rec.answer_numeric, rec.voice_mode);
         if (expected_answer != answer) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"answer_wrong\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);

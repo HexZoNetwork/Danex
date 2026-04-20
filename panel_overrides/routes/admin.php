@@ -17,6 +17,7 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::get('/rum', [Admin\ProtectController::class, 'rumIndex'])->name('admin.protect.rum');
         Route::post('/rum/ping', [Admin\ProtectController::class, 'rumPing'])->name('admin.protect.rum.ping');
         Route::get('/timeline', [Admin\ProtectController::class, 'timelineIndex'])->name('admin.protect.timeline');
+        Route::get('/challenge', [Admin\ProtectController::class, 'challengeIndex'])->name('admin.protect.challenge');
         Route::get('/ads', [Admin\ProtectController::class, 'adsIndex'])->name('admin.protect.ads');
         Route::get('/quarantine/edit', [Admin\ProtectController::class, 'quarantineEdit'])->name('admin.protect.quarantine.edit');
         Route::get('/quarantine/download', [Admin\ProtectController::class, 'quarantineDownload'])->name('admin.protect.quarantine.download');
@@ -36,6 +37,7 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::post('/allowed-wings', [Admin\ProtectController::class, 'updateAllowedWings'])->name('admin.protect.allowed_wings');
         Route::post('/reboot', [Admin\ProtectController::class, 'reboot'])->name('admin.protect.reboot');
         Route::post('/broadcast', [Admin\ProtectController::class, 'broadcast'])->name('admin.protect.broadcast.send');
+        Route::post('/challenge/update', [Admin\ProtectController::class, 'challengeUpdate'])->name('admin.protect.challenge.update');
         Route::post('/ads/store', [Admin\ProtectController::class, 'adsStore'])->name('admin.protect.ads.store');
         Route::post('/ads/service', [Admin\ProtectController::class, 'adsService'])->name('admin.protect.ads.service');
         Route::post('/ads/{ad}/update', [Admin\ProtectController::class, 'adsUpdate'])->whereNumber('ad')->name('admin.protect.ads.update');

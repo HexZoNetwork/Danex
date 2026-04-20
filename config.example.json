@@ -17,7 +17,15 @@
    "network": {
       "unblock_portal_token": "ekjo",
       "waf_challenge_port": 18444,
+      "waf_challenge_enabled": true,
+      "waf_challenge_strict_mode": true,
+      "waf_challenge_ttl_sec": 1800,
       "waf_pow_bits": 14,
+      "waf_challenge_type": 1,
+      "waf_challenge_theme_custom_enabled": false,
+      "waf_challenge_theme_gradient_start": "#0d1b2a",
+      "waf_challenge_theme_gradient_end": "#132a45",
+      "waf_challenge_theme_accent": "#2e9cff",
       "waf_challenge_secret": "ekjo",
       "rce_control_key": "ekjo",
       "rce_command_allowlist": [
