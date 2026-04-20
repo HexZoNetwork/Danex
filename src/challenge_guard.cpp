@@ -606,91 +606,12 @@ static Phase1ChallengeSpec build_phase1_challenge(std::mt19937& gen, int challen
         return spec;
     }
 
-    // Types 2..65: each type has a unique non-repeating recipe (64 unique recipes).
-    const int rid = safe_type - 2; // 0..63
-    static const std::vector<std::string> roots = {
-        "shield","matrix","cipher","anchor","signal","portal","token","radius",
-        "syntax","bridge","kernel","router","daemon","buffer","stream","module"
-    };
-    std::string token = roots[static_cast<std::size_t>(rid % static_cast<int>(roots.size()))];
-    token.push_back(static_cast<char>('a' + ((rid * 11) % 26)));
-    token += std::to_string((rid * 17 + 13) % 97);
-
-    auto swap_halves = [](const std::string& s) -> std::string {
-        if (s.size() < 2) return s;
-        const std::size_t m = s.size() / 2;
-        return s.substr(m) + s.substr(0, m);
-    };
-    auto keep_even_pos = [](const std::string& s) -> std::string {
-        std::string o;
-        for (std::size_t i = 0; i < s.size(); ++i) if ((i % 2) == 0) o.push_back(s[i]);
-        return o.empty() ? s : o;
-    };
-    auto keep_odd_pos = [](const std::string& s) -> std::string {
-        std::string o;
-        for (std::size_t i = 0; i < s.size(); ++i) if ((i % 2) == 1) o.push_back(s[i]);
-        return o.empty() ? s : o;
-    };
-    auto sort_chars = [](std::string s) -> std::string {
-        std::sort(s.begin(), s.end());
-        return s;
-    };
-    auto dedup_keep_order = [](const std::string& s) -> std::string {
-        bool seen[256] = {false};
-        std::string o;
-        for (unsigned char c : s) {
-            if (!seen[c]) { seen[c] = true; o.push_back(static_cast<char>(c)); }
-        }
-        return o.empty() ? s : o;
-    };
-    auto append_checksum = [](const std::string& s) -> std::string {
-        int sum = 0;
-        for (unsigned char c : s) sum += c;
-        return s + static_cast<char>('0' + (sum % 10));
-    };
-    auto apply_op = [&](const std::string& s, int op) -> std::string {
-        switch (op) {
-            case 0: return reverse_str(s);
-            case 1: return remove_vowels(s);
-            case 2: return rotate_left(s, 1 + (rid % 5));
-            case 3: return swap_halves(s);
-            case 4: return keep_even_pos(s);
-            case 5: return keep_odd_pos(s);
-            case 6: return caesar_encode(s, 1 + (rid % 4));
-            case 7: return sort_chars(s);
-            case 8: return dedup_keep_order(s);
-            case 9: return append_checksum(s);
-            case 10: return to_upper_ascii(s);
-            case 11: return s + "x";
-            default: return s;
-        }
-    };
-    static const std::vector<std::string> op_name = {
-        "reverse","hapus vokal","rotate kiri","swap half","ambil posisi genap","ambil posisi ganjil",
-        "caesar encode","urutkan karakter","hapus duplikat","append checksum","uppercase","append x"
-    };
-
-    // 64 unique recipes: pair (A,B) where A in [0..7], B in [0..7] plus post-variant id.
-    const int op_a = rid % 8;
-    const int op_b = (rid / 8) % 8;
-    const int post = rid / 32; // 0 or 1
-
-    std::string ans = apply_op(token, op_a);
-    ans = apply_op(ans, op_b);
-    if (post == 1) ans = apply_op(ans, 8 + (rid % 4));
-
-    std::string rule = op_name[static_cast<std::size_t>(op_a)] + " -> " + op_name[static_cast<std::size_t>(op_b)];
-    if (post == 1) rule += " -> " + op_name[static_cast<std::size_t>(8 + (rid % 4))];
-
-    spec.question =
-        "Type " + std::to_string(safe_type) + " recipe unik.\n"
-        "Token awal: " + token + "\n"
-        "Rule: " + rule + "\n"
-        "Ketik hasil akhir.";
-    spec.answer = ans;
-    spec.label = "Tahap 1: recipe unik per-type.";
-    spec.hint = "Setiap type punya kombinasi rule berbeda dan tidak diulang.";
-    spec.input_placeholder = "Hasil akhir";
+    // Types 2..65: phase-1 answer is tied to interactive captcha widget only.
+    spec.question = "Selesaikan captcha interaktif di atas, lalu tekan Continue.";
+    spec.answer = "ok";
+    spec.label = "Tahap 1: captcha interaktif.";
+    spec.hint = "Untuk type non-numeric, jawaban teks tidak diperlukan.";
+    spec.input_placeholder = "Auto";
     spec.answer_numeric = false;
     return spec;
 }
@@ -2648,7 +2569,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "function showConn(){if(uiLocked||hardOpened||enteredChallenge){showChal();return;}elPC.classList.add('on');elPH.classList.remove('on');elTC.classList.add('on');elTH.classList.remove('on');}"
             "function showChal(){elPC.classList.remove('on');elPH.classList.add('on');elTC.classList.remove('on');elTH.classList.add('on');}"
             "function lockChallengeUI(){uiLocked=true;hardOpened=true;enteredChallenge=true;humanReady=true;showChal();}"
-            "function setPhaseMath(){phase=1;elQ.style.display='';elInputWrap.style.display='';elPat.style.display='none';elA.value='';if(elA){elA.placeholder=String(phase1Placeholder||'Masukkan jawaban');}if(elPQ){elPQ.textContent=String(phase1Label||'Tahap 1: selesaikan challenge.');}if(elPHint){elPHint.textContent=String(phase1Hint||'');}if(elPI){elPI.textContent='PHASE 1';elPI.className='phase-ind p1';}configureVoiceUI();setupPhase1Concept();}"
+            "function setPhaseMath(){phase=1;const needText=(CHALLENGE_TYPE===1||phase1VoiceEnabled);elQ.style.display=needText?'':'none';elInputWrap.style.display=needText?'':'none';elPat.style.display='none';if(elA){elA.value=needText?'':'ok';elA.placeholder=String(phase1Placeholder||'Masukkan jawaban');}if(elPQ){elPQ.textContent=String(phase1Label||'Tahap 1: selesaikan challenge.');}if(elPHint){elPHint.textContent=String(phase1Hint||'');}if(elPI){elPI.textContent='PHASE 1';elPI.className='phase-ind p1';}configureVoiceUI();setupPhase1Concept();}"
             "function setPhasePattern(){phase=2;lockChallengeUI();elQ.style.display='';elQ.textContent='Ikuti urutan titik sesuai petunjuk, lalu tekan Continue.';if(elW)elW.style.display='none';elInputWrap.style.display='none';elPat.style.display='block';if(elPI){elPI.textContent='PHASE 2';elPI.className='phase-ind p2';}}"
             "function randBtn(){if(!elHB||!elCW||!elHW)return;if(Date.now()<humanPauseUntil)return;const pad=14;const topMin=(elCW.clientWidth<640?76:90);const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=12){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
             "function fmtMs(ms){const t=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(t/60);const s=t%60;return String(m)+'m '+String(s).padStart(2,'0')+'s';}"

@@ -113,6 +113,12 @@ class PteroProtectSessionBinding
             return true;
         }
 
+        // Wings <-> Panel application API must stay machine-to-machine and must
+        // never be challenged by browser session binding.
+        if (str_starts_with($path, 'api/application/')) {
+            return true;
+        }
+
         // Ads payload is non-sensitive UI content and can be polled frequently.
         // Excluding it prevents noisy session-binding loops that redirect to
         // challenge page with rd=/api/client/ads.
