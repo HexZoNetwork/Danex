@@ -2295,7 +2295,7 @@ static void handle_client(int fd, std::string remote_ip) {
 
     if (req.path == "/sw.js" && (req.method == "GET" || req.method == "HEAD")) {
         std::string js =
-            "const CACHE='pp-challenge-v21';"
+            "const CACHE='pp-challenge-v22';"
             "const PAGE='/__pteroprotect/challenge/page';"
             "self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll([PAGE,'/__pteroprotect/challenge/sw.js'])).catch(()=>{}).then(()=>self.skipWaiting()));});"
             "self.addEventListener('activate',e=>{e.waitUntil((async()=>{"

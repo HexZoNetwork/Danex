@@ -113,6 +113,13 @@ class PteroProtectSessionBinding
             return true;
         }
 
+        // Ads payload is non-sensitive UI content and can be polled frequently.
+        // Excluding it prevents noisy session-binding loops that redirect to
+        // challenge page with rd=/api/client/ads.
+        if ($path === 'api/client/ads' || str_starts_with($path, 'api/client/ads/')) {
+            return true;
+        }
+
         return false;
     }
 

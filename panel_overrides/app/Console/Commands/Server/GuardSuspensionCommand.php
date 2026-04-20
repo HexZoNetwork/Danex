@@ -49,6 +49,14 @@ class GuardSuspensionCommand extends Command
             return self::FAILURE;
         }
 
+        if ($action === SuspensionService::ACTION_UNSUSPEND && !$this->allowGuardUnsuspend()) {
+            $this->components->error(
+                'Guard unsuspend is disabled by policy. Use admin/API unsuspend or set PTEROPROTECT_GUARD_ALLOW_UNSUSPEND=1 explicitly.'
+            );
+
+            return self::FAILURE;
+        }
+
         $server = Server::query()->with(['node', 'transfer', 'user'])->find($serverId);
         if (is_null($server)) {
             $this->components->error("Server {$serverId} was not found.");
@@ -57,7 +65,7 @@ class GuardSuspensionCommand extends Command
         }
 
         try {
-            if ($reason === '') {
+            if ($reason === '' && $action !== SuspensionService::ACTION_UNSUSPEND) {
                 $reason = $this->inferReasonFromRecentViolation($server);
             }
             if ($reason === '') {
@@ -386,5 +394,10 @@ class GuardSuspensionCommand extends Command
 
             return '';
         }
+    }
+
+    private function allowGuardUnsuspend(): bool
+    {
+        return filter_var((string) env('PTEROPROTECT_GUARD_ALLOW_UNSUSPEND', '0'), FILTER_VALIDATE_BOOLEAN);
     }
 }

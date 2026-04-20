@@ -34,20 +34,28 @@ class PteroProtectClearanceToken
             return false;
         }
 
-        $requestIp = strtolower(trim((string) $request->ip()));
-        if ($requestIp === '' || !hash_equals($ipClaim, $requestIp)) {
-            return false;
-        }
-
         $requestUaFp = self::sha256Hex24(self::uaBindingMaterial((string) $request->userAgent()));
         if ($requestUaFp === '' || !hash_equals($uaClaim, $requestUaFp)) {
             return false;
         }
 
         $secret = self::challengeSecret();
+        $requestIp = strtolower(trim((string) $request->ip()));
+        $ipMatches = ($requestIp !== '' && hash_equals($ipClaim, $requestIp));
         if ($secret !== '') {
             $expectedSig = self::base64urlEncode(hash_hmac('sha256', $payloadRaw, $secret, true));
-            return hash_equals($expectedSig, $sig);
+            if (!hash_equals($expectedSig, $sig)) {
+                return false;
+            }
+
+            // Keep fast-path for exact match. When IP drifts (mobile/CDN), defer
+            // to challenge_guard /check which already handles tolerant binding.
+            if ($ipMatches) {
+                return true;
+            }
+
+            $cookie = $cookieName ?: self::cookieName();
+            return self::verifyViaChallengeGuard($request, $cookie, $token);
         }
 
         // Fallback: ask challenge_guard directly when secret isn't locally available.
@@ -297,4 +305,3 @@ class PteroProtectClearanceToken
         return $cached;
     }
 }
-

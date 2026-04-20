@@ -18,6 +18,7 @@
 #include <fstream>
 #include <set>
 #include <regex>
+#include <thread>
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <unordered_set>
@@ -227,6 +228,31 @@ long long get_host_total_ram_bytes() {
         }
     }
     cached = 0;
+    return cached;
+}
+
+int get_host_cpu_cores() {
+    static int cached = -1;
+    if (cached > 0) return cached;
+
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw > 0) {
+        cached = static_cast<int>(hw);
+        return cached;
+    }
+
+    std::ifstream f("/proc/cpuinfo");
+    if (!f.is_open()) {
+        cached = 1;
+        return cached;
+    }
+
+    int count = 0;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("processor", 0) == 0) count++;
+    }
+    cached = std::max(1, count);
     return cached;
 }
 
@@ -1959,11 +1985,16 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         return;
     }
 
-    // Compute utilisation as a percentage of the allocated limit.
-    // If limit == 0 (unlimited), treat every 100 absolute CPU % as 100 util %.
-    double cpu_pct_raw_used = (srv.cpu_limit > 0)
-        ? (snap.cpu_absolute / srv.cpu_limit * 100.0)
-        : snap.cpu_absolute;
+    // Compute utilisation as a percentage of the effective CPU budget.
+    // For unlimited servers, CPU is normalized against host cores (e.g. 8 cores = 800%).
+    const int host_cpu_cores = std::max(1, get_host_cpu_cores());
+    const double effective_cpu_limit_pct = (srv.cpu_limit > 0)
+        ? static_cast<double>(srv.cpu_limit)
+        : static_cast<double>(host_cpu_cores * 100);
+    double cpu_pct_raw_used = (effective_cpu_limit_pct > 0.0)
+        ? (snap.cpu_absolute / effective_cpu_limit_pct * 100.0)
+        : 0.0;
+    if (cpu_pct_raw_used < 0.0) cpu_pct_raw_used = 0.0;
     // Enforcement buffer applies only when a CPU limit exists.
     double cpu_pct_used = (srv.cpu_limit > 0)
         ? (cpu_pct_raw_used / CPU_ENFORCEMENT_BUFFER_MULTIPLIER)
@@ -1981,15 +2012,9 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         ? (snap.mem_bytes / static_cast<double>(effective_mem_limit_bytes) * 100.0)
         : 0.0;
 
-    bool cpu_hot     = (srv.cpu_limit > 0)
-        ? (cpu_pct_used >= HOT_THRESHOLD)
-        : (snap.cpu_absolute >= UNLIMITED_CPU_WARN_ABS * 0.8);
-    bool cpu_high    = (srv.cpu_limit > 0)
-        ? (cpu_pct_used >= cpu_threshold_pct)
-        : (snap.cpu_absolute >= UNLIMITED_CPU_WARN_ABS);
-    bool cpu_extreme = (srv.cpu_limit > 0)
-        ? (cpu_pct_used >= HARD_THRESHOLD)
-        : (snap.cpu_absolute >= UNLIMITED_CPU_HARD_ABS);
+    bool cpu_hot     = (cpu_pct_used >= HOT_THRESHOLD);
+    bool cpu_high    = (cpu_pct_used >= cpu_threshold_pct);
+    bool cpu_extreme = (cpu_pct_used >= HARD_THRESHOLD);
     bool ram_hot     = (srv.mem_limit_bytes > 0)
         ? (ram_pct_used >= HOT_THRESHOLD)
         : (snap.mem_bytes >= (effective_mem_limit_bytes * 8 / 10));
@@ -2413,9 +2438,15 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     // ── Build violation details string ───────────────────────────────────────
     std::ostringstream det;
     det << std::fixed << std::setprecision(1);
-    if (cpu_trigger)
-        det << "CPU " << snap.cpu_absolute << "% / " << srv.cpu_limit
-            << "% limit (" << (int)cpu_pct_raw_used << "%, policy=" << (int)cpu_pct_used << "%)";
+    if (cpu_trigger) {
+        if (srv.cpu_limit > 0) {
+            det << "CPU " << snap.cpu_absolute << "% / " << srv.cpu_limit
+                << "% limit (" << (int)cpu_pct_raw_used << "%, policy=" << (int)cpu_pct_used << "%)";
+        } else {
+            det << "CPU " << snap.cpu_absolute << "% / host " << (int)effective_cpu_limit_pct
+                << "% (" << (int)cpu_pct_raw_used << "% of host, policy=" << (int)cpu_pct_used << "%)";
+        }
+    }
     if (cpu_trigger && ram_trigger) det << " | ";
     if (ram_trigger) {
         long long ram_mb       = snap.mem_bytes       / (1024LL * 1024);
@@ -2532,7 +2563,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
                                (restart_ok ? "Container restarted locally ✅" : "Observed only ⚠️"))));
     bot.send_report_message(build_alert(
         abuse_type, db_info,
-        cpu_pct_raw_used, snap.cpu_absolute, srv.cpu_limit,
+        cpu_pct_raw_used, snap.cpu_absolute, static_cast<int>(effective_cpu_limit_pct),
         ram_pct_used, snap.mem_bytes, effective_mem_limit_bytes,
         action_text
     ));
