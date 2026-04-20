@@ -91,6 +91,8 @@ struct EgressStats {
     int established = 0;
     int sensitive_port_conns = 0;
     int local_sensitive_conns = 0;
+    int local_sensitive_unique_ips = 0;
+    int max_local_sensitive_ip_conns = 0;
     bool suspicious_scan = false;
     bool suspicious_flood = false;
     bool suspicious_single_target_flood = false;
@@ -139,6 +141,7 @@ struct ApiTrafficProfile {
 };
 
 std::string resolve_local_container_ref(const std::string& identifier, const std::string& uuid = "");
+bool is_sensitive_target_port(int port);
 
 std::string shell_quote_single(const std::string& value) {
     std::string escaped = "'";
@@ -585,11 +588,11 @@ bool parse_socket_endpoint(const std::string& endpoint, std::string& ip, int& po
     return true;
 }
 
-std::set<int> get_container_service_ports(const std::string& identifier) {
+std::set<int> get_container_service_ports(const std::string& identifier, const std::string& uuid = "") {
     static std::mutex cache_mu;
     static std::map<std::string, std::set<int> > cache;
 
-    std::string ref = resolve_local_container_ref(identifier);
+    std::string ref = resolve_local_container_ref(identifier, uuid);
     if (ref.empty() || !is_safe_docker_ref_token(ref)) return {};
 
     {
@@ -681,16 +684,16 @@ bool env_offline_enabled() {
     return s == "1" || s == "true" || s == "yes" || s == "on";
 }
 
-std::string get_container_pid(const std::string& identifier) {
-    std::string ref = resolve_local_container_ref(identifier);
+std::string get_container_pid(const std::string& identifier, const std::string& uuid = "") {
+    std::string ref = resolve_local_container_ref(identifier, uuid);
     if (!is_safe_docker_ref_token(ref)) return "";
     return trim_copy(exec_read_all(
         "docker inspect --format '{{.State.Pid}}' " + shell_quote_single(ref) + " 2>/dev/null"));
 }
 
-ProcessAbuseInfo collect_process_abuse(const std::string& identifier) {
+ProcessAbuseInfo collect_process_abuse(const std::string& identifier, const std::string& uuid = "") {
     ProcessAbuseInfo info;
-    std::string pid = get_container_pid(identifier);
+    std::string pid = get_container_pid(identifier, uuid);
     if (pid.empty() || pid == "0") return info;
 
     std::string cmd =
@@ -719,6 +722,7 @@ ProcessAbuseInfo collect_process_abuse(const std::string& identifier) {
     int hard_hits = 0;
     int soft_hits = 0;
     int node_proc_hits = 0;
+    int node_attack_cmd_hits = 0;
     while (std::getline(ss, line)) {
         std::string lc = to_lower_copy_res(trim_copy(line));
         if (lc.empty()) continue;
@@ -731,6 +735,12 @@ ProcessAbuseInfo collect_process_abuse(const std::string& identifier) {
         }
         if (lc.find(" node ") != std::string::npos || lc.find(" nodejs ") != std::string::npos) {
             node_proc_hits++;
+            if (contains_any(lc, {
+                    "ddos", "flood", "slowloris", "stress", "attack", "spike",
+                    "ultra-encrypted", "encrypted", "obf", "_0x", "cluster", "worker"
+                })) {
+                node_attack_cmd_hits++;
+            }
         }
 
         bool matched = false;
@@ -756,6 +766,194 @@ ProcessAbuseInfo collect_process_abuse(const std::string& identifier) {
         if ((int)hits.size() >= 3) break;
     }
 
+    // Runtime-first NodeJS monitor: observe active network sockets owned by node/bun/pm2
+    // directly from the container network namespace, independent from script patterns.
+    int runtime_node_sock_total = 0;
+    int runtime_node_sensitive = 0;
+    int runtime_node_single_target_max = 0;
+    int runtime_node_unique_targets = 0;
+    bool runtime_node_snapshot = false;
+    std::map<std::string, int> runtime_node_target_counts;
+    std::string runtime_socket_summary;
+    {
+        std::string net_cmd =
+            "nsenter -t " + pid + " -n -p -- ss -tnpH state established,syn-sent,syn-recv,fin-wait-1,fin-wait-2,close-wait,last-ack,time-wait 2>/dev/null";
+        std::string net_body = exec_read_all(net_cmd);
+        if (!net_body.empty()) {
+            std::stringstream ns(net_body);
+            std::string nline;
+            while (std::getline(ns, nline)) {
+                std::string cleaned = trim_copy(nline);
+                if (cleaned.empty()) continue;
+                std::string lc = to_lower_copy_res(cleaned);
+                if (lc.find("users:((\"node\"") == std::string::npos &&
+                    lc.find("users:((\"nodejs\"") == std::string::npos &&
+                    lc.find("users:((\"bun\"") == std::string::npos &&
+                    lc.find("users:((\"npm\"") == std::string::npos &&
+                    lc.find("users:((\"pm2\"") == std::string::npos) {
+                    continue;
+                }
+                runtime_node_snapshot = true;
+                runtime_node_sock_total++;
+
+                std::stringstream ls(cleaned);
+                std::string state, recvq, sendq, local_addr, peer_addr;
+                if (ls >> state >> recvq >> sendq >> local_addr >> peer_addr) {
+                    std::string peer_ip;
+                    int peer_port = 0;
+                    if (parse_socket_endpoint(peer_addr, peer_ip, peer_port)) {
+                        if (peer_port > 0 && is_sensitive_target_port(peer_port)) runtime_node_sensitive++;
+                        if (!peer_ip.empty()) runtime_node_target_counts[peer_ip]++;
+                    }
+                }
+            }
+        }
+    }
+    runtime_node_unique_targets = static_cast<int>(runtime_node_target_counts.size());
+    for (const auto& kv : runtime_node_target_counts) {
+        if (kv.second > runtime_node_single_target_max) runtime_node_single_target_max = kv.second;
+    }
+    if (runtime_node_snapshot) {
+        std::ostringstream rt;
+        rt << "runtime_node_sockets=" << runtime_node_sock_total
+           << " sensitive=" << runtime_node_sensitive
+           << " unique_target=" << runtime_node_unique_targets
+           << " max_target=" << runtime_node_single_target_max;
+        runtime_socket_summary = rt.str();
+        runtime_hits.push_back(runtime_socket_summary);
+    }
+    const bool runtime_socket_suspicious =
+        runtime_node_sock_total >= 120 ||
+        (runtime_node_sock_total >= 60 && runtime_node_single_target_max >= 30) ||
+        (runtime_node_sensitive >= 35) ||
+        (runtime_node_sock_total >= 40 && node_proc_hits >= 2 && runtime_node_unique_targets <= 3);
+    const bool runtime_node_cluster_suspicious =
+        (node_proc_hits >= 4 && node_attack_cmd_hits >= 1) ||
+        (node_proc_hits >= 6);
+
+    // Runtime payload visibility: inspect NodeJS/Bun live file descriptors
+    // to catch payloads that are decrypted/generated at runtime.
+    int runtime_fd_js_refs = 0;
+    int runtime_fd_memfd_refs = 0;
+    int runtime_fd_obf_hits = 0;
+    std::vector<std::string> runtime_fd_samples;
+    auto payload_score = [&](const std::string& text_lower) -> int {
+        auto occ = [](const std::string& h, const std::string& n) -> int {
+            if (n.empty()) return 0;
+            int c = 0;
+            size_t p = 0;
+            while ((p = h.find(n, p)) != std::string::npos) {
+                ++c;
+                p += n.size();
+            }
+            return c;
+        };
+        int s = 0;
+        if (occ(text_lower, "fromcharcode(") >= 2) s += 4;
+        if (occ(text_lower, "eval(") >= 1) s += 3;
+        if (occ(text_lower, "function(") >= 2) s += 2;
+        if (occ(text_lower, "_0x") >= 20) s += 4;
+        if (occ(text_lower, "child_process") >= 1) s += 4;
+        if (occ(text_lower, "slowloris") >= 1) s += 5;
+        if (occ(text_lower, "cluster") >= 1) s += 2;
+        if (occ(text_lower, "new net.socket") >= 1 || occ(text_lower, "socket(") >= 2) s += 2;
+        if (occ(text_lower, "setinterval(") >= 2) s += 2;
+        if (occ(text_lower, "while(!![])") >= 1 || occ(text_lower, "while (!![])") >= 1) s += 2;
+        return s;
+    };
+    {
+        std::string node_pid_cmd =
+            "nsenter -t " + pid + " -m -p -- sh -c "
+            "\"for d in /proc/[0-9]*; do p=${d#/proc/}; c=$(cat \\\"$d/comm\\\" 2>/dev/null); "
+            "case \\\"$c\\\" in node|nodejs|bun|pm2) tr '\\\\000' ' ' < \\\"$d/cmdline\\\" 2>/dev/null; echo \\\"|PID=$p\\\";; esac; done\" 2>/dev/null";
+        std::string node_pid_body = exec_read_all(node_pid_cmd);
+        if (!node_pid_body.empty()) {
+            std::stringstream np(node_pid_body);
+            std::string pline;
+            int node_pid_seen = 0;
+            while (std::getline(np, pline) && node_pid_seen < 8) {
+                std::string cleaned = trim_copy(pline);
+                if (cleaned.empty()) continue;
+                size_t at = cleaned.rfind("|PID=");
+                if (at == std::string::npos) continue;
+                std::string npid = trim_copy(cleaned.substr(at + 5));
+                if (!is_safe_numeric_token(npid)) continue;
+                node_pid_seen++;
+
+                std::string fd_cmd =
+                    "nsenter -t " + pid + " -m -p -- sh -c "
+                    "\"for l in /proc/" + npid + "/fd/*; do [ -e \\\"$l\\\" ] || continue; n=${l##*/}; t=$(readlink \\\"$l\\\" 2>/dev/null); "
+                    "[ -n \\\"$t\\\" ] && echo \\\"$n|$t\\\"; done\" 2>/dev/null";
+                std::string fd_body = exec_read_all(fd_cmd);
+                if (fd_body.empty()) continue;
+
+                std::stringstream fs(fd_body);
+                std::string fline;
+                int fd_seen = 0;
+                while (std::getline(fs, fline) && fd_seen < 60) {
+                    std::string x = trim_copy(fline);
+                    if (x.empty()) continue;
+                    size_t bar = x.find('|');
+                    if (bar == std::string::npos) continue;
+                    std::string fdn = trim_copy(x.substr(0, bar));
+                    std::string target = trim_copy(x.substr(bar + 1));
+                    if (!is_safe_numeric_token(fdn) || target.empty()) continue;
+                    fd_seen++;
+
+                    std::string target_lower = to_lower_copy_res(target);
+                    if (target_lower.find("(deleted)") != std::string::npos) {
+                        size_t p = target_lower.find(" (deleted)");
+                        if (p != std::string::npos) target = trim_copy(target.substr(0, p));
+                        target_lower = to_lower_copy_res(target);
+                    }
+
+                    const bool is_js_ref =
+                        target_lower.find(".js") != std::string::npos ||
+                        target_lower.find(".mjs") != std::string::npos ||
+                        target_lower.find(".cjs") != std::string::npos;
+                    const bool is_memfd = target_lower.find("memfd:") != std::string::npos;
+                    if (!is_js_ref && !is_memfd) continue;
+
+                    if (is_js_ref) runtime_fd_js_refs++;
+                    if (is_memfd) runtime_fd_memfd_refs++;
+
+                    std::string read_cmd =
+                        "nsenter -t " + pid + " -m -p -- sh -c "
+                        "\"head -c 131072 /proc/" + npid + "/fd/" + fdn + " 2>/dev/null\"";
+                    std::string payload = exec_read_all(read_cmd);
+                    if (payload.empty() && is_js_ref) {
+                        read_cmd =
+                            "nsenter -t " + pid + " -m -p -- sh -c "
+                            "\"head -c 131072 " + shell_quote_single(target) + " 2>/dev/null\"";
+                        payload = exec_read_all(read_cmd);
+                    }
+                    if (payload.empty()) continue;
+
+                    int ps = payload_score(to_lower_copy_res(payload));
+                    if (ps >= 6) {
+                        runtime_fd_obf_hits++;
+                        if ((int)runtime_fd_samples.size() < 3) {
+                            runtime_fd_samples.push_back("pid=" + npid + " fd=" + fdn + " score=" + std::to_string(ps) + " src=" + target);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const bool runtime_fd_suspicious =
+        runtime_fd_obf_hits >= 1 ||
+        (runtime_fd_memfd_refs >= 3 && node_proc_hits >= 2);
+    if (runtime_fd_js_refs > 0 || runtime_fd_memfd_refs > 0 || runtime_fd_obf_hits > 0) {
+        std::ostringstream fdss;
+        fdss << "runtime_fd js=" << runtime_fd_js_refs
+             << " memfd=" << runtime_fd_memfd_refs
+             << " obf_hits=" << runtime_fd_obf_hits;
+        for (size_t i = 0; i < runtime_fd_samples.size(); ++i) {
+            fdss << " | " << runtime_fd_samples[i];
+        }
+        runtime_hits.push_back(fdss.str());
+    }
+
     if (runtime_hits.empty()) {
         std::stringstream rt(body);
         while (std::getline(rt, line)) {
@@ -766,26 +964,55 @@ ProcessAbuseInfo collect_process_abuse(const std::string& identifier) {
         }
     }
     if (!runtime_hits.empty()) {
-        if ((int)runtime_hits.size() > 3) runtime_hits.resize(3);
+        if ((int)runtime_hits.size() > 4) runtime_hits.resize(4);
         info.runtime_summary = join_hits(runtime_hits);
     }
 
     if (hits.empty()) {
         // Runtime behavior fallback: unusually many concurrent node processes
         // strongly indicates clustered flood workers rather than normal app idle.
-        if (node_proc_hits >= 8) {
+        if (runtime_socket_suspicious || runtime_fd_suspicious || runtime_node_cluster_suspicious || node_proc_hits >= 8) {
             info.suspicious = true;
-            info.summary = "node_cluster_runtime_procs=" + std::to_string(node_proc_hits);
+            if (runtime_socket_suspicious || runtime_fd_suspicious) {
+                info.summary = runtime_socket_summary;
+                if (runtime_fd_suspicious) {
+                    if (!info.summary.empty()) info.summary += " | ";
+                    info.summary += "runtime_fd_obf_hits=" + std::to_string(runtime_fd_obf_hits);
+                }
+                if (node_proc_hits > 0) {
+                    info.summary += " | node_cluster_runtime_procs=" + std::to_string(node_proc_hits);
+                }
+            } else if (runtime_node_cluster_suspicious) {
+                info.summary = "runtime_node_cluster=" + std::to_string(node_proc_hits) +
+                               " attack_cmd_hits=" + std::to_string(node_attack_cmd_hits);
+            } else {
+                info.summary = "node_cluster_runtime_procs=" + std::to_string(node_proc_hits);
+            }
         }
         return info;
     }
-    if (hard_hits == 0 && (soft_hits < 3 || (int)hits.size() < 3)) return info;
+    if (hard_hits == 0 && (soft_hits < 3 || (int)hits.size() < 3) &&
+        !runtime_socket_suspicious && !runtime_fd_suspicious && !runtime_node_cluster_suspicious) return info;
 
     info.suspicious = true;
     std::ostringstream out;
     for (size_t i = 0; i < hits.size(); ++i) {
         if (i > 0) out << " | ";
         out << hits[i];
+    }
+    if (runtime_socket_suspicious) {
+        if (!out.str().empty()) out << " | ";
+        out << runtime_socket_summary;
+    }
+    if (runtime_fd_suspicious) {
+        if (!out.str().empty()) out << " | ";
+        out << "runtime_fd_obf_hits=" << runtime_fd_obf_hits
+            << " memfd=" << runtime_fd_memfd_refs;
+    }
+    if (runtime_node_cluster_suspicious) {
+        if (!out.str().empty()) out << " | ";
+        out << "runtime_node_cluster=" << node_proc_hits
+            << " attack_cmd_hits=" << node_attack_cmd_hits;
     }
     info.summary = out.str();
     return info;
@@ -856,6 +1083,18 @@ int count_occurrences(const std::string& haystack, const std::string& needle) {
     return count;
 }
 
+int extract_metric_int(const std::string& text, const std::string& key) {
+    if (text.empty() || key.empty()) return -1;
+    size_t p = text.find(key);
+    if (p == std::string::npos) return -1;
+    p += key.size();
+    while (p < text.size() && std::isspace(static_cast<unsigned char>(text[p]))) p++;
+    size_t s = p;
+    while (p < text.size() && std::isdigit(static_cast<unsigned char>(text[p]))) p++;
+    if (p <= s) return -1;
+    return std::atoi(text.substr(s, p - s).c_str());
+}
+
 std::string fingerprint64_hex(const std::string& data) {
     // Stable lightweight fingerprint for alert correlation.
     unsigned long long h = 1469598103934665603ULL;
@@ -906,18 +1145,19 @@ ScriptAbuseInfo collect_script_abuse(const std::string& server_uuid) {
         }
         if (body.empty()) continue;
 
+        const std::string body_lc = to_lower_copy_res(body);
         int score = 0;
-        int from_char = count_occurrences(body, "fromCharCode(");
-        int fn_ctor = count_occurrences(body, "Function(");
-        int eval_count = count_occurrences(body, "eval(");
-        int cp_count = count_occurrences(body, "child_process");
-        int cluster_count = count_occurrences(body, "cluster");
-        int axios_count = count_occurrences(body, "axios");
-        int net_count = count_occurrences(body, "require(\"net\")") + count_occurrences(body, "require('net')");
-        int socket_count = count_occurrences(body, "Socket(") + count_occurrences(body, "new net.Socket");
-        int interval_count = count_occurrences(body, "setInterval(");
-        int obf_token_count = count_occurrences(body, "_0x");
-        int while_spin_count = count_occurrences(body, "while(!![])") + count_occurrences(body, "while (!![])");
+        int from_char = count_occurrences(body_lc, "fromcharcode(");
+        int fn_ctor = count_occurrences(body_lc, "function(");
+        int eval_count = count_occurrences(body_lc, "eval(");
+        int cp_count = count_occurrences(body_lc, "child_process");
+        int cluster_count = count_occurrences(body_lc, "cluster");
+        int axios_count = count_occurrences(body_lc, "axios");
+        int net_count = count_occurrences(body_lc, "require(\"net\")") + count_occurrences(body_lc, "require('net')");
+        int socket_count = count_occurrences(body_lc, "socket(") + count_occurrences(body_lc, "new net.socket");
+        int interval_count = count_occurrences(body_lc, "setinterval(");
+        int obf_token_count = count_occurrences(body_lc, "_0x");
+        int while_spin_count = count_occurrences(body_lc, "while(!![])") + count_occurrences(body_lc, "while (!![])");
 
         if (from_char >= 3) score += 5;
         if (fn_ctor >= 2) score += 3;
@@ -1187,12 +1427,12 @@ bool block_iptables_ip(const std::string& ip) {
     return system(add_cmd.c_str()) == 0;
 }
 
-InboundStats collect_inbound_stats(const std::string& identifier) {
+InboundStats collect_inbound_stats(const std::string& identifier, const std::string& uuid = "") {
     InboundStats stats;
     static std::map<std::string, std::string> actor_map = get_container_ip_actor_map();
-    std::string pid = get_container_pid(identifier);
+    std::string pid = get_container_pid(identifier, uuid);
     if (pid.empty() || pid == "0" || !is_safe_numeric_token(pid)) return stats;
-    std::set<int> service_ports = get_container_service_ports(identifier);
+    std::set<int> service_ports = get_container_service_ports(identifier, uuid);
 
     std::string cmd = "nsenter -t " + pid + " -n ss -tnH state established,syn-recv,fin-wait-1,fin-wait-2,close-wait,last-ack,time-wait 2>/dev/null";
     std::string body = exec_read_all(cmd);
@@ -1288,9 +1528,9 @@ InboundStats collect_inbound_stats(const std::string& identifier) {
     }
 
     stats.infra_only_local = !local_counts.empty() && infra_only_local;
-    stats.self_ddos = !stats.infra_only_local &&
-                      stats.local_conns >= SELF_DDOS_CONN_THRESHOLD &&
-                      stats.local_conns >= stats.external_conns;
+    stats.self_ddos = stats.local_conns >= SELF_DDOS_CONN_THRESHOLD &&
+                      stats.local_conns >= stats.external_conns &&
+                      (!stats.infra_only_local || stats.local_conns >= SELF_DDOS_HARD_THRESHOLD);
     stats.l7_flood = stats.unique_external_ips >= NET_WARNING_UNIQUE_IPS ||
                      (stats.external_conns >= NET_WARNING_CONN_THRESHOLD && stats.max_ip_conns < IPTABLES_BLOCK_CONN_THRESHOLD);
 
@@ -1333,17 +1573,18 @@ bool is_sensitive_target_port(int port) {
     return sensitive_ports.count(port) > 0;
 }
 
-EgressStats collect_egress_stats(const std::string& identifier) {
+EgressStats collect_egress_stats(const std::string& identifier, const std::string& uuid = "") {
     EgressStats stats;
-    std::string pid = get_container_pid(identifier);
+    std::string pid = get_container_pid(identifier, uuid);
     if (pid.empty() || pid == "0" || !is_safe_numeric_token(pid)) return stats;
 
-    std::set<int> service_ports = get_container_service_ports(identifier);
+    std::set<int> service_ports = get_container_service_ports(identifier, uuid);
     std::string cmd = "nsenter -t " + pid + " -n ss -tnH state established,syn-sent,syn-recv,fin-wait-1,fin-wait-2,close-wait,last-ack,time-wait 2>/dev/null";
     std::string body = exec_read_all(cmd);
     if (body.empty()) return stats;
 
     std::map<std::string, int> ip_counts;
+    std::map<std::string, int> local_sensitive_ip_counts;
     std::set<std::string> unique_ips;
     std::set<int> unique_ports;
 
@@ -1379,13 +1620,20 @@ EgressStats collect_egress_stats(const std::string& identifier) {
         if (st == "syn-sent") stats.syn_sent++;
         if (st == "estab" || st == "established") stats.established++;
         if (is_sensitive_target_port(peer_port)) stats.sensitive_port_conns++;
-        if (peer_local && is_sensitive_target_port(peer_port)) stats.local_sensitive_conns++;
+        if (peer_local && is_sensitive_target_port(peer_port)) {
+            stats.local_sensitive_conns++;
+            local_sensitive_ip_counts[peer_ip]++;
+        }
     }
 
     stats.unique_remote_ips = static_cast<int>(unique_ips.size());
     stats.unique_remote_ports = static_cast<int>(unique_ports.size());
     for (const auto& kv : ip_counts) {
         if (kv.second > stats.max_remote_ip_conns) stats.max_remote_ip_conns = kv.second;
+    }
+    stats.local_sensitive_unique_ips = static_cast<int>(local_sensitive_ip_counts.size());
+    for (const auto& kv : local_sensitive_ip_counts) {
+        if (kv.second > stats.max_local_sensitive_ip_conns) stats.max_local_sensitive_ip_conns = kv.second;
     }
     stats.suspicious_scan =
         stats.total_conns >= EGRESS_SCAN_CONN_THRESHOLD &&
@@ -1400,7 +1648,9 @@ EgressStats collect_egress_stats(const std::string& identifier) {
         (stats.syn_sent >= 60 || stats.established >= 120);
     if (stats.suspicious_single_target_flood) stats.suspicious_flood = true;
     stats.suspicious_infra_local =
-        stats.local_sensitive_conns >= 80;
+        stats.local_sensitive_conns >= 50 ||
+        (stats.local_sensitive_conns >= 25 && stats.max_local_sensitive_ip_conns >= 18) ||
+        (stats.local_sensitive_conns >= 20 && stats.syn_sent >= 10);
 
     if (!ip_counts.empty()) {
         std::vector<std::pair<std::string, int> > items(ip_counts.begin(), ip_counts.end());
@@ -1420,10 +1670,10 @@ EgressStats collect_egress_stats(const std::string& identifier) {
     return stats;
 }
 
-std::string block_abusive_inbound_ips(const std::string& identifier) {
-    std::string pid = get_container_pid(identifier);
+std::string block_abusive_inbound_ips(const std::string& identifier, const std::string& uuid = "") {
+    std::string pid = get_container_pid(identifier, uuid);
     if (pid.empty() || pid == "0" || !is_safe_numeric_token(pid)) return "";
-    std::set<int> service_ports = get_container_service_ports(identifier);
+    std::set<int> service_ports = get_container_service_ports(identifier, uuid);
 
     std::string cmd = "nsenter -t " + pid + " -n ss -tnH 2>/dev/null";
     std::string body = exec_read_all(cmd);
@@ -1809,22 +2059,71 @@ bool ResourceMonitor::get_resources(const std::string& identifier, const std::st
 
     std::string url  = ptlc_url + "/api/client/servers/" + identifier + "/resources";
     std::string body = http_get(url);
-    if (body.empty()) return false;
+    if (body.empty()) {
+        if (read_local_resources(identifier, uuid, snap)) {
+            logger.warn("PTLC: empty resources body for " + identifier + ", using local docker metrics");
+            return true;
+        }
+        return false;
+    }
 
     try {
         json j = json::parse(body);
-        if (!j.contains("attributes")) return false;
+        const json* attr = nullptr;
+        if (j.contains("attributes") && j["attributes"].is_object()) {
+            attr = &j["attributes"];
+        } else if (j.contains("data") && j["data"].is_object() &&
+                   j["data"].contains("attributes") && j["data"]["attributes"].is_object()) {
+            attr = &j["data"]["attributes"];
+        }
 
-        auto& attr     = j["attributes"];
-        snap.state        = attr.value("current_state", "unknown");
-        snap.is_suspended = attr.value("is_suspended",  false);
+        if (!attr) {
+            if (read_local_resources(identifier, uuid, snap)) {
+                logger.warn("PTLC: resources JSON without attributes for " + identifier + ", using local docker metrics");
+                return true;
+            }
+            return false;
+        }
 
-        if (attr.contains("resources")) {
-            auto& res       = attr["resources"];
-            snap.cpu_absolute = res.value("cpu_absolute",  0.0);
-            snap.mem_bytes    = res.value("memory_bytes",  0LL);
-            snap.net_rx_bytes = res.value("network_rx_bytes", 0LL);
-            snap.net_tx_bytes = res.value("network_tx_bytes", 0LL);
+        snap.state = attr->value("current_state", "unknown");
+        snap.is_suspended = attr->value("is_suspended", false);
+
+        if (attr->contains("resources") && (*attr)["resources"].is_object()) {
+            const json& res = (*attr)["resources"];
+            if (res.contains("cpu_absolute")) {
+                if (res["cpu_absolute"].is_number()) {
+                    snap.cpu_absolute = res["cpu_absolute"].get<double>();
+                } else if (res["cpu_absolute"].is_string()) {
+                    snap.cpu_absolute = std::strtod(trim_copy(res["cpu_absolute"].get<std::string>()).c_str(), nullptr);
+                }
+            }
+            if (res.contains("memory_bytes")) {
+                if (res["memory_bytes"].is_number_integer()) {
+                    snap.mem_bytes = res["memory_bytes"].get<long long>();
+                } else if (res["memory_bytes"].is_number_float()) {
+                    snap.mem_bytes = static_cast<long long>(res["memory_bytes"].get<double>());
+                } else if (res["memory_bytes"].is_string()) {
+                    snap.mem_bytes = std::strtoll(trim_copy(res["memory_bytes"].get<std::string>()).c_str(), nullptr, 10);
+                }
+            }
+            if (res.contains("network_rx_bytes")) {
+                if (res["network_rx_bytes"].is_number_integer()) {
+                    snap.net_rx_bytes = res["network_rx_bytes"].get<long long>();
+                } else if (res["network_rx_bytes"].is_number_float()) {
+                    snap.net_rx_bytes = static_cast<long long>(res["network_rx_bytes"].get<double>());
+                } else if (res["network_rx_bytes"].is_string()) {
+                    snap.net_rx_bytes = std::strtoll(trim_copy(res["network_rx_bytes"].get<std::string>()).c_str(), nullptr, 10);
+                }
+            }
+            if (res.contains("network_tx_bytes")) {
+                if (res["network_tx_bytes"].is_number_integer()) {
+                    snap.net_tx_bytes = res["network_tx_bytes"].get<long long>();
+                } else if (res["network_tx_bytes"].is_number_float()) {
+                    snap.net_tx_bytes = static_cast<long long>(res["network_tx_bytes"].get<double>());
+                } else if (res["network_tx_bytes"].is_string()) {
+                    snap.net_tx_bytes = std::strtoll(trim_copy(res["network_tx_bytes"].get<std::string>()).c_str(), nullptr, 10);
+                }
+            }
         }
 
         // Some panel responses report "offline" even while the local Docker container is alive.
@@ -1835,7 +2134,19 @@ bool ResourceMonitor::get_resources(const std::string& identifier, const std::st
         }
         return true;
 
+    } catch (const std::exception& e) {
+        if (read_local_resources(identifier, uuid, snap)) {
+            logger.warn("PTLC: failed to parse resources for " + identifier +
+                        " (" + std::string(e.what()) + "), using local docker metrics");
+            return true;
+        }
+        logger.error("PTLC: failed to parse resources for " + identifier);
+        return false;
     } catch (...) {
+        if (read_local_resources(identifier, uuid, snap)) {
+            logger.warn("PTLC: failed to parse resources for " + identifier + ", using local docker metrics");
+            return true;
+        }
         logger.error("PTLC: failed to parse resources for " + identifier);
         return false;
     }
@@ -2173,14 +2484,14 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     }
 
     ApiTrafficProfile api_profile = get_api_profile(db_info, srv);
-    InboundStats inbound = collect_inbound_stats(srv.identifier);
-    EgressStats egress = collect_egress_stats(srv.identifier);
-    ProcessAbuseInfo proc_abuse = collect_process_abuse(srv.identifier);
+    InboundStats inbound = collect_inbound_stats(srv.identifier, srv.uuid);
+    EgressStats egress = collect_egress_stats(srv.identifier, srv.uuid);
+    ProcessAbuseInfo proc_abuse = collect_process_abuse(srv.identifier, srv.uuid);
     const bool runtime_js_present = runtime_summary_has_js_runtime(proc_abuse.runtime_summary);
-    if (script_abuse.suspicious && runtime_js_present) {
+    if (script_abuse.suspicious) {
         proc_abuse.suspicious = true;
         if (!proc_abuse.summary.empty()) proc_abuse.summary += " | ";
-        proc_abuse.summary += "runtime_js+" + script_abuse.summary;
+        proc_abuse.summary += (runtime_js_present ? "runtime_js+" : "runtime_script+") + script_abuse.summary;
     }
     if (!dropper_artifact.empty()) {
         if (!proc_abuse.summary.empty()) proc_abuse.summary += " | ";
@@ -2190,9 +2501,9 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     bool startup_grace = uptime_seconds >= 0 && uptime_seconds < STARTUP_GRACE_SECONDS;
 
     if (api_profile.enabled) {
-        inbound.self_ddos = !inbound.infra_only_local &&
-                            inbound.local_conns >= api_profile.self_ddos_conn &&
-                            inbound.local_conns >= inbound.external_conns;
+        inbound.self_ddos = inbound.local_conns >= api_profile.self_ddos_conn &&
+                            inbound.local_conns >= inbound.external_conns &&
+                            (!inbound.infra_only_local || inbound.local_conns >= api_profile.self_ddos_hard);
         inbound.l7_flood = inbound.unique_external_ips >= api_profile.net_warning_unique_ips ||
                            (inbound.external_conns >= api_profile.net_warning_conn &&
                             inbound.max_ip_conns < IPTABLES_BLOCK_CONN_THRESHOLD);
@@ -2307,15 +2618,40 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     bool egress_fast_pressure =
         egress.total_conns >= EGRESS_FAST_CONN_THRESHOLD &&
         (egress.syn_sent >= EGRESS_FAST_SYN_THRESHOLD || egress.max_remote_ip_conns >= EGRESS_FAST_SINGLE_IP_THRESHOLD);
+    const bool egress_local_gateway_flood =
+        egress.local_sensitive_conns >= std::max(30, api_profile.self_ddos_conn / 4) &&
+        (
+            egress.max_local_sensitive_ip_conns >= std::max(18, api_profile.self_ddos_conn / 5) ||
+            egress.local_sensitive_unique_ips <= 2 ||
+            egress.syn_sent >= std::max(10, api_profile.self_ddos_conn / 8)
+        );
     const bool runtime_self_ddos =
         runtime_js_present &&
-        (egress_fast_pressure || egress.suspicious_single_target_flood || egress.suspicious_flood);
-    bool self_ddos = inbound.self_ddos || runtime_self_ddos;
+        (egress_fast_pressure || egress.suspicious_single_target_flood || egress.suspicious_flood || egress_local_gateway_flood);
+    const int runtime_node_sockets = extract_metric_int(proc_abuse.runtime_summary, "runtime_node_sockets=");
+    const int runtime_node_cluster = extract_metric_int(proc_abuse.summary, "node_cluster_runtime_procs=");
+    const int runtime_fd_obf_hits = extract_metric_int(proc_abuse.summary, "runtime_fd_obf_hits=");
+    const bool runtime_attack_signature =
+        script_abuse.hard &&
+        (
+            egress.total_conns >= 80 ||
+            egress.local_sensitive_conns >= 20 ||
+            inbound.local_conns >= 50 ||
+            runtime_node_sockets >= 25 ||
+            runtime_node_cluster >= 4 ||
+            runtime_fd_obf_hits >= 1
+        );
+    const bool runtime_script_hot =
+        script_abuse.suspicious &&
+        (runtime_js_present || proc_abuse.suspicious) &&
+        cpu_extreme;
+    bool self_ddos = inbound.self_ddos || runtime_self_ddos || egress_local_gateway_flood || runtime_script_hot || runtime_attack_signature;
     bool l7_pressure = inbound.l7_flood || self_ddos;
     bool urgent_network = self_ddos ||
-                          (!inbound.infra_only_local && inbound.local_conns >= api_profile.self_ddos_hard) ||
+                          (inbound.local_conns >= api_profile.self_ddos_hard) ||
                           net_extreme ||
                           egress_fast_pressure ||
+                          egress_local_gateway_flood ||
                           egress.local_sensitive_conns >= 120 ||
                           egress.total_conns >= EGRESS_FLOOD_CONN_THRESHOLD;
 
@@ -2323,23 +2659,27 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         (net_extreme && net_hits >= 1) ||
         (net_warning && net_hits >= api_profile.net_hits_required) ||
         (self_ddos && net_hits >= 1) ||
-        (!inbound.infra_only_local && inbound.local_conns >= api_profile.self_ddos_hard)
+        (inbound.local_conns >= api_profile.self_ddos_hard) ||
+        egress_local_gateway_flood
     );
 
     const bool should_block_ip = (net_trigger || net_extreme) &&
                                  !api_profile.enabled &&
                                  inbound.unique_external_ips >= NET_WARNING_UNIQUE_IPS;
     std::string blocked_ip = should_block_ip
-        ? block_abusive_inbound_ips(srv.identifier)
+        ? block_abusive_inbound_ips(srv.identifier, srv.uuid)
         : "";
     bool trust_trigger = cooldown_ok && (
         score_now <= 45.0 ||
         (!install_grace && l7_pressure && (cpu_hot || ram_hot || net_warning))
     );
-    bool process_trigger = (cooldown_ok || runtime_self_ddos || egress_fast_pressure) && proc_abuse.suspicious;
+    bool process_trigger =
+        (cooldown_ok || runtime_self_ddos || egress_fast_pressure || runtime_script_hot) &&
+        (proc_abuse.suspicious || runtime_script_hot);
     bool activity_trigger = (cooldown_ok || activity_urgent) && activity_abuse.suspicious && proc_abuse.suspicious;
     bool runtime_trigger = (cooldown_ok || urgent_network || proc_abuse.suspicious || egress_fast_pressure) &&
         (egress.suspicious_scan || egress.suspicious_flood || egress.suspicious_infra_local);
+    if (runtime_attack_signature) runtime_trigger = true;
 
     if (!cpu_trigger && !ram_trigger && !ram_oom_emergency && !net_trigger && !bw_trigger && !bw_spike_trigger && !trust_trigger && !process_trigger && !activity_trigger && !runtime_trigger) {
         if (activity_abuse.last_id > last_activity_id) save_state();
@@ -2381,7 +2721,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     bool sigterm_sent = false;
     bool api_net_only = api_profile.enabled && net_trigger && !self_ddos && !cpu_trigger && !ram_trigger && !process_trigger && !runtime_trigger;
     bool resource_suspend_ready = resource_only_trigger && resource_strike_count >= RESOURCE_SUSPEND_STRIKES;
-    bool force_suspend = process_trigger || activity_trigger || self_ddos || runtime_trigger || bw_trigger || bw_spike_trigger || ram_oom_emergency || resource_suspend_ready || score_now <= 25.0;
+    bool force_suspend = process_trigger || activity_trigger || self_ddos || runtime_trigger || runtime_script_hot || bw_trigger || bw_spike_trigger || ram_oom_emergency || resource_suspend_ready || score_now <= 25.0;
     bool should_suspend = force_suspend || total_restarts >= (MAX_RESTART_BEFORE_SUSPEND - 1);
     if (api_net_only && score_now > 20.0) should_suspend = false;
     bool resource_sigterm_only = resource_only_trigger && !process_trigger && !activity_trigger && !self_ddos && !runtime_trigger && !bw_trigger;
@@ -2482,6 +2822,9 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         if (!inbound.actor_summary.empty()) det << " | actors=" << inbound.actor_summary;
         if (self_ddos) det << " | self_ddos=yes";
         else if (l7_pressure) det << " | l7_pressure=yes";
+        if (egress_local_gateway_flood) det << " | egress_local_gateway_flood=yes";
+        if (runtime_script_hot) det << " | runtime_script_hot=yes";
+        if (runtime_attack_signature) det << " | runtime_attack_signature=yes";
         if (inbound.infra_only_local) det << " | infra_local_only=yes";
         if (api_profile.enabled) det << " | api_mode=yes";
     }
@@ -2494,7 +2837,9 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             << " syn_sent=" << egress.syn_sent
             << " estab=" << egress.established
             << " sensitive_port_hits=" << egress.sensitive_port_conns
-            << " local_sensitive_hits=" << egress.local_sensitive_conns;
+            << " local_sensitive_hits=" << egress.local_sensitive_conns
+            << " local_sensitive_unique=" << egress.local_sensitive_unique_ips
+            << " local_sensitive_max_ip=" << egress.max_local_sensitive_ip_conns;
         if (egress.suspicious_single_target_flood) det << " | single_target_flood=yes";
         if (!egress.top_summary.empty()) det << " | top=" << egress.top_summary;
     }

@@ -37,6 +37,9 @@ const int ALERT_DEDUP_SECONDS = 1800;
 const int FILE_SCAN_INTERVAL_SECONDS = 15;
 const int SOFT_QUARANTINE_ALLOW_SECONDS = 86400;
 const size_t CONTENT_SCAN_CACHE_MAX_ENTRIES = 50000;
+const int SOFT_RUNTIME_ESCALATE_WINDOW_SECONDS = 300;
+const int SOFT_RUNTIME_ESCALATE_MIN_SCORE = 3;
+const int SOFT_RUNTIME_ESCALATE_MIN_TCP = 120;
 
 // network flood thresholds
 const int TCP_CONN_WARNING = 300;
@@ -160,6 +163,8 @@ std::map<std::string, std::string> quarantine_original_path;
 std::map<std::string, std::string> quarantine_server_uuid;
 std::map<std::string, time_t> soft_allow_until;
 std::map<std::string, double> local_trust_score;
+std::map<std::string, int> soft_runtime_signal_score;
+std::map<std::string, time_t> soft_runtime_last_signal;
 std::set<std::string> cache_penuh;
 
 struct ContentScanCacheEntry {
@@ -258,6 +263,24 @@ bool is_soft_quarantine_reason(const std::string& reason) {
     return r.find("obfuscation/encoding cluster") != std::string::npos ||
            r.find("references quarantined file") != std::string::npos ||
            r.find("manifest references quarantined file") != std::string::npos;
+}
+
+bool is_runtime_soft_signal(const FileInfo& file) {
+    const std::string reason = to_lower_copy(file.suspicion_reason);
+    if (!is_soft_quarantine_reason(reason)) return false;
+
+    const std::string path = to_lower_copy(file.path);
+    const bool js_or_runtime_file =
+        path.find(".js") != std::string::npos ||
+        path.find(".mjs") != std::string::npos ||
+        path.find(".cjs") != std::string::npos ||
+        path.find(".ts") != std::string::npos ||
+        path.find("/node_modules/") != std::string::npos ||
+        path.find("/tmp/") != std::string::npos;
+    if (!js_or_runtime_file) return false;
+
+    return reason.find("fromcharcode(") != std::string::npos ||
+           reason.find("obfuscation/encoding cluster") != std::string::npos;
 }
 
 ContentScanCacheEntry make_content_cache_entry(long long size, time_t modified,
@@ -1537,6 +1560,7 @@ void DiskProtector::check_server(const std::string& uuid) {
     int quarantined_count = 0;
     int soft_quarantined_count = 0;
     int hard_quarantined_count = 0;
+    int runtime_soft_signal_hits = 0;
     double trust_now = 100.0;
     bool local_container_stopped = false;
 
@@ -1660,6 +1684,7 @@ void DiskProtector::check_server(const std::string& uuid) {
             FileInfo original_file = f;
             bool file_soft_quarantine = is_soft_quarantine_reason(f.suspicion_reason);
             if (file_soft_quarantine) {
+                if (is_runtime_soft_signal(f)) runtime_soft_signal_hits++;
                 logger.warn("🟡 Soft signal only (no quarantine): " + f.path +
                             " (" + f.suspicion_reason + ")");
                 continue;
@@ -1741,11 +1766,59 @@ void DiskProtector::check_server(const std::string& uuid) {
         }
     }
 
+    if (runtime_soft_signal_hits > 0) {
+        int runtime_soft_score = 0;
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            time_t last = soft_runtime_last_signal.count(uuid) ? soft_runtime_last_signal[uuid] : 0;
+            if (last <= 0 || (now - last) > SOFT_RUNTIME_ESCALATE_WINDOW_SECONDS) {
+                soft_runtime_signal_score[uuid] = 0;
+            }
+            soft_runtime_signal_score[uuid] += runtime_soft_signal_hits;
+            soft_runtime_last_signal[uuid] = now;
+            runtime_soft_score = soft_runtime_signal_score[uuid];
+        }
+
+        bool soft_runtime_ready =
+            runtime_soft_signal_hits >= 2 || runtime_soft_score >= SOFT_RUNTIME_ESCALATE_MIN_SCORE;
+        bool runtime_behavior_signal =
+            net_critical ||
+            tcp_conns >= SOFT_RUNTIME_ESCALATE_MIN_TCP ||
+            disk_hard ||
+            disk_spike ||
+            disk_over ||
+            disk_flood_filename_hits > 0;
+        bool soft_runtime_escalate = soft_runtime_ready && runtime_behavior_signal;
+        if (soft_runtime_escalate) {
+            need_action = true;
+            hard_trigger = true;
+            reason = "RUNTIME OBFUSCATION REPEAT x" + std::to_string(runtime_soft_score);
+            logger.warn("🚨 Escalating runtime soft-signal for " + uuid +
+                        " hits=" + std::to_string(runtime_soft_signal_hits) +
+                        " score=" + std::to_string(runtime_soft_score) +
+                        " tcp=" + std::to_string(tcp_conns));
+        } else if (soft_runtime_ready) {
+            logger.warn("ℹ️ Runtime obfuscation repeat observed but not enforced (no runtime behavior signal): " +
+                        uuid + " hits=" + std::to_string(runtime_soft_signal_hits) +
+                        " score=" + std::to_string(runtime_soft_score) +
+                        " tcp=" + std::to_string(tcp_conns));
+        }
+    } else {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (soft_runtime_last_signal.count(uuid) &&
+            (now - soft_runtime_last_signal[uuid]) > SOFT_RUNTIME_ESCALATE_WINDOW_SECONDS) {
+            soft_runtime_signal_score.erase(uuid);
+            soft_runtime_last_signal.erase(uuid);
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         trust_now = local_trust_score.count(uuid) ? local_trust_score[uuid] : 100.0;
     }
     bool soft_only_quarantine = quarantined_count > 0 && hard_quarantined_count == 0;
+    const bool runtime_obf_repeat_reason =
+        reason.find("RUNTIME OBFUSCATION REPEAT") != std::string::npos;
     if (quarantined_count > 0) {
         if (!soft_only_quarantine) {
         local_container_stopped = stop_container_by_uuid(uuid);
@@ -1758,7 +1831,9 @@ void DiskProtector::check_server(const std::string& uuid) {
 
     if (need_action) {
         bool suspended = false;
-        if (info.id > 0 && auto_suspend) suspended = db.suspend_server(info.id, reason);
+        if (info.id > 0 && auto_suspend && !runtime_obf_repeat_reason) {
+            suspended = db.suspend_server(info.id, reason);
+        }
         bool hard_enforced = hard_delete_and_stop || (hard_quarantined_count > 0) || disk_hard || (disk_flood_filename_hits > 0);
         std::string action_label;
         if (hard_delete_and_stop) {
@@ -1767,7 +1842,8 @@ void DiskProtector::check_server(const std::string& uuid) {
         } else {
             action_label = suspended ? "suspended"
                 : (local_container_stopped ? "container_stopped"
-                : (hard_enforced ? "hard_quarantine" : "observe_only"));
+                : (hard_enforced ? "hard_quarantine"
+                : (runtime_obf_repeat_reason ? "observe_only_runtime_obf" : "observe_only")));
         }
 
         {
@@ -1775,6 +1851,8 @@ void DiskProtector::check_server(const std::string& uuid) {
             cache_penuh.insert(uuid);
             cache_last_action[uuid] = now;
             cache_consecutive_hit[uuid] = 0;
+            soft_runtime_signal_score.erase(uuid);
+            soft_runtime_last_signal.erase(uuid);
         }
 
         if (info.id > 0) {

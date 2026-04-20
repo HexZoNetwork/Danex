@@ -84,12 +84,6 @@ class GuardSuspensionCommand extends Command
 
             if (!$isStateChange) {
                 $this->suspensionService->toggle($server, $action);
-                $repeatKey = sprintf('repeat:%d:%s:%s', (int) $server->id, $action, $stableReason);
-                if ($this->shouldEmitByDedupe($repeatKey)
-                    && !$this->isRecentDuplicateActivity((int) $server->id, $action, $stableReason)
-                ) {
-                    $this->sendTelegramNotice($server, $action, $stableReason, false);
-                }
                 Log::info('Guard suspension no-op skipped state-change activity.', [
                     'server_id' => (int) $server->id,
                     'server_uuid' => (string) $server->uuid,
