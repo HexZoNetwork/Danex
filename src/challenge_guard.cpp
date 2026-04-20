@@ -1449,6 +1449,62 @@ static bool is_loopback_ip(const std::string& ip) {
     return t == "127.0.0.1" || t == "::1" || t == "::ffff:127.0.0.1";
 }
 
+static bool is_private_or_cgnat_ip(const std::string& ip) {
+    in_addr a4{};
+    if (inet_pton(AF_INET, ip.c_str(), &a4) == 1) {
+        const uint32_t host = ntohl(a4.s_addr);
+        if ((host & 0xFF000000u) == 0x0A000000u) return true;        // 10.0.0.0/8
+        if ((host & 0xFFF00000u) == 0xAC100000u) return true;        // 172.16.0.0/12
+        if ((host & 0xFFFF0000u) == 0xC0A80000u) return true;        // 192.168.0.0/16
+        if ((host & 0xFFC00000u) == 0x64400000u) return true;        // 100.64.0.0/10
+        if ((host & 0xFFFF0000u) == 0xA9FE0000u) return true;        // 169.254.0.0/16
+    }
+
+    in6_addr a6{};
+    if (inet_pton(AF_INET6, ip.c_str(), &a6) == 1) {
+        if ((a6.s6_addr[0] & 0xFE) == 0xFC) return true;             // fc00::/7
+        if (a6.s6_addr[0] == 0xFE && (a6.s6_addr[1] & 0xC0) == 0x80) return true; // fe80::/10
+    }
+    return false;
+}
+
+static bool ip_geo_similar(const std::string& prev_ip_raw, const std::string& now_ip_raw) {
+    const std::string prev_ip = trim(prev_ip_raw);
+    const std::string now_ip = trim(now_ip_raw);
+    if (prev_ip.empty() || now_ip.empty()) return false;
+    if (prev_ip == now_ip) return true;
+    if (is_loopback_ip(prev_ip) || is_loopback_ip(now_ip)) return true;
+
+    in_addr p4{}, n4{};
+    if (inet_pton(AF_INET, prev_ip.c_str(), &p4) == 1 &&
+        inet_pton(AF_INET, now_ip.c_str(), &n4) == 1) {
+        const uint32_t pa = ntohl(p4.s_addr);
+        const uint32_t na = ntohl(n4.s_addr);
+        // "Geo mirip" heuristic for IPv4: same /16 (or private/CGNAT family).
+        if ((pa & 0xFFFF0000u) == (na & 0xFFFF0000u)) return true;
+        if (is_private_or_cgnat_ip(prev_ip) && is_private_or_cgnat_ip(now_ip)) return true;
+        return false;
+    }
+
+    in6_addr p6{}, n6{};
+    if (inet_pton(AF_INET6, prev_ip.c_str(), &p6) == 1 &&
+        inet_pton(AF_INET6, now_ip.c_str(), &n6) == 1) {
+        // "Geo mirip" heuristic for IPv6: same /48.
+        if (p6.s6_addr[0] != n6.s6_addr[0] ||
+            p6.s6_addr[1] != n6.s6_addr[1] ||
+            p6.s6_addr[2] != n6.s6_addr[2] ||
+            p6.s6_addr[3] != n6.s6_addr[3] ||
+            p6.s6_addr[4] != n6.s6_addr[4] ||
+            p6.s6_addr[5] != n6.s6_addr[5]) {
+            return false;
+        }
+        return true;
+    }
+
+    // Different IP family (IPv4 <-> IPv6): treat as not similar.
+    return false;
+}
+
 static bool is_provider_range_ip(const Settings& s, const std::string& ip) {
     if (!s.provider_token_gate_enabled) return false;
     for (const auto& cidr : s.provider_token_cidrs) {
@@ -1527,17 +1583,35 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
         std::string sid = p.value("sid", std::string());
         if (exp < static_cast<long long>(std::time(nullptr))) return false;
         if (sid.empty()) return false;
-        if (p.value("ip", std::string()) != ip) return false;
-        if (p.value("ua", std::string()) != ua_fp) return false;
+        const std::string token_ip = p.value("ip", std::string());
+        const std::string token_ua = p.value("ua", std::string());
+        if (token_ip.empty() || token_ua.empty()) return false;
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
-            auto it = g_ip_session_map.find(session_scope_key(ip, ua_fp));
-            if (it == g_ip_session_map.end()) return false;
-            if (it->second.sid != sid) return false;
-            if (it->second.ua != ua_fp) return false;
-            if (it->second.exp < std::time(nullptr)) return false;
+            const std::time_t now = std::time(nullptr);
+            auto valid_entry = [&](const SessionRec& sr, const std::string& expect_ua) -> bool {
+                return sr.sid == sid && sr.ua == expect_ua && sr.exp >= now;
+            };
+
+            // Strict binding path.
+            auto cur_it = g_ip_session_map.find(session_scope_key(ip, ua_fp));
+            if (cur_it != g_ip_session_map.end() && valid_entry(cur_it->second, ua_fp)) {
+                return true;
+            }
+
+            // Tolerant path for edge-IP/UA drift: if original token scope session
+            // is still valid, migrate it to current tuple.
+            auto tok_it = g_ip_session_map.find(session_scope_key(token_ip, token_ua));
+            if (tok_it != g_ip_session_map.end() && valid_entry(tok_it->second, token_ua)) {
+                if (token_ip == ip || (token_ua == ua_fp && ip_geo_similar(token_ip, ip))) {
+                    SessionRec migrated = tok_it->second;
+                    migrated.ua = ua_fp;
+                    g_ip_session_map[session_scope_key(ip, ua_fp)] = migrated;
+                    return true;
+                }
+            }
+            return false;
         }
-        return true;
     } catch (...) {
         return false;
     }
@@ -1936,14 +2010,32 @@ static void handle_client(int fd, std::string remote_ip) {
                 found = true;
             }
         }
-        if (!found || rec.exp < std::time(nullptr) || rec.ua != ua_fp) {
+        if (!found || rec.exp < std::time(nullptr)) {
             send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"nonce_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);
             return;
         }
+        if (rec.ua != ua_fp) {
+            if (!rec.click_verified) {
+                send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"nonce_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+                close(fd);
+                return;
+            }
+            std::lock_guard<std::mutex> lock(g_nonce_mu);
+            auto it = g_nonce_map.find(nonce);
+            if (it != g_nonce_map.end()) {
+                it->second.ua = ua_fp;
+                rec.ua = ua_fp;
+            }
+        }
         if (rec.ip != ip) {
             // Mobile/CDN paths can shift IP during the challenge window.
             if (!rec.click_verified) {
+                send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"nonce_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+                close(fd);
+                return;
+            }
+            if (!ip_geo_similar(rec.ip, ip)) {
                 send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"nonce_invalid\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
                 close(fd);
                 return;
@@ -2284,12 +2376,25 @@ static void handle_client(int fd, std::string remote_ip) {
             return;
         }
         if (rec.ua != ua_fp) {
-            send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"fingerprint_mismatch\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
-            close(fd);
-            return;
+            if (!rec.click_verified) {
+                send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"fingerprint_mismatch\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+                close(fd);
+                return;
+            }
+            std::lock_guard<std::mutex> lock(g_nonce_mu);
+            auto it = g_nonce_map.find(nonce);
+            if (it != g_nonce_map.end()) {
+                it->second.ua = ua_fp;
+                rec.ua = ua_fp;
+            }
         }
         if (rec.ip != ip) {
             if (!rec.click_verified) {
+                send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"fingerprint_mismatch\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+                close(fd);
+                return;
+            }
+            if (!ip_geo_similar(rec.ip, ip)) {
                 send_response(fd, 401, "Unauthorized", "{\"ok\":false,\"error\":\"fingerprint_mismatch\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
                 close(fd);
                 return;
