@@ -151,22 +151,8 @@ class PteroProtectSessionBinding
             return $ip;
         }
 
-        // Mobile carriers often rotate subscriber IP quickly.
-        // Keep strict full-IP binding for desktop, and prefix binding for mobile.
-        if (!$this->isMobileUserAgent($ua)) {
-            return $ip;
-        }
-
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
-            $parts = explode('.', $ip);
-            if (count($parts) === 4) {
-                $parts[3] = '0';
-                return implode('.', $parts) . '/24';
-            }
-
-            return $ip;
-        }
-
+        // IPv6 privacy addresses can rotate for desktop and mobile sessions.
+        // Use a stable /64 network binding for all IPv6 clients.
         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
             $packed = @inet_pton($ip);
             if ($packed === false) {
@@ -191,6 +177,21 @@ class PteroProtectSessionBinding
             return strtolower(($normalized !== false ? $normalized : $ip) . '/64');
         }
 
+        // Mobile and in-app browsers can switch IPv4 egress often.
+        // Keep strict full IPv4 binding for desktop browser traffic.
+        if (!$this->usesRelaxedBinding($ua)) {
+            return $ip;
+        }
+
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            $parts = explode('.', $ip);
+            if (count($parts) === 4) {
+                $parts[3] = '0';
+                return implode('.', $parts) . '/24';
+            }
+
+            return $ip;
+        }
         return $ip;
     }
 
@@ -206,6 +207,32 @@ class PteroProtectSessionBinding
         );
     }
 
+    private function isInAppUserAgent(string $ua): bool
+    {
+        $ua = strtolower(trim($ua));
+        if ($ua === '') {
+            return false;
+        }
+
+        $hints = [
+            ' wv)', '; wv', 'telegram', 'fb_iab', 'fban', 'fbav', 'instagram',
+            'line/', 'micromessenger', 'gsa/', 'okhttp', 'vivo', 'miuibrowser',
+        ];
+
+        foreach ($hints as $hint) {
+            if (str_contains($ua, $hint)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function usesRelaxedBinding(string $ua): bool
+    {
+        return $this->isMobileUserAgent($ua) || $this->isInAppUserAgent($ua);
+    }
+
     private function normalizedUserAgentForBinding(string $uaRaw): string
     {
         $ua = strtolower(trim($uaRaw));
@@ -217,7 +244,7 @@ class PteroProtectSessionBinding
             $ua = substr($ua, 0, 512);
         }
 
-        if (!$this->isMobileUserAgent($ua)) {
+        if (!$this->usesRelaxedBinding($ua)) {
             return $ua;
         }
 
@@ -226,6 +253,8 @@ class PteroProtectSessionBinding
             $platform = 'android';
         } elseif (str_contains($ua, 'iphone') || str_contains($ua, 'ipad') || str_contains($ua, 'ipod')) {
             $platform = 'ios';
+        } elseif ($this->isInAppUserAgent($ua)) {
+            $platform = 'inapp';
         }
 
         $browser = 'other';

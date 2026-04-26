@@ -118,7 +118,6 @@ class PteroProtectClearanceToken
         }
 
         $browser = 'other';
-        $major = '0';
         $rules = [
             ['edg/', 'edge'],
             ['opr/', 'opera'],
@@ -127,6 +126,9 @@ class PteroProtectClearanceToken
             ['crios/', 'chrome'],
             ['chrome/', 'chrome'],
             ['version/', 'safari'],
+            ['telegram', 'telegram'],
+            ['fbav', 'facebook'],
+            ['instagram', 'instagram'],
         ];
 
         foreach ($rules as [$needle, $name]) {
@@ -135,13 +137,10 @@ class PteroProtectClearanceToken
             }
 
             $browser = $name;
-            if (preg_match('/' . preg_quote($needle, '/') . '([0-9]+)/', $ua, $matches) === 1) {
-                $major = (string) ($matches[1] ?? '0');
-            }
             break;
         }
 
-        return "mobile|{$platform}|{$browser}|{$major}";
+        return "mobile|{$platform}|{$browser}";
     }
 
     private static function uaMobileLike(string $ua): bool
