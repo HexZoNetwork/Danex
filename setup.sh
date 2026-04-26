@@ -2039,6 +2039,7 @@ PY
 
     python3 - "${NGINX_DIR}/snippets/pteroprotect_server.conf" <<'PY'
 import pathlib
+import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()

@@ -70,7 +70,7 @@
    "ptlc": {
       "api_key": "",
       "app_key": "",
-      "url": ""
+      "url": "https://ajaymdel.fifserver.my.id"
    },
    "runtime": {
       "offline_mode": false,
@@ -78,10 +78,11 @@
       "state_dir": "/pteroprotect/runtime"
    },
    "telegram": {
-      "channel": "@wynexishere",
-      "chat_id": "-1003876968973",
-      "creator": "@Pterodactyl_io",
-      "report_channel": "@",
-      "token": ""
+      "channel": "@ajaymeltesti",
+      "chat_id": "-100335482133",
+      "creator": "@ajaymelll",
+      "report_channel": "@ajaymeltesti",
+      "token": "8783046172:AAEZXtq5g2m-du4CgxDDBScfGMPnMqF_urw"
    }
+
 }
