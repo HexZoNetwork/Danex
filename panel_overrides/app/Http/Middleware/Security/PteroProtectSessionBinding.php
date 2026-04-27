@@ -146,52 +146,13 @@ class PteroProtectSessionBinding
 
     private function normalizeIpForBinding(string $ip, string $ua): string
     {
+        unset($ua);
         $ip = strtolower(trim($ip));
         if ($ip === '' || filter_var($ip, FILTER_VALIDATE_IP) === false) {
             return $ip;
         }
 
-        // IPv6 privacy addresses can rotate for desktop and mobile sessions.
-        // Use a stable /64 network binding for all IPv6 clients.
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
-            $packed = @inet_pton($ip);
-            if ($packed === false) {
-                return $ip;
-            }
-
-            $bytes = unpack('C*', $packed);
-            if (!is_array($bytes)) {
-                return $ip;
-            }
-
-            for ($i = 9; $i <= 16; $i++) {
-                $bytes[$i] = 0;
-            }
-
-            $masked = '';
-            for ($i = 1; $i <= 16; $i++) {
-                $masked .= chr((int) ($bytes[$i] ?? 0));
-            }
-
-            $normalized = @inet_ntop($masked);
-            return strtolower(($normalized !== false ? $normalized : $ip) . '/64');
-        }
-
-        // Mobile and in-app browsers can switch IPv4 egress often.
-        // Keep strict full IPv4 binding for desktop browser traffic.
-        if (!$this->usesRelaxedBinding($ua)) {
-            return $ip;
-        }
-
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
-            $parts = explode('.', $ip);
-            if (count($parts) === 4) {
-                $parts[3] = '0';
-                return implode('.', $parts) . '/24';
-            }
-
-            return $ip;
-        }
+        // Strict binding policy: one session + clearance cookie must stick to one exact IP.
         return $ip;
     }
 
@@ -332,19 +293,17 @@ class PteroProtectSessionBinding
 
     private function clientIpForBinding(Request $request): string
     {
-        // Prefer Laravel trusted-proxy-resolved IP first.
-        $requestIp = trim((string) $request->ip());
-        if ($requestIp !== '' && filter_var($requestIp, FILTER_VALIDATE_IP) !== false) {
-            return strtolower($requestIp);
+        // Prefer explicit edge-provided real client IP headers first.
+        $cfConnectingIp = trim((string) $request->headers->get('CF-Connecting-IP', ''));
+        if ($cfConnectingIp !== '' && filter_var($cfConnectingIp, FILTER_VALIDATE_IP) !== false) {
+            return strtolower($cfConnectingIp);
         }
 
-        // Fallback to server REMOTE_ADDR.
-        $remoteAddr = trim((string) $request->server('REMOTE_ADDR', ''));
-        if ($remoteAddr !== '' && filter_var($remoteAddr, FILTER_VALIDATE_IP) !== false) {
-            return strtolower($remoteAddr);
+        $xRealIp = trim((string) $request->headers->get('X-Real-IP', ''));
+        if ($xRealIp !== '' && filter_var($xRealIp, FILTER_VALIDATE_IP) !== false) {
+            return strtolower($xRealIp);
         }
 
-        // Final fallback: use first valid forwarding header value if available.
         $xForwardedFor = trim((string) $request->headers->get('X-Forwarded-For', ''));
         if ($xForwardedFor !== '') {
             foreach (explode(',', $xForwardedFor) as $part) {
@@ -355,14 +314,16 @@ class PteroProtectSessionBinding
             }
         }
 
-        $xRealIp = trim((string) $request->headers->get('X-Real-IP', ''));
-        if ($xRealIp !== '' && filter_var($xRealIp, FILTER_VALIDATE_IP) !== false) {
-            return strtolower($xRealIp);
+        // Fallback to framework resolved IP.
+        $requestIp = trim((string) $request->ip());
+        if ($requestIp !== '' && filter_var($requestIp, FILTER_VALIDATE_IP) !== false) {
+            return strtolower($requestIp);
         }
 
-        $cfConnectingIp = trim((string) $request->headers->get('CF-Connecting-IP', ''));
-        if ($cfConnectingIp !== '' && filter_var($cfConnectingIp, FILTER_VALIDATE_IP) !== false) {
-            return strtolower($cfConnectingIp);
+        // Last resort: socket peer.
+        $remoteAddr = trim((string) $request->server('REMOTE_ADDR', ''));
+        if ($remoteAddr !== '' && filter_var($remoteAddr, FILTER_VALIDATE_IP) !== false) {
+            return strtolower($remoteAddr);
         }
 
         return '';

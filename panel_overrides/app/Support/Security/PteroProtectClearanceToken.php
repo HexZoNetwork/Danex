@@ -40,25 +40,24 @@ class PteroProtectClearanceToken
         }
 
         $secret = self::challengeSecret();
-        $requestIp = strtolower(trim((string) $request->ip()));
+        $requestIp = self::clientIpForBinding($request);
         $ipMatches = ($requestIp !== '' && hash_equals($ipClaim, $requestIp));
+        if (!$ipMatches) {
+            // Strict binding policy: one clearance cookie must only work from one exact client IP.
+            return false;
+        }
+
         if ($secret !== '') {
             $expectedSig = self::base64urlEncode(hash_hmac('sha256', $payloadRaw, $secret, true));
             if (!hash_equals($expectedSig, $sig)) {
                 return false;
             }
 
-            // Keep fast-path for exact match. When IP drifts (mobile/CDN), defer
-            // to challenge_guard /check which already handles tolerant binding.
-            if ($ipMatches) {
-                return true;
-            }
-
-            $cookie = $cookieName ?: self::cookieName();
-            return self::verifyViaChallengeGuard($request, $cookie, $token);
+            return true;
         }
 
-        // Fallback: ask challenge_guard directly when secret isn't locally available.
+        // Fallback: ask challenge_guard directly when secret isn't locally available,
+        // but still with strict exact-IP gating (enforced above).
         $cookie = $cookieName ?: self::cookieName();
         return self::verifyViaChallengeGuard($request, $cookie, $token);
     }
@@ -200,7 +199,7 @@ class PteroProtectClearanceToken
 
     private static function verifyViaChallengeGuard(Request $request, string $cookieName, string $token): bool
     {
-        $ip = strtolower(trim((string) $request->ip()));
+        $ip = self::clientIpForBinding($request);
         $ua = trim((string) $request->userAgent());
         $cacheKey = 'pteroprotect:clearance:check:' . hash('sha256', $cookieName . '|' . $token . '|' . $ip . '|' . $ua);
 
@@ -245,6 +244,44 @@ class PteroProtectClearanceToken
                 fclose($fp);
             }
         });
+    }
+
+    private static function clientIpForBinding(Request $request): string
+    {
+        // Prefer explicit edge headers first for real client IP.
+        $cfConnectingIp = strtolower(trim((string) $request->headers->get('CF-Connecting-IP', '')));
+        if ($cfConnectingIp !== '' && filter_var($cfConnectingIp, FILTER_VALIDATE_IP) !== false) {
+            return $cfConnectingIp;
+        }
+
+        $xRealIp = strtolower(trim((string) $request->headers->get('X-Real-IP', '')));
+        if ($xRealIp !== '' && filter_var($xRealIp, FILTER_VALIDATE_IP) !== false) {
+            return $xRealIp;
+        }
+
+        $xForwardedFor = trim((string) $request->headers->get('X-Forwarded-For', ''));
+        if ($xForwardedFor !== '') {
+            foreach (explode(',', $xForwardedFor) as $part) {
+                $candidate = strtolower(trim($part));
+                if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
+                    return $candidate;
+                }
+            }
+        }
+
+        // Fallback to framework-resolved client IP.
+        $requestIp = strtolower(trim((string) $request->ip()));
+        if ($requestIp !== '' && filter_var($requestIp, FILTER_VALIDATE_IP) !== false) {
+            return $requestIp;
+        }
+
+        // Last resort: socket peer.
+        $remoteAddr = strtolower(trim((string) $request->server('REMOTE_ADDR', '')));
+        if ($remoteAddr !== '' && filter_var($remoteAddr, FILTER_VALIDATE_IP) !== false) {
+            return $remoteAddr;
+        }
+
+        return '';
     }
 
     private static function challengeSecret(): string
