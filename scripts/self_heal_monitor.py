@@ -129,9 +129,9 @@ def checkhost_probe(url: str) -> Tuple[bool, float, str]:
             ok = ok_flag
         else:
             ok = as_int(ok_flag, 0) == 1
-        if not ok and status_code.isdigit():
+        if status_code.isdigit():
             code_num = int(status_code)
-            ok = 200 <= code_num < 400
+            ok = (code_num == 200)
 
         latency_ms = max(0.0, latency_sec * 1000.0)
         summary = status_code if status_code else (status_text or "unknown")
@@ -228,8 +228,10 @@ def main() -> int:
         external_latency = 0.0
         external_src = ""
 
-        if checkhost_enabled and base_url:
-            ok, lat, src = checkhost_probe(base_url)
+        challenge_url = (base_url + challenge_path) if base_url else ""
+
+        if checkhost_enabled and challenge_url:
+            ok, lat, src = checkhost_probe(challenge_url)
             external_ok, external_latency, external_src = ok, lat, src
             if not external_ok:
                 # fallback local immediately
@@ -244,8 +246,8 @@ def main() -> int:
             external_src = f"local-primary:{code2}"
 
         challenge_ok = True
-        if base_url:
-            okc, codec, _, _ = http_probe(base_url + challenge_path, timeout_sec=6.0)
+        if challenge_url:
+            okc, codec, _, _ = http_probe(challenge_url, timeout_sec=6.0)
             challenge_ok = okc and codec == 200
 
         window.append((ts, external_ok and challenge_ok, external_latency))
