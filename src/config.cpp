@@ -65,10 +65,34 @@ Config Config::load(const std::string& filename) {
         cfg.network.host_recent_hitcount = j.value("network", json::object()).value("host_recent_hitcount", 60);
         cfg.network.host_recent_window_sec = j.value("network", json::object()).value("host_recent_window_sec", 5);
 
+        cfg.monitor.checkhost_enabled = j.value("monitor", json::object()).value("checkhost_enabled", true);
+        cfg.monitor.checkhost_api_key = j.value("monitor", json::object()).value("checkhost_api_key", "");
+        cfg.monitor.external_url = j.value("monitor", json::object()).value("external_url", "");
+        cfg.monitor.challenge_path = j.value("monitor", json::object()).value("challenge_path", "/__pteroprotect/challenge/new?hc=8&dm=8&m=0");
+        cfg.monitor.local_health_url = j.value("monitor", json::object()).value("local_health_url", "http://127.0.0.1:18080/api/system");
+        cfg.monitor.check_interval_normal_sec = j.value("monitor", json::object()).value("check_interval_normal_sec", 5);
+        cfg.monitor.check_interval_anomaly_sec = j.value("monitor", json::object()).value("check_interval_anomaly_sec", 2);
+        cfg.monitor.external_fail_streak_threshold = j.value("monitor", json::object()).value("external_fail_streak_threshold", 3);
+        cfg.monitor.latency_p95_ms_threshold = j.value("monitor", json::object()).value("latency_p95_ms_threshold", 10000.0);
+        cfg.monitor.error_rate_threshold = j.value("monitor", json::object()).value("error_rate_threshold", 0.5);
+        cfg.monitor.lockdown_ttl_sec = j.value("monitor", json::object()).value("lockdown_ttl_sec", 180);
+
+        cfg.abuse.self_ddos_req_threshold = j.value("abuse", json::object()).value("self_ddos_req_threshold", 100);
+        cfg.abuse.window_ms = j.value("abuse", json::object()).value("window_ms", 500);
+        cfg.abuse.strike_window_sec = j.value("abuse", json::object()).value("strike_window_sec", 60);
+        cfg.abuse.max_strikes = j.value("abuse", json::object()).value("max_strikes", 3);
+        cfg.abuse.sigterm_grace_ms = j.value("abuse", json::object()).value("sigterm_grace_ms", 1500);
+        cfg.abuse.then_sigkill = j.value("abuse", json::object()).value("then_sigkill", true);
+        cfg.abuse.escalation_ttl_sec = j.value("abuse", json::object()).value("escalation_ttl_sec", 45);
+
         // PTLC (optional)
         if (j.contains("ptlc")) {
             cfg.ptlc.url     = env_or_default("DANN_PTLC_URL", j["ptlc"].value("url", ""));
             cfg.ptlc.api_key = env_or_default("DANN_PTLC_API_KEY", j["ptlc"].value("api_key", ""));
+        }
+
+        if (cfg.monitor.external_url.empty()) {
+            cfg.monitor.external_url = cfg.ptlc.url;
         }
         
         logger.info("✅ Config loaded from " + filename);

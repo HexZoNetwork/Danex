@@ -1240,6 +1240,16 @@ fi
 if [[ -f "${INSTALL_DIR}/scripts/smoke_l7_defense.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/smoke_l7_defense.sh"
 fi
+if [[ -f "${INSTALL_DIR}/scripts/validator_preflight.sh" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/validator_preflight.sh"
+    ln -sf "${INSTALL_DIR}/scripts/validator_preflight.sh" /usr/local/bin/pteroprotect-validate
+fi
+if [[ -f "${INSTALL_DIR}/scripts/self_heal_monitor.py" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/self_heal_monitor.py"
+fi
+if [[ -f "${INSTALL_DIR}/scripts/runtime_abuse_guard.py" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/runtime_abuse_guard.py"
+fi
 
 # PHP-FPM capacity hardening for high-traffic/attack windows.
 PHP_FPM_POOL_CONF=""
@@ -1339,6 +1349,14 @@ fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-panel-sync.service" ]]; then
     echo "[setup] installing panel override sync service..."
     install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-panel-sync.service" "${SYSTEMD_DIR}/pteroprotect-panel-sync.service"
+fi
+if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-selfheal.service" ]]; then
+    echo "[setup] installing self-heal monitor service..."
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-selfheal.service" "${SYSTEMD_DIR}/pteroprotect-selfheal.service"
+fi
+if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-abuse-guard.service" ]]; then
+    echo "[setup] installing runtime abuse guard service..."
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-abuse-guard.service" "${SYSTEMD_DIR}/pteroprotect-abuse-guard.service"
 fi
 
 PANEL_OVERRIDE_SOURCE=""
@@ -3076,6 +3094,26 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
         fi
         if ! systemctl is-active --quiet pteroprotect-panel-sync; then
             echo "[setup] error: pteroprotect-panel-sync is not active after setup." >&2
+            exit 1
+        fi
+    fi
+    if [[ -f "${SYSTEMD_DIR}/pteroprotect-selfheal.service" ]]; then
+        systemctl enable pteroprotect-selfheal >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-selfheal >/dev/null 2>&1; then
+            systemctl start pteroprotect-selfheal >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-selfheal; then
+            echo "[setup] error: pteroprotect-selfheal is not active after setup." >&2
+            exit 1
+        fi
+    fi
+    if [[ -f "${SYSTEMD_DIR}/pteroprotect-abuse-guard.service" ]]; then
+        systemctl enable pteroprotect-abuse-guard >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-abuse-guard >/dev/null 2>&1; then
+            systemctl start pteroprotect-abuse-guard >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-abuse-guard; then
+            echo "[setup] error: pteroprotect-abuse-guard is not active after setup." >&2
             exit 1
         fi
     fi

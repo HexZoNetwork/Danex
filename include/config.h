@@ -57,6 +57,30 @@ struct NetworkConfig {
     int host_recent_window_sec;
 };
 
+struct MonitorConfig {
+    bool checkhost_enabled;
+    std::string checkhost_api_key;
+    std::string external_url;
+    std::string challenge_path;
+    std::string local_health_url;
+    int check_interval_normal_sec;
+    int check_interval_anomaly_sec;
+    int external_fail_streak_threshold;
+    double latency_p95_ms_threshold;
+    double error_rate_threshold;
+    int lockdown_ttl_sec;
+};
+
+struct AbuseConfig {
+    int self_ddos_req_threshold;
+    int window_ms;
+    int strike_window_sec;
+    int max_strikes;
+    int sigterm_grace_ms;
+    bool then_sigkill;
+    int escalation_ttl_sec;
+};
+
 struct Config {
     DatabaseConfig database;
     TelegramConfig telegram;
@@ -65,6 +89,8 @@ struct Config {
     LimitsConfig limits;
     RuntimeConfig runtime;
     NetworkConfig network;
+    MonitorConfig monitor;
+    AbuseConfig abuse;
     
     static Config load(const std::string& filename);
     void save(const std::string& filename);

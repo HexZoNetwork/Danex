@@ -1,0 +1,17 @@
+[Unit]
+Description=PteroProtect Runtime Abuse Guard
+After=network-online.target pteroprotect.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/pteroprotect
+Environment=DANN_CONFIG_PATH=/pteroprotect/config.json
+ExecStart=/usr/bin/env python3 /pteroprotect/scripts/runtime_abuse_guard.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

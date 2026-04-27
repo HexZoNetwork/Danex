@@ -64,6 +64,39 @@
       "provider_token_ip_cache_ttl_sec": 604800,
       "provider_token_provider_keywords": "digitalocean,microsoft,azure,upcloud,hostinger,idwebhost,linode,akamai,vultr,choopa,hetzner,ovh,contabo,oracle,google,google cloud,amazon,aws,alibaba,tencent"
    },
+   "monitor": {
+      "checkhost_enabled": true,
+      "checkhost_api_key": "",
+      "external_url": "https://example.com",
+      "challenge_path": "/__pteroprotect/challenge/new?hc=8&dm=8&m=0",
+      "local_health_url": "http://127.0.0.1:18080/api/system",
+      "check_interval_normal_sec": 5,
+      "check_interval_anomaly_sec": 2,
+      "latency_p95_ms_threshold": 10000,
+      "error_rate_threshold": 0.5,
+      "external_fail_streak_threshold": 3,
+      "lockdown_ttl_sec": 180
+   },
+   "abuse": {
+      "runtime_targets": [
+         "node",
+         "nodejs",
+         "python",
+         "python3"
+      ],
+      "gateway_ports": [
+         80,
+         443,
+         18444
+      ],
+      "self_ddos_req_threshold": 100,
+      "window_ms": 500,
+      "strike_window_sec": 60,
+      "max_strikes": 3,
+      "sigterm_grace_ms": 1500,
+      "then_sigkill": true,
+      "escalation_ttl_sec": 45
+   },
    "paths": {
       "volumes": "/var/lib/pterodactyl/volumes"
    },
