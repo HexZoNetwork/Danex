@@ -72,6 +72,8 @@
       "local_health_url": "http://127.0.0.1:18080/api/system",
       "check_interval_normal_sec": 5,
       "check_interval_anomaly_sec": 2,
+      "checkhost_max_nodes": 8,
+      "checkhost_zero_node_threshold": 3,
       "latency_p95_ms_threshold": 10000,
       "error_rate_threshold": 0.5,
       "external_fail_streak_threshold": 3,

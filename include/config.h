@@ -65,6 +65,8 @@ struct MonitorConfig {
     std::string local_health_url;
     int check_interval_normal_sec;
     int check_interval_anomaly_sec;
+    int checkhost_max_nodes;
+    int checkhost_zero_node_threshold;
     int external_fail_streak_threshold;
     double latency_p95_ms_threshold;
     double error_rate_threshold;

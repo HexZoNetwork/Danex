@@ -65,12 +65,12 @@ def http_probe(url: str, timeout_sec: float = 6.0) -> Tuple[bool, int, float, st
         return False, 0, elapsed, str(exc)
 
 
-def checkhost_probe(url: str) -> Tuple[bool, float, str]:
+def checkhost_probe(url: str, max_nodes: int = 8, zero_threshold: int = 3) -> Tuple[bool, float, str]:
     if not url:
         return False, 0.0, "empty-url"
     try:
         req_init = urllib.request.Request(
-            f"https://check-host.net/check-http?{urllib.parse.urlencode({'host': url, 'max_nodes': '1'})}",
+            f"https://check-host.net/check-http?{urllib.parse.urlencode({'host': url, 'max_nodes': str(max(1, max_nodes))})}",
             headers={"Accept": "application/json", "User-Agent": "DanexSelfHeal/1.0"},
             method="GET",
         )
@@ -99,43 +99,68 @@ def checkhost_probe(url: str) -> Tuple[bool, float, str]:
             if any(res.get(n) is not None for n in node_ids):
                 break
 
-        # Find first completed node payload.
-        node_payload = None
+        completed_nodes = 0
+        ok_nodes = 0
+        zero_nodes = 0
+        latencies_ms = []
+        last_summary = "unknown"
+
         for nid in node_ids:
-            candidate = res.get(nid)
-            if candidate is not None:
-                node_payload = candidate
-                break
-        if node_payload is None:
+            node_payload = res.get(nid)
+            if node_payload is None:
+                continue
+
+            first = None
+            if isinstance(node_payload, list) and node_payload:
+                first = node_payload[0]
+                if isinstance(first, list) and first and isinstance(first[0], list):
+                    first = first[0]
+            if not isinstance(first, list) or len(first) < 2:
+                continue
+
+            completed_nodes += 1
+            ok_flag = first[0]
+            latency_sec = as_float(first[1], 0.0)
+            status_text = str(first[2]) if len(first) > 2 and first[2] is not None else ""
+            status_code = str(first[3]) if len(first) > 3 and first[3] is not None else ""
+
+            ok = False
+            if isinstance(ok_flag, bool):
+                ok = ok_flag
+            else:
+                ok = as_int(ok_flag, 0) == 1
+            is_zero_node = False
+            if status_code.isdigit():
+                code_num = int(status_code)
+                ok = (code_num == 200)
+                if code_num == 0:
+                    is_zero_node = True
+            elif as_int(ok_flag, 1) == 0:
+                is_zero_node = True
+
+            if ok:
+                ok_nodes += 1
+                latencies_ms.append(max(0.0, latency_sec * 1000.0))
+
+            status_l = status_text.lower()
+            if "timed out" in status_l or "timeout" in status_l:
+                is_zero_node = True
+
+            if is_zero_node:
+                zero_nodes += 1
+
+            last_summary = status_code if status_code else (status_text or "unknown")
+
+        if completed_nodes == 0:
             return False, 0.0, "checkhost-result-missing"
 
-        # HTTP schema (per docs): [[1, 0.13, "OK", "200", "ip"]]
-        # Some nodes may still return [[null]] or null while running.
-        first = None
-        if isinstance(node_payload, list) and node_payload:
-            first = node_payload[0]
-            if isinstance(first, list) and first and isinstance(first[0], list):
-                first = first[0]
-        if not isinstance(first, list) or len(first) < 2:
-            return False, 0.0, "checkhost-result-bad"
+        if zero_nodes >= max(1, zero_threshold):
+            latency = sum(latencies_ms) / len(latencies_ms) if latencies_ms else 0.0
+            return False, latency, f"zero_nodes={zero_nodes}/{completed_nodes}"
 
-        ok_flag = first[0]
-        latency_sec = as_float(first[1], 0.0)
-        status_text = str(first[2]) if len(first) > 2 and first[2] is not None else ""
-        status_code = str(first[3]) if len(first) > 3 and first[3] is not None else ""
-
-        ok = False
-        if isinstance(ok_flag, bool):
-            ok = ok_flag
-        else:
-            ok = as_int(ok_flag, 0) == 1
-        if status_code.isdigit():
-            code_num = int(status_code)
-            ok = (code_num == 200)
-
-        latency_ms = max(0.0, latency_sec * 1000.0)
-        summary = status_code if status_code else (status_text or "unknown")
-        return ok, latency_ms, summary
+        latency = sum(latencies_ms) / len(latencies_ms) if latencies_ms else 0.0
+        success = ok_nodes > 0
+        return success, latency, f"ok_nodes={ok_nodes}/{completed_nodes};last={last_summary}"
     except Exception as exc:
         return False, 0.0, str(exc)
 
@@ -204,6 +229,8 @@ def main() -> int:
 
     state_dir = runtime.get("state_dir", "/pteroprotect/runtime")
     checkhost_enabled = bool(monitor.get("checkhost_enabled", True))
+    checkhost_max_nodes = max(1, as_int(monitor.get("checkhost_max_nodes", 8), 8))
+    checkhost_zero_node_threshold = max(1, as_int(monitor.get("checkhost_zero_node_threshold", 3), 3))
     base_url = str(monitor.get("external_url", cfg.get("ptlc", {}).get("url", ""))).rstrip("/")
     challenge_path = str(monitor.get("challenge_path", "/__pteroprotect/challenge/new?hc=8&dm=8&m=0"))
     local_health_url = str(monitor.get("local_health_url", "http://127.0.0.1:18080/api/system"))
@@ -231,7 +258,11 @@ def main() -> int:
         challenge_url = (base_url + challenge_path) if base_url else ""
 
         if checkhost_enabled and challenge_url:
-            ok, lat, src = checkhost_probe(challenge_url)
+            ok, lat, src = checkhost_probe(
+                challenge_url,
+                max_nodes=checkhost_max_nodes,
+                zero_threshold=checkhost_zero_node_threshold,
+            )
             external_ok, external_latency, external_src = ok, lat, src
             if not external_ok:
                 # fallback local immediately

@@ -72,6 +72,8 @@ Config Config::load(const std::string& filename) {
         cfg.monitor.local_health_url = j.value("monitor", json::object()).value("local_health_url", "http://127.0.0.1:18080/api/system");
         cfg.monitor.check_interval_normal_sec = j.value("monitor", json::object()).value("check_interval_normal_sec", 5);
         cfg.monitor.check_interval_anomaly_sec = j.value("monitor", json::object()).value("check_interval_anomaly_sec", 2);
+        cfg.monitor.checkhost_max_nodes = j.value("monitor", json::object()).value("checkhost_max_nodes", 8);
+        cfg.monitor.checkhost_zero_node_threshold = j.value("monitor", json::object()).value("checkhost_zero_node_threshold", 3);
         cfg.monitor.external_fail_streak_threshold = j.value("monitor", json::object()).value("external_fail_streak_threshold", 3);
         cfg.monitor.latency_p95_ms_threshold = j.value("monitor", json::object()).value("latency_p95_ms_threshold", 10000.0);
         cfg.monitor.error_rate_threshold = j.value("monitor", json::object()).value("error_rate_threshold", 0.5);
