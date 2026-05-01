@@ -113,11 +113,11 @@
       "state_dir": "/pteroprotect/runtime"
    },
    "telegram": {
-      "channel": "@ajaymeltesti",
-      "chat_id": "-100335482133",
-      "creator": "@ajaymelll",
-      "report_channel": "@ajaymeltesti",
-      "token": "8783046172:AAEZXtq5g2m-du4CgxDDBScfGMPnMqF_urw"
+      "channel": "@",
+      "chat_id": "-100",
+      "creator": "@",
+      "report_channel": "@",
+      "token": ""
    }
 
 }
