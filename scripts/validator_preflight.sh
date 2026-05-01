@@ -50,11 +50,24 @@ else:
 PY
 }
 
+is_placeholder_url() {
+  local value="${1:-}"
+  python3 - "$value" <<'PY'
+import sys
+import urllib.parse
+
+value = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
+host = (urllib.parse.urlparse(value).hostname or "").lower().strip(".")
+raise SystemExit(0 if host in {"", "example.com", "www.example.com", "example.net", "example.org"} else 1)
+PY
+}
+
 EXTERNAL_URL="$(read_cfg monitor.external_url "")"
-if [[ -z "$EXTERNAL_URL" ]]; then
-  EXTERNAL_URL="$(read_cfg ptlc.url "")"
+PTLC_URL="$(read_cfg ptlc.url "")"
+if [[ -z "$EXTERNAL_URL" ]] || is_placeholder_url "$EXTERNAL_URL"; then
+  EXTERNAL_URL="$PTLC_URL"
 fi
-CHALLENGE_PATH="$(read_cfg monitor.challenge_path "/__pteroprotect/challenge/new?hc=8&dm=8&m=0")"
+CHALLENGE_PATH="$(read_cfg monitor.challenge_path "/__pteroprotect/challenge/page")"
 LOCAL_HEALTH="$(read_cfg monitor.local_health_url "http://127.0.0.1:18080/api/system")"
 
 if [[ -n "$EXTERNAL_URL" ]]; then

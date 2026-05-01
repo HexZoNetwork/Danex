@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Dict, Optional, Tuple
@@ -11,6 +12,26 @@ from typing import Dict, Optional, Tuple
 CONFIG_PATH = os.environ.get("DANN_CONFIG_PATH", "/pteroprotect/config.json")
 SHM_RUNTIME_DIR = os.environ.get("PTEROPROTECT_RUNTIME_DIR", "/dev/shm/pteroprotect")
 PANEL_RUNTIME_DIR = os.environ.get("PTEROPROTECT_PANEL_RUNTIME_DIR", "/pteroprotect/runtime")
+DEFAULT_CHALLENGE_PATH = "/__pteroprotect/challenge/page"
+
+
+def is_placeholder_url(value: str) -> bool:
+    try:
+        host = urllib.parse.urlparse(str(value).strip()).hostname or ""
+    except Exception:
+        return True
+    host = host.lower().strip(".")
+    return host in {"", "example.com", "www.example.com", "example.net", "example.org"}
+
+
+def resolve_external_url(cfg: dict, monitor: dict) -> str:
+    monitor_url = str(monitor.get("external_url", "")).strip()
+    ptlc_url = str(cfg.get("ptlc", {}).get("url", "")).strip() if isinstance(cfg, dict) else ""
+    if monitor_url and not is_placeholder_url(monitor_url):
+        return monitor_url.rstrip("/")
+    if ptlc_url and not is_placeholder_url(ptlc_url):
+        return ptlc_url.rstrip("/")
+    return monitor_url.rstrip("/")
 
 
 def log(msg: str) -> None:
@@ -60,6 +81,13 @@ def http_probe(url: str, timeout_sec: float = 6.0) -> Tuple[bool, int, float, st
             elapsed = (time.time() - start) * 1000.0
             code = int(resp.status)
             return True, code, elapsed, body.decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        elapsed = (time.time() - start) * 1000.0
+        try:
+            body = exc.read(256)
+        except Exception:
+            body = b""
+        return True, int(exc.code), elapsed, body.decode("utf-8", errors="ignore")
     except Exception as exc:
         elapsed = (time.time() - start) * 1000.0
         return False, 0, elapsed, str(exc)
@@ -231,8 +259,8 @@ def main() -> int:
     checkhost_enabled = bool(monitor.get("checkhost_enabled", True))
     checkhost_max_nodes = max(1, as_int(monitor.get("checkhost_max_nodes", 8), 8))
     checkhost_zero_node_threshold = max(1, as_int(monitor.get("checkhost_zero_node_threshold", 3), 3))
-    base_url = str(monitor.get("external_url", cfg.get("ptlc", {}).get("url", ""))).rstrip("/")
-    challenge_path = str(monitor.get("challenge_path", "/__pteroprotect/challenge/new?hc=8&dm=8&m=0"))
+    base_url = resolve_external_url(cfg, monitor)
+    challenge_path = str(monitor.get("challenge_path", DEFAULT_CHALLENGE_PATH))
     local_health_url = str(monitor.get("local_health_url", "http://127.0.0.1:18080/api/system"))
 
     normal_sec = max(2, as_int(monitor.get("check_interval_normal_sec", 5), 5))

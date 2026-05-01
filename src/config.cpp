@@ -68,7 +68,7 @@ Config Config::load(const std::string& filename) {
         cfg.monitor.checkhost_enabled = j.value("monitor", json::object()).value("checkhost_enabled", true);
         cfg.monitor.checkhost_api_key = j.value("monitor", json::object()).value("checkhost_api_key", "");
         cfg.monitor.external_url = j.value("monitor", json::object()).value("external_url", "");
-        cfg.monitor.challenge_path = j.value("monitor", json::object()).value("challenge_path", "/__pteroprotect/challenge/new?hc=8&dm=8&m=0");
+        cfg.monitor.challenge_path = j.value("monitor", json::object()).value("challenge_path", "/__pteroprotect/challenge/page");
         cfg.monitor.local_health_url = j.value("monitor", json::object()).value("local_health_url", "http://127.0.0.1:18080/api/system");
         cfg.monitor.check_interval_normal_sec = j.value("monitor", json::object()).value("check_interval_normal_sec", 5);
         cfg.monitor.check_interval_anomaly_sec = j.value("monitor", json::object()).value("check_interval_anomaly_sec", 2);

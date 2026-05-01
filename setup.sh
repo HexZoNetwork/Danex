@@ -831,6 +831,8 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         merge_defaults($j, $default_cfg);
         $j->{database} = {} if ref($j->{database}) ne "HASH";
         $j->{network} = {} if ref($j->{network}) ne "HASH";
+        $j->{monitor} = {} if ref($j->{monitor}) ne "HASH";
+        $j->{ptlc} = {} if ref($j->{ptlc}) ne "HASH";
 
         if (defined $env_file && -f $env_file) {
             my %env = ();
@@ -941,6 +943,24 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         }
         if (!defined($j->{network}{server_bandwidth_window_sec}) || $j->{network}{server_bandwidth_window_sec} !~ /^\d+$/ || $j->{network}{server_bandwidth_window_sec} < 300) {
             $j->{network}{server_bandwidth_window_sec} = 10800;
+        }
+        sub is_placeholder_url {
+            my ($value) = @_;
+            return 1 if !defined($value);
+            my $v = lc("$value");
+            $v =~ s/^\s+|\s+$//g;
+            return 1 if $v eq "";
+            $v =~ s#^[a-z][a-z0-9+.-]*://##;
+            $v =~ s#/.*$##;
+            $v =~ s#:.*$##;
+            $v =~ s/^\[|\]$//g;
+            return $v eq "example.com" || $v eq "www.example.com" || $v eq "example.net" || $v eq "example.org";
+        }
+        if (is_placeholder_url($j->{monitor}{external_url}) && !is_placeholder_url($j->{ptlc}{url})) {
+            $j->{monitor}{external_url} = $j->{ptlc}{url};
+        }
+        if (!defined($j->{monitor}{challenge_path}) || $j->{monitor}{challenge_path} eq "" || $j->{monitor}{challenge_path} =~ m#/challenge/new#) {
+            $j->{monitor}{challenge_path} = "/__pteroprotect/challenge/page";
         }
         # Production-safe defaults to reduce false positives on shared/NAT client IPs.
         $j->{network}{self_unblock_essentials} = JSON::PP::true if !defined($j->{network}{self_unblock_essentials});
