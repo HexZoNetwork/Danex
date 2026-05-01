@@ -53,6 +53,7 @@ APT_DEPS=(
     libcurl4-openssl-dev
     libssl-dev
     nlohmann-json3-dev
+    acl
 )
 
 APT_INSTALL_OPTS=(
@@ -225,6 +226,26 @@ read_network_setting() {
             print $value;
         }
     ' "${config_file}" "${key}" "${default_value}" 2>/dev/null || printf '%s' "${default_value}"
+}
+
+panel_runtime_users() {
+    {
+        printf '%s\n' www-data
+
+        if [[ -d "${PANEL_DIR}" ]]; then
+            stat -c '%U' "${PANEL_DIR}" 2>/dev/null || true
+        fi
+
+        for pool in /etc/php/*/fpm/pool.d/*.conf; do
+            [[ -f "${pool}" ]] || continue
+            awk -F= '
+                /^[[:space:]]*user[[:space:]]*=/ {
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2);
+                    if ($2 != "") print $2;
+                }
+            ' "${pool}" 2>/dev/null || true
+        done
+    } | awk '/^[A-Za-z_][A-Za-z0-9_-]*$/ && !seen[$0]++'
 }
 
 validate_json_config_file() {
@@ -1193,6 +1214,13 @@ fi
 
 chown root:www-data "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
 chmod 2775 "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
+if command -v setfacl >/dev/null 2>&1; then
+    while IFS= read -r _pp_user; do
+        id "${_pp_user}" >/dev/null 2>&1 || continue
+        setfacl -m "u:${_pp_user}:rwx" "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
+        setfacl -d -m "u:${_pp_user}:rwx" "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
+    done < <(panel_runtime_users)
+fi
 
 # Ensure mode/lockdown control files are group-writable for operational tools.
 printf '{"mode":"normal"}\n' > /dev/shm/pteroprotect/mode.flag || true
@@ -1209,6 +1237,16 @@ chmod 664 \
     /dev/shm/pteroprotect/strict_lockdown.flag \
     "${INSTALL_DIR}/runtime/mode.json" \
     "${INSTALL_DIR}/runtime/lockdown.json" >/dev/null 2>&1 || true
+if command -v setfacl >/dev/null 2>&1; then
+    while IFS= read -r _pp_user; do
+        id "${_pp_user}" >/dev/null 2>&1 || continue
+        setfacl -m "u:${_pp_user}:rw" \
+            /dev/shm/pteroprotect/mode.flag \
+            /dev/shm/pteroprotect/strict_lockdown.flag \
+            "${INSTALL_DIR}/runtime/mode.json" \
+            "${INSTALL_DIR}/runtime/lockdown.json" >/dev/null 2>&1 || true
+    done < <(panel_runtime_users)
+fi
 chmod 755 "${INSTALL_DIR}"
 chmod 755 "${INSTALL_DIR}/dann_guard"
 if [[ -f "${INSTALL_DIR}/challenge_guard" ]]; then
@@ -3151,10 +3189,13 @@ fi
 
 if command -v sudo >/dev/null 2>&1; then
     echo "[setup] configuring sudoers for panel protect controls..."
-    cat >/etc/sudoers.d/pteroprotect-panel <<'EOF'
-Defaults:www-data !requiretty
-www-data ALL=(root) NOPASSWD: ALL
-EOF
+    {
+        while IFS= read -r _pp_user; do
+            id "${_pp_user}" >/dev/null 2>&1 || continue
+            printf 'Defaults:%s !requiretty\n' "${_pp_user}"
+            printf '%s ALL=(root) NOPASSWD: ALL\n' "${_pp_user}"
+        done < <(panel_runtime_users)
+    } >/etc/sudoers.d/pteroprotect-panel
     chmod 0440 /etc/sudoers.d/pteroprotect-panel
 fi
 

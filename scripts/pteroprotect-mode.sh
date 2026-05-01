@@ -7,6 +7,7 @@ MODE="${1:-status}"
 TTL="${2:-600}"
 
 mkdir -p "${SHM_RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}"
+chmod 2775 "${SHM_RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
 
 MODE_FILES=(
     "${SHM_RUNTIME_DIR}/mode.flag"
@@ -21,14 +22,15 @@ write_file_safely() {
     local file="$1"
     local payload="$2"
 
+    mkdir -p "$(dirname "${file}")" >/dev/null 2>&1 || true
     if printf '%s\n' "${payload}" > "${file}" 2>/dev/null; then
         chmod 664 "${file}" >/dev/null 2>&1 || true
         return 0
     fi
 
     if command -v sudo >/dev/null 2>&1; then
-        if printf '%s\n' "${payload}" | sudo tee "${file}" >/dev/null 2>&1; then
-            sudo chmod 664 "${file}" >/dev/null 2>&1 || true
+        if printf '%s\n' "${payload}" | sudo -n tee "${file}" >/dev/null 2>&1; then
+            sudo -n chmod 664 "${file}" >/dev/null 2>&1 || true
             return 0
         fi
     fi
@@ -44,7 +46,7 @@ remove_file_safely() {
     fi
 
     if command -v sudo >/dev/null 2>&1; then
-        sudo rm -f "${file}" >/dev/null 2>&1 && return 0
+        sudo -n rm -f "${file}" >/dev/null 2>&1 && return 0
     fi
 
     echo "Mode change failed: cannot remove ${file} (permission denied)" >&2
@@ -107,7 +109,7 @@ status() {
     for file in "${MODE_FILES[@]}"; do
         echo "  ${file}"
         if [[ -f "${file}" ]]; then
-            cat "${file}"
+            cat "${file}" 2>/dev/null || echo '{"mode":"normal"}'
         else
             echo '{"mode":"normal"}'
         fi
@@ -118,7 +120,7 @@ status() {
     for file in "${LOCKDOWN_FILES[@]}"; do
         echo "  ${file}"
         if [[ -f "${file}" ]]; then
-            cat "${file}"
+            cat "${file}" 2>/dev/null || echo '{"enabled":false}'
         else
             echo '{"enabled":false}'
         fi
