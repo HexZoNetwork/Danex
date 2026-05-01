@@ -92,6 +92,7 @@ struct NonceRec {
 struct SessionRec {
     std::string sid;
     std::string ua;
+    std::vector<std::string> ips;
     std::time_t exp = 0;
 };
 
@@ -1832,6 +1833,28 @@ static std::string session_scope_key(const std::string& ip, const std::string& u
     return ip + "|" + ua_fp;
 }
 
+static bool session_has_ip(const SessionRec& sr, const std::string& ip) {
+    for (const auto& known_ip : sr.ips) {
+        if (known_ip == ip) return true;
+    }
+    return false;
+}
+
+static void session_add_ip(SessionRec& sr, const std::string& ip) {
+    if (ip.empty() || session_has_ip(sr, ip)) return;
+    sr.ips.push_back(ip);
+    while (sr.ips.size() > 5) {
+        sr.ips.erase(sr.ips.begin());
+    }
+}
+
+static void erase_sessions_for_ua(const std::string& ua_fp) {
+    for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end();) {
+        if (it->second.ua == ua_fp) it = g_ip_session_map.erase(it);
+        else ++it;
+    }
+}
+
 static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& req, const std::string& client_ip) {
     auto internal_it = req.headers.find("x-pteroprotect-internal");
     const bool internal_marked = (internal_it != req.headers.end() && trim(internal_it->second) == "1");
@@ -1898,16 +1921,17 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
             // Strict binding path.
             auto cur_it = g_ip_session_map.find(session_scope_key(ip, ua_fp));
             if (cur_it != g_ip_session_map.end() && valid_entry(cur_it->second, ua_fp)) {
+                session_add_ip(cur_it->second, ip);
                 return true;
             }
 
-            // Tolerant path for edge-IP/UA drift: if original token scope session
-            // is still valid, migrate it to current tuple.
-            auto tok_it = g_ip_session_map.find(session_scope_key(token_ip, token_ua));
-            if (tok_it != g_ip_session_map.end() && valid_entry(tok_it->second, token_ua)) {
-                if (token_ip == ip || (token_ua == ua_fp && ip_geo_similar(token_ip, ip))) {
-                    SessionRec migrated = tok_it->second;
-                    migrated.ua = ua_fp;
+            // Mobile networks can rotate client IPs between requests. Bind the
+            // clearance to sid+UA and allow up to five recent IPs for that sid.
+            for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end(); ++it) {
+                if (!valid_entry(it->second, ua_fp)) continue;
+                if (session_has_ip(it->second, ip) || it->second.ips.size() < 5) {
+                    SessionRec migrated = it->second;
+                    session_add_ip(migrated, ip);
                     g_ip_session_map[session_scope_key(ip, ua_fp)] = migrated;
                     return true;
                 }
@@ -2784,9 +2808,11 @@ static void handle_client(int fd, std::string remote_ip) {
         std::string sid = random_nonce();
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
+            erase_sessions_for_ua(ua_fp);
             SessionRec sr;
             sr.sid = sid;
             sr.ua = ua_fp;
+            sr.ips.push_back(ip);
             sr.exp = std::time(nullptr) + s.ttl;
             g_ip_session_map[session_scope_key(ip, ua_fp)] = sr;
         }

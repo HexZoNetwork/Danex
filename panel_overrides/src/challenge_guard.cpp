@@ -70,6 +70,7 @@ struct NonceRec {
 struct SessionRec {
     std::string sid;
     std::string ua;
+    std::vector<std::string> ips;
     std::time_t exp = 0;
 };
 
@@ -1037,6 +1038,28 @@ static std::string session_scope_key(const std::string& ip, const std::string& u
     return ip + "|" + ua_fp;
 }
 
+static bool session_has_ip(const SessionRec& sr, const std::string& ip) {
+    for (const auto& known_ip : sr.ips) {
+        if (known_ip == ip) return true;
+    }
+    return false;
+}
+
+static void session_add_ip(SessionRec& sr, const std::string& ip) {
+    if (ip.empty() || session_has_ip(sr, ip)) return;
+    sr.ips.push_back(ip);
+    while (sr.ips.size() > 5) {
+        sr.ips.erase(sr.ips.begin());
+    }
+}
+
+static void erase_sessions_for_ua(const std::string& ua_fp) {
+    for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end();) {
+        if (it->second.ua == ua_fp) it = g_ip_session_map.erase(it);
+        else ++it;
+    }
+}
+
 static bool has_valid_auth_token_header(const HttpRequest& req, const std::string& client_ip) {
     auto internal_it = req.headers.find("x-pteroprotect-internal");
     if (internal_it == req.headers.end() || trim(internal_it->second) != "1") {
@@ -1091,17 +1114,26 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
         std::string sid = p.value("sid", std::string());
         if (exp < static_cast<long long>(std::time(nullptr))) return false;
         if (sid.empty()) return false;
-        if (p.value("ip", std::string()) != ip) return false;
         if (p.value("ua", std::string()) != ua_fp) return false;
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
             auto it = g_ip_session_map.find(session_scope_key(ip, ua_fp));
-            if (it == g_ip_session_map.end()) return false;
-            if (it->second.sid != sid) return false;
-            if (it->second.ua != ua_fp) return false;
-            if (it->second.exp < std::time(nullptr)) return false;
+            const std::time_t now = std::time(nullptr);
+            if (it != g_ip_session_map.end() && it->second.sid == sid && it->second.ua == ua_fp && it->second.exp >= now) {
+                session_add_ip(it->second, ip);
+                return true;
+            }
+            for (auto sit = g_ip_session_map.begin(); sit != g_ip_session_map.end(); ++sit) {
+                if (sit->second.sid != sid || sit->second.ua != ua_fp || sit->second.exp < now) continue;
+                if (session_has_ip(sit->second, ip) || sit->second.ips.size() < 5) {
+                    SessionRec migrated = sit->second;
+                    session_add_ip(migrated, ip);
+                    g_ip_session_map[session_scope_key(ip, ua_fp)] = migrated;
+                    return true;
+                }
+            }
         }
-        return true;
+        return false;
     } catch (...) {
         return false;
     }
@@ -1856,9 +1888,11 @@ static void handle_client(int fd, std::string remote_ip) {
         std::string sid = random_nonce();
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
+            erase_sessions_for_ua(ua_fp);
             SessionRec sr;
             sr.sid = sid;
             sr.ua = ua_fp;
+            sr.ips.push_back(ip);
             sr.exp = std::time(nullptr) + s.ttl;
             g_ip_session_map[session_scope_key(ip, ua_fp)] = sr;
         }

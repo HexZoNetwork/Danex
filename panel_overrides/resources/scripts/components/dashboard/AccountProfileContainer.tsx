@@ -24,12 +24,26 @@ interface Values {
     birthday: string;
 }
 
+const normalizeAvatarUrl = (value?: string | null): string => {
+    const trimmed = String(value || '').trim();
+
+    if (trimmed === '') return '';
+    if (trimmed.startsWith('//')) return `https:${trimmed}`;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
+    if (/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(\/|$)/.test(trimmed)) return `https://${trimmed}`;
+
+    return trimmed;
+};
+
 const schema = Yup.object().shape({
     username: Yup.string().required('Username is required.').max(191),
     email: Yup.string().email().required('Email is required.'),
     name_first: Yup.string().required('First name is required.').max(191),
     name_last: Yup.string().required('Last name is required.').max(191),
-    avatar_url: Yup.string().nullable().url('Avatar must be a valid URL.'),
+    avatar_url: Yup.string()
+        .nullable()
+        .transform((value) => normalizeAvatarUrl(value))
+        .url('Avatar must be a valid URL.'),
     birthday: Yup.string()
         .nullable()
         .matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Use YYYY-MM-DD format.', excludeEmptyString: true }),
@@ -145,7 +159,7 @@ export default () => {
             email: values.email,
             name_first: values.name_first,
             name_last: values.name_last,
-            avatar_url: values.avatar_url.trim() === '' ? null : values.avatar_url.trim(),
+            avatar_url: normalizeAvatarUrl(values.avatar_url) === '' ? null : normalizeAvatarUrl(values.avatar_url),
             birthday: values.birthday.trim() === '' ? null : values.birthday,
         })
             .then((profile) => {
