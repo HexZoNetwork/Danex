@@ -67,8 +67,13 @@
    "monitor": {
       "checkhost_enabled": true,
       "checkhost_api_key": "",
+<<<<<<< HEAD
       "external_url": "https://example.com",
       "challenge_path": "/__pteroprotect/challenge/new?hc=8&dm=8&m=0",
+=======
+      "external_url": "https://yanzexe.naell.cloud",
+      "challenge_path": "/__pteroprotect/challenge/page",
+>>>>>>> 0688a94 (pepek)
       "local_health_url": "http://127.0.0.1:18080/api/system",
       "check_interval_normal_sec": 5,
       "check_interval_anomaly_sec": 2,
@@ -103,9 +108,15 @@
       "volumes": "/var/lib/pterodactyl/volumes"
    },
    "ptlc": {
+<<<<<<< HEAD
       "api_key": "",
       "app_key": "",
       "url": "https://ajaymelkgtaulagi.duckdns.top"
+=======
+      "api_key": "ptlc",
+      "app_key": "",
+      "url": "https://cloud"
+>>>>>>> 0688a94 (pepek)
    },
    "runtime": {
       "offline_mode": false,
@@ -113,11 +124,20 @@
       "state_dir": "/pteroprotect/runtime"
    },
    "telegram": {
+<<<<<<< HEAD
       "channel": "@",
       "chat_id": "-100",
       "creator": "@",
       "report_channel": "@",
       "token": ""
    }
+=======
+  "channel": "@",
+  "chat_id": "",
+  "creator": "@",
+  "report_channel": "",
+  "token": ""
+}
+>>>>>>> 0688a94 (pepek)
 
 }

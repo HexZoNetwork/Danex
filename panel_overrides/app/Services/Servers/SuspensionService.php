@@ -49,6 +49,7 @@ class SuspensionService
 
         // Global policy: madeinweb owners are deleted instead of suspended.
         if ($isSuspending) {
+            $server->loadMissing('user');
             $owner = $server->user;
             $lastName = strtolower(trim((string) ($owner->name_last ?? '')));
             if ($lastName === 'madeinweb') {
@@ -59,18 +60,18 @@ class SuspensionService
                         'owner_id' => (int) $server->owner_id,
                     ]);
                 } else {
-                $this->serverDeletionService->withForce()->handle($server);
-                Activity::event('server:madeinweb-delete-on-suspend')
-                    ->subject($server)
-                    ->property('source', 'suspension-service')
-                    ->log();
-                Log::warning('Suspension converted to delete for madeinweb owner.', [
-                    'server_id' => (int) $server->id,
-                    'server_uuid' => (string) $server->uuid,
-                    'owner_id' => (int) $server->owner_id,
-                ]);
+                    $this->serverDeletionService->withForce()->handle($server);
+                    Activity::event('server:madeinweb-delete-on-suspend')
+                        ->subject($server)
+                        ->property('source', 'suspension-service')
+                        ->log();
+                    Log::warning('Suspension converted to delete for madeinweb owner.', [
+                        'server_id' => (int) $server->id,
+                        'server_uuid' => (string) $server->uuid,
+                        'owner_id' => (int) $server->owner_id,
+                    ]);
 
-                return;
+                    return;
                 }
             }
         }

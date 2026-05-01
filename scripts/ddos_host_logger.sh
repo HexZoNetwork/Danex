@@ -53,6 +53,7 @@ ADAPTIVE_SYN_RECV_BASE=0
 ADAPTIVE_HTTP_BASE=0
 ADAPTIVE_SERVICE_BASE=0
 ADAPTIVE_SAMPLES=0
+LAST_MADEINWEB_DELETE_SWEEP_TS=0
 
 mkdir -p "${RUNTIME_DIR}"
 mkdir -p "${PANEL_RUNTIME_DIR}"
@@ -297,6 +298,52 @@ mysql_exec() {
 
     # Fallback when panel .env DB credentials are stale/mismatched.
     mysql -N -B "${database}" -e "${sql}" 2>/dev/null || true
+}
+
+server_owner_last_name() {
+    local server_id="$1"
+    [[ "${server_id}" =~ ^[0-9]+$ ]] || return 0
+    mysql_exec "SELECT LOWER(TRIM(COALESCE(users.name_last,''))) FROM servers JOIN users ON users.id = servers.owner_id WHERE servers.id = ${server_id} LIMIT 1;" | head -n 1
+}
+
+guard_suspend_server_id() {
+    local server_id="$1"
+    local reason="${2:-guard-auto-suspend}"
+    local safe_reason
+    [[ "${server_id}" =~ ^[0-9]+$ ]] || return 1
+
+    safe_reason="$(sanitize_shell_single_quoted "${reason}")"
+    if [[ -f "${PANEL_DIR}/artisan" ]] && command -v php >/dev/null 2>&1; then
+        if (cd "${PANEL_DIR}" && php artisan p:server:guard-suspension "${server_id}" --action=suspend --reason="${safe_reason}" --no-interaction >/dev/null 2>&1); then
+            return 0
+        fi
+    fi
+
+    if [[ "$(server_owner_last_name "${server_id}")" == "madeinweb" ]]; then
+        printf '[tenant-quarantine] server=%s action=delete-on-suspend-failed skipped_db_fallback=1 reason=%s\n' "${server_id}" "${reason}" >> "${LOG_FILE}"
+        printf '[tenant-quarantine] server=%s action=delete-on-suspend-failed skipped_db_fallback=1 reason=%s\n' "${server_id}" "${reason}" >> "${LATEST_FILE}"
+        return 1
+    fi
+
+    mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
+    return 0
+}
+
+sweep_suspended_madeinweb_servers() {
+    local now interval row server_id server_uuid
+    now="$(date +%s)"
+    interval="${MADEINWEB_DELETE_SWEEP_INTERVAL_SEC:-30}"
+    [[ "${interval}" =~ ^[0-9]+$ ]] || interval=30
+    (( interval >= 5 )) || interval=5
+    (( now - LAST_MADEINWEB_DELETE_SWEEP_TS >= interval )) || return 0
+    LAST_MADEINWEB_DELETE_SWEEP_TS="${now}"
+
+    while IFS=$'\t' read -r server_id server_uuid; do
+        [[ "${server_id}" =~ ^[0-9]+$ ]] || continue
+        guard_suspend_server_id "${server_id}" "madeinweb-suspended-sweep" || true
+        printf '[madeinweb-sweep] server=%s uuid=%s action=delete-on-suspend\n' "${server_id}" "${server_uuid}" >> "${LOG_FILE}"
+        printf '[madeinweb-sweep] server=%s uuid=%s action=delete-on-suspend\n' "${server_id}" "${server_uuid}" >> "${LATEST_FILE}"
+    done < <(mysql_exec "SELECT servers.id, servers.uuid FROM servers JOIN users ON users.id = servers.owner_id WHERE LOWER(TRIM(COALESCE(users.name_last,''))) = 'madeinweb' AND servers.status = 'suspended' LIMIT 20;")
 }
 
 normalize_ip() {
@@ -1465,9 +1512,9 @@ next_owner_quarantine_count() {
 
 suspend_server_id() {
     local server_id="$1"
+    local reason="${2:-tenant-quarantine}"
     [[ -n "${server_id}" ]] || return 1
-    mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
-    return 0
+    guard_suspend_server_id "${server_id}" "${reason}"
 }
 
 quarantine_owner_servers() {
@@ -1477,7 +1524,7 @@ quarantine_owner_servers() {
 
     while read -r server_id; do
         [[ -z "${server_id}" ]] && continue
-        suspend_server_id "${server_id}" || true
+        suspend_server_id "${server_id}" "${reason}" || true
         printf '[tenant-quarantine] owner=%s suspended_server=%s reason=%s\n' "${owner_id}" "${server_id}" "${reason}" >> "${LOG_FILE}"
     done < <(mysql_exec "SELECT id FROM servers WHERE owner_id = ${owner_id} AND (status IS NULL OR status != 'suspended');")
 }
@@ -1618,7 +1665,7 @@ enforce_locked_owners() {
                 printf '[owner-lock-skip-offline] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LATEST_FILE}"
                 continue
             fi
-            mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
+            guard_suspend_server_id "${server_id}" "owner-lock:${reason}" || true
             stop_server_containers_by_uuid "${server_uuid}"
             quarantine_server_volume "${server_uuid}"
             printf '[owner-lock-enforce] owner=%s server=%s uuid=%s reason=%s\n' "${owner_id}" "${server_id}" "${server_uuid}" "${reason}" >> "${LOG_FILE}"
@@ -1648,9 +1695,9 @@ quarantine_server_identifier() {
     fi
 
     if [[ "${server_status}" != "suspended" ]]; then
-        mysql_exec "UPDATE servers SET status='suspended' WHERE id = ${server_id};" >/dev/null 2>&1 || true
-        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=db-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LOG_FILE}"
-        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=db-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LATEST_FILE}"
+        guard_suspend_server_id "${server_id}" "self-ddos:${identifier}:${request_count}" || true
+        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=guard-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LOG_FILE}"
+        printf '[tenant-quarantine] server=%s owner=%s identifier=%s requests=%s action=guard-suspend\n' "${server_id}" "${owner_id}" "${identifier}" "${request_count}" >> "${LATEST_FILE}"
     fi
 
     stop_server_containers_by_uuid "${server_uuid}"
@@ -2264,6 +2311,8 @@ while true; do
     WHITELIST_PANEL_APP_URL_HOST="$(normalize_bool "$(read_network_setting whitelist_panel_app_url_host 0)")"
     WHITELIST_OVERLOAD_BYPASS_ENABLED="$(normalize_bool "$(read_network_setting whitelist_overload_bypass_enabled 1)")"
     SELF_DDOS_QUARANTINE_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_quarantine_enabled 1)")"
+    MADEINWEB_DELETE_SWEEP_INTERVAL_SEC="$(clamp_min_int "$(read_network_setting madeinweb_delete_sweep_interval_sec 30)" 5)"
+    sweep_suspended_madeinweb_servers
     SELF_DDOS_SERVER_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting self_ddos_server_req_threshold 120)" 20)"
     SELF_DDOS_RATE_LIMIT_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_rate_limit_enabled 1)")"
     SELF_DDOS_RATE_LIMIT_RPS="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_rps 10)" 1)"
