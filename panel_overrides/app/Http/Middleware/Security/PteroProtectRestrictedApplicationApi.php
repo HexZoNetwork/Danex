@@ -102,10 +102,7 @@ class PteroProtectRestrictedApplicationApi
                 throw new AccessDeniedHttpException('Primary admin resources cannot be modified.');
             }
             $ownsServer = $this->ownership->isOwnedBy('servers', (int) $targetServer->id, $adminUserId, $tokenIdentifier);
-            $ownsOwnerUser = $this->ownership->isOwnedBy('users', (int) $targetServer->owner_id, $adminUserId, $tokenIdentifier)
-                || (int) $targetServer->owner_id === $adminUserId;
-
-            if (!$ownsServer && !$ownsOwnerUser) {
+            if (!$ownsServer) {
                 throw new AccessDeniedHttpException('You do not own this server resource.');
             }
         }

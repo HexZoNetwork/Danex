@@ -4,6 +4,7 @@ namespace Pterodactyl\Http\Middleware\Security;
 
 use Closure;
 use Illuminate\Http\Request;
+use Pterodactyl\Models\Server;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
 class PteroProtectRestrictedClientServerAccess
@@ -20,9 +21,13 @@ class PteroProtectRestrictedClientServerAccess
             return $next($request);
         }
 
-        // Delegated admin accounts are management-only. Block direct server resource access
-        // through client API (console, files, resources, network, startup, settings, etc.).
+        $server = $request->route('server');
+        if ($server instanceof Server && (int) $server->owner_id === (int) $user->id) {
+            return $next($request);
+        }
+
+        // Delegated admin accounts may use their own servers, but not runtime
+        // resources that belong to other accounts.
         throw new AccessDeniedHttpException('Delegated admin cannot access server runtime resources.');
     }
 }
-

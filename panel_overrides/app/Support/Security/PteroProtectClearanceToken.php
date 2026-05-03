@@ -39,13 +39,8 @@ class PteroProtectClearanceToken
             return false;
         }
 
-        $secret = self::challengeSecret();
         $requestIp = self::clientIpForBinding($request);
-        $ipMatches = ($requestIp !== '' && hash_equals($ipClaim, $requestIp));
-        if (!$ipMatches) {
-            // Strict binding policy: one clearance cookie must only work from one exact client IP.
-            return false;
-        }
+        $secret = self::challengeSecret();
 
         if ($secret !== '') {
             $expectedSig = self::base64urlEncode(hash_hmac('sha256', $payloadRaw, $secret, true));
@@ -53,11 +48,10 @@ class PteroProtectClearanceToken
                 return false;
             }
 
-            return true;
+            return self::sessionIpAllowed($sid, $uaClaim, $ipClaim, $requestIp, $exp);
         }
 
-        // Fallback: ask challenge_guard directly when secret isn't locally available,
-        // but still with strict exact-IP gating (enforced above).
+        // Fallback: ask challenge_guard directly when secret isn't locally available.
         $cookie = $cookieName ?: self::cookieName();
         return self::verifyViaChallengeGuard($request, $cookie, $token);
     }
@@ -244,6 +238,46 @@ class PteroProtectClearanceToken
                 fclose($fp);
             }
         });
+    }
+
+    private static function sessionIpAllowed(string $sid, string $uaClaim, string $tokenIp, string $requestIp, int $exp): bool
+    {
+        $tokenIp = strtolower(trim($tokenIp));
+        $requestIp = strtolower(trim($requestIp));
+        if ($requestIp === '' || filter_var($requestIp, FILTER_VALIDATE_IP) === false) {
+            return false;
+        }
+        if ($tokenIp === '' || filter_var($tokenIp, FILTER_VALIDATE_IP) === false) {
+            return false;
+        }
+
+        $ttl = max(1, min(86400, $exp - time()));
+        $cacheKey = 'pteroprotect:clearance:ips:' . hash('sha256', $sid . '|' . $uaClaim);
+        $ips = Cache::get($cacheKey, []);
+        if (!is_array($ips)) {
+            $ips = [];
+        }
+
+        $ips[] = $tokenIp;
+        $ips = array_values(array_unique(array_filter(array_map(static function ($ip): string {
+            $ip = strtolower(trim((string) $ip));
+            return filter_var($ip, FILTER_VALIDATE_IP) !== false ? $ip : '';
+        }, $ips))));
+
+        if (in_array($requestIp, $ips, true)) {
+            Cache::put($cacheKey, $ips, $ttl);
+            return true;
+        }
+
+        if (count($ips) >= 5) {
+            Cache::put($cacheKey, $ips, $ttl);
+            return false;
+        }
+
+        $ips[] = $requestIp;
+        Cache::put($cacheKey, $ips, $ttl);
+
+        return true;
     }
 
     private static function clientIpForBinding(Request $request): string
