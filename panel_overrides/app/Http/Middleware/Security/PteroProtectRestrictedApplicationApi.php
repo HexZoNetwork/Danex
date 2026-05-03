@@ -5,6 +5,7 @@ namespace Pterodactyl\Http\Middleware\Security;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Pterodactyl\Models\ApiKey;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Models\User;
 use Pterodactyl\Services\PteroProtect\AdminOwnershipService;
@@ -22,6 +23,10 @@ class PteroProtectRestrictedApplicationApi
         $user = $request->user();
         if (!$user || !$user->root_admin) {
             throw new AccessDeniedHttpException('Admin API access is required.');
+        }
+        $token = $user->currentAccessToken();
+        if (!$token instanceof ApiKey || $token->key_type !== ApiKey::TYPE_APPLICATION) {
+            throw new AccessDeniedHttpException('Application API requires a valid application API key.');
         }
         if ((int) $user->id === 1) {
             return $next($request);
@@ -157,7 +162,7 @@ class PteroProtectRestrictedApplicationApi
     private function tokenIdentifier(Request $request): ?string
     {
         $token = $request->user()?->currentAccessToken();
-        if (!is_object($token) || !property_exists($token, 'identifier')) {
+        if (!$token instanceof ApiKey || $token->key_type !== ApiKey::TYPE_APPLICATION) {
             return null;
         }
 

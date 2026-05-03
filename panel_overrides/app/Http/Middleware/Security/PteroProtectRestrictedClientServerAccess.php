@@ -4,6 +4,7 @@ namespace Pterodactyl\Http\Middleware\Security;
 
 use Closure;
 use Illuminate\Http\Request;
+use Pterodactyl\Models\ApiKey;
 use Pterodactyl\Models\Server;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
@@ -22,6 +23,15 @@ class PteroProtectRestrictedClientServerAccess
         }
 
         $server = $request->route('server');
+        $token = $user->currentAccessToken();
+        if ($token instanceof ApiKey && $token->key_type === ApiKey::TYPE_ACCOUNT) {
+            if ($server instanceof Server && (int) $server->owner_id === (int) $user->id) {
+                return $next($request);
+            }
+
+            throw new AccessDeniedHttpException('Client API keys can only access servers owned by the token owner.');
+        }
+
         if ($server instanceof Server && (int) $server->owner_id === (int) $user->id) {
             return $next($request);
         }
