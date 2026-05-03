@@ -25,7 +25,7 @@ class PteroProtectRestrictedApplicationApi
             throw new AccessDeniedHttpException('Admin API access is required.');
         }
         $token = $user->currentAccessToken();
-        if (!$token instanceof ApiKey || $token->key_type !== ApiKey::TYPE_APPLICATION) {
+        if ($token instanceof ApiKey && $token->key_type !== ApiKey::TYPE_APPLICATION) {
             throw new AccessDeniedHttpException('Application API requires a valid application API key.');
         }
         if ((int) $user->id === 1) {
