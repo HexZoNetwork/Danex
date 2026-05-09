@@ -51,6 +51,11 @@ struct Settings {
     std::string challenge_theme_gradient_end = "#132a45";
     std::string challenge_theme_accent = "#2e9cff";
     std::string cookie_name = "pp_clearance";
+    std::string cookie_secure_mode = "auto";
+    int session_ip_prefix_v4 = 24;
+    int session_ip_prefix_v6 = 56;
+    int session_grace_sec = 20;
+    std::string node_id = "local-node";
     std::string secret;
     std::vector<std::string> trusted_hosts;
     std::vector<std::string> provider_token_cidrs;
@@ -97,6 +102,7 @@ struct SessionRec {
 };
 
 static std::atomic<bool> g_running(true);
+static std::atomic<int> g_active_workers(0);
 static std::mutex g_nonce_mu;
 static std::map<std::string, NonceRec> g_nonce_map;
 static std::mutex g_session_mu;
@@ -108,12 +114,16 @@ static std::string g_cfg_path = "/pteroprotect/config.json";
 static std::string g_ephemeral_secret;
 static std::mutex g_api_token_cache_mu;
 static std::map<std::string, std::time_t> g_valid_api_token_cache;
+static std::mutex g_completed_mu;
+static std::map<std::string, std::time_t> g_completed_challenges;
 static std::string random_nonce();
 static std::string to_lower(std::string s);
 static bool base64_decode(const std::string& in, std::string& out);
 static std::string hmac_sha256_hex(const std::string& key, const std::string& data);
 static bool secure_equals(const std::string& a, const std::string& b);
 static bool daemon_bearer_token_format_ok(const std::string& token);
+static std::string ip_prefix_of(const std::string& ip, int v4_prefix_bits, int v6_prefix_bits);
+static bool ip_in_same_prefix(const std::string& a, const std::string& b, int v4_prefix_bits, int v6_prefix_bits);
 
 static inline std::string trim(const std::string& in) {
     std::size_t b = 0;
@@ -325,14 +335,39 @@ static void token_cache_store_valid_api_token(const std::string& token, int ttl_
 static bool is_valid_panel_api_bearer(const Settings& s, const std::string& token) {
     if (!is_panel_api_token_format(token)) return false;
     if (token_cache_contains_valid_api_token(token)) return true;
-    std::string cmd = "/usr/bin/php /pteroprotect/scripts/validate_api_key.php " + token + " 2>/dev/null";
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) return false;
-    char buf[64] = {0};
-    std::string output;
-    if (fgets(buf, sizeof(buf), pipe) != nullptr) output = trim(buf);
-    const int rc = pclose(pipe);
-    const bool ok = (rc == 0 && output == "valid");
+    MYSQL* conn = mysql_init(nullptr);
+    if (!conn) return false;
+    bool ok = false;
+    if (mysql_real_connect(conn,
+            s.db_host.empty() ? "127.0.0.1" : s.db_host.c_str(),
+            s.db_user.c_str(),
+            s.db_password.c_str(),
+            s.db_name.c_str(),
+            0, nullptr, 0) != nullptr) {
+        std::string esc;
+        esc.resize(token.size() * 2 + 1);
+        unsigned long esc_len = mysql_real_escape_string(conn, &esc[0], token.c_str(), static_cast<unsigned long>(token.size()));
+        esc.resize(esc_len);
+        std::string q1 = "SELECT 1 FROM api_keys WHERE token='" + esc + "' LIMIT 1";
+        if (mysql_query(conn, q1.c_str()) == 0) {
+            MYSQL_RES* res = mysql_store_result(conn);
+            if (res) {
+                ok = mysql_num_rows(res) > 0;
+                mysql_free_result(res);
+            }
+        }
+        if (!ok) {
+            std::string q2 = "SELECT 1 FROM personal_access_tokens WHERE token='" + esc + "' LIMIT 1";
+            if (mysql_query(conn, q2.c_str()) == 0) {
+                MYSQL_RES* res2 = mysql_store_result(conn);
+                if (res2) {
+                    ok = mysql_num_rows(res2) > 0;
+                    mysql_free_result(res2);
+                }
+            }
+        }
+    }
+    mysql_close(conn);
     if (ok) token_cache_store_valid_api_token(token);
     return ok;
 }
@@ -737,6 +772,14 @@ static std::string json_get_string(const json& root, const std::string& key, con
     return fallback;
 }
 
+static void log_event_json(const std::string& event, const json& fields = json::object()) {
+    json out = json::object();
+    out["ts"] = static_cast<long long>(std::time(nullptr));
+    out["event"] = event;
+    for (auto it = fields.begin(); it != fields.end(); ++it) out[it.key()] = it.value();
+    std::cerr << out.dump() << "\n";
+}
+
 static int json_get_int(const json& root, const std::string& key, int fallback) {
     if (!root.is_object()) return fallback;
     auto it = root.find(key);
@@ -889,6 +932,15 @@ static Settings load_settings() {
             );
             s.cookie_name = trim(json_get_string(net, "waf_challenge_cookie_name", "pp_clearance"));
             if (s.cookie_name.empty()) s.cookie_name = "pp_clearance";
+            s.cookie_secure_mode = to_lower(trim(json_get_string(net, "challenge_cookie_secure_mode", "auto")));
+            if (!(s.cookie_secure_mode == "auto" || s.cookie_secure_mode == "always" || s.cookie_secure_mode == "never")) {
+                s.cookie_secure_mode = "auto";
+            }
+            s.session_ip_prefix_v4 = std::max(8, std::min(32, json_get_int(net, "session_ip_prefix_v4", 24)));
+            s.session_ip_prefix_v6 = std::max(32, std::min(128, json_get_int(net, "session_ip_prefix_v6", 56)));
+            s.session_grace_sec = std::max(0, std::min(300, json_get_int(net, "session_grace_sec", 20)));
+            s.node_id = trim(json_get_string(net, "node_id", "local-node"));
+            if (s.node_id.empty()) s.node_id = "local-node";
             s.secret = trim(json_get_string(net, "waf_challenge_secret", ""));
             if (s.secret.empty()) {
                 s.secret = trim(json_get_string(net, "unblock_portal_token", ""));
@@ -1808,6 +1860,40 @@ static bool ip_geo_similar(const std::string& prev_ip_raw, const std::string& no
     return false;
 }
 
+static std::string ip_prefix_of(const std::string& ip, int v4_prefix_bits, int v6_prefix_bits) {
+    in_addr a4{};
+    if (inet_pton(AF_INET, ip.c_str(), &a4) == 1) {
+        int bits = std::max(0, std::min(32, v4_prefix_bits));
+        const uint32_t host = ntohl(a4.s_addr);
+        const uint32_t mask = bits == 0 ? 0u : (bits == 32 ? 0xFFFFFFFFu : (0xFFFFFFFFu << (32 - bits)));
+        const uint32_t pref = host & mask;
+        std::ostringstream oss;
+        oss << "v4:" << bits << ":" << pref;
+        return oss.str();
+    }
+    in6_addr a6{};
+    if (inet_pton(AF_INET6, ip.c_str(), &a6) == 1) {
+        int bits = std::max(0, std::min(128, v6_prefix_bits));
+        const int full = bits / 8;
+        const int rem = bits % 8;
+        std::ostringstream oss;
+        oss << "v6:" << bits << ":";
+        for (int i = 0; i < full; ++i) oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(a6.s6_addr[i]);
+        if (rem > 0 && full < 16) {
+            unsigned char masked = static_cast<unsigned char>(a6.s6_addr[full] & (0xFFu << (8 - rem)));
+            oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(masked);
+        }
+        return oss.str();
+    }
+    return "";
+}
+
+static bool ip_in_same_prefix(const std::string& a, const std::string& b, int v4_prefix_bits, int v6_prefix_bits) {
+    const std::string pa = ip_prefix_of(a, v4_prefix_bits, v6_prefix_bits);
+    const std::string pb = ip_prefix_of(b, v4_prefix_bits, v6_prefix_bits);
+    return !pa.empty() && pa == pb;
+}
+
 static bool is_provider_range_ip(const Settings& s, const std::string& ip) {
     if (!s.provider_token_gate_enabled) return false;
     for (const auto& cidr : s.provider_token_cidrs) {
@@ -1883,34 +1969,47 @@ static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& re
 static std::string issue_token(const Settings& s, const std::string& ip, const std::string& ua_fp, const std::string& sid) {
     json p;
     p["ip"] = ip;
-    p["ua"] = ua_fp;
+    p["ua_fp"] = ua_fp;
     p["sid"] = sid;
+    p["iat"] = static_cast<long long>(std::time(nullptr));
     p["exp"] = static_cast<long long>(std::time(nullptr) + s.ttl);
+    p["iss"] = s.node_id;
+    p["kid"] = "v1";
+    p["net_prefix_v4"] = ip_prefix_of(ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6);
+    p["net_prefix_v6"] = p["net_prefix_v4"];
+    p["jti"] = random_token(12);
     std::string payload = p.dump();
     std::string b = base64url_encode(payload);
     std::string sig = hmac_sha256_b64url(s.secret, payload);
     return b + "." + sig;
 }
 
-static bool verify_token(const Settings& s, const std::string& token, const std::string& ip, const std::string& ua_fp) {
+static bool verify_token(const Settings& s, const std::string& token, const std::string& ip, const std::string& ua_fp, std::string* reason_out = nullptr) {
+    auto fail = [&](const std::string& why) -> bool {
+        if (reason_out) *reason_out = why;
+        return false;
+    };
     std::size_t dot = token.find('.');
-    if (dot == std::string::npos) return false;
+    if (dot == std::string::npos) return fail("token_format");
     std::string b = token.substr(0, dot);
     std::string sig = token.substr(dot + 1);
     std::string payload;
-    if (!base64url_decode(b, payload)) return false;
+    if (!base64url_decode(b, payload)) return fail("token_decode");
     std::string expected = hmac_sha256_b64url(s.secret, payload);
-    if (expected != sig) return false;
+    if (!secure_equals(expected, sig)) return fail("sig_invalid");
     try {
         json p = json::parse(payload);
-        if (!p.is_object()) return false;
+        if (!p.is_object()) return fail("token_payload");
         long long exp = p.value("exp", 0LL);
         std::string sid = p.value("sid", std::string());
-        if (exp < static_cast<long long>(std::time(nullptr))) return false;
-        if (sid.empty()) return false;
+        if (exp < static_cast<long long>(std::time(nullptr))) return fail("expired");
+        if (sid.empty()) return fail("sid_missing");
         const std::string token_ip = p.value("ip", std::string());
-        const std::string token_ua = p.value("ua", std::string());
-        if (token_ip.empty() || token_ua.empty()) return false;
+        const std::string token_ua = p.value("ua_fp", p.value("ua", std::string()));
+        if (token_ip.empty() || token_ua.empty()) return fail("claims_missing");
+        if (token_ua != ua_fp) return fail("ua_miss");
+        const bool ip_prefix_ok = ip_in_same_prefix(token_ip, ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6);
+        if (!ip_prefix_ok) return fail("ip_prefix_miss");
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
             const std::time_t now = std::time(nullptr);
@@ -1936,10 +2035,10 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
                     return true;
                 }
             }
-            return false;
+            return fail("session_not_found");
         }
     } catch (...) {
-        return false;
+        return fail("token_parse");
     }
 }
 
@@ -2070,9 +2169,12 @@ static void handle_client(int fd, std::string remote_ip) {
         }
         std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
         std::string tok = read_cookie(cookie, s.cookie_name);
-        if (!tok.empty() && verify_token(s, tok, ip, ua_fp)) {
+        std::string verify_reason;
+        if (!tok.empty() && verify_token(s, tok, ip, ua_fp, &verify_reason)) {
+            log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}});
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
+            log_event_json("session_mismatch", {{"ip", ip}, {"reason", verify_reason.empty() ? "no_cookie_or_invalid" : verify_reason}, {"node_id", s.node_id}});
             send_response(fd, 401, "Unauthorized", "", {}, head_only);
         }
         close(fd);
@@ -2092,9 +2194,12 @@ static void handle_client(int fd, std::string remote_ip) {
         }
         std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
         std::string tok = read_cookie(cookie, s.cookie_name);
-        if (!tok.empty() && verify_token(s, tok, ip, ua_fp)) {
+        std::string verify_reason;
+        if (!tok.empty() && verify_token(s, tok, ip, ua_fp, &verify_reason)) {
+            log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web"}});
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
+            log_event_json("session_mismatch", {{"ip", ip}, {"reason", verify_reason.empty() ? "no_cookie_or_invalid" : verify_reason}, {"node_id", s.node_id}, {"path", "check-web"}});
             send_response(fd, 401, "Unauthorized", "", {}, head_only);
         }
         close(fd);
@@ -2294,6 +2399,8 @@ static void handle_client(int fd, std::string remote_ip) {
         out["phase1_label"] = spec.label;
         out["phase1_hint"] = spec.hint;
         out["phase1_input_placeholder"] = spec.input_placeholder;
+        out["completion_id"] = "cmp_" + random_token(10);
+        log_event_json("challenge_issued", {{"ip", ip}, {"node_id", s.node_id}, {"challenge_type", challenge_type}, {"nonce", nonce}});
         send_response(fd, 200, "OK", out.dump(), {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
         close(fd);
         return;
@@ -2667,6 +2774,7 @@ static void handle_client(int fd, std::string remote_ip) {
             return;
         }
         std::string nonce, answer, rd = "/";
+        std::string completion_id;
         long long pow_counter = -1;
         std::string pow_hash;
         json behavior = json::object();
@@ -2677,6 +2785,7 @@ static void handle_client(int fd, std::string remote_ip) {
             in = json::parse(req.body);
             nonce = trim(in.value("nonce", std::string()));
             rd = trim(in.value("rd", std::string("/")));
+            completion_id = trim(in.value("completion_id", std::string()));
         } catch (...) {
             send_response(fd, 400, "Bad Request", "{\"ok\":false,\"error\":\"invalid_json\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);
@@ -2799,6 +2908,22 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
+        if (completion_id.empty()) completion_id = "cmp_" + nonce;
+        {
+            std::lock_guard<std::mutex> lock(g_completed_mu);
+            const std::time_t now = std::time(nullptr);
+            for (auto it = g_completed_challenges.begin(); it != g_completed_challenges.end();) {
+                if (it->second <= now) it = g_completed_challenges.erase(it);
+                else ++it;
+            }
+            auto it = g_completed_challenges.find(completion_id);
+            if (it != g_completed_challenges.end()) {
+                send_response(fd, 200, "OK", "{\"ok\":true,\"duplicate\":true}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
+                close(fd);
+                return;
+            }
+            g_completed_challenges[completion_id] = now + std::max(5, s.session_grace_sec);
+        }
         {
             std::lock_guard<std::mutex> lock(g_nonce_mu);
             auto it = g_nonce_map.find(nonce);
@@ -2808,7 +2933,6 @@ static void handle_client(int fd, std::string remote_ip) {
         std::string sid = random_nonce();
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
-            erase_sessions_for_ua(ua_fp);
             SessionRec sr;
             sr.sid = sid;
             sr.ua = ua_fp;
@@ -2817,13 +2941,22 @@ static void handle_client(int fd, std::string remote_ip) {
             g_ip_session_map[session_scope_key(ip, ua_fp)] = sr;
         }
         std::string tok = issue_token(s, ip, ua_fp, sid);
+        std::string secure_attr = "Secure";
+        if (s.cookie_secure_mode == "never") secure_attr.clear();
+        if (s.cookie_secure_mode == "auto") {
+            secure_attr = (req.headers.count("x-forwarded-proto") && to_lower(trim(req.headers.at("x-forwarded-proto"))) == "http") ? "" : "Secure";
+        }
+        std::string cookie_line = s.cookie_name + "=" + tok + "; Path=/; Max-Age=" + std::to_string(s.ttl) + "; HttpOnly; SameSite=Lax";
+        if (!secure_attr.empty()) cookie_line += "; " + secure_attr;
         std::vector<std::pair<std::string, std::string>> headers = {
             {"Content-Type", "application/json; charset=utf-8"},
-            {"Set-Cookie", s.cookie_name + "=" + tok + "; Path=/; Max-Age=" + std::to_string(s.ttl) + "; HttpOnly; Secure; SameSite=Lax"},
+            {"Set-Cookie", cookie_line},
         };
         json out;
         out["ok"] = true;
         out["redirect"] = rd;
+        log_event_json("challenge_passed", {{"ip", ip}, {"node_id", s.node_id}, {"sid", sid}});
+        log_event_json("token_issued", {{"ip", ip}, {"node_id", s.node_id}, {"sid", sid}});
         send_response(fd, 200, "OK", out.dump(), headers, head_only);
         close(fd);
         return;
@@ -2892,7 +3025,17 @@ int main() {
         char ipbuf[INET_ADDRSTRLEN] = {0};
         inet_ntop(AF_INET, &cli.sin_addr, ipbuf, sizeof(ipbuf));
         std::string rip = ipbuf[0] ? ipbuf : "127.0.0.1";
-        std::thread([fd, rip]() { handle_client(fd, rip); }).detach();
+        constexpr int kMaxWorkers = 512;
+        int cur = g_active_workers.load();
+        if (cur >= kMaxWorkers) {
+            close(fd);
+            continue;
+        }
+        g_active_workers.fetch_add(1);
+        std::thread([fd, rip]() {
+            handle_client(fd, rip);
+            g_active_workers.fetch_sub(1);
+        }).detach();
     }
 
     close(server_fd);

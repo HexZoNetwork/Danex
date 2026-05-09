@@ -62,7 +62,32 @@
       "provider_token_cache_file": "/pteroprotect/cache/provider_ranges.txt",
       "provider_token_ip_cache_file": "/pteroprotect/cache/provider_ip_cache.json",
       "provider_token_ip_cache_ttl_sec": 604800,
-      "provider_token_provider_keywords": "digitalocean,microsoft,azure,upcloud,hostinger,idwebhost,linode,akamai,vultr,choopa,hetzner,ovh,contabo,oracle,google,google cloud,amazon,aws,alibaba,tencent"
+      "provider_token_provider_keywords": "digitalocean,microsoft,azure,upcloud,hostinger,idwebhost,linode,akamai,vultr,choopa,hetzner,ovh,contabo,oracle,google,google cloud,amazon,aws,alibaba,tencent",
+      "control_plane_url": "http://127.0.0.1:18446",
+      "node_id": "node-local",
+      "node_auth_key": "replace_me",
+      "redis_url": "redis://127.0.0.1:6379/0",
+      "session_ip_prefix_v4": 24,
+      "session_ip_prefix_v6": 56,
+      "session_grace_sec": 20,
+      "challenge_cookie_secure_mode": "auto",
+      "waf_challenge_upstream": "127.0.0.1:18444",
+      "public_tcp_ports": "80,443,8080,18443",
+      "infra_guard_ports": "22,2022,8080,3306,5432,6379",
+      "protected_services": [
+         {
+            "name": "panel-http",
+            "host": "0.0.0.0",
+            "port": 80,
+            "proto": "http"
+         },
+         {
+            "name": "panel-https",
+            "host": "0.0.0.0",
+            "port": 443,
+            "proto": "https"
+         }
+      ]
    },
    "monitor": {
       "checkhost_enabled": true,

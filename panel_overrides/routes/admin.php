@@ -144,6 +144,12 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::get('/view/{node:id}/servers', [Admin\Nodes\NodeViewController::class, 'servers'])->name('admin.nodes.view.servers');
         Route::get('/view/{node:id}/system-information', Admin\Nodes\SystemInformationController::class);
 
+        Route::get('/view/{node:id}/auto-configure', [Admin\Nodes\NodeAutoConfigureController::class, 'index'])->name('admin.nodes.view.auto-configure');
+        Route::post('/view/{node:id}/auto-configure/start', [Admin\Nodes\NodeAutoConfigureController::class, 'start'])->middleware('throttle:6,1')->name('admin.nodes.view.auto-configure.start');
+        Route::get('/view/{node:id}/auto-configure/status/{run:id}', [Admin\Nodes\NodeAutoConfigureController::class, 'status'])->middleware('throttle:120,1')->name('admin.nodes.view.auto-configure.status');
+        Route::get('/view/{node:id}/auto-configure/logs/{run:id}', [Admin\Nodes\NodeAutoConfigureController::class, 'logs'])->middleware('throttle:120,1')->name('admin.nodes.view.auto-configure.logs');
+        Route::post('/view/{node:id}/auto-configure/cancel/{run:id}', [Admin\Nodes\NodeAutoConfigureController::class, 'cancel'])->middleware('throttle:10,1')->name('admin.nodes.view.auto-configure.cancel');
+
         Route::post('/new', [Admin\NodesController::class, 'store']);
         Route::post('/view/{node:id}/allocation', [Admin\NodesController::class, 'createAllocation']);
         Route::post('/view/{node:id}/allocation/remove', [Admin\NodesController::class, 'allocationRemoveBlock'])->name('admin.nodes.view.allocation.removeBlock');

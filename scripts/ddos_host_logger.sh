@@ -7,7 +7,7 @@ RUNTIME_DIR="/dev/shm/pteroprotect"
 PANEL_RUNTIME_DIR="${PTEROPROTECT_PANEL_RUNTIME_DIR:-/pteroprotect/runtime}"
 LOG_FILE="${RUNTIME_DIR}/ddos_host.log"
 LATEST_FILE="${RUNTIME_DIR}/ddos_host.latest"
-PORTS_REGEX=':(80|443|8080|2022)$'
+PORTS_REGEX="${PTEROPROTECT_PORTS_REGEX:-:(80|443|8080|2022)$}"
 IPSET4="pteroprotect_block_v4"
 IPSET6="pteroprotect_block_v6"
 BLOCK_ONLY_CHAIN4="PTEROPROTECT-DYNBLOCK"
@@ -2286,7 +2286,7 @@ load_adaptive_state
 
 while true; do
     TRAFFIC_PROFILE="$(trim "$(printf '%s' "$(read_network_setting traffic_profile mixed)" | tr '[:upper:]' '[:lower:]')")"
-    MONITOR_TCP_PORTS="$(sanitize_ports_csv "${PTEROPROTECT_MONITOR_TCP_PORTS:-22,80,443,8080,2022,3306,6379}")"
+    MONITOR_TCP_PORTS="$(sanitize_ports_csv "${PTEROPROTECT_MONITOR_TCP_PORTS:-${PTEROPROTECT_INFRA_GUARD_PORTS:-22,2022,8080,3306,5432,6379}}")"
     PORTS_REGEX="$(build_ports_regex "${MONITOR_TCP_PORTS}")"
 
     HOST_FIREWALL_ENABLED="$(normalize_bool "$(read_network_setting host_firewall_enabled 0)")"
