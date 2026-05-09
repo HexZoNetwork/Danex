@@ -2113,11 +2113,13 @@ elif "location /api/ {" not in text:
 path.write_text(text)
 PY
 
-    python3 - "${NGINX_DIR}/snippets/pteroprotect_server.conf" <<'PY'
+    python3 - "${NGINX_DIR}/snippets/pteroprotect_server.conf" "${CHALLENGE_PORT:-18444}" <<'PY'
 import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
+challenge_port = (sys.argv[2] if len(sys.argv) > 2 else "18444").strip() or "18444"
+challenge_upstream = f"127.0.0.1:{challenge_port}"
 text = path.read_text()
 
 text = text.replace(
@@ -2143,14 +2145,14 @@ if "location @pteroprotect_provider_web_block {" not in text:
             )
             text = text[:end] + block + text[end:]
 
-check_location = """location = /__pteroprotect/challenge/check {\n    internal;\n    proxy_pass http://127.0.0.1:18444/check;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}\n"""
+check_location = f"""location = /__pteroprotect/challenge/check {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"""
 if "location = /__pteroprotect/challenge/check_web {" not in text and check_location in text:
-    insert = check_location + "\nlocation = /__pteroprotect/challenge/check_web {\n    internal;\n    proxy_pass http://127.0.0.1:18444/check-web;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Cookie $http_cookie;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}\n"
+    insert = check_location + f"\nlocation = /__pteroprotect/challenge/check_web {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-web;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Cookie $http_cookie;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"
     text = text.replace(check_location, insert)
 
-check_token_location = """location = /__pteroprotect/challenge/check_token {\n    internal;\n    proxy_pass http://127.0.0.1:18444/check-token;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}\n"""
+check_token_location = f"""location = /__pteroprotect/challenge/check_token {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-token;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"""
 if "location = /__pteroprotect/challenge/check_provider_api {" not in text and check_token_location in text:
-    insert = check_token_location + "\nlocation = /__pteroprotect/challenge/check_provider_api {\n    internal;\n    proxy_pass http://127.0.0.1:18444/check-provider-api;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}\n"
+    insert = check_token_location + f"\nlocation = /__pteroprotect/challenge/check_provider_api {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-provider-api;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"
     text = text.replace(check_token_location, insert)
 
 for old, new in [
@@ -3189,11 +3191,82 @@ fi
 
 if command -v sudo >/dev/null 2>&1; then
     echo "[setup] configuring sudoers for panel protect controls..."
+    install -d -m 0755 /usr/local/bin
+    cat > /usr/local/bin/pteroprotect-adminctl <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+arg="${2:-}"
+
+require_unit() {
+    local unit="${1:-}"
+    case "${unit}" in
+        nginx|fail2ban|pteroprotect|pteroprotect-panel-sync|pteroprotect-selfheal|pteroprotect-abuse-guard|wings)
+            ;;
+        *)
+            echo "unit not allowed: ${unit}" >&2
+            exit 64
+            ;;
+    esac
+}
+
+case "${action}" in
+    service-restart|service-start|service-stop|service-status)
+        require_unit "${arg}"
+        case "${action}" in
+            service-restart) exec systemctl restart "${arg}" ;;
+            service-start) exec systemctl start "${arg}" ;;
+            service-stop) exec systemctl stop "${arg}" ;;
+            service-status) exec systemctl status "${arg}" --no-pager ;;
+        esac
+        ;;
+    nginx-test)
+        exec nginx -t
+        ;;
+    nginx-reload)
+        exec systemctl reload nginx
+        ;;
+    journal-tail)
+        require_unit "${arg}"
+        exec journalctl -u "${arg}" -n 200 --no-pager
+        ;;
+    reboot)
+        exec systemctl reboot
+        ;;
+    *)
+        echo "usage: pteroprotect-adminctl {service-restart|service-start|service-stop|service-status|nginx-test|nginx-reload|journal-tail|reboot} [unit]" >&2
+        exit 64
+        ;;
+esac
+EOF
+    chmod 0750 /usr/local/bin/pteroprotect-adminctl
+    if ! id pteroprotect-ops >/dev/null 2>&1; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin pteroprotect-ops >/dev/null 2>&1 || true
+    fi
+    chown root:pteroprotect-ops /usr/local/bin/pteroprotect-adminctl
+    SYSTEMCTL_BIN="$(command -v systemctl || echo /bin/systemctl)"
+    JOURNALCTL_BIN="$(command -v journalctl || echo /bin/journalctl)"
+    NGINX_BIN="$(command -v nginx || echo /usr/sbin/nginx)"
+    cat > /etc/sudoers.d/pteroprotect-ops <<EOF
+Defaults:pteroprotect-ops !requiretty
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start nginx, $SYSTEMCTL_BIN stop nginx, $SYSTEMCTL_BIN restart nginx, $SYSTEMCTL_BIN reload nginx, $SYSTEMCTL_BIN status nginx --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start fail2ban, $SYSTEMCTL_BIN stop fail2ban, $SYSTEMCTL_BIN restart fail2ban, $SYSTEMCTL_BIN status fail2ban --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect, $SYSTEMCTL_BIN stop pteroprotect, $SYSTEMCTL_BIN restart pteroprotect, $SYSTEMCTL_BIN status pteroprotect --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-panel-sync, $SYSTEMCTL_BIN stop pteroprotect-panel-sync, $SYSTEMCTL_BIN restart pteroprotect-panel-sync, $SYSTEMCTL_BIN status pteroprotect-panel-sync --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-selfheal, $SYSTEMCTL_BIN stop pteroprotect-selfheal, $SYSTEMCTL_BIN restart pteroprotect-selfheal, $SYSTEMCTL_BIN status pteroprotect-selfheal --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-abuse-guard, $SYSTEMCTL_BIN stop pteroprotect-abuse-guard, $SYSTEMCTL_BIN restart pteroprotect-abuse-guard, $SYSTEMCTL_BIN status pteroprotect-abuse-guard --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start wings, $SYSTEMCTL_BIN stop wings, $SYSTEMCTL_BIN restart wings, $SYSTEMCTL_BIN status wings --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN reboot
+pteroprotect-ops ALL=(root) NOPASSWD: $NGINX_BIN -t
+pteroprotect-ops ALL=(root) NOPASSWD: $JOURNALCTL_BIN -u nginx -n 200 --no-pager, $JOURNALCTL_BIN -u fail2ban -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-panel-sync -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-selfheal -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-abuse-guard -n 200 --no-pager, $JOURNALCTL_BIN -u wings -n 200 --no-pager
+EOF
+    chmod 0440 /etc/sudoers.d/pteroprotect-ops
     {
         while IFS= read -r _pp_user; do
             id "${_pp_user}" >/dev/null 2>&1 || continue
             printf 'Defaults:%s !requiretty\n' "${_pp_user}"
-            printf '%s ALL=(root) NOPASSWD: ALL\n' "${_pp_user}"
+            printf '%s ALL=(pteroprotect-ops) NOPASSWD: /usr/local/bin/pteroprotect-adminctl *\n' "${_pp_user}"
         done < <(panel_runtime_users)
     } >/etc/sudoers.d/pteroprotect-panel
     chmod 0440 /etc/sudoers.d/pteroprotect-panel

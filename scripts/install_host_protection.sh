@@ -494,8 +494,8 @@ add_host_v6_whitelist() {
 
 prune_input_jump_rules_v4() {
     local ports="${PROTECTED_TCP_PORTS:-${PUBLIC_TCP_PORTS}}"
-    while iptables -C INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN}" >/dev/null 2>&1; do
-        iptables -D INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN}" >/dev/null 2>&1 || break
+    while iptables -C INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN}" >/dev/null 2>&1 || break
     done
     while iptables -C INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN}" >/dev/null 2>&1; do
         iptables -D INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN}" >/dev/null 2>&1 || break
@@ -612,8 +612,8 @@ ensure_loopback_web_access_rules_v6() {
 
 prune_input_jump_rules_v6() {
     local ports="${PROTECTED_TCP_PORTS:-${PUBLIC_TCP_PORTS}}"
-    while ip6tables -C INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN6}" >/dev/null 2>&1; do
-        ip6tables -D INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${CHAIN6}" >/dev/null 2>&1 || break
+    while ip6tables -C INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN6}" >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN6}" >/dev/null 2>&1 || break
     done
     while ip6tables -C INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN6}" >/dev/null 2>&1; do
         ip6tables -D INPUT -p tcp -m multiport --dports "${ports}" -j "${CHAIN6}" >/dev/null 2>&1 || break
@@ -665,7 +665,7 @@ supports_synproxy_v6() {
 
 cleanup_host_protection() {
     prune_input_jump_rules_v4
-    prune_wings_guard_jump_rules_v4 "8080,2022"
+    prune_wings_guard_jump_rules_v4 "${WINGS_GUARD_PORTS}"
     prune_infra_guard_jump_rules_v4 "22,2022,8080,3306,5432,6379"
     prune_bw_jump_rules_v4
     prune_synproxy_jump_rules_v4
@@ -702,7 +702,7 @@ cleanup_host_protection() {
 
     if have_cmd ip6tables; then
         prune_input_jump_rules_v6
-        prune_wings_guard_jump_rules_v6 "8080,2022"
+        prune_wings_guard_jump_rules_v6 "${WINGS_GUARD_PORTS}"
         prune_infra_guard_jump_rules_v6 "22,2022,8080,3306,5432,6379"
         prune_bw_jump_rules_v6
         prune_synproxy_jump_rules_v6

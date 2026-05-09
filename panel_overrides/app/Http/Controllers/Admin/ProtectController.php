@@ -1103,7 +1103,9 @@ class ProtectController extends Controller
             return redirect()->route('admin.protect');
         }
 
-        $result = $this->run(['systemctl', 'reboot'], 3);
+        $result = is_executable('/usr/local/bin/pteroprotect-adminctl')
+            ? $this->run(['/usr/local/bin/pteroprotect-adminctl', 'reboot'], 5)
+            : $this->run(['systemctl', 'reboot'], 3);
         if ($result['exit'] !== 0) {
             $this->alert->danger('Reboot command failed: ' . $result['output'])->flash();
         } else {
@@ -2415,7 +2417,60 @@ class ProtectController extends Controller
             return $command;
         }
 
+        $adminctl = '/usr/local/bin/pteroprotect-adminctl';
+        if (is_executable($adminctl)) {
+            $mapped = $this->mapToAdminCtl($command, $adminctl);
+            if ($mapped !== null) {
+                return $mapped;
+            }
+        }
+
         return array_merge(['/usr/bin/sudo', '-n'], $command);
+    }
+
+    /**
+     * @param array<int,string> $command
+     * @return array<int,string>|null
+     */
+    private function mapToAdminCtl(array $command, string $adminctl): ?array
+    {
+        if ($command === []) {
+            return null;
+        }
+
+        $bin = basename((string) $command[0]);
+        if ($bin === 'systemctl' && count($command) >= 2) {
+            $action = (string) ($command[1] ?? '');
+            if ($action === 'reboot') {
+                return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, 'reboot'];
+            }
+            $service = (string) ($command[2] ?? '');
+            if (in_array($action, ['start', 'stop', 'restart', 'status'], true) && $service !== '') {
+                return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, "service-{$action}", $service];
+            }
+            if ($action === 'reload' && (($command[2] ?? '') === 'nginx')) {
+                return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, 'nginx-reload'];
+            }
+        }
+
+        if ($bin === 'nginx' && (($command[1] ?? '') === '-t')) {
+            return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, 'nginx-test'];
+        }
+
+        if ($bin === 'journalctl') {
+            $unit = '';
+            for ($i = 1; $i < count($command); $i++) {
+                if (($command[$i] ?? '') === '-u') {
+                    $unit = (string) ($command[$i + 1] ?? '');
+                    break;
+                }
+            }
+            if ($unit !== '') {
+                return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, 'journal-tail', $unit];
+            }
+        }
+
+        return null;
     }
 
     private function hasChatNotificationTable(): bool

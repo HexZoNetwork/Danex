@@ -1248,11 +1248,11 @@ ensure_lightweight_block_hooks() {
             --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
     fi
     iptables -A "${BLOCK_ONLY_CHAIN4}" -j RETURN
-    while iptables -C INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${BLOCK_ONLY_CHAIN4}" >/dev/null 2>&1; do
-        iptables -D INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${BLOCK_ONLY_CHAIN4}" || break
+    while iptables -C INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${BLOCK_ONLY_CHAIN4}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${BLOCK_ONLY_CHAIN4}" || break
     done
-    while iptables -C INPUT -p tcp -m multiport --dports 22,80,443,8080,2022 -j "${BLOCK_ONLY_CHAIN4}" >/dev/null 2>&1; do
-        iptables -D INPUT -p tcp -m multiport --dports 22,80,443,8080,2022 -j "${BLOCK_ONLY_CHAIN4}" || break
+    while iptables -C INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${BLOCK_ONLY_CHAIN4}" >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${BLOCK_ONLY_CHAIN4}" || break
     done
     while iptables -C INPUT -p tcp ! --dport "${unblock_port}" -j "${BLOCK_ONLY_CHAIN4}" >/dev/null 2>&1; do
         iptables -D INPUT -p tcp ! --dport "${unblock_port}" -j "${BLOCK_ONLY_CHAIN4}" || break
@@ -1323,11 +1323,11 @@ ensure_lightweight_block_hooks() {
                 --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
         fi
         ip6tables -A "${BLOCK_ONLY_CHAIN6}" -j RETURN
-        while ip6tables -C INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${BLOCK_ONLY_CHAIN6}" >/dev/null 2>&1; do
-            ip6tables -D INPUT -p tcp -m multiport --dports 80,443,8080,2022 -j "${BLOCK_ONLY_CHAIN6}" || break
+        while ip6tables -C INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${BLOCK_ONLY_CHAIN6}" >/dev/null 2>&1; do
+            ip6tables -D INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${BLOCK_ONLY_CHAIN6}" || break
         done
-        while ip6tables -C INPUT -p tcp -m multiport --dports 22,80,443,8080,2022 -j "${BLOCK_ONLY_CHAIN6}" >/dev/null 2>&1; do
-            ip6tables -D INPUT -p tcp -m multiport --dports 22,80,443,8080,2022 -j "${BLOCK_ONLY_CHAIN6}" || break
+        while ip6tables -C INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${BLOCK_ONLY_CHAIN6}" >/dev/null 2>&1; do
+            ip6tables -D INPUT -p tcp -m multiport --dports "${PROTECTED_TCP_PORTS}" -j "${BLOCK_ONLY_CHAIN6}" || break
         done
         while ip6tables -C INPUT -p tcp ! --dport "${unblock_port}" -j "${BLOCK_ONLY_CHAIN6}" >/dev/null 2>&1; do
             ip6tables -D INPUT -p tcp ! --dport "${unblock_port}" -j "${BLOCK_ONLY_CHAIN6}" || break

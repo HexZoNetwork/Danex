@@ -37,7 +37,6 @@
          "ipset",
          "ufw",
          "nginx",
-         "php",
          "ls"
       ],
       "rce_read_path_allowlist": [
@@ -49,9 +48,7 @@
          "/dev/shm/pteroprotect/"
       ],
       "rce_default_timeout_sec": 15,
-      "trusted_hosts": [
-         ""
-      ],
+      "trusted_hosts": [],
       "provider_token_gate_enabled": false,
       "provider_token_ipv4_cidrs": "",
       "provider_token_ipv6_cidrs": "",

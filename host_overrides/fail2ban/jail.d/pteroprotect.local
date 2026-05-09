@@ -14,7 +14,8 @@ maxretry = 12
 enabled = true
 port = 22,2022
 filter = sshd[mode=aggressive]
-backend = systemd
+backend = auto
+journalmatch = _SYSTEMD_UNIT=sshd.service + _COMM=sshd
 findtime = 300
 maxretry = 4
 bantime = 172800
