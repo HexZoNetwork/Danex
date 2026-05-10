@@ -36,6 +36,18 @@ class RemoteProvisioner
         ];
     }
 
+    public function verifyPinnedFingerprint(string $actualFingerprintBase64, string $expectedFingerprint): void
+    {
+        $expected = trim($expectedFingerprint);
+        if ($expected === '') {
+            throw new RuntimeException('host_fingerprint_missing');
+        }
+
+        if (!hash_equals($expected, trim($actualFingerprintBase64))) {
+            throw new RuntimeException('host_fingerprint_mismatch');
+        }
+    }
+
     public function runWithPrivateKey(string $host, int $port, string $username, string $privateKeyPem, string $script, int $timeout): array
     {
         $ssh = new SSH2($host, $port, $timeout);

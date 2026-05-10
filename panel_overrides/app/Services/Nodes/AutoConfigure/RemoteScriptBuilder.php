@@ -51,8 +51,20 @@ port_in_use() {
   ss -ltn "( sport = :$1 )" | grep -q ":$1"
 }
 
+port_owned_by_wings() {
+  local line
+  line="$(ss -ltnp "( sport = :$1 )" 2>/dev/null | awk 'NR>1{print; exit}' || true)"
+  [[ -n "$line" ]] || return 1
+  printf '%s' "$line" | grep -Eiq 'users:\\(\\(\"wings\"|/usr/(local/)?bin/wings|wings\\.service'
+}
+
 pick_port() {
   if ! port_in_use "$WINGS_PORT"; then
+    echo "$WINGS_PORT"
+    return
+  fi
+
+  if port_owned_by_wings "$WINGS_PORT"; then
     echo "$WINGS_PORT"
     return
   fi
@@ -88,8 +100,8 @@ configure_firewall() {
     firewall-cmd --permanent --add-port=2022/tcp || true
     firewall-cmd --reload || true
   fi
-  if command -v setenforce >/dev/null 2>&1; then
-    setenforce 0 || true
+  if command -v semanage >/dev/null 2>&1; then
+    semanage port -a -t http_port_t -p tcp "$p" >/dev/null 2>&1 || semanage port -m -t http_port_t -p tcp "$p" >/dev/null 2>&1 || true
   fi
 }
 

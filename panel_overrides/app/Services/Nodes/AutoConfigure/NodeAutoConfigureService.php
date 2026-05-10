@@ -19,6 +19,15 @@ class NodeAutoConfigureService
     public function start(Node $node, User $user, array $input): NodeAutoConfigRun
     {
         return DB::transaction(function () use ($node, $user, $input) {
+            $globalRunning = NodeAutoConfigRun::query()
+                ->whereIn('status', [NodeAutoConfigRun::STATUS_PENDING, NodeAutoConfigRun::STATUS_RUNNING])
+                ->lockForUpdate()
+                ->count();
+            $maxParallel = max(1, (int) config('pteroprotect_autoconfigure.max_parallel_runs', 3));
+            if ($globalRunning >= $maxParallel) {
+                abort(429, 'Auto configure concurrency limit reached. Please retry shortly.');
+            }
+
             $running = NodeAutoConfigRun::query()
                 ->where('node_id', (int) $node->id)
                 ->whereIn('status', [NodeAutoConfigRun::STATUS_PENDING, NodeAutoConfigRun::STATUS_RUNNING])
@@ -49,6 +58,7 @@ class NodeAutoConfigureService
                     'reconfigure_mode' => (string) ($input['reconfigure_mode'] ?? 'reconfigure'),
                     'firewall_mode' => (string) ($input['firewall_mode'] ?? 'auto'),
                     'ephemeral_public_key' => (string) $keys['public'],
+                    'expected_host_fingerprint' => trim((string) ($input['host_fingerprint'] ?? '')),
                 ],
             ]);
 

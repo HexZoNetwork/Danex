@@ -53,6 +53,14 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
             );
             $run->host_fingerprint = (string) ($bootstrap['host_fingerprint'] ?? '');
             $run->save();
+
+            $hostKeyPolicy = (string) $run->host_key_policy;
+            $expectedFingerprint = (string) ($run->requested_payload['expected_host_fingerprint'] ?? '');
+            if ($hostKeyPolicy === 'strict_pinned') {
+                $provisioner->verifyPinnedFingerprint((string) $run->host_fingerprint, $expectedFingerprint);
+                $logger->log($run, 'info', 'bootstrap', 'Pinned host fingerprint validated.', [], 'bootstrap_fingerprint_ok');
+            }
+
             $logger->log($run, 'info', 'bootstrap', 'Password bootstrap completed, ephemeral key installed.', [], 'bootstrap_ok');
 
             $script = $builder->render(

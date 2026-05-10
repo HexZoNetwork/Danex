@@ -34,6 +34,10 @@
                             <option value="strict_pinned" {{ $defaults['host_key_policy'] === 'strict_pinned' ? 'selected' : '' }}>strict_pinned</option>
                         </select>
                     </div>
+                    <div class="form-group">
+                        <label>Pinned Host Fingerprint (base64, required for strict_pinned)</label>
+                        <input class="form-control" name="host_fingerprint" value="{{ old('host_fingerprint', '') }}" placeholder="AAAAB3NzaC1yc2EAAAADAQABAAABAQ...">
+                    </div>
                     <div class="form-group"><label>Mode</label>
                         <select class="form-control" name="reconfigure_mode">
                             <option value="reconfigure" selected>Reconfigure Existing Node</option>

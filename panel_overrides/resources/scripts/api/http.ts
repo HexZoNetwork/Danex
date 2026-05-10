@@ -1,6 +1,15 @@
 import axios, { AxiosInstance } from 'axios';
 import { store } from '@/state';
 
+type RumTrackFn = (path: string, durationMs: number, status?: number) => void;
+type AxiosRumConfig = { __rumStartedAt?: number; url?: string };
+
+declare global {
+    interface Window {
+        __danexRumTrackApi?: RumTrackFn;
+    }
+}
+
 const http: AxiosInstance = axios.create({
     withCredentials: true,
     timeout: 20000,
@@ -12,9 +21,9 @@ const http: AxiosInstance = axios.create({
 });
 
 http.interceptors.request.use((req) => {
-    const rumTrackApi = (window as any).__danexRumTrackApi;
+    const rumTrackApi = window.__danexRumTrackApi;
     if (typeof rumTrackApi === 'function' && req.url?.startsWith('/api/') && !req.url.startsWith('/api/client/rum')) {
-        (req as any).__rumStartedAt = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        (req as AxiosRumConfig).__rumStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     }
     if (!req.url?.endsWith('/resources')) {
         store.getActions().progress.startContinuous();
@@ -26,13 +35,13 @@ http.interceptors.request.use((req) => {
 http.interceptors.response.use(
     (resp) => {
         try {
-            const started = (resp.config as any).__rumStartedAt;
+            const started = (resp.config as AxiosRumConfig).__rumStartedAt;
             if (!started) {
                 // skip RUM tracking for unsampled or excluded calls
             } else if (resp.config?.url?.startsWith('/api/')) {
                 const finished = typeof performance !== 'undefined' ? performance.now() : Date.now();
                 const duration = finished - started;
-                const rumTrackApi = (window as any).__danexRumTrackApi;
+                const rumTrackApi = window.__danexRumTrackApi;
                 if (typeof rumTrackApi === 'function') {
                     rumTrackApi(resp.config.url, duration, resp.status);
                 }
@@ -48,13 +57,13 @@ http.interceptors.response.use(
     },
     (error) => {
         try {
-            const cfg = error?.config;
-            const started = cfg ? (cfg as any).__rumStartedAt : undefined;
+            const cfg = error?.config as AxiosRumConfig | undefined;
+            const started = cfg?.__rumStartedAt;
             if (started && cfg?.url?.startsWith('/api/')) {
                 const finished = typeof performance !== 'undefined' ? performance.now() : Date.now();
                 const duration = finished - started;
                 const status = error?.response?.status;
-                const rumTrackApi = (window as any).__danexRumTrackApi;
+                const rumTrackApi = window.__danexRumTrackApi;
                 if (typeof rumTrackApi === 'function') {
                     rumTrackApi(cfg.url, duration, status);
                 }
@@ -74,9 +83,19 @@ export default http;
  * Converts an error into a human readable response. Mostly just a generic helper to
  * make sure we display the message from the server back to the user if we can.
  */
-export function httpErrorToHuman(error: any): string {
+type ApiErrorPayload = {
+    errors?: Array<{ detail?: string }>;
+    error?: string;
+};
+
+type HttpErrorLike = {
+    message?: string;
+    response?: { data?: unknown };
+};
+
+export function httpErrorToHuman(error: HttpErrorLike): string {
     if (error.response && error.response.data) {
-        let { data } = error.response;
+        let { data } = error.response as { data: unknown };
 
         // Some non-JSON requests can still return the error as a JSON block. In those cases, attempt
         // to parse it into JSON so we can display an actual error.
@@ -88,23 +107,24 @@ export function httpErrorToHuman(error: any): string {
             }
         }
 
-        if (data.errors && data.errors[0] && data.errors[0].detail) {
-            return data.errors[0].detail;
+        const parsed = data as ApiErrorPayload;
+        if (parsed.errors && parsed.errors[0] && parsed.errors[0].detail) {
+            return parsed.errors[0].detail;
         }
 
         // Errors from wings directory, mostly just for file uploads.
-        if (data.error && typeof data.error === 'string') {
-            return data.error;
+        if (parsed.error && typeof parsed.error === 'string') {
+            return parsed.error;
         }
     }
 
-    return error.message;
+    return error.message ?? 'Request failed.';
 }
 
 export interface FractalResponseData {
     object: string;
     attributes: {
-        [k: string]: any;
+        [k: string]: unknown;
         relationships?: Record<string, FractalResponseData | FractalResponseList | null | undefined>;
     };
 }
@@ -141,7 +161,7 @@ export interface PaginationDataSet {
     totalPages: number;
 }
 
-export function getPaginationSet(data: any): PaginationDataSet {
+export function getPaginationSet(data: Record<string, number>): PaginationDataSet {
     return {
         total: data.total,
         count: data.count,
