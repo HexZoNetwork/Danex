@@ -69,7 +69,7 @@
       "session_grace_sec": 20,
       "challenge_cookie_secure_mode": "auto",
       "waf_challenge_upstream": "127.0.0.1:18444",
-      "public_tcp_ports": "80,443,8080,18443",
+      "public_tcp_ports": "22,80,443,2022,8080,18443",
       "infra_guard_ports": "22,2022,8080,3306,5432,6379",
       "protected_services": [
          {
@@ -84,6 +84,31 @@
             "port": 443,
             "proto": "https"
          }
+      ],
+      "waf_modsec_enabled": true,
+      "waf_crs_paranoia_level": 1,
+      "waf_crs_inbound_threshold": 5,
+      "waf_crs_outbound_threshold": 4,
+      "waf_sensitive_fail_closed": true,
+      "rate_limit_auth_rate": "5r/s",
+      "rate_limit_auth_burst": 20,
+      "rate_limit_api_client_rate": "30r/s",
+      "rate_limit_api_client_burst": 80,
+      "rate_limit_api_application_rate": "60r/s",
+      "rate_limit_api_application_burst": 120,
+      "rate_limit_static_rate": "120r/s",
+      "rate_limit_static_burst": 240,
+      "wings_api_bind": "127.0.0.1",
+      "wings_userns_mode": "private",
+      "wings_enable_icc": false,
+      "admin_exec_mode": "restricted_templates",
+      "admin_exec_templates": [
+         "systemctl_status",
+         "journal_tail",
+         "nginx_test",
+         "nginx_reload",
+         "ss_listen",
+         "tail_logs"
       ]
    },
    "monitor": {
@@ -140,5 +165,67 @@
       "creator": "@",
       "report_channel": "@",
       "token": ""
+   },
+   "waf": {
+      "modsec": {
+         "enabled": true
+      },
+      "crs": {
+         "paranoia_level": 1,
+         "inbound_threshold": 5,
+         "outbound_threshold": 4
+      },
+      "failure_policy": {
+         "sensitive_fail_closed": true
+      }
+   },
+   "rate_limits": {
+      "auth": {
+         "rate": "5r/s",
+         "burst": 20
+      },
+      "api_client": {
+         "rate": "30r/s",
+         "burst": 80
+      },
+      "api_application": {
+         "rate": "60r/s",
+         "burst": 120
+      },
+      "static": {
+         "rate": "120r/s",
+         "burst": 240
+      }
+   },
+   "firewall": {
+      "allowed_ports": "22,80,443,2022,8080,18443",
+      "restricted_sources": {
+         "wings_api": "127.0.0.1/32"
+      }
+   },
+   "abuse_guard": {
+      "max_auto_bans": 200
+   },
+   "panel": {
+      "admin_exec": {
+         "mode": "restricted_templates",
+         "templates": [
+            "systemctl_status",
+            "journal_tail",
+            "nginx_test",
+            "nginx_reload",
+            "ss_listen",
+            "tail_logs"
+         ]
+      }
+   },
+   "wings": {
+      "isolation": {
+         "userns_mode": "private",
+         "icc_enabled": false
+      },
+      "api": {
+         "bind": "127.0.0.1"
+      }
    }
 }

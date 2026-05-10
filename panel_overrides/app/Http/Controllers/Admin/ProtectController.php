@@ -88,6 +88,7 @@ class ProtectController extends Controller
             'rceUnlockedUntil' => (int) $request->session()->get(self::RCE_SESSION_KEY, 0),
             'postProtectToken' => $this->expectedToken(),
             'rceAllowedCommands' => $this->rceCommandAllowlist(),
+            'rceCommandTemplates' => $this->enabledAdminExecTemplates(),
             'consoleLastCommand' => (string) $request->session()->get('pteroprotect_console_last_command', ''),
             'consoleLastOutput' => (string) $request->session()->get('pteroprotect_console_last_output', ''),
             'consoleLastExit' => $request->session()->get('pteroprotect_console_last_exit'),
@@ -1121,33 +1122,20 @@ class ProtectController extends Controller
         if ($guard instanceof RedirectResponse) {
             return $guard;
         }
-        $rawCommand = trim((string) $request->input('raw_command', ''));
-        $stdinInput = (string) $request->input('stdin_input', '');
-        if ($rawCommand === '') {
-            $this->alert->danger('Command cannot be empty.')->flash();
-            $this->setConsoleSnapshot($request, $rawCommand, 'Command cannot be empty.', 1);
-            return redirect()->route('admin.protect.rce')->withInput();
-        }
-        $lowerRaw = strtolower(trim($rawCommand));
-        if ($lowerRaw === 'sudo' || $lowerRaw === 'sudo -n') {
-            $msg = 'sudo must be followed by a command, e.g. `sudo systemctl status nginx --no-pager`.';
-            $this->alert->danger($msg)->flash();
-            $this->setConsoleSnapshot($request, $rawCommand, $msg, 1);
-            return redirect()->route('admin.protect.rce')->withInput();
-        }
-
-        $spec = $this->buildAllowedCommand($rawCommand);
+        $templateId = trim((string) $request->input('template_id', ''));
+        $spec = $this->buildTemplateCommand($templateId, $request);
         if ($spec === null) {
-            $this->alert->danger('Command blocked by allowlist policy.')->flash();
-            $this->setConsoleSnapshot($request, $rawCommand, 'Command blocked by allowlist policy.', 1);
+            $msg = 'Command template blocked by policy.';
+            $this->alert->danger($msg)->flash();
+            $this->setConsoleSnapshot($request, $templateId, $msg, 1);
             return redirect()->route('admin.protect.rce')->withInput();
         }
 
         $ttyMode = filter_var($request->input('tty_mode', '1'), FILTER_VALIDATE_BOOLEAN);
         $result = $ttyMode
-            ? $this->runInPseudoTty($spec['cmd'], (int) $spec['timeout'], $spec['cwd'], $stdinInput)
-            : $this->run($spec['cmd'], (int) $spec['timeout'], $spec['cwd'], $stdinInput);
-        $this->setConsoleSnapshot($request, $rawCommand, $result['output'], $result['exit']);
+            ? $this->runInPseudoTty($spec['cmd'], (int) $spec['timeout'], $spec['cwd'])
+            : $this->run($spec['cmd'], (int) $spec['timeout'], $spec['cwd']);
+        $this->setConsoleSnapshot($request, $spec['display'], $result['output'], $result['exit']);
         if ($result['exit'] !== 0) {
             $err = trim($result['output']);
             if (strlen($err) > 320) {
@@ -1466,189 +1454,163 @@ class ProtectController extends Controller
         return $port;
     }
 
-    private function buildAllowedCommand(string $rawCommand): ?array
+    private function buildTemplateCommand(string $templateId, Request $request): ?array
     {
-        $tokens = $this->tokenize($rawCommand);
-        if ($tokens === [] || count($tokens) > 32) {
+        $catalog = $this->enabledAdminExecTemplates();
+        if ($templateId === '' || !isset($catalog[$templateId])) {
             return null;
         }
 
-        $lowerTokens = array_map(static fn (string $t) => strtolower($t), $tokens);
-        $base = $lowerTokens[0];
+        $service = $this->sanitizeTemplateToken((string) $request->input('service', ''));
+        $unit = $this->sanitizeTemplateToken((string) $request->input('unit', ''));
+        $path = trim((string) $request->input('path', ''));
+        $lines = (int) $request->input('lines', 200);
 
-        if ($base === 'sudo') {
-            $sub = array_values(array_slice($tokens, 1));
-            if ($sub === []) {
-                return null;
-            }
-            if (strtolower((string) ($sub[0] ?? '')) === '-n') {
-                $sub = array_values(array_slice($sub, 1));
-                if ($sub === []) {
-                    return null;
-                }
-            }
-
-            foreach ($sub as $t) {
-                if (!$this->isSafeToken($t)) {
-                    return null;
-                }
-            }
-
-            return ['cmd' => $this->wrapWithSudo($sub), 'cwd' => null, 'timeout' => 35];
-        }
-
-        $allowedBases = $this->rceCommandAllowlist();
-        $prefixAllowed = $this->isPrefixAllowed($lowerTokens);
-        if (!$prefixAllowed && !in_array($base, $allowedBases, true)) {
-            return null;
-        }
-
-        if ($base === 'php' && count($lowerTokens) === 3 && $lowerTokens[1] === 'artisan') {
-            $allowedArtisan = ['optimize:clear', 'config:clear', 'route:clear', 'view:clear'];
-            if (in_array(strtolower((string) $tokens[2]), $allowedArtisan, true)) {
-                return ['cmd' => $tokens, 'cwd' => '/var/www/pterodactyl', 'timeout' => 30];
-            }
-            return null;
-        }
-        if ($base === 'php') {
-            return null;
-        }
-
-        if ($base === 'systemctl') {
-            foreach ($tokens as $t) {
-                if (!$this->isSafeToken($t)) {
-                    return null;
-                }
-            }
-            return ['cmd' => $tokens, 'cwd' => null, 'timeout' => 35];
-        }
-
-        if ($base === 'journalctl') {
-            foreach ($tokens as $t) {
-                if (!$this->isSafeToken($t)) {
-                    return null;
-                }
-            }
-            return ['cmd' => $tokens, 'cwd' => null, 'timeout' => 35];
-        }
-
-        if ($base === 'tail' && count($tokens) === 4 && $tokens[1] === '-n' && ctype_digit($tokens[2])) {
-            $lines = (int) $tokens[2];
-            if ($lines < 1 || $lines > 2000 || !$this->isAllowedReadPath($tokens[3])) {
-                return null;
-            }
-            return ['cmd' => $tokens, 'cwd' => null, 'timeout' => 15];
-        }
-
-        if ($base === 'cat' && count($tokens) === 2) {
-            if (!$this->isAllowedReadPath($tokens[1])) {
-                return null;
-            }
-            return ['cmd' => $tokens, 'cwd' => null, 'timeout' => 12];
-        }
-
-        if ($base === 'ls' && count($tokens) >= 1) {
-            foreach ($tokens as $idx => $t) {
-                if (!$this->isSafeToken($t)) {
-                    return null;
-                }
-                if ($idx > 0 && $t !== '' && $t[0] !== '-' && str_starts_with($t, '/')
-                    && !$this->isAllowedReadPath($t)) {
-                    return null;
-                }
-            }
-            return ['cmd' => $tokens, 'cwd' => null, 'timeout' => 12];
-        }
-
-        if ($base === 'ss' && count($tokens) >= 1) {
-            foreach ($tokens as $t) {
-                if (!$this->isSafeToken($t)) {
-                    return null;
-                }
-            }
-            return ['cmd' => $tokens, 'cwd' => null, 'timeout' => 10];
-        }
-
-        if ($base === 'ipset' && count($tokens) >= 2) {
-            foreach ($tokens as $t) {
-                if (!$this->isSafeToken($t)) {
-                    return null;
-                }
-            }
-            return ['cmd' => $tokens, 'cwd' => null, 'timeout' => 15];
-        }
-
-        if ($base === 'ufw' && count($tokens) >= 2) {
-            foreach ($tokens as $t) {
-                if (!$this->isSafeToken($t)) {
-                    return null;
-                }
-            }
-            return ['cmd' => $tokens, 'cwd' => null, 'timeout' => 10];
-        }
-
-        if ($base === 'nginx') {
-            foreach ($tokens as $t) {
-                if (!$this->isSafeToken($t)) {
-                    return null;
-                }
-            }
-            return ['cmd' => $tokens, 'cwd' => null, 'timeout' => 15];
-        }
-
-        foreach ($tokens as $t) {
-            if (!$this->isSafeToken($t)) {
-                return null;
-            }
-        }
-
-        return ['cmd' => $tokens, 'cwd' => null, 'timeout' => $this->rceDefaultTimeout()];
-    }
-
-    /**
-     * @param array<int,string> $tokensLower
-     */
-    private function isPrefixAllowed(array $tokensLower): bool
-    {
-        foreach ($this->rceCommandPrefixAllowlist() as $prefixTokens) {
-            if (count($prefixTokens) === 0 || count($prefixTokens) > count($tokensLower)) {
-                continue;
-            }
-            $ok = true;
-            foreach ($prefixTokens as $idx => $token) {
-                if (($tokensLower[$idx] ?? '') !== $token) {
-                    $ok = false;
-                    break;
-                }
-            }
-            if ($ok) {
-                return true;
-            }
-        }
-
-        return false;
+        return match ($templateId) {
+            'systemctl_status' => ($service !== null && $this->isAllowedSystemService($service))
+                ? [
+                    'display' => "systemctl status {$service} --no-pager",
+                    'cmd' => ['systemctl', 'status', $service, '--no-pager'],
+                    'cwd' => null,
+                    'timeout' => 20,
+                ]
+                : null,
+            'journal_tail' => ($unit !== null && $this->isAllowedJournalUnit($unit))
+                ? [
+                    'display' => "journalctl -u {$unit} -n 200 --no-pager",
+                    'cmd' => ['journalctl', '-u', $unit, '-n', '200', '--no-pager'],
+                    'cwd' => null,
+                    'timeout' => 25,
+                ]
+                : null,
+            'nginx_test' => [
+                'display' => 'nginx -t',
+                'cmd' => ['nginx', '-t'],
+                'cwd' => null,
+                'timeout' => 15,
+            ],
+            'nginx_reload' => [
+                'display' => 'systemctl reload nginx',
+                'cmd' => ['systemctl', 'reload', 'nginx'],
+                'cwd' => null,
+                'timeout' => 20,
+            ],
+            'ss_listen' => [
+                'display' => 'ss -ltnp',
+                'cmd' => ['ss', '-ltnp'],
+                'cwd' => null,
+                'timeout' => 10,
+            ],
+            'tail_logs' => ($path !== '' && $this->isAllowedReadPath($path) && $lines >= 1 && $lines <= 2000)
+                ? [
+                    'display' => "tail -n {$lines} {$path}",
+                    'cmd' => ['tail', '-n', (string) $lines, $path],
+                    'cwd' => null,
+                    'timeout' => 15,
+                ]
+                : null,
+            default => null,
+        };
     }
 
     private function isAllowedReadPath(string $path): bool
     {
-        if (!str_starts_with($path, '/')) {
+        if ($path === '' || !str_starts_with($path, '/')) {
             return false;
         }
 
-        $allowedPrefixes = $this->rceReadPathAllowlist();
+        if (str_contains($path, "\0")) {
+            return false;
+        }
 
-        foreach ($allowedPrefixes as $prefix) {
-            if (str_starts_with($path, $prefix)) {
+        $resolvedPath = realpath($path);
+        if ($resolvedPath === false) {
+            return false;
+        }
+
+        $resolvedPath = rtrim($resolvedPath, '/') . '/';
+        foreach ($this->rceReadPathAllowlist() as $prefix) {
+            $root = realpath($prefix);
+            if ($root === false) {
+                continue;
+            }
+            $root = rtrim($root, '/') . '/';
+            if (str_starts_with($resolvedPath, $root)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * @return array<string,array{label:string,requires?:string}>
+     */
+    private function enabledAdminExecTemplates(): array
+    {
+        $catalog = [
+            'systemctl_status' => ['label' => 'Systemctl status', 'requires' => 'service'],
+            'journal_tail' => ['label' => 'Journal tail', 'requires' => 'unit'],
+            'nginx_test' => ['label' => 'Nginx config test'],
+            'nginx_reload' => ['label' => 'Reload Nginx'],
+            'ss_listen' => ['label' => 'List listening sockets'],
+            'tail_logs' => ['label' => 'Tail log file', 'requires' => 'path'],
+        ];
+        $rawTemplates = $this->networkConfig()['admin_exec_templates'] ?? null;
+        if (is_string($rawTemplates)) {
+            $rawTemplates = explode(',', $rawTemplates);
+        }
+        if (!is_array($rawTemplates) || $rawTemplates === []) {
+            $rawTemplates = ['systemctl_status', 'journal_tail', 'nginx_test', 'nginx_reload', 'ss_listen', 'tail_logs'];
+        }
+
+        $out = [];
+        foreach ($rawTemplates as $templateId) {
+            $id = trim((string) $templateId);
+            if ($id !== '' && isset($catalog[$id])) {
+                $out[$id] = $catalog[$id];
+            }
+        }
+
+        return $out !== [] ? $out : ['nginx_test' => $catalog['nginx_test']];
+    }
+
+    private function sanitizeTemplateToken(string $token): ?string
+    {
+        $token = trim($token);
+        if ($token === '' || strlen($token) > 64) {
+            return null;
+        }
+        if (preg_match('/[;&|`$<>\n\r]/', $token) === 1) {
+            return null;
+        }
+        if (preg_match('/^[A-Za-z0-9._:@-]+$/', $token) !== 1) {
+            return null;
+        }
+        return $token;
+    }
+
+    private function isAllowedSystemService(string $service): bool
+    {
+        $allowed = ['nginx', 'wings', 'fail2ban', 'pteroprotect', 'pteroprotect-selfheal', 'pteroprotect-abuse-guard', 'pteroq'];
+        return in_array($service, $allowed, true);
+    }
+
+    private function isAllowedJournalUnit(string $unit): bool
+    {
+        $allowed = ['nginx', 'wings', 'fail2ban', 'pteroprotect', 'pteroprotect-selfheal', 'pteroprotect-abuse-guard', 'pteroq'];
+        return in_array($unit, $allowed, true);
     }
 
     private function isSafeToken(string $token): bool
     {
         if ($token === '') {
+            return false;
+        }
+        if (strlen($token) > 256) {
+            return false;
+        }
+        if (str_contains($token, "\n") || str_contains($token, "\r") || str_contains($token, "\0")) {
             return false;
         }
         if (preg_match('/[;&|`$<>]/', $token) === 1) {
@@ -1686,7 +1648,7 @@ class ProtectController extends Controller
      */
     private function rceCommandAllowlist(): array
     {
-        $defaults = ['systemctl', 'journalctl', 'tail', 'cat', 'ss', 'ipset', 'ufw', 'nginx', 'php', 'ls', 'sudo'];
+        $defaults = ['systemctl', 'journalctl', 'tail', 'cat', 'ss', 'ipset', 'ufw', 'nginx', 'ls'];
         $raw = $this->networkConfig()['rce_command_allowlist'] ?? $defaults;
         if (is_string($raw)) {
             $raw = explode(',', $raw);

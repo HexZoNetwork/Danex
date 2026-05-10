@@ -207,6 +207,16 @@ def write_file(path: str, payload: str) -> None:
         log(f"write failed path={path}: {exc}")
 
 
+def write_metrics(base_dir: str, values: Dict[str, float]) -> None:
+    lines = [
+        "# HELP pteroprotect_selfheal External and local health monitor metrics.",
+        "# TYPE pteroprotect_selfheal gauge",
+    ]
+    for key, value in values.items():
+        lines.append(f"pteroprotect_selfheal{{metric=\"{key}\"}} {value}")
+    write_file(os.path.join(base_dir, "self_heal.prom"), "\n".join(lines))
+
+
 def set_mode(mode: str) -> None:
     now = int(time.time())
     payload = json.dumps({"mode": mode, "updated_at": now}, ensure_ascii=True)
@@ -355,6 +365,16 @@ def main() -> int:
                 set_mode("normal")
                 set_lockdown(False)
                 mode = "normal"
+
+        write_metrics(PANEL_RUNTIME_DIR, {
+            "signals": float(signals),
+            "p95_ms": float(p95),
+            "error_rate": float(error_rate),
+            "external_fail_streak": float(external_fail_streak),
+            "challenge_ok": 1.0 if challenge_ok else 0.0,
+            "external_ok": 1.0 if external_ok else 0.0,
+            "self_ddos_recent": 1.0 if self_ddos_recent else 0.0,
+        })
 
         sleep_sec = anomaly_sec if signals >= 1 else normal_sec
         time.sleep(sleep_sec)

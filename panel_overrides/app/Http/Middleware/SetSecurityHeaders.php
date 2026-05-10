@@ -17,6 +17,7 @@ class SetSecurityHeaders
     private static array $headers = [
         'X-Frame-Options' => 'DENY',
         'X-Content-Type-Options' => 'nosniff',
+        'X-XSS-Protection' => '1; mode=block',
         'Referrer-Policy' => 'strict-origin-when-cross-origin',
         'Permissions-Policy' => 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=(), interest-cohort=()',
         'Cross-Origin-Opener-Policy' => 'same-origin',
@@ -60,7 +61,7 @@ class SetSecurityHeaders
         }
 
         if ($request->isSecure() && ! $response->headers->has('Strict-Transport-Security')) {
-            $response->headers->set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+            $response->headers->set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
         }
 
         foreach (static::$headers as $key => $value) {

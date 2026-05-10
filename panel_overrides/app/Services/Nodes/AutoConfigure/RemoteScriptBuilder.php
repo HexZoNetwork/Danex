@@ -112,6 +112,15 @@ install_wings() {
   fi
 }
 
+ensure_wings_user() {
+  if ! id -u wings >/dev/null 2>&1; then
+    useradd --system --home /etc/pterodactyl --shell /usr/sbin/nologin wings || true
+  fi
+  if getent group docker >/dev/null 2>&1; then
+    usermod -aG docker wings || true
+  fi
+}
+
 write_unit() {
   cat >/etc/systemd/system/wings.service <<'UNIT'
 [Unit]
@@ -119,7 +128,8 @@ Description=Pterodactyl Wings Daemon
 After=network.target
 
 [Service]
-User=root
+User=wings
+Group=wings
 WorkingDirectory=/etc/pterodactyl
 LimitNOFILE=4096
 PIDFile=/var/run/wings/daemon.pid
@@ -136,7 +146,9 @@ UNIT
 main() {
   install_deps
   install_wings
+  ensure_wings_user
   mkdir -p /etc/pterodactyl /var/run/wings
+  chown -R wings:wings /etc/pterodactyl /var/run/wings || true
   selected_port="$(pick_port)"
   configure_firewall "$selected_port"
   write_unit

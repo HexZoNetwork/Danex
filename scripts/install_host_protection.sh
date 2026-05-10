@@ -62,6 +62,7 @@ CONFIG_PATH="${GUARD_HOME}/config.json"
 UNBLOCK_PORTAL_PORT="${PTEROPROTECT_UNBLOCK_PORTAL_PORT:-}"
 WINGS_API_PORT="${PTEROPROTECT_WINGS_API_PORT:-}"
 WINGS_SFTP_PORT="${PTEROPROTECT_WINGS_SFTP_PORT:-}"
+WINGS_API_RESTRICTED_SOURCE="${PTEROPROTECT_WINGS_API_RESTRICTED_SOURCE:-127.0.0.1/32}"
 WINGS_GUARD_CONNLIMIT_PER_IP="${PTEROPROTECT_WINGS_GUARD_CONNLIMIT_PER_IP:-32}"
 WINGS_GUARD_NEW_CONN_RATE="${PTEROPROTECT_WINGS_GUARD_NEW_CONN_RATE:-10}"
 WINGS_GUARD_NEW_CONN_BURST="${PTEROPROTECT_WINGS_GUARD_NEW_CONN_BURST:-20}"
@@ -876,9 +877,9 @@ if [[ -n "${WINGS_GUARD_PORTS}" ]]; then
         iptables -I INPUT -p tcp -m multiport --dports "${WINGS_GUARD_PORTS}" -j "${WINGS_GUARD_CHAIN4}"
     iptables -A "${WINGS_GUARD_CHAIN4}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
     iptables -A "${WINGS_GUARD_CHAIN4}" -s 127.0.0.1/32 -j RETURN
-    iptables -A "${WINGS_GUARD_CHAIN4}" -s 10.0.0.0/8 -j RETURN
-    iptables -A "${WINGS_GUARD_CHAIN4}" -s 172.16.0.0/12 -j RETURN
-    iptables -A "${WINGS_GUARD_CHAIN4}" -s 192.168.0.0/16 -j RETURN
+    if [[ "${WINGS_API_RESTRICTED_SOURCE}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
+        iptables -A "${WINGS_GUARD_CHAIN4}" -s "${WINGS_API_RESTRICTED_SOURCE}" -j RETURN
+    fi
     if have_cmd ipset; then
         iptables -A "${WINGS_GUARD_CHAIN4}" -m set --match-set "${IPSET4}" src -j DROP
         iptables -A "${WINGS_GUARD_CHAIN4}" -p tcp --syn -m connlimit --connlimit-above "${WINGS_GUARD_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j SET --add-set "${IPSET4}" src

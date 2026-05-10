@@ -228,6 +228,46 @@ read_network_setting() {
     ' "${config_file}" "${key}" "${default_value}" 2>/dev/null || printf '%s' "${default_value}"
 }
 
+read_config_path_value() {
+    local path_expr="$1"
+    local default_value="$2"
+    local config_file="${INSTALL_DIR}/config.json"
+
+    if [[ ! -f "${config_file}" ]]; then
+        printf '%s' "${default_value}"
+        return 0
+    fi
+
+    python3 - "${config_file}" "${path_expr}" "${default_value}" <<'PY' 2>/dev/null || printf '%s' "${default_value}"
+import json
+import sys
+
+cfg_path, dotted_path, default = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    print(default, end="")
+    raise SystemExit(0)
+
+cur = data
+for seg in dotted_path.split("."):
+    if not isinstance(cur, dict) or seg not in cur:
+        print(default, end="")
+        raise SystemExit(0)
+    cur = cur[seg]
+
+if isinstance(cur, list):
+    print(",".join(str(x) for x in cur), end="")
+elif isinstance(cur, bool):
+    print("true" if cur else "false", end="")
+elif cur is None:
+    print(default, end="")
+else:
+    print(str(cur), end="")
+PY
+}
+
 panel_runtime_users() {
     {
         printf '%s\n' www-data
@@ -1109,6 +1149,14 @@ lines = env_path.read_text().splitlines()
 for k, v in net.items():
     updates[env_key_from_network(k)] = value_to_string(v)
 
+# Harden production defaults for panel runtime.
+updates["APP_DEBUG"] = "false"
+updates["SESSION_DRIVER"] = "redis"
+updates["CACHE_DRIVER"] = "redis"
+updates["SESSION_SECURE_COOKIE"] = "true"
+updates["SESSION_HTTP_ONLY"] = "true"
+updates["SESSION_SAME_SITE"] = "lax"
+
 # DB_* intentionally NOT written from config.json to panel .env.
 # Database source of truth must remain panel .env.
 
@@ -1416,6 +1464,10 @@ if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-abuse-guard.service" ]]; then
     echo "[setup] installing runtime abuse guard service..."
     install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-abuse-guard.service" "${SYSTEMD_DIR}/pteroprotect-abuse-guard.service"
 fi
+if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-log-watch.service" ]]; then
+    echo "[setup] installing security log watch service..."
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-log-watch.service" "${SYSTEMD_DIR}/pteroprotect-log-watch.service"
+fi
 
 PANEL_OVERRIDE_SOURCE=""
 if [[ -d "${PROJECT_DIR}/panel_overrides" ]]; then
@@ -1694,6 +1746,33 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     WEBSOCKET_GLOBAL_CONN_LIMIT="$(read_network_setting websocket_global_conn_limit "")"
     NGINX_WORKER_CONNECTIONS="$(read_network_setting nginx_worker_connections 4096)"
     NGINX_WORKER_RLIMIT_NOFILE="$(read_network_setting nginx_worker_rlimit_nofile 131072)"
+    WAF_MODSEC_ENABLED="$(read_config_path_value waf.modsec.enabled "$(read_network_setting waf_modsec_enabled true)")"
+    WAF_CRS_PARANOIA_LEVEL="$(read_config_path_value waf.crs.paranoia_level "$(read_network_setting waf_crs_paranoia_level 1)")"
+    WAF_CRS_INBOUND_THRESHOLD="$(read_config_path_value waf.crs.inbound_threshold "$(read_network_setting waf_crs_inbound_threshold 5)")"
+    WAF_CRS_OUTBOUND_THRESHOLD="$(read_config_path_value waf.crs.outbound_threshold "$(read_network_setting waf_crs_outbound_threshold 4)")"
+    RATE_AUTH_RATE="$(read_config_path_value rate_limits.auth.rate "$(read_network_setting rate_limit_auth_rate 5r/s)")"
+    RATE_AUTH_BURST="$(read_config_path_value rate_limits.auth.burst "$(read_network_setting rate_limit_auth_burst 20)")"
+    RATE_API_CLIENT_RATE="$(read_config_path_value rate_limits.api_client.rate "$(read_network_setting rate_limit_api_client_rate 30r/s)")"
+    RATE_API_APPLICATION_RATE="$(read_config_path_value rate_limits.api_application.rate "$(read_network_setting rate_limit_api_application_rate 60r/s)")"
+    RATE_STATIC_RATE="$(read_config_path_value rate_limits.static.rate "$(read_network_setting rate_limit_static_rate 120r/s)")"
+
+    MODSEC_RUNTIME_ENABLED=0
+    if [[ "${WAF_MODSEC_ENABLED,,}" == "true" || "${WAF_MODSEC_ENABLED}" == "1" ]]; then
+        MODSEC_PACKAGES=()
+        if apt-cache show libnginx-mod-http-modsecurity >/dev/null 2>&1; then
+            MODSEC_PACKAGES+=(libnginx-mod-http-modsecurity)
+        fi
+        if apt-cache show modsecurity-crs >/dev/null 2>&1; then
+            MODSEC_PACKAGES+=(modsecurity-crs)
+        fi
+        if (( ${#MODSEC_PACKAGES[@]} > 0 )); then
+            echo "[setup] installing ModSecurity stack: ${MODSEC_PACKAGES[*]}"
+            apt-get install "${APT_INSTALL_OPTS[@]}" "${MODSEC_PACKAGES[@]}"
+            MODSEC_RUNTIME_ENABLED=1
+        else
+            echo "[setup] warning: no ModSecurity packages found in apt repositories." >&2
+        fi
+    fi
     if [[ "${HTTP_CONN_LIMIT}" =~ ^[0-9]+$ ]]; then
         if (( HTTP_CONN_LIMIT < AUTH_CONN_LIMIT )); then
             AUTH_CONN_LIMIT="${HTTP_CONN_LIMIT}"
@@ -1713,6 +1792,9 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     fi
     if [[ ! "${WEBSOCKET_GLOBAL_CONN_LIMIT}" =~ ^[0-9]+$ ]]; then
         WEBSOCKET_GLOBAL_CONN_LIMIT=$(( WEBSOCKET_CONN_LIMIT * 20 ))
+    fi
+    if [[ "${RATE_AUTH_BURST}" =~ ^[0-9]+$ ]]; then
+        HTTP_AUTH_REQ_BURST="${RATE_AUTH_BURST}"
     fi
     if (( WEBSOCKET_GLOBAL_CONN_LIMIT < 400 )); then
         WEBSOCKET_GLOBAL_CONN_LIMIT=400
@@ -1770,6 +1852,23 @@ PY
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_realip.conf" "${NGINX_DIR}/conf.d/pteroprotect_realip.conf"
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_provider_gate.conf" "${NGINX_DIR}/conf.d/pteroprotect_provider_gate.conf"
     cp "${INSTALL_DIR}/host_overrides/nginx/snippets/pteroprotect_server.conf" "${NGINX_DIR}/snippets/pteroprotect_server.conf"
+    if [[ "${MODSEC_RUNTIME_ENABLED}" != "1" ]]; then
+        perl -0pi -e 's/^modsecurity on;\\n//m; s/^modsecurity_rules_file .*;\\n//m;' "${NGINX_DIR}/snippets/pteroprotect_server.conf"
+    fi
+    if [[ -d "${INSTALL_DIR}/host_overrides/nginx/modsec" ]]; then
+        mkdir -p "${NGINX_DIR}/modsec/rules"
+        cp "${INSTALL_DIR}/host_overrides/nginx/modsec/main.conf" "${NGINX_DIR}/modsec/main.conf"
+        cp "${INSTALL_DIR}/host_overrides/nginx/modsec/crs-setup.conf" "${NGINX_DIR}/modsec/crs-setup.conf"
+        cp "${INSTALL_DIR}/host_overrides/nginx/modsec/local-exclusions.conf" "${NGINX_DIR}/modsec/local-exclusions.conf"
+        if [[ -d /usr/share/modsecurity-crs/rules ]]; then
+            cp -f /usr/share/modsecurity-crs/rules/*.conf "${NGINX_DIR}/modsec/rules/" 2>/dev/null || true
+        elif [[ -d /usr/share/modsecurity-crs/owasp-crs/rules ]]; then
+            cp -f /usr/share/modsecurity-crs/owasp-crs/rules/*.conf "${NGINX_DIR}/modsec/rules/" 2>/dev/null || true
+        fi
+        perl -0pi -e "s/setvar:tx.paranoia_level=\\d+/setvar:tx.paranoia_level=${WAF_CRS_PARANOIA_LEVEL}/g; s/setvar:tx.inbound_anomaly_score_threshold=\\d+/setvar:tx.inbound_anomaly_score_threshold=${WAF_CRS_INBOUND_THRESHOLD}/g; s/setvar:tx.outbound_anomaly_score_threshold=\\d+/setvar:tx.outbound_anomaly_score_threshold=${WAF_CRS_OUTBOUND_THRESHOLD}/g;" "${NGINX_DIR}/modsec/crs-setup.conf"
+        mkdir -p /var/log/nginx
+        touch /var/log/nginx/modsec_audit.log
+    fi
     if [[ ! "${CDN_STATIC_CACHE_TTL}" =~ ^[0-9]+[smhdw]$ ]]; then
         CDN_STATIC_CACHE_TTL="7d"
     fi
@@ -1806,7 +1905,18 @@ if m:
     text = text[:m.start()] + replacement + text[m.end():]
     path.write_text(text)
 PY
-    perl -0pi -e "s/(zone=pteroprotect_req:20m rate=)\\d+(r\\/s;)/\${1}${HTTP_REQ_RATE}\${2}/g; s/(zone=pteroprotect_auth:10m rate=)\\d+(r\\/m;)/\${1}${HTTP_AUTH_REQ_RATE_PER_MIN}\${2}/g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
+    if [[ "${RATE_AUTH_RATE}" =~ ^[0-9]+r/s$ ]]; then
+        HTTP_AUTH_REQ_RATE_PER_MIN="${RATE_AUTH_RATE}"
+    elif [[ "${HTTP_AUTH_REQ_RATE_PER_MIN}" =~ ^[0-9]+$ ]]; then
+        HTTP_AUTH_REQ_RATE_PER_MIN="${HTTP_AUTH_REQ_RATE_PER_MIN}r/m"
+    else
+        HTTP_AUTH_REQ_RATE_PER_MIN="5r/s"
+    fi
+    [[ "${HTTP_REQ_RATE}" =~ ^[0-9]+$ ]] && HTTP_REQ_RATE="${HTTP_REQ_RATE}r/s"
+    [[ "${RATE_API_CLIENT_RATE}" =~ ^[0-9]+r/s$ ]] || RATE_API_CLIENT_RATE="400r/s"
+    [[ "${RATE_API_APPLICATION_RATE}" =~ ^[0-9]+r/s$ ]] || RATE_API_APPLICATION_RATE="600r/s"
+    [[ "${RATE_STATIC_RATE}" =~ ^[0-9]+r/s$ ]] || RATE_STATIC_RATE="30r/s"
+    perl -0pi -e "s/(zone=pteroprotect_req:20m rate=)\\d+r\\/s;/\${1}${HTTP_REQ_RATE};/g; s/(zone=pteroprotect_auth:10m rate=)\\d+r\\/[sm];/\${1}${HTTP_AUTH_REQ_RATE_PER_MIN};/g; s/(zone=pteroprotect_api_key_req:20m rate=)\\d+r\\/s;/\${1}${RATE_API_CLIENT_RATE};/g; s/(zone=pteroprotect_api_global_req:10m rate=)\\d+r\\/s;/\${1}${RATE_API_APPLICATION_RATE};/g; s/(zone=pteroprotect_global_req:10m rate=)\\d+r\\/s;/\${1}${RATE_STATIC_RATE};/g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
     python3 - "${NGINX_DIR}/conf.d/pteroprotect_realip.conf" "${REAL_IP_ENABLED_RAW}" "${REAL_IP_HEADER}" "${REAL_IP_RECURSIVE_RAW}" "${TRUSTED_PROXY_IPV4_CIDRS}" "${TRUSTED_PROXY_IPV6_CIDRS}" <<'PY'
 import ipaddress
 import pathlib
@@ -2145,14 +2255,14 @@ if "location @pteroprotect_provider_web_block {" not in text:
             )
             text = text[:end] + block + text[end:]
 
-check_location = f"""location = /__pteroprotect/challenge/check {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"""
+check_location = f"""location = /__pteroprotect/challenge/check {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_deny;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"""
 if "location = /__pteroprotect/challenge/check_web {" not in text and check_location in text:
-    insert = check_location + f"\nlocation = /__pteroprotect/challenge/check_web {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-web;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Cookie $http_cookie;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"
+    insert = check_location + f"\nlocation = /__pteroprotect/challenge/check_web {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-web;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Cookie $http_cookie;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_deny;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"
     text = text.replace(check_location, insert)
 
-check_token_location = f"""location = /__pteroprotect/challenge/check_token {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-token;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"""
+check_token_location = f"""location = /__pteroprotect/challenge/check_token {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-token;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_deny;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"""
 if "location = /__pteroprotect/challenge/check_provider_api {" not in text and check_token_location in text:
-    insert = check_token_location + f"\nlocation = /__pteroprotect/challenge/check_provider_api {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-provider-api;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_allow;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"
+    insert = check_token_location + f"\nlocation = /__pteroprotect/challenge/check_provider_api {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-provider-api;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_deny;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"
     text = text.replace(check_token_location, insert)
 
 for old, new in [
@@ -2379,12 +2489,13 @@ PY
         echo "[setup] preparing wings reverse-proxy guard on :8080..."
         CHALLENGE_PORT="$(read_network_setting waf_challenge_port 18444)"
         WINGS_REPLICAS_RAW="$(read_network_setting wings_guard_replicas "")"
-        WINGS_ROOTLESS_ENABLED="false"
+        WINGS_ROOTLESS_ENABLED="$(read_config_path_value wings.isolation.rootless_enabled "$(read_network_setting wings_rootless_enabled true)")"
         WINGS_ROOTLESS_CONTAINER_UID="1000"
         WINGS_ROOTLESS_CONTAINER_GID="1000"
         WINGS_DISABLE_REMOTE_DOWNLOAD="$(read_network_setting wings_disable_remote_download true)"
-        WINGS_USERNS_MODE="host"
-        WINGS_ENABLE_ICC="$(read_network_setting wings_enable_icc false)"
+        WINGS_USERNS_MODE="$(read_config_path_value wings.isolation.userns_mode "$(read_network_setting wings_userns_mode private)")"
+        WINGS_ENABLE_ICC="$(read_config_path_value wings.isolation.icc_enabled "$(read_network_setting wings_enable_icc false)")"
+        WINGS_API_BIND="$(read_config_path_value wings.api.bind "$(read_network_setting wings_api_bind 127.0.0.1)")"
         WINGS_IGNORE_PANEL_CONFIG_UPDATES="$(read_network_setting wings_ignore_panel_config_updates true)"
         # wings-guard requires Wings to stay on localhost:18080; allowing panel-driven
         # config overwrites can revert host/port and break all daemon endpoints with 502.
@@ -2542,6 +2653,7 @@ PY
                 "${WINGS_DISABLE_REMOTE_DOWNLOAD}" \
                 "${WINGS_USERNS_MODE}" \
                 "${WINGS_ENABLE_ICC}" \
+                "${WINGS_API_BIND}" \
                 "${WINGS_IGNORE_PANEL_CONFIG_UPDATES}" \
                 "${WINGS_OPENAT_MODE}" <<'PY'
 import re
@@ -2566,8 +2678,9 @@ rootless_gid = str(sys.argv[4] if len(sys.argv) > 4 else "1000").strip() or "100
 disable_remote_download = as_bool(sys.argv[5] if len(sys.argv) > 5 else "true", True)
 userns_mode = str(sys.argv[6] if len(sys.argv) > 6 else "host").strip() or "host"
 enable_icc = as_bool(sys.argv[7] if len(sys.argv) > 7 else "false", False)
-ignore_panel_cfg_updates = as_bool(sys.argv[8] if len(sys.argv) > 8 else "true", True)
-openat_mode = str(sys.argv[9] if len(sys.argv) > 9 else "compat").strip() or "compat"
+api_bind_host = str(sys.argv[8] if len(sys.argv) > 8 else "127.0.0.1").strip() or "127.0.0.1"
+ignore_panel_cfg_updates = as_bool(sys.argv[9] if len(sys.argv) > 9 else "true", True)
+openat_mode = str(sys.argv[10] if len(sys.argv) > 10 else "compat").strip() or "compat"
 
 lines = p.read_text().splitlines()
 out = []
@@ -2580,6 +2693,15 @@ in_docker = False
 in_docker_network = False
 
 for line in lines:
+    if re.match(r'^\s*remote:\s*', line):
+        raw = re.sub(r'^\s*remote:\s*', '', line).strip().strip('"').strip("'")
+        if raw.startswith("http://"):
+            raw = "https://" + raw[len("http://"):]
+        elif not raw.startswith("https://"):
+            raw = "https://" + raw
+        out.append(f"remote: {raw}")
+        continue
+
     if re.match(r'^api:\s*$', line):
         in_api = True
         in_ssl = False
@@ -2645,7 +2767,7 @@ for line in lines:
         in_ssl = False
 
     if in_api and re.match(r'^\s{2}host:\s*', line):
-        out.append('  host: 127.0.0.1')
+        out.append(f'  host: {api_bind_host}')
         continue
 
     if in_api and re.match(r'^\s{2}port:\s*', line):
@@ -2714,9 +2836,9 @@ server {
         return 444;
     }
 
-    location @challenge_allow {
+    location @challenge_deny {
         internal;
-        return 204;
+        return 503;
     }
 
     location @wings_upstream {
@@ -2748,7 +2870,7 @@ server {
         proxy_set_header Content-Length "";
         proxy_pass_request_body off;
         proxy_intercept_errors on;
-        error_page 500 502 503 504 = @challenge_allow;
+        error_page 500 502 503 504 = @challenge_deny;
         proxy_connect_timeout 300ms;
         proxy_send_timeout 1s;
         proxy_read_timeout 1s;
@@ -2982,7 +3104,8 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
     HOST_RECENT_WINDOW="$(read_network_setting host_recent_window_sec 5)"
     HOST_BLACKHOLE_TTL="$(read_network_setting blackhole_ttl_sec 600)"
     HOST_IPV6_ENABLED="$(read_network_setting ipv6_enabled true)"
-    HOST_PUBLIC_TCP_PORTS="$(read_network_setting public_tcp_ports 80,443,8080,18443)"
+    HOST_PUBLIC_TCP_PORTS="$(read_config_path_value firewall.allowed_ports "$(read_network_setting public_tcp_ports 80,443,8080,18443)")"
+    HOST_WINGS_RESTRICTED_SOURCE="$(read_config_path_value firewall.restricted_sources.wings_api 127.0.0.1/32)"
     HOST_EGRESS_GUARD_ENABLED="$(read_network_setting egress_guard_enabled true)"
     HOST_DOCKER_STRICT_ISOLATION_ENABLED="$(read_network_setting docker_strict_isolation_enabled true)"
     HOST_EGRESS_TCP_BLOCK_PORTS="$(read_network_setting egress_tcp_block_ports 25,465,587,2525,23,2323,4444,5555,6667,6697,11211)"
@@ -3054,6 +3177,7 @@ if [[ -x "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
             PTEROPROTECT_IP_TRUST_BW_WORST_KBPS="${HOST_IP_TRUST_BW_WORST_KBPS}" \
             PTEROPROTECT_IP_TRUST_BW_BURST_KB="${HOST_IP_TRUST_BW_BURST_KB}" \
             PTEROPROTECT_INFRA_GUARD_PORTS="${HOST_INFRA_GUARD_PORTS}" \
+            PTEROPROTECT_WINGS_API_RESTRICTED_SOURCE="${HOST_WINGS_RESTRICTED_SOURCE}" \
             PTEROPROTECT_INFRA_CONNLIMIT_PER_IP="${HOST_INFRA_CONNLIMIT_PER_IP}" \
             PTEROPROTECT_INFRA_NEW_CONN_RATE="${HOST_INFRA_NEW_CONN_RATE}" \
             PTEROPROTECT_INFRA_NEW_CONN_BURST="${HOST_INFRA_NEW_CONN_BURST}" \
@@ -3177,6 +3301,16 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
             exit 1
         fi
     fi
+    if [[ -f "${SYSTEMD_DIR}/pteroprotect-log-watch.service" ]]; then
+        systemctl enable pteroprotect-log-watch >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-log-watch >/dev/null 2>&1; then
+            systemctl start pteroprotect-log-watch >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-log-watch; then
+            echo "[setup] error: pteroprotect-log-watch is not active after setup." >&2
+            exit 1
+        fi
+    fi
     if systemctl list-unit-files 2>/dev/null | grep -q '^wings\.service'; then
         systemctl enable wings >/dev/null 2>&1
         if ! systemctl restart wings >/dev/null 2>&1; then
@@ -3202,7 +3336,7 @@ arg="${2:-}"
 require_unit() {
     local unit="${1:-}"
     case "${unit}" in
-        nginx|fail2ban|pteroprotect|pteroprotect-panel-sync|pteroprotect-selfheal|pteroprotect-abuse-guard|wings)
+        nginx|fail2ban|pteroprotect|pteroprotect-panel-sync|pteroprotect-selfheal|pteroprotect-abuse-guard|pteroprotect-log-watch|wings)
             ;;
         *)
             echo "unit not allowed: ${unit}" >&2
@@ -3256,10 +3390,11 @@ pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect, $SYSTEM
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-panel-sync, $SYSTEMCTL_BIN stop pteroprotect-panel-sync, $SYSTEMCTL_BIN restart pteroprotect-panel-sync, $SYSTEMCTL_BIN status pteroprotect-panel-sync --no-pager
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-selfheal, $SYSTEMCTL_BIN stop pteroprotect-selfheal, $SYSTEMCTL_BIN restart pteroprotect-selfheal, $SYSTEMCTL_BIN status pteroprotect-selfheal --no-pager
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-abuse-guard, $SYSTEMCTL_BIN stop pteroprotect-abuse-guard, $SYSTEMCTL_BIN restart pteroprotect-abuse-guard, $SYSTEMCTL_BIN status pteroprotect-abuse-guard --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-log-watch, $SYSTEMCTL_BIN stop pteroprotect-log-watch, $SYSTEMCTL_BIN restart pteroprotect-log-watch, $SYSTEMCTL_BIN status pteroprotect-log-watch --no-pager
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start wings, $SYSTEMCTL_BIN stop wings, $SYSTEMCTL_BIN restart wings, $SYSTEMCTL_BIN status wings --no-pager
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN reboot
 pteroprotect-ops ALL=(root) NOPASSWD: $NGINX_BIN -t
-pteroprotect-ops ALL=(root) NOPASSWD: $JOURNALCTL_BIN -u nginx -n 200 --no-pager, $JOURNALCTL_BIN -u fail2ban -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-panel-sync -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-selfheal -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-abuse-guard -n 200 --no-pager, $JOURNALCTL_BIN -u wings -n 200 --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $JOURNALCTL_BIN -u nginx -n 200 --no-pager, $JOURNALCTL_BIN -u fail2ban -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-panel-sync -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-selfheal -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-abuse-guard -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-log-watch -n 200 --no-pager, $JOURNALCTL_BIN -u wings -n 200 --no-pager
 EOF
     chmod 0440 /etc/sudoers.d/pteroprotect-ops
     {

@@ -1,0 +1,17 @@
+[Unit]
+Description=PteroProtect Security Log Watcher
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/pteroprotect
+Environment=DANN_CONFIG_PATH=/pteroprotect/config.json
+ExecStart=/usr/bin/env python3 /pteroprotect/scripts/security_log_watch.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

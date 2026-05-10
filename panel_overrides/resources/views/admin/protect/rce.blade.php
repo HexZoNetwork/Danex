@@ -114,8 +114,18 @@
                     <div class="pp-console pp-dark-shell">
                         <div class="pp-console-line">
                             <span class="pp-console-prompt">root$</span>
-                            <input type="text" class="form-control pp-console-input" name="raw_command" value="{{ old('raw_command', $consoleLastCommand ?? '') }}" placeholder="systemctl status wings --no-pager" required {{ $rceUnlocked ? '' : 'disabled' }} />
-                            <input type="text" class="form-control pp-console-input" name="stdin_input" value="{{ old('stdin_input', '') }}" placeholder="stdin optional (e.g. y)" {{ $rceUnlocked ? '' : 'disabled' }} />
+                            <select class="form-control pp-console-input" name="template_id" required {{ $rceUnlocked ? '' : 'disabled' }}>
+                                <option value="">Select command template</option>
+                                @foreach(($rceCommandTemplates ?? []) as $templateId => $templateMeta)
+                                    <option value="{{ $templateId }}" {{ old('template_id') === $templateId ? 'selected' : '' }}>
+                                        {{ $templateMeta['label'] ?? $templateId }}
+                                    </option>
+                                @endforeach
+                            </select>
+                            <input type="text" class="form-control pp-console-input" name="service" value="{{ old('service', 'nginx') }}" placeholder="service (for systemctl status)" {{ $rceUnlocked ? '' : 'disabled' }} />
+                            <input type="text" class="form-control pp-console-input" name="unit" value="{{ old('unit', 'nginx') }}" placeholder="unit (for journal tail)" {{ $rceUnlocked ? '' : 'disabled' }} />
+                            <input type="text" class="form-control pp-console-input" name="path" value="{{ old('path', '/var/log/nginx/error.log') }}" placeholder="log path (for tail_logs)" {{ $rceUnlocked ? '' : 'disabled' }} />
+                            <input type="number" min="1" max="2000" class="form-control pp-console-input" name="lines" value="{{ old('lines', 200) }}" placeholder="lines" {{ $rceUnlocked ? '' : 'disabled' }} />
                             <label style="display:flex;align-items:center;gap:4px;color:#a8b7ca;font-size:12px;margin:0 6px;">
                                 <input type="checkbox" name="tty_mode" value="1" {{ old('tty_mode', '1') ? 'checked' : '' }} {{ $rceUnlocked ? '' : 'disabled' }} />
                                 TTY
@@ -126,8 +136,8 @@
                 </form>
                 <div class="pp-console-output">{{ $consoleLastOutput !== '' ? $consoleLastOutput : 'No command output yet.' }}</div>
                 <p class="text-muted" style="margin-top:6px;">Last exit code: <code>{{ is_null($consoleLastExit) ? '-' : $consoleLastExit }}</code></p>
-                <p class="text-muted" style="margin-top:10px;">Allowlist dari <code>config.json</code> key <code>network.rce_command_allowlist</code>. Active: <code>{{ implode(', ', $rceAllowedCommands ?? []) }}</code>.</p>
-                <p class="text-muted">Untuk <code>cat</code>, <code>tail</code>, dan path argumen <code>ls</code> absolut, path dibatasi oleh <code>network.rce_read_path_allowlist</code>.</p>
+                <p class="text-muted" style="margin-top:10px;">Template mode aktif. Source template: <code>network.admin_exec_templates</code>.</p>
+                <p class="text-muted">Path untuk template <code>tail_logs</code> dibatasi oleh <code>network.rce_read_path_allowlist</code> dan validasi <code>realpath</code>.</p>
                 <p class="text-muted">Mode <code>TTY</code> menjalankan command via pseudo-terminal per-eksekusi. Full shell interaktif berkelanjutan tetap tidak didukung di web UI.</p>
             </div>
         </div>

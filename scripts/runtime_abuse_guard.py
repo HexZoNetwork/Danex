@@ -181,10 +181,24 @@ def write_self_ddos_event(state_dir: str, payload: dict) -> None:
         log(f"failed writing self-ddos event: {exc}")
 
 
+def write_metrics(state_dir: str, metrics: Dict[str, int]) -> None:
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        path = os.path.join(state_dir, "abuse_guard.prom")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# HELP pteroprotect_abuse_guard_events_total Total abuse guard events by type.\n")
+            f.write("# TYPE pteroprotect_abuse_guard_events_total counter\n")
+            for key, value in metrics.items():
+                f.write(f'pteroprotect_abuse_guard_events_total{{event=\"{key}\"}} {int(value)}\n')
+    except Exception as exc:
+        log(f"failed writing abuse metrics: {exc}")
+
+
 def main() -> int:
     cfg = load_config()
     runtime = cfg.get("runtime", {}) if isinstance(cfg, dict) else {}
     abuse = cfg.get("abuse", {}) if isinstance(cfg, dict) else {}
+    abuse_guard = cfg.get("abuse_guard", {}) if isinstance(cfg, dict) else {}
 
     state_dir = runtime.get("state_dir", STATE_DIR_DEFAULT)
     req_threshold = as_int(abuse.get("self_ddos_req_threshold", 100), 100)
@@ -194,6 +208,14 @@ def main() -> int:
     grace_ms = as_int(abuse.get("sigterm_grace_ms", 1500), 1500)
     do_sigkill = bool(abuse.get("then_sigkill", True))
     escalation_ttl = as_int(abuse.get("escalation_ttl_sec", 45), 45)
+    max_auto_bans = as_int(abuse_guard.get("max_auto_bans", 200), 200)
+
+    allow_pids_raw = abuse_guard.get("allow_pids", [])
+    deny_pids_raw = abuse_guard.get("deny_pids", [])
+    allow_pids = set(as_int(v, -1) for v in allow_pids_raw) if isinstance(allow_pids_raw, list) else set()
+    deny_pids = set(as_int(v, -1) for v in deny_pids_raw) if isinstance(deny_pids_raw, list) else set()
+    allow_pids = {pid for pid in allow_pids if pid > 0}
+    deny_pids = {pid for pid in deny_pids if pid > 0}
 
     targets = abuse.get("runtime_targets", ["node", "nodejs", "python", "python3"])
     if not isinstance(targets, list) or not targets:
@@ -209,8 +231,20 @@ def main() -> int:
     # per-pid rolling counters
     prev_counts: Dict[int, int] = {}
     strikes: Dict[int, collections.deque] = {}
+    escalations = collections.deque()  # unix seconds of active auto-bans
+    metrics = {
+        "events": 0,
+        "killed": 0,
+        "escalated": 0,
+        "escalation_dropped_cap": 0,
+        "allowlist_skipped": 0,
+        "denylist_seen": 0,
+    }
 
-    log(f"started threshold={req_threshold}/{window_ms}ms targets={targets} ports={gateway_ports}")
+    log(
+        f"started threshold={req_threshold}/{window_ms}ms targets={targets} ports={gateway_ports} "
+        f"max_auto_bans={max_auto_bans}"
+    )
 
     sleep_s = max(0.2, window_ms / 1000.0)
     while True:
@@ -225,12 +259,19 @@ def main() -> int:
                 strikes.pop(pid, None)
 
         for pid in pids:
+            if pid in allow_pids:
+                metrics["allowlist_skipped"] += 1
+                continue
             current = socket_count_for_pid(pid, gateway_ports)
             prev = prev_counts.get(pid, current)
             delta = max(0, current - prev)
             prev_counts[pid] = current
 
-            if delta < req_threshold:
+            threshold = req_threshold // 2 if pid in deny_pids else req_threshold
+            if pid in deny_pids:
+                metrics["denylist_seen"] += 1
+
+            if delta < max(1, threshold):
                 continue
 
             q = strikes.setdefault(pid, collections.deque())
@@ -241,6 +282,9 @@ def main() -> int:
             uid = pid_uid(pid)
             log(f"self-ddos offender pid={pid} uid={uid} delta={delta} strikes={len(q)}/{max_strikes}")
             ok = terminate_pid(pid, grace_ms, do_sigkill)
+            metrics["events"] += 1
+            if ok:
+                metrics["killed"] += 1
 
             event = {
                 "ts": int(ts),
@@ -257,12 +301,19 @@ def main() -> int:
             }
 
             if len(q) >= max_strikes:
+                while escalations and (ts - escalations[0]) > max(60, escalation_ttl):
+                    escalations.popleft()
                 cid = resolve_container_id(pid)
                 event["escalated"] = True
                 event["container_id"] = cid
-                if cid:
+                if cid and len(escalations) < max_auto_bans:
                     pause_container_temporarily(cid, escalation_ttl)
                     event["escalation_action"] = "container_pause"
+                    escalations.append(ts)
+                    metrics["escalated"] += 1
+                elif cid:
+                    event["escalation_action"] = "cap_reached"
+                    metrics["escalation_dropped_cap"] += 1
                 else:
                     event["escalation_action"] = "none"
                 q.clear()
@@ -270,7 +321,9 @@ def main() -> int:
                 event["escalated"] = False
 
             write_self_ddos_event(state_dir, event)
+            write_metrics(state_dir, metrics)
 
+        write_metrics(state_dir, metrics)
         time.sleep(sleep_s)
 
 
