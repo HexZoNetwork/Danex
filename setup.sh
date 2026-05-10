@@ -1961,7 +1961,7 @@ PY
     [[ "${RATE_API_CLIENT_RATE}" =~ ^[0-9]+r/s$ ]] || RATE_API_CLIENT_RATE="400r/s"
     [[ "${RATE_API_APPLICATION_RATE}" =~ ^[0-9]+r/s$ ]] || RATE_API_APPLICATION_RATE="600r/s"
     [[ "${RATE_STATIC_RATE}" =~ ^[0-9]+r/s$ ]] || RATE_STATIC_RATE="30r/s"
-    perl -0pi -e "s/(zone=pteroprotect_req:20m rate=)\\d+r\\/s;/\${1}${HTTP_REQ_RATE};/g; s/(zone=pteroprotect_auth:10m rate=)\\d+r\\/[sm];/\${1}${HTTP_AUTH_REQ_RATE_PER_MIN};/g; s/(zone=pteroprotect_api_key_req:20m rate=)\\d+r\\/s;/\${1}${RATE_API_CLIENT_RATE};/g; s/(zone=pteroprotect_api_global_req:10m rate=)\\d+r\\/s;/\${1}${RATE_API_APPLICATION_RATE};/g; s/(zone=pteroprotect_global_req:10m rate=)\\d+r\\/s;/\${1}${RATE_STATIC_RATE};/g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
+    perl -0pi -e "s#(zone=pteroprotect_req:20m rate=)\\d+r/s;#\${1}${HTTP_REQ_RATE};#g; s#(zone=pteroprotect_auth:10m rate=)\\d+r/[sm];#\${1}${HTTP_AUTH_REQ_RATE_PER_MIN};#g; s#(zone=pteroprotect_api_key_req:20m rate=)\\d+r/s;#\${1}${RATE_API_CLIENT_RATE};#g; s#(zone=pteroprotect_api_global_req:10m rate=)\\d+r/s;#\${1}${RATE_API_APPLICATION_RATE};#g; s#(zone=pteroprotect_global_req:10m rate=)\\d+r/s;#\${1}${RATE_STATIC_RATE};#g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
     python3 - "${NGINX_DIR}/conf.d/pteroprotect_realip.conf" "${REAL_IP_ENABLED_RAW}" "${REAL_IP_HEADER}" "${REAL_IP_RECURSIVE_RAW}" "${TRUSTED_PROXY_IPV4_CIDRS}" "${TRUSTED_PROXY_IPV6_CIDRS}" <<'PY'
 import ipaddress
 import pathlib
