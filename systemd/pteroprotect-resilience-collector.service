@@ -1,0 +1,18 @@
+[Unit]
+Description=PteroProtect Resilience Metrics Collector
+After=network-online.target pteroprotect-resilience.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/pteroprotect
+Environment=DANN_CONFIG_PATH=/pteroprotect/config.json
+Environment=PTEROPROTECT_PANEL_RUNTIME_DIR=/pteroprotect/runtime
+ExecStart=/usr/bin/env python3 /pteroprotect/scripts/resilience_collector.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

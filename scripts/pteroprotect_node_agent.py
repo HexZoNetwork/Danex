@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-import json, os, socket, time, urllib.request
+import json
+import os
+import socket
+import time
+import urllib.request
 
 CONFIG_PATH = os.environ.get('PTEROPROTECT_CONFIG_PATH', '/pteroprotect/config.json')
+RUNTIME_DIR = os.environ.get('PTEROPROTECT_PANEL_RUNTIME_DIR', '/pteroprotect/runtime')
 
 
 def cfg():
@@ -10,10 +15,6 @@ def cfg():
             return json.load(f)
     except Exception:
         return {}
-
-
-def net(k, d=None):
-    return (cfg().get('network') or {}).get(k, d)
 
 
 def post(url, headers, body):
@@ -26,6 +27,24 @@ def detect_ip():
     return os.environ.get('PTEROPROTECT_NODE_IP', '127.0.0.1')
 
 
+def read_resilience_snapshot():
+    p = os.path.join(RUNTIME_DIR, 'resilience_state.json')
+    try:
+        with open(p, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return {
+            'stage': data.get('stage', 'unknown'),
+            'attack_score': data.get('attack_score', 0),
+            'health_score': data.get('health_score', 0),
+            'confidence': data.get('confidence', 0),
+            'ts': data.get('ts', 0),
+        }
+    except Exception:
+        return {}
+
+
 def main():
     while True:
         c = cfg()
@@ -36,7 +55,8 @@ def main():
             'ip': detect_ip(),
             'ports': str(n.get('public_tcp_ports') or '80,443,8080').split(','),
             'services': n.get('protected_services') or [],
-            'version': 'pteroprotect-node-agent-1',
+            'version': 'pteroprotect-node-agent-2',
+            'resilience': read_resilience_snapshot(),
         }
         headers = {'Content-Type': 'application/json'}
         key = str(n.get('node_auth_key') or '')

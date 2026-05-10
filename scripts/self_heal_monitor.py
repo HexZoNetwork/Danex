@@ -7,7 +7,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
+
+from resilience_runtime import as_bool, cfg_resilience, emit_resilience_event, write_json
 
 CONFIG_PATH = os.environ.get("DANN_CONFIG_PATH", "/pteroprotect/config.json")
 SHM_RUNTIME_DIR = os.environ.get("PTEROPROTECT_RUNTIME_DIR", "/dev/shm/pteroprotect")
@@ -113,7 +115,6 @@ def checkhost_probe(url: str, max_nodes: int = 8, zero_threshold: int = 3) -> Tu
             return False, 0.0, "checkhost-init-invalid"
         node_ids = list(nodes.keys())
 
-        # wait/poll for result propagation
         res = {}
         for _ in range(3):
             time.sleep(1.0)
@@ -160,7 +161,7 @@ def checkhost_probe(url: str, max_nodes: int = 8, zero_threshold: int = 3) -> Tu
             is_zero_node = False
             if status_code.isdigit():
                 code_num = int(status_code)
-                ok = (code_num == 200)
+                ok = code_num == 200
                 if code_num == 0:
                     is_zero_node = True
             elif as_int(ok_flag, 1) == 0:
@@ -229,12 +230,10 @@ def set_lockdown(enabled: bool, ttl_sec: int = 0, reason: str = "") -> None:
     if enabled:
         until = now + max(30, ttl_sec)
         shm_payload = json.dumps({"enabled": True, "reason": reason, "until": until, "updated_at": now}, ensure_ascii=True)
-        panel_payload = shm_payload
     else:
         shm_payload = json.dumps({"enabled": False, "updated_at": now}, ensure_ascii=True)
-        panel_payload = shm_payload
     write_file(os.path.join(SHM_RUNTIME_DIR, "strict_lockdown.flag"), shm_payload)
-    write_file(os.path.join(PANEL_RUNTIME_DIR, "lockdown.json"), panel_payload)
+    write_file(os.path.join(PANEL_RUNTIME_DIR, "lockdown.json"), shm_payload)
 
 
 def read_recent_self_ddos(state_dir: str, max_age_sec: int = 30) -> bool:
@@ -249,14 +248,12 @@ def read_recent_self_ddos(state_dir: str, max_age_sec: int = 30) -> bool:
 
 
 def trigger_self_heal() -> None:
-    # phased self-heal: php-fpm -> nginx -> wings
     services = ["php8.3-fpm", "nginx", "wings"]
     for svc in services:
         if systemd_active(svc):
             continue
         log(f"service {svc} not active, restarting")
         run(["systemctl", "restart", svc], timeout=12)
-    # always reload nginx to apply transient mitigations
     run(["systemctl", "reload", "nginx"], timeout=8)
 
 
@@ -264,6 +261,7 @@ def main() -> int:
     cfg = load_config()
     runtime = cfg.get("runtime", {}) if isinstance(cfg, dict) else {}
     monitor = cfg.get("monitor", {}) if isinstance(cfg, dict) else {}
+    res_cfg = cfg_resilience(cfg)
 
     state_dir = runtime.get("state_dir", "/pteroprotect/runtime")
     checkhost_enabled = bool(monitor.get("checkhost_enabled", True))
@@ -281,11 +279,14 @@ def main() -> int:
     error_rate_threshold = as_float(monitor.get("error_rate_threshold", 0.5), 0.5)
     external_fail_streak_threshold = max(2, as_int(monitor.get("external_fail_streak_threshold", 3), 3))
 
-    window = []  # list[(ts, ok, latency_ms)]
+    orchestrator_primary = as_bool(res_cfg.get("orchestrator_primary", True), True)
+    events_file = str(res_cfg.get("events_file", os.path.join(PANEL_RUNTIME_DIR, "resilience_events.jsonl")))
+
+    window = []
     external_fail_streak = 0
     mode = "normal"
 
-    log(f"started url={base_url} checkhost_primary={checkhost_enabled}")
+    log(f"started url={base_url} checkhost_primary={checkhost_enabled} orchestrator_primary={orchestrator_primary}")
 
     while True:
         ts = time.time()
@@ -303,7 +304,6 @@ def main() -> int:
             )
             external_ok, external_latency, external_src = ok, lat, src
             if not external_ok:
-                # fallback local immediately
                 ok2, code2, lat2, _ = http_probe(local_health_url, timeout_sec=5.0)
                 external_ok = ok2 and code2 in (200, 401, 403)
                 external_latency = lat2
@@ -341,30 +341,66 @@ def main() -> int:
 
         self_ddos_recent = read_recent_self_ddos(state_dir, max_age_sec=30)
 
+        # Persist a dependency snapshot for orchestration and debugging.
+        dep_snapshot = {
+            'ts': int(ts),
+            'external_ok': bool(external_ok),
+            'challenge_ok': bool(challenge_ok),
+            'external_latency_ms': float(external_latency),
+            'p95_ms': float(p95),
+            'error_rate': float(error_rate),
+            'signals': int(signals),
+            'source': external_src,
+        }
+        write_json(os.path.join(PANEL_RUNTIME_DIR, 'self_heal_dependency.json'), dep_snapshot)
+
         if signals >= 2:
             trigger_self_heal()
-            if self_ddos_recent:
+            if not orchestrator_primary:
+                if self_ddos_recent:
+                    if mode != "elevated":
+                        set_mode("elevated")
+                        set_lockdown(False)
+                        mode = "elevated"
+                else:
+                    set_mode("emergency")
+                    set_lockdown(True, lockdown_ttl_sec, reason=f"signals={signals};src={external_src}")
+                    mode = "lockdown"
+        elif signals == 1:
+            if not orchestrator_primary:
                 if mode != "elevated":
-                    set_mode("elevated")
+                    set_mode("aggressive")
                     set_lockdown(False)
                     mode = "elevated"
-                log(f"self-ddos recent, skip lockdown (signals={signals}, src={external_src})")
-            else:
-                set_mode("emergency")
-                set_lockdown(True, lockdown_ttl_sec, reason=f"signals={signals};src={external_src}")
-                mode = "lockdown"
-                log(f"lockdown enabled signals={signals} p95={p95:.1f}ms error_rate={error_rate:.2f} fail_streak={external_fail_streak}")
-        elif signals == 1:
-            if mode != "elevated":
-                set_mode("aggressive")
-                set_lockdown(False)
-                mode = "elevated"
-            log(f"elevated mode signals=1 p95={p95:.1f}ms error_rate={error_rate:.2f} fail_streak={external_fail_streak}")
         else:
-            if mode != "normal":
-                set_mode("normal")
-                set_lockdown(False)
-                mode = "normal"
+            if not orchestrator_primary:
+                if mode != "normal":
+                    set_mode("normal")
+                    set_lockdown(False)
+                    mode = "normal"
+
+        # Standardized resilience event schema emission.
+        score = min(1.0, max(0.0, (signals / 3.0) * 0.7 + min(0.3, error_rate)))
+        confidence = min(1.0, sample_count / 30.0) if sample_count > 0 else 0.0
+        emit_resilience_event(
+            layer='l7',
+            service='self_heal_monitor',
+            decision='degraded' if signals > 0 else 'healthy',
+            score=score,
+            confidence=confidence,
+            tenant_scope='global',
+            expiry=int(time.time()) + max(normal_sec, anomaly_sec) * 2,
+            extra={
+                'signals': signals,
+                'p95_ms': round(p95, 3),
+                'error_rate': round(error_rate, 6),
+                'external_fail_streak': external_fail_streak,
+                'source': external_src,
+                'challenge_ok': challenge_ok,
+                'external_ok': external_ok,
+            },
+            events_file=events_file,
+        )
 
         write_metrics(PANEL_RUNTIME_DIR, {
             "signals": float(signals),
@@ -374,6 +410,7 @@ def main() -> int:
             "challenge_ok": 1.0 if challenge_ok else 0.0,
             "external_ok": 1.0 if external_ok else 0.0,
             "self_ddos_recent": 1.0 if self_ddos_recent else 0.0,
+            "orchestrator_primary": 1.0 if orchestrator_primary else 0.0,
         })
 
         sleep_sec = anomaly_sec if signals >= 1 else normal_sec

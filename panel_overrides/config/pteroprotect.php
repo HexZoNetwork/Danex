@@ -91,4 +91,11 @@ return [
         'web_fingerprint_cluster_limit' => 360,
         'lockdown_web_fingerprint_cluster_limit' => 140,
     ],
+    'resilience' => [
+        'enabled' => env('PTEROPROTECT_RESILIENCE_ENABLED', true),
+        'state_file' => env('PTEROPROTECT_RESILIENCE_STATE_FILE', '/pteroprotect/runtime/resilience_state.json'),
+        'events_file' => env('PTEROPROTECT_RESILIENCE_EVENTS_FILE', '/pteroprotect/runtime/resilience_events.jsonl'),
+        'poison_file' => env('PTEROPROTECT_RESILIENCE_POISON_FILE', '/pteroprotect/runtime/poison_fingerprints.json'),
+        'replay_queue_file' => env('PTEROPROTECT_RESILIENCE_REPLAY_FILE', '/pteroprotect/runtime/replay_queue.jsonl'),
+    ],
 ];

@@ -1275,16 +1275,34 @@ printf '{"mode":"normal"}\n' > /dev/shm/pteroprotect/mode.flag || true
 printf '{"enabled":false}\n' > /dev/shm/pteroprotect/strict_lockdown.flag || true
 printf '{"mode":"normal"}\n' > "${INSTALL_DIR}/runtime/mode.json" || true
 printf '{"enabled":false}\n' > "${INSTALL_DIR}/runtime/lockdown.json" || true
+printf '{"stage":"normal","attack_score":0.0,"health_score":1.0,"confidence":1.0,"ts":%s}\n' "$(date +%s)" > "${INSTALL_DIR}/runtime/resilience_state.json" || true
+: > "${INSTALL_DIR}/runtime/replay_queue.jsonl" || true
+printf '{}\n' > "${INSTALL_DIR}/runtime/poison_fingerprints.json" || true
+: > "${INSTALL_DIR}/runtime/resilience_events.jsonl" || true
+printf '# TYPE pteroprotect_resilience_collector_sources_total gauge\npteroprotect_resilience_collector_sources_total 0\n' > "${INSTALL_DIR}/runtime/resilience.prom" || true
+printf '# TYPE pteroprotect_resilience_score gauge\npteroprotect_resilience_score{kind=\"attack\"} 0\n' > "${INSTALL_DIR}/runtime/resilience_orchestrator.prom" || true
 chown root:www-data \
     /dev/shm/pteroprotect/mode.flag \
     /dev/shm/pteroprotect/strict_lockdown.flag \
     "${INSTALL_DIR}/runtime/mode.json" \
-    "${INSTALL_DIR}/runtime/lockdown.json" >/dev/null 2>&1 || true
+    "${INSTALL_DIR}/runtime/lockdown.json" \
+    "${INSTALL_DIR}/runtime/resilience_state.json" \
+    "${INSTALL_DIR}/runtime/replay_queue.jsonl" \
+    "${INSTALL_DIR}/runtime/poison_fingerprints.json" \
+    "${INSTALL_DIR}/runtime/resilience_events.jsonl" \
+    "${INSTALL_DIR}/runtime/resilience.prom" \
+    "${INSTALL_DIR}/runtime/resilience_orchestrator.prom" >/dev/null 2>&1 || true
 chmod 664 \
     /dev/shm/pteroprotect/mode.flag \
     /dev/shm/pteroprotect/strict_lockdown.flag \
     "${INSTALL_DIR}/runtime/mode.json" \
-    "${INSTALL_DIR}/runtime/lockdown.json" >/dev/null 2>&1 || true
+    "${INSTALL_DIR}/runtime/lockdown.json" \
+    "${INSTALL_DIR}/runtime/resilience_state.json" \
+    "${INSTALL_DIR}/runtime/replay_queue.jsonl" \
+    "${INSTALL_DIR}/runtime/poison_fingerprints.json" \
+    "${INSTALL_DIR}/runtime/resilience_events.jsonl" \
+    "${INSTALL_DIR}/runtime/resilience.prom" \
+    "${INSTALL_DIR}/runtime/resilience_orchestrator.prom" >/dev/null 2>&1 || true
 if command -v setfacl >/dev/null 2>&1; then
     while IFS= read -r _pp_user; do
         id "${_pp_user}" >/dev/null 2>&1 || continue
@@ -1292,7 +1310,13 @@ if command -v setfacl >/dev/null 2>&1; then
             /dev/shm/pteroprotect/mode.flag \
             /dev/shm/pteroprotect/strict_lockdown.flag \
             "${INSTALL_DIR}/runtime/mode.json" \
-            "${INSTALL_DIR}/runtime/lockdown.json" >/dev/null 2>&1 || true
+            "${INSTALL_DIR}/runtime/lockdown.json" \
+            "${INSTALL_DIR}/runtime/resilience_state.json" \
+            "${INSTALL_DIR}/runtime/replay_queue.jsonl" \
+            "${INSTALL_DIR}/runtime/poison_fingerprints.json" \
+            "${INSTALL_DIR}/runtime/resilience_events.jsonl" \
+            "${INSTALL_DIR}/runtime/resilience.prom" \
+            "${INSTALL_DIR}/runtime/resilience_orchestrator.prom" >/dev/null 2>&1 || true
     done < <(panel_runtime_users)
 fi
 chmod 755 "${INSTALL_DIR}"
@@ -1355,6 +1379,19 @@ if [[ -f "${INSTALL_DIR}/scripts/self_heal_monitor.py" ]]; then
 fi
 if [[ -f "${INSTALL_DIR}/scripts/runtime_abuse_guard.py" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/runtime_abuse_guard.py"
+fi
+if [[ -f "${INSTALL_DIR}/scripts/resilience_runtime.py" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/resilience_runtime.py"
+fi
+if [[ -f "${INSTALL_DIR}/scripts/resilience_orchestrator.py" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/resilience_orchestrator.py"
+fi
+if [[ -f "${INSTALL_DIR}/scripts/resilience_collector.py" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/resilience_collector.py"
+fi
+if [[ -f "${INSTALL_DIR}/scripts/resilience_test_harness.py" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/resilience_test_harness.py"
+    ln -sf "${INSTALL_DIR}/scripts/resilience_test_harness.py" /usr/local/bin/pteroprotect-resilience-test
 fi
 
 # PHP-FPM capacity hardening for high-traffic/attack windows.
@@ -1467,6 +1504,14 @@ fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-log-watch.service" ]]; then
     echo "[setup] installing security log watch service..."
     install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-log-watch.service" "${SYSTEMD_DIR}/pteroprotect-log-watch.service"
+fi
+if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-resilience.service" ]]; then
+    echo "[setup] installing resilience orchestrator service..."
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-resilience.service" "${SYSTEMD_DIR}/pteroprotect-resilience.service"
+fi
+if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-resilience-collector.service" ]]; then
+    echo "[setup] installing resilience collector service..."
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-resilience-collector.service" "${SYSTEMD_DIR}/pteroprotect-resilience-collector.service"
 fi
 
 PANEL_OVERRIDE_SOURCE=""
@@ -3311,6 +3356,26 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
             exit 1
         fi
     fi
+    if [[ -f "${SYSTEMD_DIR}/pteroprotect-resilience.service" ]]; then
+        systemctl enable pteroprotect-resilience >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-resilience >/dev/null 2>&1; then
+            systemctl start pteroprotect-resilience >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-resilience; then
+            echo "[setup] error: pteroprotect-resilience is not active after setup." >&2
+            exit 1
+        fi
+    fi
+    if [[ -f "${SYSTEMD_DIR}/pteroprotect-resilience-collector.service" ]]; then
+        systemctl enable pteroprotect-resilience-collector >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-resilience-collector >/dev/null 2>&1; then
+            systemctl start pteroprotect-resilience-collector >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-resilience-collector; then
+            echo "[setup] error: pteroprotect-resilience-collector is not active after setup." >&2
+            exit 1
+        fi
+    fi
     if systemctl list-unit-files 2>/dev/null | grep -q '^wings\.service'; then
         systemctl enable wings >/dev/null 2>&1
         if ! systemctl restart wings >/dev/null 2>&1; then
@@ -3336,7 +3401,7 @@ arg="${2:-}"
 require_unit() {
     local unit="${1:-}"
     case "${unit}" in
-        nginx|fail2ban|pteroprotect|pteroprotect-panel-sync|pteroprotect-selfheal|pteroprotect-abuse-guard|pteroprotect-log-watch|wings)
+        nginx|fail2ban|pteroprotect|pteroprotect-panel-sync|pteroprotect-selfheal|pteroprotect-abuse-guard|pteroprotect-log-watch|pteroprotect-resilience|pteroprotect-resilience-collector|wings)
             ;;
         *)
             echo "unit not allowed: ${unit}" >&2

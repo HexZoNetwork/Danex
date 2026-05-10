@@ -27,15 +27,33 @@ class PteroProtectWaf
         $mode = $this->currentMode((string) ($config['mode_flag'] ?? ''));
         $category = $this->categoryForPath($path);
         $trustedIp = $this->isTrustedIp($ip, $config);
+        $resilienceConfig = config('pteroprotect.resilience', []);
+        $resilienceState = $this->loadResilienceState($resilienceConfig);
+        $stage = strtolower((string) ($resilienceState['stage'] ?? 'normal'));
+        $featureFlags = is_array($resilienceState['features'] ?? null) ? $resilienceState['features'] : [];
+        $governorBudgets = is_array($resilienceState['resource_governor']['budgets'] ?? null)
+            ? $resilienceState['resource_governor']['budgets']
+            : [];
+        $replayConfig = is_array($resilienceState['replay'] ?? null) ? $resilienceState['replay'] : [];
+        $circuits = is_array($resilienceState['circuit_breakers'] ?? null) ? $resilienceState['circuit_breakers'] : [];
+        $poisonConfig = $this->loadPoisonFingerprintConfig($resilienceConfig);
 
         if ($this->isSuspiciousRequest($request, $config, $userAgent, $path, $queryString, $contentLength)) {
             $this->logDecision($config, 'deny', 'signature', $ip, $path, $userAgent);
+            $this->logResilienceEvent($resilienceConfig, 'l7', 'waf', 'deny_signature', 0.99, 0.95, 'global', ['path' => $path, 'ip' => $ip]);
             return $this->blockedResponse($request, 403, 'Blocked by PteroProtect WAF.');
         }
 
         if ($this->isLikelyHeadlessStealth($request, $userAgent, $category, $config)) {
             $this->logDecision($config, 'deny', 'headless-stealth', $ip, $path, $userAgent);
+            $this->logResilienceEvent($resilienceConfig, 'l7', 'waf', 'deny_headless', 0.9, 0.9, 'global', ['path' => $path, 'ip' => $ip]);
             return $this->blockedResponse($request, 403, 'Automated browser traffic is not allowed.');
+        }
+
+        if ($this->isHardDroppedByPoisonFingerprint($request, $path, $poisonConfig)) {
+            $this->logDecision($config, 'deny', 'poison-fingerprint', $ip, $path, $userAgent);
+            $this->logResilienceEvent($resilienceConfig, 'l7', 'waf', 'deny_poison_hard_drop', 1.0, 0.98, 'global', ['path' => $path, 'ip' => $ip]);
+            return $this->blockedResponse($request, 429, 'Request pattern temporarily quarantined.');
         }
 
         if ($this->shouldBypassRequest($request, $category, $path)) {
@@ -51,18 +69,91 @@ class PteroProtectWaf
             return $next($request);
         }
 
+        if ($this->shouldShedByFeature($path, $featureFlags, $stage) && !$this->isCoreRoute($request, $path)) {
+            if ($this->shouldQueueReplay($request, $path, $stage, $replayConfig)) {
+                $ticket = $this->queueReplayTicket($request, $path, $replayConfig, $resilienceConfig);
+                $this->logResilienceEvent(
+                    $resilienceConfig,
+                    'app',
+                    'waf',
+                    'replay_queued',
+                    0.7,
+                    0.8,
+                    'global',
+                    ['path' => $path, 'ticket_id' => $ticket]
+                );
+
+                if ($request->expectsJson() || str_starts_with($request->path(), 'api/')) {
+                    return new JsonResponse([
+                        'error' => 'Request deferred while service is recovering.',
+                        'replay_ticket' => $ticket,
+                        'stage' => $stage,
+                    ], 202);
+                }
+
+                return response('Request deferred while service is recovering.', 202);
+            }
+
+            $this->logDecision($config, 'deny', 'feature-shed', $ip, $path, $userAgent);
+            $this->logResilienceEvent(
+                $resilienceConfig,
+                'app',
+                'waf',
+                'feature_shed',
+                0.85,
+                0.8,
+                'global',
+                ['path' => $path, 'stage' => $stage]
+            );
+
+            return $this->blockedResponse($request, 503, 'Service is temporarily degraded while recovering.');
+        }
+
+        if ($this->shouldDegradeFromCircuit($request, $path, $circuits, $stage) && !$this->isCoreRoute($request, $path)) {
+            $this->logDecision($config, 'deny', 'dependency-circuit', $ip, $path, $userAgent);
+            $this->logResilienceEvent(
+                $resilienceConfig,
+                'app',
+                'waf',
+                'dependency_degraded',
+                0.8,
+                0.75,
+                'global',
+                ['path' => $path, 'stage' => $stage]
+            );
+
+            return $this->blockedResponse($request, 503, 'Dependent service is recovering. Try again shortly.');
+        }
+
         $blockInEmergency = (bool) ($config['block_paths_in_emergency'] ?? false);
         if ($mode === 'emergency' && $blockInEmergency && $this->shouldBlockInEmergency($path, $config)) {
             $this->logDecision($config, 'deny', 'emergency-path', $ip, $path, $userAgent);
+            $this->logResilienceEvent($resilienceConfig, 'l7', 'waf', 'deny_emergency_path', 0.9, 0.8, 'global', ['path' => $path, 'ip' => $ip]);
             return $this->blockedResponse($request, 429, 'Emergency protection mode is active.');
         }
 
         if ($lockdown && $this->shouldBlockDuringLockdown($path, $config)) {
             $this->logDecision($config, 'deny', 'lockdown-path', $ip, $path, $userAgent);
+            $this->logResilienceEvent($resilienceConfig, 'l7', 'waf', 'deny_lockdown_path', 0.85, 0.8, 'global', ['path' => $path, 'ip' => $ip]);
             return $this->blockedResponse($request, 429, 'Temporary protection mode is active.');
         }
 
         [$perIpLimit, $globalLimit, $decay] = $this->limitsForCategory($category, $lockdown, $mode, $config);
+
+        if ($this->isRateLimitedByAdaptiveBudget($request, $category, $governorBudgets)) {
+            $this->logDecision($config, 'deny', "adaptive-budget:{$category}:{$stage}", $ip, $path, $userAgent);
+            $this->logResilienceEvent(
+                $resilienceConfig,
+                'app',
+                'waf',
+                'adaptive_budget_drop',
+                0.75,
+                0.7,
+                'global',
+                ['path' => $path, 'category' => $category, 'stage' => $stage]
+            );
+            return $this->blockedResponse($request, 429, 'Server is limiting non-critical concurrency.');
+        }
 
         if ($this->isRateLimited("pteroprotect:waf:ip:{$category}:{$ip}", $perIpLimit, $decay)) {
             $this->logDecision($config, 'deny', "per-ip:{$category}:{$mode}", $ip, $path, $userAgent);
@@ -85,6 +176,332 @@ class PteroProtectWaf
         }
 
         return $next($request);
+    }
+
+    private function loadResilienceState(array $resilienceConfig): array
+    {
+        $stateFile = trim((string) ($resilienceConfig['state_file'] ?? '/pteroprotect/runtime/resilience_state.json'));
+        if ($stateFile === '' || !is_file($stateFile)) {
+            return [];
+        }
+
+        $raw = @file_get_contents($stateFile);
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $data = json_decode($raw, true);
+        return is_array($data) ? $data : [];
+    }
+
+    private function loadPoisonFingerprintConfig(array $resilienceConfig): array
+    {
+        $file = trim((string) ($resilienceConfig['poison_file'] ?? '/pteroprotect/runtime/poison_fingerprints.json'));
+        if ($file === '' || !is_file($file)) {
+            return [];
+        }
+
+        $raw = @file_get_contents($file);
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $data = json_decode($raw, true);
+        return is_array($data) ? $data : [];
+    }
+
+    private function isHardDroppedByPoisonFingerprint(Request $request, string $path, array $poisonMap): bool
+    {
+        if (empty($poisonMap)) {
+            return false;
+        }
+
+        $method = strtoupper($request->method());
+        $uaFamily = $this->uaFamily((string) $request->userAgent());
+        $prefix = sprintf('%s|%s|%s|', $method, $this->normalizePath('/' . $path), $uaFamily);
+
+        foreach ($poisonMap as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $signature = (string) ($entry['signature'] ?? '');
+            if ($signature === '' || !str_starts_with($signature, $prefix)) {
+                continue;
+            }
+
+            $expiresAt = (int) ($entry['expires_at'] ?? 0);
+            if ($expiresAt > 0 && $expiresAt < time()) {
+                continue;
+            }
+
+            if (strtolower((string) ($entry['action'] ?? '')) === 'hard_drop') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function uaFamily(string $ua): string
+    {
+        $value = strtolower(trim($ua));
+        if ($value === '') {
+            return 'empty';
+        }
+
+        foreach (['headless', 'curl', 'python', 'wget', 'bot', 'spider', 'scanner', 'sqlmap'] as $needle) {
+            if (str_contains($value, $needle)) {
+                return 'automation';
+            }
+        }
+
+        if (str_contains($value, 'mozilla') || str_contains($value, 'chrome') || str_contains($value, 'safari') || str_contains($value, 'firefox')) {
+            return 'browser';
+        }
+
+        return 'other';
+    }
+
+    private function normalizePath(string $path): string
+    {
+        $norm = strtolower(trim($path));
+        $norm = preg_replace('#/[0-9a-f]{8,}(?=/|$)#', '/{id}', $norm) ?? $norm;
+        $norm = preg_replace('#/\d{2,}(?=/|$)#', '/{n}', $norm) ?? $norm;
+        return $norm;
+    }
+
+    private function shouldShedByFeature(string $path, array $featureFlags, string $stage): bool
+    {
+        if ($stage === 'normal') {
+            return false;
+        }
+
+        $check = [
+            'chat' => '#^api/client/chat(?:/|$)#i',
+            'ads' => '#^api/client/ads(?:/|$)#i',
+            'create_panel' => '#^api/client/create-panel(?:/|$)#i',
+            'heavy_files' => '#^api/client/servers/[^/]+/(files|backups)(?:/|$)#i',
+            'noncritical_api' => '#^api/client/(?:rum|danexcoin)(?:/|$)#i',
+            'websocket' => '#^api/client/servers/[^/]+/websocket(?:/|$)#i',
+            'polling' => '#^api/client/servers/[^/]+/(resources|activity)(?:/|$)#i',
+        ];
+
+        foreach ($check as $flag => $pattern) {
+            if (($featureFlags[$flag] ?? false) && preg_match($pattern, $path) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isCoreRoute(Request $request, string $path): bool
+    {
+        if (preg_match('#^auth/(login|logout|password|register)(?:/|$)#i', $path) === 1) {
+            return true;
+        }
+
+        if (preg_match('#^api/remote(?:/|$)#i', $path) === 1) {
+            return true;
+        }
+
+        if (preg_match('#^api/client/servers/[^/]+/(power|command)(?:/|$)#i', $path) === 1) {
+            return true;
+        }
+
+        // State-changing core auth/profile operations should remain available when possible.
+        return strtoupper($request->method()) !== 'GET'
+            && preg_match('#^api/client/account/(password|profile|email)(?:/|$)#i', $path) === 1;
+    }
+
+    private function shouldDegradeFromCircuit(Request $request, string $path, array $circuits, string $stage): bool
+    {
+        if ($stage === 'normal') {
+            return false;
+        }
+
+        $deps = [];
+        if (preg_match('#^auth(?:/|$)#i', $path) === 1 || preg_match('#^api(?:/|$)#i', $path) === 1) {
+            $deps[] = 'db';
+        }
+        if (preg_match('#^api/client/chat(?:/|$)#i', $path) === 1 || preg_match('#^api/client/servers/[^/]+/websocket(?:/|$)#i', $path) === 1) {
+            $deps[] = 'redis';
+        }
+        if (preg_match('#^api/client/servers/[^/]+/(resources|websocket|files|backups|network|power|command)(?:/|$)#i', $path) === 1) {
+            $deps[] = 'wings';
+        }
+        if (preg_match('#^api/(client|application)(?:/|$)#i', $path) === 1) {
+            $deps[] = 'challenge';
+        }
+
+        if (empty($deps)) {
+            return false;
+        }
+
+        foreach (array_unique($deps) as $dep) {
+            $entry = $circuits[$dep] ?? null;
+            if (!is_array($entry)) {
+                continue;
+            }
+            $state = strtolower((string) ($entry['state'] ?? 'closed'));
+            if ($state === 'open') {
+                return true;
+            }
+            if ($state === 'half_open' && strtoupper($request->method()) !== 'GET') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isRateLimitedByAdaptiveBudget(Request $request, string $category, array $budgets): bool
+    {
+        if (empty($budgets)) {
+            return false;
+        }
+
+        $budget = (int) ($budgets[$category] ?? 0);
+        if ($budget <= 0) {
+            return false;
+        }
+
+        $ip = trim((string) $request->ip());
+        $key = sprintf('pteroprotect:waf:adaptive:%s:%s', $category, $ip);
+        $decay = 1;
+        if (RateLimiter::tooManyAttempts($key, $budget)) {
+            return true;
+        }
+
+        RateLimiter::hit($key, $decay);
+        return false;
+    }
+
+    private function shouldQueueReplay(Request $request, string $path, string $stage, array $replayConfig): bool
+    {
+        if ($stage !== 'constrained' && $stage !== 'emergency') {
+            return false;
+        }
+
+        if (!($replayConfig['enabled'] ?? false)) {
+            return false;
+        }
+
+        $method = strtoupper($request->method());
+        if ($method === 'GET') {
+            return true;
+        }
+
+        if (!in_array($method, ['POST'], true)) {
+            return false;
+        }
+
+        $allowPostPaths = $replayConfig['allowed_post_paths'] ?? [];
+        if (!is_array($allowPostPaths)) {
+            return false;
+        }
+
+        foreach ($allowPostPaths as $allowed) {
+            $candidate = trim((string) $allowed);
+            if ($candidate !== '' && str_starts_with('/' . ltrim($path, '/'), $candidate)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function queueReplayTicket(Request $request, string $path, array $replayConfig, array $resilienceConfig): string
+    {
+        $file = trim((string) ($resilienceConfig['replay_queue_file'] ?? '/pteroprotect/runtime/replay_queue.jsonl'));
+        $maxQueue = max(100, (int) ($replayConfig['max_queue'] ?? 2000));
+        $ttlSec = max(30, (int) ($replayConfig['ttl_sec'] ?? 600));
+        $secret = (string) ($replayConfig['hmac_secret'] ?? '');
+        if ($secret === '') {
+            $secret = substr(hash('sha256', (string) config('app.key', 'fallback')), 0, 32);
+        }
+
+        $now = time();
+        $ticketId = bin2hex(random_bytes(12));
+        $subject = trim((string) $request->user()?->id);
+        if ($subject === '') {
+            $subject = trim((string) $request->ip());
+        }
+
+        $method = strtoupper($request->method());
+        $payloadHash = hash('sha256', json_encode($request->all(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '{}');
+        $sig = hash_hmac('sha256', implode('|', [$ticketId, $subject, $method, $path, (string) $now]), $secret);
+
+        $record = [
+            'ticket_id' => $ticketId,
+            'subject' => $subject,
+            'method' => $method,
+            'path' => '/' . ltrim($path, '/'),
+            'payload_hash' => $payloadHash,
+            'queued_at' => $now,
+            'expires_at' => $now + $ttlSec,
+            'signature' => $sig,
+        ];
+
+        $dir = dirname($file);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+
+        @file_put_contents($file, json_encode($record, JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND | LOCK_EX);
+        $this->trimReplayQueue($file, $maxQueue);
+
+        return $ticketId;
+    }
+
+    private function trimReplayQueue(string $file, int $maxQueue): void
+    {
+        $raw = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (!is_array($raw)) {
+            return;
+        }
+
+        if (count($raw) <= $maxQueue) {
+            return;
+        }
+
+        $slice = array_slice($raw, -1 * $maxQueue);
+        @file_put_contents($file, implode("\n", $slice) . "\n", LOCK_EX);
+    }
+
+    private function logResilienceEvent(
+        array $resilienceConfig,
+        string $layer,
+        string $service,
+        string $decision,
+        float $score,
+        float $confidence,
+        string $tenantScope,
+        array $extra = []
+    ): void {
+        $file = trim((string) ($resilienceConfig['events_file'] ?? '/pteroprotect/runtime/resilience_events.jsonl'));
+        if ($file === '') {
+            return;
+        }
+
+        $dir = dirname($file);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+
+        $payload = array_merge([
+            'ts' => time(),
+            'layer' => $layer,
+            'service' => $service,
+            'decision' => $decision,
+            'score' => max(0.0, min(1.0, $score)),
+            'confidence' => max(0.0, min(1.0, $confidence)),
+            'tenant_scope' => $tenantScope,
+            'expiry' => time() + 120,
+        ], $extra);
+
+        @file_put_contents($file, json_encode($payload, JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND | LOCK_EX);
     }
 
     private function categoryForPath(string $path): string

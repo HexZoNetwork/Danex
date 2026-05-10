@@ -227,5 +227,95 @@
       "api": {
          "bind": "127.0.0.1"
       }
+   },
+   "resilience": {
+      "enabled": true,
+      "orchestrator_primary": true,
+      "mode": "adaptive",
+      "prg_thresholds": {
+         "elevated": 0.62,
+         "constrained": 0.76,
+         "emergency": 0.88,
+         "recover_to_constrained": 0.7,
+         "recover_to_elevated": 0.55,
+         "recover_to_normal": 0.35
+      },
+      "cooldowns": {
+         "stage_min_sec": 30,
+         "emergency_exit_stable_sec": 90,
+         "half_open_probe_sec": 15
+      },
+      "feature_shedding": {
+         "profile": "aggressive",
+         "stage1": [
+            "chat",
+            "ads",
+            "create_panel"
+         ],
+         "stage2": [
+            "heavy_files",
+            "noncritical_api"
+         ],
+         "stage3": [
+            "websocket",
+            "polling"
+         ]
+      },
+      "consensus": {
+         "enabled": true,
+         "backend": "redis",
+         "quorum": 2,
+         "ttl_sec": 30
+      },
+      "replay": {
+         "enabled": true,
+         "max_queue": 2000,
+         "ttl_sec": 600,
+         "hmac_secret": "replace_me_replay_hmac_secret",
+         "allowed_post_paths": [
+            "/api/client/account/profile",
+            "/api/client/account/password",
+            "/api/client/chat/read",
+            "/api/client/chat/notifications/read"
+         ]
+      },
+      "health": {
+         "weights": {
+            "db": 0.3,
+            "redis": 0.2,
+            "queue": 0.1,
+            "wings": 0.2,
+            "challenge": 0.2
+         },
+         "degraded_score": 0.7,
+         "unhealthy_score": 0.45
+      },
+      "resource_governor": {
+         "enabled": true,
+         "cpu_pressure_pct": 90,
+         "mem_pressure_pct": 90,
+         "base_budgets": {
+            "auth": 40,
+            "api": 120,
+            "resource": 80,
+            "websocket": 60,
+            "web": 100
+         }
+      },
+      "detection": {
+         "enabled": true,
+         "access_log": "/var/log/nginx/pteroprotect.access.log",
+         "waf_log": "/dev/shm/pteroprotect/waf.log",
+         "min_samples": 30,
+         "poison_ttl_sec": 1800,
+         "hard_drop_confidence": 0.9,
+         "soft_drop_confidence": 0.7
+      },
+      "state_file": "/pteroprotect/runtime/resilience_state.json",
+      "metrics_file": "/pteroprotect/runtime/resilience.prom",
+      "orchestrator_metrics_file": "/pteroprotect/runtime/resilience_orchestrator.prom",
+      "events_file": "/pteroprotect/runtime/resilience_events.jsonl",
+      "poison_file": "/pteroprotect/runtime/poison_fingerprints.json",
+      "replay_queue_file": "/pteroprotect/runtime/replay_queue.jsonl"
    }
 }
