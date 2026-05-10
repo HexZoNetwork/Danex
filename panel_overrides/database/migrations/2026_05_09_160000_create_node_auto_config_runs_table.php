@@ -9,8 +9,8 @@ return new class extends Migration {
     {
         Schema::create('node_auto_config_runs', function (Blueprint $table) {
             $table->id();
-            $table->unsignedBigInteger('node_id');
-            $table->unsignedBigInteger('user_id');
+            $table->unsignedInteger('node_id');
+            $table->unsignedInteger('user_id');
             $table->string('status', 24)->index();
             $table->string('target_host', 191);
             $table->unsignedInteger('target_port')->default(22);
