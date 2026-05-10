@@ -37,7 +37,8 @@
          "ipset",
          "ufw",
          "nginx",
-         "ls"
+         "ls",
+         "sudo"
       ],
       "rce_read_path_allowlist": [
          "/var/log/",
