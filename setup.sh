@@ -1804,16 +1804,42 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     MODSEC_RUNTIME_ENABLED=0
     if [[ "${WAF_MODSEC_ENABLED,,}" == "true" || "${WAF_MODSEC_ENABLED}" == "1" ]]; then
         MODSEC_PACKAGES=()
+        
+        # Try to install modsecurity module (available in ondrej/nginx PPA for nginx 1.18)
         if apt-cache show libnginx-mod-http-modsecurity >/dev/null 2>&1; then
             MODSEC_PACKAGES+=(libnginx-mod-http-modsecurity)
+        elif command -v add-apt-repository >/dev/null 2>&1; then
+            # Try ondrej/nginx PPA for modsecurity support
+            echo "[setup] attempting to add ondrej/nginx PPA for ModSecurity module..."
+            add-apt-repository -y ppa:ondrej/nginx-mainline >/dev/null 2>&1 && apt-get update >/dev/null 2>&1
+            if apt-cache show libnginx-mod-http-modsecurity >/dev/null 2>&1; then
+                MODSEC_PACKAGES+=(libnginx-mod-http-modsecurity)
+            fi
         fi
+        
         if apt-cache show modsecurity-crs >/dev/null 2>&1; then
             MODSEC_PACKAGES+=(modsecurity-crs)
         fi
+        
         if (( ${#MODSEC_PACKAGES[@]} > 0 )); then
             echo "[setup] installing ModSecurity stack: ${MODSEC_PACKAGES[*]}"
             apt-get install "${APT_INSTALL_OPTS[@]}" "${MODSEC_PACKAGES[@]}"
-            MODSEC_RUNTIME_ENABLED=1
+            
+            # Verify module was installed and enable it in nginx
+            if [[ -f /usr/share/nginx/modules-available/mod-http-modsecurity.load ]]; then
+                echo "[setup] enabling modsecurity module in nginx..."
+                ln -sf /usr/share/nginx/modules-available/mod-http-modsecurity.load /etc/nginx/modules-enabled/50-mod-http-modsecurity.load
+                MODSEC_RUNTIME_ENABLED=1
+            elif dpkg -l | grep -q libnginx-mod-http-modsecurity; then
+                # Module installed but symlink doesn't exist, try to find and enable it
+                echo "[setup] enabling installed modsecurity module..."
+                find /usr/share/nginx/modules-available -name "*modsecurity*" -type f | while read -r mod_file; do
+                    ln -sf "$mod_file" "/etc/nginx/modules-enabled/$(basename "$mod_file")" 2>/dev/null
+                done
+                MODSEC_RUNTIME_ENABLED=1
+            else
+                echo "[setup] warning: modsecurity module installation failed or module files not found" >&2
+            fi
         else
             echo "[setup] warning: no ModSecurity packages found in apt repositories." >&2
         fi
@@ -1898,7 +1924,8 @@ PY
     cp "${INSTALL_DIR}/host_overrides/nginx/conf.d/pteroprotect_provider_gate.conf" "${NGINX_DIR}/conf.d/pteroprotect_provider_gate.conf"
     cp "${INSTALL_DIR}/host_overrides/nginx/snippets/pteroprotect_server.conf" "${NGINX_DIR}/snippets/pteroprotect_server.conf"
     if [[ "${MODSEC_RUNTIME_ENABLED}" != "1" ]]; then
-        perl -0pi -e 's/^modsecurity on;\\n//m; s/^modsecurity_rules_file .*;\\n//m;' "${NGINX_DIR}/snippets/pteroprotect_server.conf"
+        echo "[setup] removing modsecurity directives from nginx config (module not available)..."
+        perl -0pi -e 's/\s*modsecurity on;?\s*\n?//g; s/\s*modsecurity_rules_file [^;]+;?\s*\n?//g;' "${NGINX_DIR}/snippets/pteroprotect_server.conf"
     fi
     if [[ -d "${INSTALL_DIR}/host_overrides/nginx/modsec" ]]; then
         mkdir -p "${NGINX_DIR}/modsec/rules"
