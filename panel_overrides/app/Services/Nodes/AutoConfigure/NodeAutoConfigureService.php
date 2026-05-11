@@ -63,7 +63,7 @@ class NodeAutoConfigureService
             ]);
 
             ExecuteNodeAutoConfigureJob::dispatch((int) $run->id)
-                ->onQueue((string) config('pteroprotect_autoconfigure.queue', 'default'));
+                ->onQueue((string) config('pteroprotect_autoconfigure.queue', 'standard'));
 
             return $run;
         });
