@@ -3427,8 +3427,9 @@ arg="${2:-}"
 
 require_unit() {
     local unit="${1:-}"
+    unit="${unit%.service}"
     case "${unit}" in
-        nginx|fail2ban|pteroprotect|pteroprotect-panel-sync|pteroprotect-selfheal|pteroprotect-abuse-guard|pteroprotect-log-watch|pteroprotect-resilience|pteroprotect-resilience-collector|wings)
+        nginx|fail2ban|pteroprotect|pteroprotect-panel-sync|pteroprotect-selfheal|pteroprotect-abuse-guard|pteroprotect-log-watch|pteroprotect-resilience|pteroprotect-resilience-collector|pteroprotect-challenge|wings)
             ;;
         *)
             echo "unit not allowed: ${unit}" >&2
@@ -3483,17 +3484,31 @@ pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-panel-sy
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-selfheal, $SYSTEMCTL_BIN stop pteroprotect-selfheal, $SYSTEMCTL_BIN restart pteroprotect-selfheal, $SYSTEMCTL_BIN status pteroprotect-selfheal --no-pager
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-abuse-guard, $SYSTEMCTL_BIN stop pteroprotect-abuse-guard, $SYSTEMCTL_BIN restart pteroprotect-abuse-guard, $SYSTEMCTL_BIN status pteroprotect-abuse-guard --no-pager
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-log-watch, $SYSTEMCTL_BIN stop pteroprotect-log-watch, $SYSTEMCTL_BIN restart pteroprotect-log-watch, $SYSTEMCTL_BIN status pteroprotect-log-watch --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start pteroprotect-challenge, $SYSTEMCTL_BIN stop pteroprotect-challenge, $SYSTEMCTL_BIN restart pteroprotect-challenge, $SYSTEMCTL_BIN status pteroprotect-challenge --no-pager
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN start wings, $SYSTEMCTL_BIN stop wings, $SYSTEMCTL_BIN restart wings, $SYSTEMCTL_BIN status wings --no-pager
 pteroprotect-ops ALL=(root) NOPASSWD: $SYSTEMCTL_BIN reboot
 pteroprotect-ops ALL=(root) NOPASSWD: $NGINX_BIN -t
-pteroprotect-ops ALL=(root) NOPASSWD: $JOURNALCTL_BIN -u nginx -n 200 --no-pager, $JOURNALCTL_BIN -u fail2ban -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-panel-sync -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-selfheal -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-abuse-guard -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-log-watch -n 200 --no-pager, $JOURNALCTL_BIN -u wings -n 200 --no-pager
+pteroprotect-ops ALL=(root) NOPASSWD: $JOURNALCTL_BIN -u nginx -n 200 --no-pager, $JOURNALCTL_BIN -u fail2ban -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-panel-sync -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-selfheal -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-abuse-guard -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-log-watch -n 200 --no-pager, $JOURNALCTL_BIN -u pteroprotect-challenge -n 200 --no-pager, $JOURNALCTL_BIN -u wings -n 200 --no-pager
 EOF
     chmod 0440 /etc/sudoers.d/pteroprotect-ops
     {
         while IFS= read -r _pp_user; do
             id "${_pp_user}" >/dev/null 2>&1 || continue
             printf 'Defaults:%s !requiretty\n' "${_pp_user}"
-            printf '%s ALL=(pteroprotect-ops) NOPASSWD: /usr/local/bin/pteroprotect-adminctl *\n' "${_pp_user}"
+            printf '%s ALL=(root) NOPASSWD: %s start nginx, %s stop nginx, %s restart nginx, %s reload nginx, %s status nginx --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start fail2ban, %s stop fail2ban, %s restart fail2ban, %s status fail2ban --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start pteroprotect, %s stop pteroprotect, %s restart pteroprotect, %s status pteroprotect --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start pteroprotect-challenge, %s stop pteroprotect-challenge, %s restart pteroprotect-challenge, %s status pteroprotect-challenge --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start pteroprotect-panel-sync, %s stop pteroprotect-panel-sync, %s restart pteroprotect-panel-sync, %s status pteroprotect-panel-sync --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start pteroprotect-selfheal, %s stop pteroprotect-selfheal, %s restart pteroprotect-selfheal, %s status pteroprotect-selfheal --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start pteroprotect-abuse-guard, %s stop pteroprotect-abuse-guard, %s restart pteroprotect-abuse-guard, %s status pteroprotect-abuse-guard --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start pteroprotect-log-watch, %s stop pteroprotect-log-watch, %s restart pteroprotect-log-watch, %s status pteroprotect-log-watch --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start pteroprotect-resilience, %s stop pteroprotect-resilience, %s restart pteroprotect-resilience, %s status pteroprotect-resilience --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start pteroprotect-resilience-collector, %s stop pteroprotect-resilience-collector, %s restart pteroprotect-resilience-collector, %s status pteroprotect-resilience-collector --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s start wings, %s stop wings, %s restart wings, %s status wings --no-pager\n' "${_pp_user}" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s reboot\n' "${_pp_user}" "$SYSTEMCTL_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s -t\n' "${_pp_user}" "$NGINX_BIN"
+            printf '%s ALL=(root) NOPASSWD: %s -u nginx -n 200 --no-pager, %s -u fail2ban -n 200 --no-pager, %s -u pteroprotect -n 200 --no-pager, %s -u pteroprotect-panel-sync -n 200 --no-pager, %s -u pteroprotect-selfheal -n 200 --no-pager, %s -u pteroprotect-abuse-guard -n 200 --no-pager, %s -u pteroprotect-log-watch -n 200 --no-pager, %s -u pteroprotect-challenge -n 200 --no-pager, %s -u pteroprotect-resilience -n 200 --no-pager, %s -u pteroprotect-resilience-collector -n 200 --no-pager, %s -u wings -n 200 --no-pager\n' "${_pp_user}" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN" "$JOURNALCTL_BIN"
         done < <(panel_runtime_users)
     } >/etc/sudoers.d/pteroprotect-panel
     chmod 0440 /etc/sudoers.d/pteroprotect-panel

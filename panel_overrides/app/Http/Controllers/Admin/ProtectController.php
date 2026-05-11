@@ -526,7 +526,7 @@ class ProtectController extends Controller
         $data['network']['waf_challenge_theme_accent'] = $themeAccent;
         File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
 
-        $restart = $this->run(['systemctl', 'restart', 'pteroprotect-challenge.service'], 8);
+        $restart = $this->run(['systemctl', 'restart', 'pteroprotect-challenge'], 8);
         if (($restart['exit'] ?? 1) !== 0) {
             $this->alert->danger(
                 'Challenge type saved, but challenge service restart failed: ' . trim((string) ($restart['output'] ?? 'unknown error'))
