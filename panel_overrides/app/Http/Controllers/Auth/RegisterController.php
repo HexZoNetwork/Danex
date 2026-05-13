@@ -23,7 +23,7 @@ class RegisterController extends AbstractLoginController
     public function meta(): JsonResponse
     {
         [$token, $botUsername] = $this->resolveTelegramBotIdentity();
-        $requiredChannels = array_slice($this->getRequiredJoinChannels(), 0, 1);
+        $requiredChannels = $this->getRequiredJoinChannels();
 
         return (new JsonResponse([
             'data' => [
@@ -58,6 +58,7 @@ class RegisterController extends AbstractLoginController
         }
 
         $telegramId = trim((string) $validated['telegram_id']);
+        $nameLast = 'madeinweb';
         $requiredChannels = $this->getRequiredJoinChannels();
         $joinCheck = $this->validateRequiredChannelMembership($token, $telegramId, $requiredChannels);
         if (!(bool) ($joinCheck['ok'] ?? false)) {
@@ -83,7 +84,7 @@ class RegisterController extends AbstractLoginController
             'email' => trim((string) $validated['email']),
             'username' => trim((string) $validated['username']),
             'name_first' => trim((string) $validated['name_first']),
-            'name_last' => 'madeinweb',
+            'name_last' => $nameLast,
             'telegram_id' => $telegramId,
             'password_encrypted' => Crypt::encryptString((string) $validated['password']),
             'otp_hash' => Hash::make($otp),
@@ -281,18 +282,32 @@ class RegisterController extends AbstractLoginController
                     $channels[] = $value;
                 }
             }
+
+            foreach (['telegram.required_channels', 'telegram.channels'] as $key) {
+                $raw = data_get($decoded, $key);
+                $items = [];
+                if (is_array($raw)) {
+                    $items = $raw;
+                } elseif (is_string($raw)) {
+                    $items = preg_split('/[\s,]+/', trim($raw)) ?: [];
+                }
+
+                foreach ($items as $item) {
+                    $value = trim((string) $item);
+                    if ($value === '') {
+                        continue;
+                    }
+                    if ($value[0] !== '@') {
+                        $value = '@' . ltrim($value, '@');
+                    }
+                    if (!in_array($value, $channels, true)) {
+                        $channels[] = $value;
+                    }
+                }
+            }
         }
 
-        if (count($channels) <= 1) {
-            return $channels;
-        }
-
-        // Show/require exactly one channel at a time, rotated every 10 minutes.
-        $bucket = (int) floor(time() / 600);
-        $seed = (string) config('app.key', 'pteroprotect') . '|' . (string) $bucket;
-        $idx = (int) (abs(crc32($seed)) % count($channels));
-
-        return [$channels[$idx]];
+        return $channels;
     }
 
     /**
@@ -339,7 +354,10 @@ class RegisterController extends AbstractLoginController
         $missing = [];
         foreach ($channels as $channel) {
             $membership = $this->getTelegramChannelMembership($token, $channel, $telegramId);
-            if (!(bool) ($membership['is_member'] ?? false)) {
+            // Fail closed only when Telegram check is reachable and definitive.
+            // If API check is unavailable (e.g. bot lacks access to channel member list),
+            // don't hard-block registration.
+            if ((bool) ($membership['ok'] ?? false) && !(bool) ($membership['is_member'] ?? false)) {
                 $missing[] = $channel;
             }
         }
@@ -389,10 +407,14 @@ class RegisterController extends AbstractLoginController
      */
     private function buildJoinRetryErrorMessage(array $requiredChannels, array $missingChannels): string
     {
-        $targets = count($missingChannels) > 0 ? $missingChannels : $requiredChannels;
-        $channelText = implode(' dan ', $targets);
+        $all = implode(', ', $requiredChannels);
+        $missing = count($missingChannels) > 0 ? implode(', ', $missingChannels) : '';
 
-        return "Wajib join {$channelText} dulu, lalu retry pendaftaran.";
+        if ($missing !== '') {
+            return "Wajib join semua channel berikut: {$all}. Belum terdeteksi join di: {$missing}. Setelah join, tunggu 10-30 detik lalu retry.";
+        }
+
+        return "Wajib join semua channel berikut: {$all}. Setelah join, tunggu 10-30 detik lalu retry.";
     }
 
     /**
@@ -427,6 +449,7 @@ class RegisterController extends AbstractLoginController
 
         try {
             $response = Http::asForm()
+                ->retry(2, 300)
                 ->timeout(10)
                 ->post("https://api.telegram.org/bot{$token}/sendMessage", [
                     'chat_id' => $telegramId,
@@ -440,10 +463,75 @@ class RegisterController extends AbstractLoginController
 
             return [
                 'ok' => $ok,
-                'description' => $description !== '' ? $description : null,
+                'description' => $description !== '' ? $description : ('telegram http ' . $response->status()),
             ];
         } catch (\Throwable) {
-            return ['ok' => false, 'description' => 'network error'];
+            $fallback = $this->sendOtpViaCurl($token, $telegramId, $text);
+            if ((bool) ($fallback['ok'] ?? false)) {
+                return $fallback;
+            }
+
+            $fallbackDesc = trim((string) ($fallback['description'] ?? ''));
+            if ($fallbackDesc !== '') {
+                return ['ok' => false, 'description' => $fallbackDesc];
+            }
+
+            return ['ok' => false, 'description' => 'network error (cannot reach api.telegram.org from server)'];
         }
+    }
+
+    /**
+     * @return array{ok:bool,description?:string}
+     */
+    private function sendOtpViaCurl(string $token, string $telegramId, string $text): array
+    {
+        if (!function_exists('curl_init')) {
+            return ['ok' => false, 'description' => 'curl extension unavailable'];
+        }
+
+        $url = "https://api.telegram.org/bot{$token}/sendMessage";
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return ['ok' => false, 'description' => 'curl init failed'];
+        }
+
+        $fields = http_build_query([
+            'chat_id' => $telegramId,
+            'text' => $text,
+            'disable_web_page_preview' => 'true',
+        ]);
+
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $fields,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+        ]);
+
+        $resp = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $error = curl_error($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($resp === false) {
+            return ['ok' => false, 'description' => 'curl error ' . $errno . ': ' . $error];
+        }
+
+        $decoded = json_decode((string) $resp, true);
+        $ok = is_array($decoded) && (bool) data_get($decoded, 'ok', false);
+        $description = trim((string) data_get($decoded, 'description', ''));
+
+        if ($ok) {
+            return ['ok' => true];
+        }
+
+        if ($description !== '') {
+            return ['ok' => false, 'description' => $description];
+        }
+
+        return ['ok' => false, 'description' => 'telegram http ' . $status];
     }
 }

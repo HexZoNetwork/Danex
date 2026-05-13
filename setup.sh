@@ -668,19 +668,74 @@ repair_container_volume_permissions() {
     local volumes_root="/var/lib/pterodactyl/volumes"
     local vol=""
     local repaired=0
-    local container_uid="1000"
-    local container_gid="1000"
+    local config_path="/etc/pterodactyl/config.yml"
+    local rootless_enabled="false"
+    local system_uid=""
+    local system_gid=""
+    local container_uid=""
+    local container_gid=""
+    local target_uid=""
+    local target_gid=""
+    local mode_label="system.user uid/gid"
+    local owner_pair=""
 
     [[ -d "${volumes_root}" ]] || return 0
 
-    if [[ -f /etc/pterodactyl/config.yml ]]; then
-        container_uid="$(awk -F': ' '/^[[:space:]]{6}container_uid:[[:space:]]*/{gsub(/[^0-9]/,"",$2); if($2!=""){print $2; exit}}' /etc/pterodactyl/config.yml 2>/dev/null || true)"
-        container_gid="$(awk -F': ' '/^[[:space:]]{6}container_gid:[[:space:]]*/{gsub(/[^0-9]/,"",$2); if($2!=""){print $2; exit}}' /etc/pterodactyl/config.yml 2>/dev/null || true)"
+    if [[ -f "${config_path}" ]]; then
+        rootless_enabled="$(
+            awk '
+                BEGIN{in_rootless=0}
+                /^[[:space:]]{4}rootless:[[:space:]]*$/ {in_rootless=1; next}
+                in_rootless && /^[[:space:]]{6}enabled:[[:space:]]*/ {
+                    v=$0
+                    sub(/^[^:]*:[[:space:]]*/, "", v)
+                    gsub(/[[:space:]"]/,"",v)
+                    print tolower(v)
+                    exit
+                }
+                in_rootless && /^[[:space:]]{4}[A-Za-z_][A-Za-z0-9_]*:[[:space:]]*$/ {in_rootless=0}
+            ' "${config_path}" 2>/dev/null || true
+        )"
+        system_uid="$(awk -F': ' '/^[[:space:]]{4}uid:[[:space:]]*[0-9]+[[:space:]]*$/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "${config_path}" 2>/dev/null || true)"
+        system_gid="$(awk -F': ' '/^[[:space:]]{4}gid:[[:space:]]*[0-9]+[[:space:]]*$/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "${config_path}" 2>/dev/null || true)"
+        container_uid="$(awk -F': ' '/^[[:space:]]{6}container_uid:[[:space:]]*[0-9]+[[:space:]]*$/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "${config_path}" 2>/dev/null || true)"
+        container_gid="$(awk -F': ' '/^[[:space:]]{6}container_gid:[[:space:]]*[0-9]+[[:space:]]*$/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "${config_path}" 2>/dev/null || true)"
     fi
-    [[ "${container_uid}" =~ ^[0-9]+$ ]] || container_uid="1000"
-    [[ "${container_gid}" =~ ^[0-9]+$ ]] || container_gid="1000"
 
-    echo "[setup] repairing permissions for all container volumes (uid:gid ${container_uid}:${container_gid})..."
+    [[ "${system_uid}" =~ ^[0-9]+$ ]] || system_uid=""
+    [[ "${system_gid}" =~ ^[0-9]+$ ]] || system_gid=""
+    [[ "${container_uid}" =~ ^[0-9]+$ ]] || container_uid=""
+    [[ "${container_gid}" =~ ^[0-9]+$ ]] || container_gid=""
+
+    if [[ "${rootless_enabled}" == "1" || "${rootless_enabled}" == "true" || "${rootless_enabled}" == "yes" || "${rootless_enabled}" == "on" ]]; then
+        target_uid="${container_uid}"
+        target_gid="${container_gid}"
+        mode_label="rootless.container_uid/gid"
+    else
+        target_uid="${system_uid}"
+        target_gid="${system_gid}"
+    fi
+
+    if [[ ! "${target_uid}" =~ ^[0-9]+$ || ! "${target_gid}" =~ ^[0-9]+$ || "${target_uid}" == "0" || "${target_gid}" == "0" ]]; then
+        target_uid="${system_uid}"
+        target_gid="${system_gid}"
+        mode_label="system.user uid/gid (fallback)"
+    fi
+
+    if [[ ! "${target_uid}" =~ ^[0-9]+$ || ! "${target_gid}" =~ ^[0-9]+$ || "${target_uid}" == "0" || "${target_gid}" == "0" ]]; then
+        owner_pair="$(stat -c '%u:%g' "${volumes_root}" 2>/dev/null || true)"
+        if [[ "${owner_pair}" =~ ^[0-9]+:[0-9]+$ ]]; then
+            target_uid="${owner_pair%%:*}"
+            target_gid="${owner_pair##*:}"
+            mode_label="volumes root owner fallback"
+        fi
+    fi
+
+    if [[ "${target_uid}" =~ ^[0-9]+$ && "${target_gid}" =~ ^[0-9]+$ ]]; then
+        echo "[setup] repairing permissions for all container volumes (uid:gid ${target_uid}:${target_gid}, source=${mode_label})..."
+    else
+        echo "[setup] repairing permissions for all container volumes (ownership unchanged, source unavailable)..."
+    fi
     while IFS= read -r -d '' vol; do
         [[ -d "${vol}" ]] || continue
 
@@ -689,7 +744,9 @@ repair_container_volume_permissions() {
             chattr -R -i "${vol}" >/dev/null 2>&1 || true
         fi
 
-        chown -R "${container_uid}:${container_gid}" "${vol}" >/dev/null 2>&1 || true
+        if [[ "${target_uid}" =~ ^[0-9]+$ && "${target_gid}" =~ ^[0-9]+$ ]]; then
+            chown -R "${target_uid}:${target_gid}" "${vol}" >/dev/null 2>&1 || true
+        fi
         # Keep container root secure but always accessible for its owner.
         find "${vol}" -type d -exec chmod u+rwx,go+rx {} \; >/dev/null 2>&1 || true
         find "${vol}" -type f -exec chmod u+rw,go+r {} \; >/dev/null 2>&1 || true
