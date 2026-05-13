@@ -371,9 +371,9 @@ export default () => {
                         <div css={tw`mt-2 max-h-[220px] overflow-auto space-y-1`}>
                             {feed.slice(0, 40).map((item, idx) => (
                                 <div key={`${item.timestamp}-${idx}`} css={tw`text-xs font-mono flex items-start gap-2`}>
-                                    <span css={tw`text-neutral-500 shrink-0`}>{new Date(item.timestamp).toLocaleTimeString()}</span>
+                                    <span css={tw`text-neutral-500 flex-shrink-0`}>{new Date(item.timestamp).toLocaleTimeString()}</span>
                                     <span
-                                        css={tw`shrink-0`}
+                                        css={tw`flex-shrink-0`}
                                         style={{
                                             color:
                                                 item.severity === 'danger'
