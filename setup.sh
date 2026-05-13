@@ -418,6 +418,100 @@ if changed:
 PY
 }
 
+ensure_panel_autoconfigure_defaults() {
+    local panel_dir="${1:-${PANEL_DIR}}"
+    local panel_env_file="${2:-${PANEL_ENV_FILE}}"
+    local autoconf_cfg="${panel_dir}/config/pteroprotect_autoconfigure.php"
+
+    [[ -d "${panel_dir}" ]] || return 0
+
+    if [[ -f "${panel_env_file}" ]] && command -v python3 >/dev/null 2>&1; then
+        python3 - "${panel_env_file}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+env_path = Path(sys.argv[1])
+if not env_path.exists():
+    raise SystemExit(0)
+
+key = "PTEROPROTECT_AUTOCONF_QUEUE"
+target_val = "standard"
+key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$")
+
+lines = env_path.read_text().splitlines()
+out = []
+seen = False
+
+for line in lines:
+    m = key_re.match(line)
+    if not m:
+        out.append(line)
+        continue
+    if m.group(1) == key:
+        out.append(f"{key}={target_val}")
+        seen = True
+    else:
+        out.append(line)
+
+if not seen:
+    out.append(f"{key}={target_val}")
+
+env_path.write_text("\n".join(out).rstrip("\n") + "\n")
+PY
+    fi
+
+    if [[ -f "${autoconf_cfg}" ]]; then
+        perl -0pi -e "s/PTEROPROTECT_AUTOCONF_QUEUE',\\s*'default'/PTEROPROTECT_AUTOCONF_QUEUE', 'standard'/g" "${autoconf_cfg}" || true
+    fi
+
+    if command -v php >/dev/null 2>&1 && [[ -f "${panel_dir}/artisan" ]]; then
+        (cd "${panel_dir}" && php artisan config:clear >/dev/null 2>&1 || true)
+    fi
+}
+
+post_install_service_smoke_check() {
+    local panel_env_file="${1:-${PANEL_ENV_FILE}}"
+    local app_url=""
+    local app_host=""
+    local panel_code=""
+    local wings_code=""
+
+    if command -v systemctl >/dev/null 2>&1; then
+        for svc in nginx pteroq wings; do
+            if systemctl list-unit-files "${svc}.service" >/dev/null 2>&1; then
+                if ! systemctl is-active --quiet "${svc}"; then
+                    warn "service ${svc} is not active after setup. run: systemctl status ${svc} -n 100 --no-pager"
+                fi
+            fi
+        done
+    fi
+
+    panel_code="$(curl -4 -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 http://127.0.0.1/ 2>/dev/null || true)"
+    if [[ ! "${panel_code}" =~ ^[0-9]{3}$ || "${panel_code}" == "000" ]]; then
+        warn "panel local HTTP probe failed on 127.0.0.1:80"
+    fi
+
+    wings_code="$(curl -k -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 https://127.0.0.1:8080/api/system 2>/dev/null || true)"
+    if [[ ! "${wings_code}" =~ ^(200|401|403)$ ]]; then
+        warn "wings-guard probe on 127.0.0.1:8080/api/system is unexpected (code=${wings_code:-n/a})"
+    fi
+
+    if [[ -f "${panel_env_file}" ]]; then
+        app_url="$(
+            awk -F'=' '/^\s*APP_URL\s*=/{print $2; exit}' "${panel_env_file}" 2>/dev/null \
+            | tr -d "\"'" \
+            | xargs -r echo
+        )"
+        if [[ -n "${app_url}" ]]; then
+            app_host="$(printf '%s' "${app_url}" | sed -E 's|^https?://||; s|/.*$||; s|:[0-9]+$||')"
+            if [[ -n "${app_host}" ]] && ! getent ahostsv4 "${app_host}" >/dev/null 2>&1 && ! getent ahostsv6 "${app_host}" >/dev/null 2>&1; then
+                warn "APP_URL host does not resolve from this server (${app_host}); buyers may see downtime until DNS is fixed."
+            fi
+        fi
+    fi
+}
+
 ensure_panel_runtime_dirs() {
     local panel_dir="$1"
     local owner_user="www-data"
@@ -1533,6 +1627,7 @@ if [[ -d "${PANEL_DIR}" && -n "${PANEL_OVERRIDE_SOURCE}" ]]; then
     PANEL_OVERRIDE_BACKUP_DIR="${BACKUP_DIR}/panel_overrides_$(date -u +%Y%m%d_%H%M%S)"
     backup_panel_override_targets "${PANEL_OVERRIDE_SOURCE}" "${PANEL_DIR}" "${PANEL_OVERRIDE_BACKUP_DIR}"
     copy_tree "${PANEL_OVERRIDE_SOURCE}" "${PANEL_DIR}"
+    ensure_panel_autoconfigure_defaults "${PANEL_DIR}" "${PANEL_ENV_FILE}"
 
     # Reviactyl compatibility bridge:
     # ensure known extra frontend deps and line-clamp plugin are present
@@ -3122,6 +3217,39 @@ fi
 if [[ -x "${INSTALL_DIR}/scripts/install_fail2ban.sh" ]]; then
     echo "[setup] applying fail2ban protection profile..."
     "${INSTALL_DIR}/scripts/install_fail2ban.sh" "${INSTALL_DIR}" || true
+
+    FAIL2BAN_REQUIRED_RAW="$(read_network_setting fail2ban_required true)"
+    FAIL2BAN_REQUIRED=0
+    case "${FAIL2BAN_REQUIRED_RAW,,}" in
+        1|true|yes|on) FAIL2BAN_REQUIRED=1 ;;
+    esac
+    case "${PTEROPROTECT_FAIL2BAN_REQUIRED:-}" in
+        0|false|FALSE|no|NO|off|OFF) FAIL2BAN_REQUIRED=0 ;;
+        1|true|TRUE|yes|YES|on|ON) FAIL2BAN_REQUIRED=1 ;;
+    esac
+
+    if (( FAIL2BAN_REQUIRED == 1 )); then
+        if ! command -v fail2ban-client >/dev/null 2>&1; then
+            echo "[setup] error: fail2ban-client is missing but fail2ban is required." >&2
+            echo "[setup] hint: apt-get install -y fail2ban" >&2
+            exit 1
+        fi
+        if ! fail2ban-client -d >/dev/null 2>&1; then
+            echo "[setup] error: fail2ban configuration is invalid." >&2
+            fail2ban-client -d || true
+            exit 1
+        fi
+        if command -v systemctl >/dev/null 2>&1; then
+            if ! systemctl is-active --quiet fail2ban; then
+                echo "[setup] error: fail2ban is not active after setup." >&2
+                systemctl --no-pager --full status fail2ban || true
+                journalctl -u fail2ban -n 120 --no-pager || true
+                exit 1
+            fi
+        else
+            echo "[setup] warning: systemctl not found; cannot assert fail2ban service state." >&2
+        fi
+    fi
 fi
 
 SSH_HARDENING_ENABLED="$(read_network_setting ssh_hardening_enabled true)"
@@ -3434,6 +3562,9 @@ fi
 if [[ -x "${INSTALL_DIR}/scripts/edge_origin_cloak.sh" ]]; then
     bash "${INSTALL_DIR}/scripts/edge_origin_cloak.sh" clear 80,443 >/dev/null 2>&1 || true
 fi
+
+echo "[setup] running post-install connectivity smoke checks..."
+post_install_service_smoke_check "${PANEL_ENV_FILE}"
 
 echo "[setup] done."
 echo "[setup] workspace: ${INSTALL_DIR}"
