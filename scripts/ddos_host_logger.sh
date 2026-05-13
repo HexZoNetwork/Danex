@@ -2288,6 +2288,7 @@ while true; do
     TRAFFIC_PROFILE="$(trim "$(printf '%s' "$(read_network_setting traffic_profile mixed)" | tr '[:upper:]' '[:lower:]')")"
     MONITOR_TCP_PORTS="$(sanitize_ports_csv "${PTEROPROTECT_MONITOR_TCP_PORTS:-${PTEROPROTECT_INFRA_GUARD_PORTS:-22,2022,8080,3306,5432,6379}}")"
     PORTS_REGEX="$(build_ports_regex "${MONITOR_TCP_PORTS}")"
+    PROTECTED_TCP_PORTS="$(sanitize_ports_csv "$(read_network_setting public_tcp_ports "22,80,443,2022,8080,18443")")"
 
     HOST_FIREWALL_ENABLED="$(normalize_bool "$(read_network_setting host_firewall_enabled 0)")"
     DYNAMIC_BLOCK_ENABLED="$(normalize_bool "$(read_network_setting dynamic_block_enabled 0)")"

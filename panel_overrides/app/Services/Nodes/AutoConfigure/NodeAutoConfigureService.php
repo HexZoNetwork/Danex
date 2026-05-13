@@ -59,6 +59,8 @@ class NodeAutoConfigureService
                     'firewall_mode' => (string) ($input['firewall_mode'] ?? 'auto'),
                     'ephemeral_public_key' => (string) $keys['public'],
                     'expected_host_fingerprint' => trim((string) ($input['host_fingerprint'] ?? '')),
+                    'node_yaml_b64' => base64_encode($node->getYamlConfiguration()),
+                    'protected_mode' => true,
                 ],
             ]);
 

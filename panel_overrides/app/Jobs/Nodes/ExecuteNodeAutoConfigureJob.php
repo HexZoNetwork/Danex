@@ -8,6 +8,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Crypt;
+use Pterodactyl\Models\Node;
 use Pterodactyl\Models\NodeAutoConfigRun;
 use Pterodactyl\Services\Nodes\AutoConfigure\RemoteProvisioner;
 use Pterodactyl\Services\Nodes\AutoConfigure\RemoteScriptBuilder;
@@ -66,7 +67,9 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
             $script = $builder->render(
                 (int) $run->wings_port,
                 (string) $run->fallback_port_range,
-                (string) ($run->requested_payload['firewall_mode'] ?? 'auto')
+                (string) ($run->requested_payload['firewall_mode'] ?? 'auto'),
+                (string) ($run->requested_payload['node_yaml_b64'] ?? ''),
+                (bool) ($run->requested_payload['protected_mode'] ?? true)
             );
 
             $exec = $provisioner->runWithPrivateKey(
@@ -85,6 +88,24 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
 
             if (($exec['exit_code'] ?? 1) !== 0 && ($exec['exit_code'] ?? 1) !== null) {
                 throw new \RuntimeException('remote_installer_failed');
+            }
+
+            $output = (string) ($exec['output'] ?? '');
+            if (preg_match('/SELECTED_WINGS_PORT=(\d{1,5})/', $output, $matches) === 1) {
+                $selectedPort = (int) $matches[1];
+                if ($selectedPort >= 1 && $selectedPort <= 65535) {
+                    $run->wings_port = $selectedPort;
+                    $run->save();
+
+                    $node = Node::query()->find((int) $run->node_id);
+                    if ($node && (int) $node->daemonListen !== $selectedPort) {
+                        $node->daemonListen = $selectedPort;
+                        $node->save();
+                        $logger->log($run, 'info', 'panel_sync', 'Updated panel daemonListen to selected public daemon port.', [
+                            'daemonListen' => $selectedPort,
+                        ], 'panel_daemon_listen_updated');
+                    }
+                }
             }
 
             $provisioner->revokeEphemeralKey(

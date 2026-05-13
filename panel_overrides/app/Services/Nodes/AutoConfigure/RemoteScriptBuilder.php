@@ -4,18 +4,19 @@ namespace Pterodactyl\Services\Nodes\AutoConfigure;
 
 class RemoteScriptBuilder
 {
-    public function build(int $wingsPort, string $fallbackRange, string $firewallMode): string
+    public function build(int $wingsPort, string $fallbackRange, string $firewallMode, string $nodeYamlB64, bool $protectedMode): string
     {
         $port = max(1, min(65535, $wingsPort));
         $range = preg_replace('/[^0-9,\-]/', '', $fallbackRange) ?: '8081-8099';
         $mode = $firewallMode === 'minimal' ? 'minimal' : 'auto';
-
         return <<<'BASH'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 WINGS_PORT="__WINGS_PORT__"
 FALLBACK_RANGE="__FALLBACK_RANGE__"
 FIREWALL_MODE="__FIREWALL_MODE__"
+NODE_YAML_B64="__NODE_YAML_B64__"
+PROTECTED_MODE="__PROTECTED_MODE__"
 
 log() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
@@ -32,19 +33,55 @@ install_deps() {
   case "$pm" in
     apt)
       apt-get update -y
-      apt-get install -y curl tar jq ufw
+      apt-get install -y curl tar jq ufw ca-certificates gnupg lsb-release python3
       ;;
     dnf)
-      dnf install -y curl tar jq firewalld
+      dnf install -y curl tar jq firewalld ca-certificates python3
       ;;
     yum)
-      yum install -y curl tar jq firewalld
+      yum install -y curl tar jq firewalld ca-certificates python3
       ;;
     *)
       log "unsupported package manager"
       exit 21
       ;;
   esac
+}
+
+install_docker() {
+  if command -v docker >/dev/null 2>&1; then
+    return
+  fi
+  local pm
+  pm="$(detect_pm)"
+  case "$pm" in
+    apt)
+      install -m 0755 -d /etc/apt/keyrings
+      if [[ ! -f /etc/apt/keyrings/docker.asc ]]; then
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      fi
+      . /etc/os-release
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" >/etc/apt/sources.list.d/docker.list
+      apt-get update -y
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      ;;
+    dnf)
+      dnf -y install dnf-plugins-core
+      dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+      dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      ;;
+    yum)
+      yum -y install yum-utils
+      yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+      yum -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      ;;
+    *)
+      log "cannot install docker on unsupported package manager"
+      exit 22
+      ;;
+  esac
+  systemctl enable --now docker
 }
 
 port_in_use() {
@@ -143,33 +180,149 @@ WantedBy=multi-user.target
 UNIT
 }
 
+write_node_config() {
+  mkdir -p /etc/pterodactyl
+  printf '%s' "$NODE_YAML_B64" | base64 -d >/etc/pterodactyl/config.yml
+}
+
+patch_node_config_for_protect() {
+  local public_port="$1"
+  python3 - "$public_port" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+public_port = str(sys.argv[1])
+path = Path("/etc/pterodactyl/config.yml")
+if not path.exists():
+    raise SystemExit(0)
+
+lines = path.read_text().splitlines()
+out = []
+in_api = False
+in_ssl = False
+
+for line in lines:
+    if re.match(r'^api:\s*$', line):
+        in_api = True
+        in_ssl = False
+        out.append(line)
+        continue
+    if in_api and re.match(r'^\s{2}ssl:\s*$', line):
+        in_ssl = True
+        out.append(line)
+        continue
+    if re.match(r'^[^\s]', line):
+        in_api = False
+        in_ssl = False
+
+    if in_api and re.match(r'^\s{2}host:\s*', line):
+        out.append("  host: 127.0.0.1")
+        continue
+    if in_api and re.match(r'^\s{2}port:\s*', line):
+        out.append("  port: 18080")
+        continue
+    if in_ssl and re.match(r'^\s{4}enabled:\s*', line):
+        out.append("    enabled: false")
+        continue
+    if re.match(r'^ignore_panel_config_updates:\s*', line):
+        out.append("ignore_panel_config_updates: true")
+        continue
+    out.append(line)
+
+if not any(l.startswith("ignore_panel_config_updates:") for l in out):
+    out.append("ignore_panel_config_updates: true")
+
+path.write_text("\n".join(out) + "\n")
+PY
+}
+
+configure_wings_guard() {
+  local public_port="$1"
+  local cert key
+  cert="$(awk -F': ' '/^[[:space:]]{4}cert:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
+  key="$(awk -F': ' '/^[[:space:]]{4}key:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
+  if [[ ! -f "$cert" || ! -f "$key" ]]; then
+    log "wings_guard_skip_missing_cert"
+    return
+  fi
+  if ! command -v nginx >/dev/null 2>&1; then
+    log "wings_guard_skip_no_nginx"
+    return
+  fi
+
+  cat >/etc/nginx/sites-available/wings-guard.conf <<EOF
+upstream pteroprotect_wings_pool {
+    server 127.0.0.1:18080 max_fails=3 fail_timeout=3s;
+    keepalive 128;
+}
+
+server {
+    listen ${public_port} ssl;
+    listen [::]:${public_port} ssl;
+    server_name _;
+    ssl_certificate ${cert};
+    ssl_certificate_key ${key};
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+
+    location / {
+        proxy_pass http://pteroprotect_wings_pool;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+EOF
+  ln -sfn /etc/nginx/sites-available/wings-guard.conf /etc/nginx/sites-enabled/wings-guard.conf
+  nginx -t
+  systemctl reload nginx || systemctl restart nginx
+}
+
 main() {
   install_deps
+  install_docker
   install_wings
   ensure_wings_user
   mkdir -p /etc/pterodactyl /var/run/wings
   chown -R wings:wings /etc/pterodactyl /var/run/wings || true
   selected_port="$(pick_port)"
+  write_node_config
+  if [[ "$PROTECTED_MODE" == "1" ]]; then
+    patch_node_config_for_protect "$selected_port"
+  fi
   configure_firewall "$selected_port"
   write_unit
   systemctl daemon-reload
   systemctl enable wings || true
-  systemctl restart wings || true
+  systemctl restart wings
+  if [[ "$PROTECTED_MODE" == "1" ]]; then
+    configure_wings_guard "$selected_port"
+  fi
+  curl -sS -m 5 -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/api/system | grep -Eq '^(200|401|403)$'
   log "selected_wings_port=$selected_port"
   echo "SELECTED_WINGS_PORT=$selected_port"
 }
 
 main "$@"
-BASH
-;
+BASH;
     }
 
-    public function render(int $wingsPort, string $fallbackRange, string $firewallMode): string
+    public function render(int $wingsPort, string $fallbackRange, string $firewallMode, string $nodeYamlB64, bool $protectedMode): string
     {
+        $safeYaml = preg_replace('/[^A-Za-z0-9+\/=]/', '', $nodeYamlB64) ?: '';
+        $protected = $protectedMode ? '1' : '0';
+
         return str_replace(
-            ['__WINGS_PORT__', '__FALLBACK_RANGE__', '__FIREWALL_MODE__'],
-            [(string) $wingsPort, $fallbackRange, $firewallMode],
-            $this->build($wingsPort, $fallbackRange, $firewallMode)
+            ['__WINGS_PORT__', '__FALLBACK_RANGE__', '__FIREWALL_MODE__', '__NODE_YAML_B64__', '__PROTECTED_MODE__'],
+            [(string) $wingsPort, $fallbackRange, $firewallMode, $safeYaml, $protected],
+            $this->build($wingsPort, $fallbackRange, $firewallMode, $nodeYamlB64, $protectedMode)
         );
     }
 }
