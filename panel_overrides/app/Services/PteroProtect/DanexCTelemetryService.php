@@ -342,10 +342,13 @@ class DanexCTelemetryService
     private function buildUptimeLabel(): string
     {
         $uptimePath = '/proc/uptime';
-        if (!File::exists($uptimePath)) {
+        if (!File::exists($uptimePath) || !is_readable($uptimePath)) {
             return 'n/a';
         }
-        $raw = trim((string) File::get($uptimePath));
+        $raw = trim((string) @file_get_contents($uptimePath));
+        if ($raw === '') {
+            return 'n/a';
+        }
         $first = (float) explode(' ', $raw)[0];
         $days = (int) floor($first / 86400);
         $hours = (int) floor(($first % 86400) / 3600);
@@ -413,9 +416,9 @@ class DanexCTelemetryService
     private function readConfig(): array
     {
         $path = env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
-        if (!is_string($path) || $path === '' || !File::exists($path)) {
+        if (!is_string($path) || $path === '' || !File::exists($path) || !is_readable($path)) {
             $repoDefault = base_path('config.json');
-            if (is_string($repoDefault) && File::exists($repoDefault)) {
+            if (is_string($repoDefault) && File::exists($repoDefault) && is_readable($repoDefault)) {
                 $path = $repoDefault;
             }
         }
@@ -424,10 +427,14 @@ class DanexCTelemetryService
 
     private function readJsonFile(string $path): array
     {
-        if ($path === '' || !File::exists($path)) {
+        if ($path === '' || !File::exists($path) || !is_readable($path)) {
             return [];
         }
-        $data = json_decode((string) File::get($path), true);
+        $raw = @file_get_contents($path);
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+        $data = json_decode($raw, true);
         return is_array($data) ? $data : [];
     }
 
@@ -448,7 +455,7 @@ class DanexCTelemetryService
 
     private function readLastLines(string $path, int $maxLines): array
     {
-        if ($path === '' || !File::exists($path) || $maxLines <= 0) {
+        if ($path === '' || !File::exists($path) || !is_readable($path) || $maxLines <= 0) {
             return [];
         }
         $contents = @file($path, FILE_IGNORE_NEW_LINES);
