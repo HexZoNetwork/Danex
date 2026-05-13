@@ -458,10 +458,50 @@ class DanexCTelemetryService
         if ($path === '' || !File::exists($path) || !is_readable($path) || $maxLines <= 0) {
             return [];
         }
-        $contents = @file($path, FILE_IGNORE_NEW_LINES);
-        if (!is_array($contents) || $contents === []) {
+
+        $handle = @fopen($path, 'rb');
+        if (!is_resource($handle)) {
             return [];
         }
-        return array_slice($contents, -$maxLines);
+
+        $chunkSize = 65536;
+        $buffer = '';
+        $lines = [];
+        $position = @fseek($handle, 0, SEEK_END) === 0 ? @ftell($handle) : false;
+        if (!is_int($position)) {
+            @fclose($handle);
+            return [];
+        }
+
+        while ($position > 0 && count($lines) <= $maxLines) {
+            $readSize = min($chunkSize, $position);
+            $position -= $readSize;
+            if (@fseek($handle, $position) !== 0) {
+                break;
+            }
+            $chunk = @fread($handle, $readSize);
+            if (!is_string($chunk) || $chunk === '') {
+                break;
+            }
+
+            $buffer = $chunk . $buffer;
+            $lines = preg_split('/\r\n|\n|\r/', $buffer);
+            if (!is_array($lines)) {
+                $lines = [];
+                break;
+            }
+        }
+
+        @fclose($handle);
+
+        if ($lines === []) {
+            return [];
+        }
+
+        if (end($lines) === '') {
+            array_pop($lines);
+        }
+
+        return array_slice($lines, -$maxLines);
     }
 }

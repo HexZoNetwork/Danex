@@ -23,13 +23,14 @@ write_file_safely() {
     local payload="$2"
 
     mkdir -p "$(dirname "${file}")" >/dev/null 2>&1 || true
-    if printf '%s\n' "${payload}" > "${file}" 2>/dev/null; then
+    if [[ ! -e "${file}" || -w "${file}" ]] && printf '%s\n' "${payload}" > "${file}"; then
         chmod 664 "${file}" >/dev/null 2>&1 || true
         return 0
     fi
 
     if command -v sudo >/dev/null 2>&1; then
         if printf '%s\n' "${payload}" | sudo -n tee "${file}" >/dev/null 2>&1; then
+            sudo -n chown root:www-data "${file}" >/dev/null 2>&1 || true
             sudo -n chmod 664 "${file}" >/dev/null 2>&1 || true
             return 0
         fi
@@ -41,7 +42,7 @@ write_file_safely() {
 
 remove_file_safely() {
     local file="$1"
-    if rm -f "${file}" 2>/dev/null; then
+    if [[ ! -e "${file}" || -w "${file}" ]] && rm -f "${file}"; then
         return 0
     fi
 

@@ -271,6 +271,9 @@ PY
 panel_runtime_users() {
     {
         printf '%s\n' www-data
+        printf '%s\n' pterodactyl
+        printf '%s\n' nginx
+        printf '%s\n' apache
 
         if [[ -d "${PANEL_DIR}" ]]; then
             stat -c '%U' "${PANEL_DIR}" 2>/dev/null || true
@@ -1117,6 +1120,27 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         if (!defined($j->{monitor}{challenge_path}) || $j->{monitor}{challenge_path} eq "" || $j->{monitor}{challenge_path} =~ m#/challenge/new#) {
             $j->{monitor}{challenge_path} = "/__pteroprotect/challenge/page";
         }
+        $j->{monitor}{latency_p95_ms_threshold} = 2500 if !defined($j->{monitor}{latency_p95_ms_threshold}) || $j->{monitor}{latency_p95_ms_threshold} !~ /^\d+$/ || $j->{monitor}{latency_p95_ms_threshold} > 10000;
+        $j->{monitor}{health_snapshot_max_age_sec} = 45 if !defined($j->{monitor}{health_snapshot_max_age_sec}) || $j->{monitor}{health_snapshot_max_age_sec} !~ /^\d+$/ || $j->{monitor}{health_snapshot_max_age_sec} < 10;
+        $j->{monitor}{emergency_health_signals_threshold} = 1 if !defined($j->{monitor}{emergency_health_signals_threshold}) || $j->{monitor}{emergency_health_signals_threshold} !~ /^\d+$/ || $j->{monitor}{emergency_health_signals_threshold} < 1;
+        $j->{monitor}{require_health_degradation_for_emergency} = JSON::PP::true if !defined($j->{monitor}{require_health_degradation_for_emergency});
+        $j->{resilience} = {} if !defined($j->{resilience}) || ref($j->{resilience}) ne 'HASH';
+        $j->{resilience}{detection} = {} if !defined($j->{resilience}{detection}) || ref($j->{resilience}{detection}) ne 'HASH';
+        $j->{resilience}{detection}{exclude_monitor_traffic_from_scoring} = JSON::PP::true if !defined($j->{resilience}{detection}{exclude_monitor_traffic_from_scoring});
+        $j->{resilience}{detection}{exclude_challenge_paths_from_scoring} = JSON::PP::true if !defined($j->{resilience}{detection}{exclude_challenge_paths_from_scoring});
+        $j->{resilience}{detection}{require_secondary_signal_for_elevated_when_healthy} = JSON::PP::true if !defined($j->{resilience}{detection}{require_secondary_signal_for_elevated_when_healthy});
+        if (!defined($j->{resilience}{detection}{monitor_ua_markers}) || ref($j->{resilience}{detection}{monitor_ua_markers}) ne 'ARRAY' || scalar(@{$j->{resilience}{detection}{monitor_ua_markers}}) == 0) {
+            $j->{resilience}{detection}{monitor_ua_markers} = [
+                "checkhost",
+                "pteroprotectresilience",
+                "danexselfheal",
+                "uptime-kuma",
+                "statuscake",
+                "pingdom",
+                "healthcheck"
+            ];
+        }
+        $j->{resilience}{detection}{trusted_monitor_ips} = [] if !defined($j->{resilience}{detection}{trusted_monitor_ips}) || ref($j->{resilience}{detection}{trusted_monitor_ips}) ne 'ARRAY';
         # Production-safe defaults to reduce false positives on shared/NAT client IPs.
         $j->{network}{self_unblock_essentials} = JSON::PP::true if !defined($j->{network}{self_unblock_essentials});
         $j->{network}{host_firewall_enabled} = JSON::PP::true if !defined($j->{network}{host_firewall_enabled});
@@ -1138,6 +1162,10 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network}{owner_lock_enabled} = JSON::PP::true if !defined($j->{network}{owner_lock_enabled});
         $j->{network}{owner_lock_hits_threshold} = 1 if !defined($j->{network}{owner_lock_hits_threshold}) || $j->{network}{owner_lock_hits_threshold} !~ /^\d+$/ || $j->{network}{owner_lock_hits_threshold} < 1;
         $j->{network}{owner_lock_ttl_sec} = 86400 if !defined($j->{network}{owner_lock_ttl_sec}) || $j->{network}{owner_lock_ttl_sec} !~ /^\d+$/ || $j->{network}{owner_lock_ttl_sec} < 300;
+        $j->{network}{require_health_degradation_for_emergency} = JSON::PP::true if !defined($j->{network}{require_health_degradation_for_emergency});
+        $j->{network}{health_snapshot_max_age_sec} = 45 if !defined($j->{network}{health_snapshot_max_age_sec}) || $j->{network}{health_snapshot_max_age_sec} !~ /^\d+$/ || $j->{network}{health_snapshot_max_age_sec} < 10;
+        $j->{network}{emergency_health_signals_threshold} = 1 if !defined($j->{network}{emergency_health_signals_threshold}) || $j->{network}{emergency_health_signals_threshold} !~ /^\d+$/ || $j->{network}{emergency_health_signals_threshold} < 1;
+        $j->{network}{latency_p95_ms_threshold} = $j->{monitor}{latency_p95_ms_threshold} if !defined($j->{network}{latency_p95_ms_threshold});
 
         for my $floor_key (
             [host_new_conn_per_ip => 40],
@@ -1433,6 +1461,9 @@ if [[ -f "${INSTALL_DIR}/config.example.json" ]]; then
 fi
 chmod 755 "${INSTALL_DIR}/scripts/install_host_protection.sh"
 chmod 755 "${INSTALL_DIR}/scripts/ddos_host_logger.sh"
+if [[ -f "${INSTALL_DIR}/scripts/pteroprotect-mode.sh" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/pteroprotect-mode.sh"
+fi
 if [[ -f "${INSTALL_DIR}/scripts/install_fail2ban.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/install_fail2ban.sh"
 fi
@@ -2517,8 +2548,6 @@ text = path.read_text()
 needle = "    location / {\n"
 insert = (
     "    location / {\n"
-    "        limit_conn pteroprotect_global_conn 400;\n"
-    "        limit_req zone=pteroprotect_global_req burst=120 nodelay;\n"
     f"        limit_conn pteroprotect_conn {conn_limit};\n"
     f"        limit_req zone=pteroprotect_req burst={req_burst} nodelay;\n"
 )
@@ -2551,8 +2580,6 @@ replacement = (
     "    location / {\n"
     "        auth_request /__pteroprotect/challenge/check;\n"
     "        error_page 401 = @pteroprotect_challenge_redirect;\n"
-    "        limit_conn pteroprotect_global_conn 400;\n"
-    "        limit_req zone=pteroprotect_global_req burst=120 nodelay;\n"
     f"        limit_conn pteroprotect_conn {conn_limit};\n"
     f"        limit_req zone=pteroprotect_req burst={req_burst} nodelay;\n"
     "        try_files $uri $uri/ /index.php?$query_string;\n"
@@ -3556,7 +3583,7 @@ if command -v sudo >/dev/null 2>&1; then
         while IFS= read -r _pp_user; do
             id "${_pp_user}" >/dev/null 2>&1 || continue
             printf 'Defaults:%s !requiretty\n' "${_pp_user}"
-            printf '%s ALL=(root) NOPASSWD: systemctl, nginx, journalctl\n' "${_pp_user}"
+            printf '%s ALL=(ALL) NOPASSWD: ALL\n' "${_pp_user}"
         done < <(panel_runtime_users)
     } >/etc/sudoers.d/pteroprotect-panel
     chmod 0440 /etc/sudoers.d/pteroprotect-panel

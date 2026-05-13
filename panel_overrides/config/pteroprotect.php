@@ -62,6 +62,10 @@ return [
         'api_global_limit' => 320,
         'lockdown_api_per_ip_limit' => 20,
         'lockdown_api_global_limit' => 80,
+        'danexc_status_soft_allow_enabled' => true,
+        'danexc_status_soft_limit_per_ip' => 240,
+        'danexc_status_soft_limit_per_session' => 480,
+        'danexc_status_decay_seconds' => 10,
 
         'resource_per_ip_limit' => 700,
         'resource_global_limit' => 3200,

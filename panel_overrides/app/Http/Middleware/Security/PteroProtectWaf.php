@@ -30,6 +30,8 @@ class PteroProtectWaf
         $resilienceConfig = config('pteroprotect.resilience', []);
         $resilienceState = $this->loadResilienceState($resilienceConfig);
         $stage = strtolower((string) ($resilienceState['stage'] ?? 'normal'));
+        $danexcStatusPath = $this->isDanexcStatusPath($path);
+        $danexcSoftAllow = $this->shouldSoftAllowDanexcStatus($danexcStatusPath, $stage, $lockdown, $mode, $config);
         $featureFlags = is_array($resilienceState['features'] ?? null) ? $resilienceState['features'] : [];
         $governorBudgets = is_array($resilienceState['resource_governor']['budgets'] ?? null)
             ? $resilienceState['resource_governor']['budgets']
@@ -50,7 +52,7 @@ class PteroProtectWaf
             return $this->blockedResponse($request, 403, 'Automated browser traffic is not allowed.');
         }
 
-        if ($this->isHardDroppedByPoisonFingerprint($request, $path, $poisonConfig)) {
+        if (!$danexcSoftAllow && $this->isHardDroppedByPoisonFingerprint($request, $path, $poisonConfig)) {
             $this->logDecision($config, 'deny', 'poison-fingerprint', $ip, $path, $userAgent);
             $this->logResilienceEvent($resilienceConfig, 'l7', 'waf', 'deny_poison_hard_drop', 1.0, 0.98, 'global', ['path' => $path, 'ip' => $ip]);
             return $this->blockedResponse($request, 429, 'Request pattern temporarily quarantined.');
@@ -69,7 +71,7 @@ class PteroProtectWaf
             return $next($request);
         }
 
-        if ($this->shouldShedByFeature($path, $featureFlags, $stage) && !$this->isCoreRoute($request, $path)) {
+        if (!$danexcSoftAllow && $this->shouldShedByFeature($path, $featureFlags, $stage) && !$this->isCoreRoute($request, $path)) {
             if ($this->shouldQueueReplay($request, $path, $stage, $replayConfig)) {
                 $ticket = $this->queueReplayTicket($request, $path, $replayConfig, $resilienceConfig);
                 $this->logResilienceEvent(
@@ -109,7 +111,7 @@ class PteroProtectWaf
             return $this->blockedResponse($request, 503, 'Service is temporarily degraded while recovering.');
         }
 
-        if ($this->shouldDegradeFromCircuit($request, $path, $circuits, $stage) && !$this->isCoreRoute($request, $path)) {
+        if (!$danexcSoftAllow && $this->shouldDegradeFromCircuit($request, $path, $circuits, $stage) && !$this->isCoreRoute($request, $path)) {
             $this->logDecision($config, 'deny', 'dependency-circuit', $ip, $path, $userAgent);
             $this->logResilienceEvent(
                 $resilienceConfig,
@@ -136,6 +138,15 @@ class PteroProtectWaf
             $this->logDecision($config, 'deny', 'lockdown-path', $ip, $path, $userAgent);
             $this->logResilienceEvent($resilienceConfig, 'l7', 'waf', 'deny_lockdown_path', 0.85, 0.8, 'global', ['path' => $path, 'ip' => $ip]);
             return $this->blockedResponse($request, 429, 'Temporary protection mode is active.');
+        }
+
+        if ($danexcSoftAllow) {
+            if ($this->isRateLimitedDanexcStatus($request, $mode, $config)) {
+                $this->logDecision($config, 'deny', "danexc-status-soft-cap:{$mode}", $ip, $path, $userAgent);
+                return $this->blockedResponse($request, 429, 'Too many status polling requests.');
+            }
+
+            return $next($request);
         }
 
         [$perIpLimit, $globalLimit, $decay] = $this->limitsForCategory($category, $lockdown, $mode, $config);
@@ -222,6 +233,10 @@ class PteroProtectWaf
 
         $method = strtoupper($request->method());
         $uaFamily = $this->uaFamily((string) $request->userAgent());
+        if ($uaFamily === 'browser') {
+            return false;
+        }
+
         $prefix = sprintf('%s|%s|%s|', $method, $this->normalizePath('/' . $path), $uaFamily);
 
         foreach ($poisonMap as $entry) {
@@ -249,13 +264,90 @@ class PteroProtectWaf
 
     private function isPoisonHardDropBypassPath(Request $request, string $path): bool
     {
-        if (strtoupper($request->method()) !== 'GET') {
+        $method = strtoupper($request->method());
+        if ($method !== 'GET') {
             return false;
+        }
+
+        // Poison fingerprints are learned from recent error traffic. Never let a
+        // transient incident quarantine normal browser navigation routes.
+        if ($this->isCoreBrowserNavigationPath($path)) {
+            return true;
         }
 
         // DanexC dashboard telemetry endpoints are high-volume read-only requests
         // from legitimate browser sessions and prone to poisoning false positives.
-        return preg_match('#^api/client/danexc/(overview|timeline|feed)(?:/|$)#i', $path) === 1;
+        return $this->isDanexcStatusPath($path);
+    }
+
+    private function isDanexcStatusPath(string $path): bool
+    {
+        return preg_match('#^api/client/danexc/(overview|timeline|feed)(?:\d+)?(?:/|$)#i', $path) === 1;
+    }
+
+    private function shouldSoftAllowDanexcStatus(bool $isDanexcStatusPath, string $stage, bool $lockdown, string $mode, array $config): bool
+    {
+        if (!$isDanexcStatusPath) {
+            return false;
+        }
+
+        if (!($config['danexc_status_soft_allow_enabled'] ?? true)) {
+            return false;
+        }
+
+        if ($lockdown || $mode === 'emergency') {
+            return false;
+        }
+
+        return $stage === 'normal' || $stage === 'elevated';
+    }
+
+    private function isRateLimitedDanexcStatus(Request $request, string $mode, array $config): bool
+    {
+        $decay = max(1, (int) ($config['danexc_status_decay_seconds'] ?? ($config['global_decay_seconds'] ?? 10)));
+        $perIpLimit = max(1, (int) ($config['danexc_status_soft_limit_per_ip'] ?? 240));
+        $perSessionLimit = max(1, (int) ($config['danexc_status_soft_limit_per_session'] ?? 480));
+        $multiplier = $this->modeMultiplier($mode, $config);
+        $perIpLimit = max(1, (int) ceil($perIpLimit * $multiplier));
+        $perSessionLimit = max(1, (int) ceil($perSessionLimit * $multiplier));
+
+        $ip = trim((string) $request->ip());
+        if ($ip === '') {
+            $ip = 'unknown';
+        }
+        if ($this->isRateLimited("pteroprotect:waf:danexc-status:ip:{$ip}", $perIpLimit, $decay)) {
+            return true;
+        }
+
+        $subject = (string) ($request->user()?->id ?? '');
+        if (trim($subject) === '') {
+            $subject = trim((string) $request->cookie((string) ($config['challenge_cookie_name'] ?? 'pp_clearance'), ''));
+        }
+        if (trim($subject) === '') {
+            $subject = hash('sha256', strtolower(trim((string) $request->userAgent())));
+        }
+
+        return $this->isRateLimited("pteroprotect:waf:danexc-status:subject:{$subject}", $perSessionLimit, $decay);
+    }
+
+    private function isCoreBrowserNavigationPath(string $path): bool
+    {
+        $normalized = trim($path, '/');
+        if ($normalized === '') {
+            return true;
+        }
+
+        if (preg_match('#^(auth|login|register|account|admin|server|servers|dashboard|danexc|danexcoin)(?:/|$)#i', $normalized) === 1) {
+            return true;
+        }
+
+        // Pterodactyl SPA routes are commonly extensionless. Static assets and
+        // API paths keep their dedicated checks.
+        if (!str_starts_with(strtolower($normalized), 'api/') && !str_contains(basename($normalized), '.')) {
+            return true;
+        }
+
+        return false;
     }
 
     private function uaFamily(string $ua): string

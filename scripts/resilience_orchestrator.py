@@ -45,10 +45,12 @@ ACCESS_RE = re.compile(
 @dataclass
 class ReqSample:
     ts: float
+    ip: str
     method: str
     path: str
     status: int
     ua_family: str
+    ua_raw: str
 
 
 class LogFollower:
@@ -159,13 +161,31 @@ def parse_access_line(line: str) -> Optional[ReqSample]:
     target = m.group("target")
     status = as_int(m.group("status"), 0)
     ua = m.group("ua")
+    ip = m.group("ip")
     return ReqSample(
         ts=time.time(),
+        ip=ip,
         method=method,
         path=normalize_path(target),
         status=status,
         ua_family=ua_family(ua),
+        ua_raw=ua,
     )
+
+
+def is_challenge_path(path: str) -> bool:
+    return path.startswith("/__pteroprotect/challenge")
+
+
+def has_ua_marker(ua: str, markers: List[str]) -> bool:
+    raw = (ua or "").strip().lower()
+    if raw == "":
+        return False
+    for marker in markers:
+        token = (marker or "").strip().lower()
+        if token and token in raw:
+            return True
+    return False
 
 
 def http_probe(url: str, timeout_sec: float = 2.5) -> Tuple[bool, int, float]:
@@ -402,9 +422,9 @@ def prune_replay_queue(path: str, ttl_sec: int, cap: int) -> int:
     return len(kept)
 
 
-def write_mode_files(stage: str, runtime_dir: str) -> None:
+def write_mode_files(stage: str, runtime_dir: str, monitor: Optional[Dict[str, Any]] = None) -> None:
     mode = "normal"
-    if stage in {"elevated", "constrained"}:
+    if stage == "constrained":
         mode = "aggressive"
     if stage == "emergency":
         mode = "emergency"
@@ -416,12 +436,88 @@ def write_mode_files(stage: str, runtime_dir: str) -> None:
         lock_payload["until"] = now + 180
         lock_payload["reason"] = "resilience_emergency"
 
+    shm = "/dev/shm/pteroprotect"
+    host_mode = load_json(os.path.join(shm, "mode.flag"), {})
+    host_lock = load_json(os.path.join(shm, "strict_lockdown.flag"), {})
+    host_mode_source = str(host_mode.get("source", ""))
+    host_lock_source = str(host_lock.get("source", ""))
+    host_mode_until = as_int(host_mode.get("until", 0), 0)
+    host_lock_until = as_int(host_lock.get("until", 0), 0)
+    host_mode_value = str(host_mode.get("mode", "normal"))
+    host_mode_active = (
+        host_mode_source != "resilience_orchestrator"
+        and host_mode_value in {"aggressive", "emergency"}
+        and host_mode_until > now
+    )
+    host_lock_active = (
+        host_lock_source != "resilience_orchestrator"
+        and bool(host_lock.get("enabled"))
+        and host_lock_until > now
+    )
+    host_health_gate = read_health_gate(runtime_dir, monitor or {})
+    host_lock_health_ready = bool(host_health_gate.get("degraded"))
+    if stage != "emergency" and host_lock_active and host_lock_health_ready:
+        mode_payload = {
+            "mode": "emergency",
+            "updated_at": now,
+            "source": "resilience_orchestrator",
+            "reason": "host_guard_lockdown",
+        }
+        lock_payload = host_lock
+    elif stage not in {"emergency", "constrained"} and host_mode_active and (host_mode_value != "emergency" or host_lock_health_ready):
+        mode_payload = dict(host_mode)
+        mode_payload["updated_at"] = now
+
     write_json(os.path.join(runtime_dir, "mode.json"), mode_payload)
     write_json(os.path.join(runtime_dir, "lockdown.json"), lock_payload)
     # Keep shared-memory compatibility with existing guards.
-    shm = "/dev/shm/pteroprotect"
     write_json(os.path.join(shm, "mode.flag"), mode_payload)
     write_json(os.path.join(shm, "strict_lockdown.flag"), lock_payload)
+
+
+def read_health_gate(runtime_dir: str, monitor: Dict[str, Any]) -> Dict[str, Any]:
+    now = utc_ts()
+    default_max_age = as_int(monitor.get("health_snapshot_max_age_sec", 45), 45)
+    max_age = max(10, default_max_age)
+    p95_threshold = as_float(monitor.get("latency_p95_ms_threshold", 2500), 2500)
+    error_threshold = as_float(monitor.get("error_rate_threshold", 0.5), 0.5)
+    signal_threshold = max(1, as_int(monitor.get("emergency_health_signals_threshold", 1), 1))
+    path = str(monitor.get("health_snapshot_file", os.path.join(runtime_dir, "self_heal_dependency.json")))
+    snap = load_json(path, {})
+    if not isinstance(snap, dict):
+        snap = {}
+
+    ts = as_int(snap.get("ts", 0), 0)
+    age = now - ts if ts > 0 else 999999
+    fresh = ts > 0 and age <= max_age
+    signals = as_int(snap.get("signals", 0), 0)
+    p95_ms = as_float(snap.get("p95_ms", 0.0), 0.0)
+    error_rate = as_float(snap.get("error_rate", 0.0), 0.0)
+    external_ok = bool(snap.get("external_ok", True))
+    challenge_ok = bool(snap.get("challenge_ok", True))
+    degraded = bool(
+        fresh
+        and (
+            signals >= signal_threshold
+            or p95_ms >= p95_threshold
+            or error_rate >= error_threshold
+            or not external_ok
+            or not challenge_ok
+        )
+    )
+
+    return {
+        "fresh": fresh,
+        "age_sec": age,
+        "degraded": degraded,
+        "signals": signals,
+        "p95_ms": p95_ms,
+        "error_rate": error_rate,
+        "external_ok": external_ok,
+        "challenge_ok": challenge_ok,
+        "source": str(snap.get("source", "")),
+        "path": path,
+    }
 
 
 def get_redis_ballots(redis_url: str) -> List[Dict[str, Any]]:
@@ -495,6 +591,41 @@ def main() -> int:
     hard_conf = clamp01(as_float(detection.get("hard_drop_confidence", 0.90), 0.90))
     soft_conf = clamp01(as_float(detection.get("soft_drop_confidence", 0.70), 0.70))
     min_samples = max(10, as_int(detection.get("min_samples", 30), 30))
+    elevated_req_rate = max(1.0, as_float(detection.get("elevated_req_rate", 15.0), 15.0))
+    emergency_req_rate = max(elevated_req_rate, as_float(detection.get("emergency_req_rate", 45.0), 45.0))
+    elevated_bad_rate = clamp01(as_float(detection.get("elevated_bad_rate", 0.25), 0.25))
+    emergency_bad_rate = clamp01(as_float(detection.get("emergency_bad_rate", 0.45), 0.45))
+    elevated_drop_rate = clamp01(as_float(detection.get("elevated_drop_rate", 0.18), 0.18))
+    emergency_drop_rate = clamp01(as_float(detection.get("emergency_drop_rate", 0.35), 0.35))
+    require_health_degradation_for_emergency = as_bool(
+        detection.get("require_health_degradation_for_emergency", monitor.get("require_health_degradation_for_emergency", True)),
+        True,
+    )
+    exclude_monitor_traffic_from_scoring = as_bool(detection.get("exclude_monitor_traffic_from_scoring", True), True)
+    exclude_challenge_paths_from_scoring = as_bool(detection.get("exclude_challenge_paths_from_scoring", True), True)
+    require_secondary_signal_for_elevated_when_healthy = as_bool(
+        detection.get("require_secondary_signal_for_elevated_when_healthy", True),
+        True,
+    )
+    monitor_ua_markers = detection.get(
+        "monitor_ua_markers",
+        [
+            "checkhost",
+            "pteroprotectresilience",
+            "danexselfheal",
+            "uptime-kuma",
+            "statuscake",
+            "pingdom",
+            "healthcheck",
+        ],
+    )
+    if not isinstance(monitor_ua_markers, list):
+        monitor_ua_markers = []
+    monitor_ua_markers = [str(x).strip().lower() for x in monitor_ua_markers if str(x).strip() != ""]
+    trusted_monitor_ips = detection.get("trusted_monitor_ips", [])
+    if not isinstance(trusted_monitor_ips, list):
+        trusted_monitor_ips = []
+    trusted_monitor_ips = {str(x).strip() for x in trusted_monitor_ips if str(x).strip() != ""}
 
     cool_cfg = res.get("cooldowns", {}) if isinstance(res.get("cooldowns"), dict) else {}
     stage_min_sec = max(5, as_int(cool_cfg.get("stage_min_sec", 30), 30))
@@ -556,26 +687,46 @@ def main() -> int:
             samples.popleft()
 
         total = len(samples)
+        scoring_total = 0
+        excluded_monitor = 0
+        excluded_challenge = 0
         bad = 0
+        drops = 0
         route_counts: Dict[str, int] = collections.Counter()
         ua_counts: Dict[str, int] = collections.Counter()
         challenge_fails = 0
         auth_api_bad = 0
 
         for s in samples:
+            is_monitor_traffic = has_ua_marker(s.ua_raw, monitor_ua_markers) or (s.ip in trusted_monitor_ips)
+            is_challenge_traffic = is_challenge_path(s.path)
+            scoring_excluded = False
+            if exclude_monitor_traffic_from_scoring and is_monitor_traffic:
+                excluded_monitor += 1
+                scoring_excluded = True
+            if exclude_challenge_paths_from_scoring and is_challenge_traffic:
+                excluded_challenge += 1
+                scoring_excluded = True
+            if scoring_excluded:
+                continue
+
+            scoring_total += 1
             route_counts[s.path] += 1
             ua_counts[s.ua_family] += 1
             if s.status >= 400:
                 bad += 1
-                if s.path.startswith("/__pteroprotect/challenge"):
+                if s.status in {429, 444, 503}:
+                    drops += 1
+                if is_challenge_traffic:
                     challenge_fails += 1
                 if s.path.startswith("/auth") or s.path.startswith("/api"):
                     auth_api_bad += 1
 
-        req_rate = float(total) / float(max(1, window_sec))
-        bad_rate = float(bad) / float(max(1, total))
+        req_rate = float(scoring_total) / float(max(1, window_sec))
+        bad_rate = float(bad) / float(max(1, scoring_total))
+        drop_rate = float(drops) / float(max(1, scoring_total))
         route_top = max(route_counts.values()) if route_counts else 0
-        route_asym = (float(route_top) / float(max(1, total))) if total > 0 else 0.0
+        route_asym = (float(route_top) / float(max(1, scoring_total))) if scoring_total > 0 else 0.0
         ua_ent = entropy_from_counts(ua_counts)
         challenge_corr = float(challenge_fails) / float(max(1, auth_api_bad)) if auth_api_bad > 0 else 0.0
 
@@ -607,10 +758,43 @@ def main() -> int:
             + (0.10 * ua_drop_scaled)
             + (0.05 * corr_score)
         )
-        confidence = clamp01(float(total) / float(max(min_samples, 1)))
+        absolute_pressure = 0.0
+        absolute_reasons: List[str] = []
+        enough_ratio_samples = scoring_total >= min_samples
+        if req_rate >= emergency_req_rate:
+            absolute_pressure = max(absolute_pressure, 0.92)
+            absolute_reasons.append("emergency_req_rate")
+        elif req_rate >= elevated_req_rate:
+            absolute_pressure = max(absolute_pressure, 0.66)
+            absolute_reasons.append("elevated_req_rate")
+        if enough_ratio_samples and bad_rate >= emergency_bad_rate:
+            absolute_pressure = max(absolute_pressure, 0.94)
+            absolute_reasons.append("emergency_bad_rate")
+        elif enough_ratio_samples and bad_rate >= elevated_bad_rate:
+            absolute_pressure = max(absolute_pressure, 0.68)
+            absolute_reasons.append("elevated_bad_rate")
+        if enough_ratio_samples and drop_rate >= emergency_drop_rate:
+            absolute_pressure = max(absolute_pressure, 0.96)
+            absolute_reasons.append("emergency_drop_rate")
+        elif enough_ratio_samples and drop_rate >= elevated_drop_rate:
+            absolute_pressure = max(absolute_pressure, 0.70)
+            absolute_reasons.append("elevated_drop_rate")
+        if route_asym >= 0.65 and enough_ratio_samples:
+            absolute_pressure = max(absolute_pressure, 0.72)
+            absolute_reasons.append("route_asymmetry")
+
+        anomaly_score = max(anomaly_score, absolute_pressure)
+        confidence = clamp01(float(scoring_total) / float(max(min_samples, 1)))
 
         # Poison fingerprinting.
         for s in parsed_batch:
+            if exclude_monitor_traffic_from_scoring and (has_ua_marker(s.ua_raw, monitor_ua_markers) or (s.ip in trusted_monitor_ips)):
+                continue
+            if exclude_challenge_paths_from_scoring and is_challenge_path(s.path):
+                continue
+            if s.ua_family == "browser":
+                continue
+
             status_family = f"{s.status // 100}xx"
             fp_raw = f"{s.method}|{s.path}|{s.ua_family}|{status_family}"
             fp = hashlib.sha256(fp_raw.encode("utf-8")).hexdigest()
@@ -672,6 +856,7 @@ def main() -> int:
             "redis": clamp01(1.0 - max(0.0, (redis_rtt - 50.0) / 900.0)) if redis_rtt > 0 else 0.2,
             "queue": clamp01(1.0 - max(0.0, (queue_age - 5.0) / 120.0)),
         }
+        health_gate = read_health_gate(runtime_dir, monitor)
 
         # Fault-injection hooks for deterministic recovery testing.
         if fault_flag(runtime_dir, "db_degraded"):
@@ -688,10 +873,32 @@ def main() -> int:
             health_score += clamp01(as_float(w, 0.0)) * clamp01(dep_scores.get(dep, 0.0))
         health_score = clamp01(health_score)
 
-        # Attack score increases when health drops and anomalies rise.
-        attack_score = clamp01((anomaly_score * 0.7) + ((1.0 - health_score) * 0.3))
+        emergency_health_ready = (not require_health_degradation_for_emergency) or bool(health_gate.get("degraded"))
+        healthy_health_gate = not bool(health_gate.get("degraded"))
+        gated_absolute_pressure = absolute_pressure
+        gated_anomaly_score = anomaly_score
+        non_route_absolute_reasons = [reason for reason in absolute_reasons if reason != "route_asymmetry"]
+        if (
+            require_secondary_signal_for_elevated_when_healthy
+            and healthy_health_gate
+            and "route_asymmetry" in absolute_reasons
+            and not non_route_absolute_reasons
+        ):
+            elevated_cap = max(0.0, as_float(prg_thresholds.get("elevated", 0.62), 0.62) - 0.02)
+            gated_absolute_pressure = min(gated_absolute_pressure, elevated_cap)
+            gated_anomaly_score = min(gated_anomaly_score, elevated_cap)
+        if require_health_degradation_for_emergency and not emergency_health_ready and absolute_pressure >= as_float(prg_thresholds.get("emergency", 0.88), 0.88):
+            gated_absolute_pressure = min(absolute_pressure, as_float(prg_thresholds.get("constrained", 0.76), 0.76) + 0.03)
+            gated_anomaly_score = min(anomaly_score, gated_absolute_pressure)
+
+        # Attack score increases when health drops and anomalies rise. Emergency is
+        # gated by external health so healthy CheckHost/local probes do not cause
+        # needless lockdown from volume alone.
+        attack_score = clamp01(max(gated_absolute_pressure, (gated_anomaly_score * 0.7) + ((1.0 - health_score) * 0.3)))
 
         local_stage = stage_from_score(attack_score, prg_thresholds)
+        if require_health_degradation_for_emergency and local_stage == "emergency" and not emergency_health_ready:
+            local_stage = "constrained"
 
         # Dependency circuit breakers and propagation.
         for dep, dscore in dep_scores.items():
@@ -733,7 +940,7 @@ def main() -> int:
                 stable_since = now
         else:
             if stage_rank(target_stage) > stage_rank(stage):
-                if elapsed >= stage_min_sec:
+                if target_stage == "emergency" or elapsed >= stage_min_sec:
                     stage = target_stage
                     last_stage_change = now
             elif stage_rank(target_stage) < stage_rank(stage):
@@ -793,6 +1000,25 @@ def main() -> int:
             "anomaly_score": round(anomaly_score, 6),
             "health_score": round(health_score, 6),
             "confidence": round(consensus_conf, 6),
+            "traffic": {
+                "total_requests_window": total,
+                "scoring_requests_window": scoring_total,
+                "excluded_requests_window": max(0, total - scoring_total),
+                "excluded_monitor_window": excluded_monitor,
+                "excluded_challenge_window": excluded_challenge,
+                "requests_per_sec": round(req_rate, 6),
+                "bad_rate": round(bad_rate, 6),
+                "drop_rate": round(drop_rate, 6),
+                "route_asymmetry": round(route_asym, 6),
+                "absolute_pressure": round(absolute_pressure, 6),
+                "gated_absolute_pressure": round(gated_absolute_pressure, 6),
+                "absolute_reasons": absolute_reasons,
+            },
+            "health_gate": health_gate | {
+                "require_degradation_for_emergency": require_health_degradation_for_emergency,
+                "emergency_health_ready": emergency_health_ready,
+                "healthy_gate": healthy_health_gate,
+            },
             "consensus": {
                 "enabled": consensus_enabled,
                 "quorum": quorum,
@@ -839,7 +1065,7 @@ def main() -> int:
         # Persist runtime artifacts.
         write_json(state_file, state)
         write_json(poison_file, poison_state)
-        write_mode_files(stage, runtime_dir)
+        write_mode_files(stage, runtime_dir, monitor)
 
         emit_resilience_event(
             layer="orchestration",
@@ -852,6 +1078,23 @@ def main() -> int:
             extra={
                 "health_score": round(health_score, 6),
                 "anomaly_score": round(anomaly_score, 6),
+                "traffic": {
+                    "requests_per_sec": round(req_rate, 6),
+                    "bad_rate": round(bad_rate, 6),
+                    "drop_rate": round(drop_rate, 6),
+                    "total_requests_window": total,
+                    "scoring_requests_window": scoring_total,
+                    "excluded_monitor_window": excluded_monitor,
+                    "excluded_challenge_window": excluded_challenge,
+                    "absolute_pressure": round(absolute_pressure, 6),
+                    "gated_absolute_pressure": round(gated_absolute_pressure, 6),
+                    "absolute_reasons": absolute_reasons,
+                },
+                "health_gate": health_gate | {
+                    "require_degradation_for_emergency": require_health_degradation_for_emergency,
+                    "emergency_health_ready": emergency_health_ready,
+                    "healthy_gate": healthy_health_gate,
+                },
                 "features": shedding,
             },
             events_file=events_file,
@@ -869,6 +1112,11 @@ def main() -> int:
             prom_line("pteroprotect_resilience_poison_count", float(len(poison_state))),
             prom_line("pteroprotect_resilience_requests_per_sec", req_rate),
             prom_line("pteroprotect_resilience_bad_rate", bad_rate),
+            prom_line("pteroprotect_resilience_drop_rate", drop_rate),
+            prom_line("pteroprotect_resilience_absolute_pressure", absolute_pressure),
+            prom_line("pteroprotect_resilience_gated_absolute_pressure", gated_absolute_pressure),
+            prom_line("pteroprotect_resilience_health_gate_degraded", 1.0 if bool(health_gate.get("degraded")) else 0.0),
+            prom_line("pteroprotect_resilience_traffic_scoring_ratio", (float(scoring_total) / float(max(1, total)))),
             prom_line("pteroprotect_resilience_route_asymmetry", route_asym),
             prom_line("pteroprotect_resilience_ua_entropy", ua_ent),
             prom_line("pteroprotect_resilience_challenge_correlation", challenge_corr),

@@ -171,6 +171,19 @@ def cfg_resilience(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "poison_ttl_sec": 1800,
             "hard_drop_confidence": 0.90,
             "soft_drop_confidence": 0.70,
+            "exclude_monitor_traffic_from_scoring": True,
+            "exclude_challenge_paths_from_scoring": True,
+            "require_secondary_signal_for_elevated_when_healthy": True,
+            "monitor_ua_markers": [
+                "checkhost",
+                "pteroprotectresilience",
+                "danexselfheal",
+                "uptime-kuma",
+                "statuscake",
+                "pingdom",
+                "healthcheck",
+            ],
+            "trusted_monitor_ips": [],
         },
     }
 

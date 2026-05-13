@@ -111,6 +111,36 @@ read_network_setting() {
     ' "${CONFIG_FILE}" "${key}" "${default_value}" 2>/dev/null || printf '%s' "${default_value}"
 }
 
+read_runtime_json_value() {
+    local file="$1"
+    local key="$2"
+    local default_value="$3"
+
+    if [[ ! -f "${file}" ]]; then
+        printf '%s' "${default_value}"
+        return 0
+    fi
+
+    perl -MJSON::PP -e '
+        my ($file, $key, $default_value) = @ARGV;
+        open my $fh, "<", $file or do { print $default_value; exit 0; };
+        local $/;
+        my $raw = <$fh>;
+        my $data = eval { decode_json($raw) };
+        if (!$data || ref($data) ne "HASH" || !exists $data->{$key}) {
+            print $default_value;
+            exit 0;
+        }
+
+        my $value = $data->{$key};
+        if (!defined($value) || ref($value) ne "") {
+            print $default_value;
+        } else {
+            print $value;
+        }
+    ' "${file}" "${key}" "${default_value}" 2>/dev/null || printf '%s' "${default_value}"
+}
+
 read_unblock_portal_port() {
     local value
     value="$(read_network_setting unblock_portal_port 18443)"
@@ -2191,7 +2221,7 @@ set_lockdown_state() {
     if [[ "${enabled}" == "1" ]]; then
         until=$(( now + ttl ))
         write_runtime_payload \
-            "$(printf '{"enabled":true,"reason":"%s","until":%s,"updated_at":%s}' "${reason}" "${until}" "${now}")" \
+            "$(printf '{"enabled":true,"reason":"%s","until":%s,"updated_at":%s,"source":"ddos_host_logger"}' "${reason}" "${until}" "${now}")" \
             "${LOCKDOWN_FLAG_FILE}" \
             "${LOCKDOWN_FLAG_FILE_PANEL}"
         printf '[lockdown] enabled ttl=%s reason=%s\n' "${ttl}" "${reason}" >> "${LOG_FILE}"
@@ -2226,7 +2256,7 @@ set_mode_state() {
 
     until=$(( now + ttl ))
     write_runtime_payload \
-        "$(printf '{"mode":"%s","reason":"%s","until":%s,"updated_at":%s}' "${mode}" "${reason}" "${until}" "${now}")" \
+        "$(printf '{"mode":"%s","reason":"%s","until":%s,"updated_at":%s,"source":"ddos_host_logger"}' "${mode}" "${reason}" "${until}" "${now}")" \
         "${MODE_FLAG_FILE}" \
         "${MODE_FLAG_FILE_PANEL}"
     if [[ "${MODE_STATE_CACHE}" != "${mode}" ]]; then
@@ -2392,10 +2422,17 @@ while true; do
     SERVICE_ACTIVITY_EMERGENCY_THRESHOLD="$(clamp_min_int "$(read_network_setting service_activity_emergency_threshold 240)" 20)"
     SERVICE_ACTIVITY_DELTA_AGGRESSIVE="$(clamp_min_int "$(read_network_setting service_activity_delta_aggressive 60)" 5)"
     SERVICE_ACTIVITY_DELTA_EMERGENCY="$(clamp_min_int "$(read_network_setting service_activity_delta_emergency 120)" 10)"
+    REQUIRE_HEALTH_DEGRADATION_FOR_EMERGENCY="$(normalize_bool "$(read_network_setting require_health_degradation_for_emergency 1)")"
+    HEALTH_SNAPSHOT_FILE="$(read_network_setting health_snapshot_file "${PANEL_RUNTIME_DIR}/self_heal_dependency.json")"
+    HEALTH_SNAPSHOT_MAX_AGE_SEC="$(clamp_min_int "$(read_network_setting health_snapshot_max_age_sec 45)" 10)"
+    EMERGENCY_HEALTH_SIGNALS_THRESHOLD="$(clamp_min_int "$(read_network_setting emergency_health_signals_threshold 1)" 1)"
+    EMERGENCY_HEALTH_LATENCY_P95_MS="$(clamp_min_int "$(read_network_setting latency_p95_ms_threshold 2500)" 100)"
     SWARM_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_req_threshold 240)" 40)"
     SWARM_UNIQUE_IP_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_unique_ip_threshold 24)" 4)"
     SWARM_PER_IP_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_per_ip_req_threshold 24)" 4)"
     SWARM_MODE_MIN_TOP_HTTP="$(clamp_min_int "$(read_network_setting swarm_mode_min_top_http 80)" 10)"
+    SWARM_EMERGENCY_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_emergency_req_threshold 360)" "${SWARM_REQ_THRESHOLD}")"
+    SWARM_EMERGENCY_UNIQUE_IP_THRESHOLD="$(clamp_min_int "$(read_network_setting swarm_emergency_unique_ip_threshold 36)" "${SWARM_UNIQUE_IP_THRESHOLD}")"
     ADAPTIVE_GUARD_ENABLED="$(normalize_bool "$(read_network_setting adaptive_guard_enabled 1)")"
     ADAPTIVE_ALPHA_PCT="$(clamp_percentage "$(read_network_setting adaptive_alpha_pct 12)" 2 60)"
     ADAPTIVE_MIN_SAMPLES="$(clamp_min_int "$(read_network_setting adaptive_min_samples 20)" 5)"
@@ -2614,6 +2651,15 @@ while true; do
     detect_bad_token_abusers "${bad_token_ip_counts}"
     swarm_hits="$(detect_proxy_swarm_patterns "${path_swarm_stats}")"
     [[ "${swarm_hits}" =~ ^[0-9]+$ ]] || swarm_hits=0
+    swarm_peak_req=0
+    swarm_peak_uniq=0
+    while IFS=$'\t' read -r swarm_kind _swarm_path swarm_req swarm_uniq; do
+        [[ "${swarm_kind}" == "PATH" ]] || continue
+        [[ "${swarm_req}" =~ ^[0-9]+$ ]] || continue
+        [[ "${swarm_uniq}" =~ ^[0-9]+$ ]] || continue
+        (( swarm_req > swarm_peak_req )) && swarm_peak_req="${swarm_req}"
+        (( swarm_uniq > swarm_peak_uniq )) && swarm_peak_uniq="${swarm_uniq}"
+    done <<< "${path_swarm_stats}"
     update_ip_trust_from_rate_samples "${syn_ip_counts}" "${established_ip_counts}" "${access_ip_counts}" "${probe_ip_counts}" "${sqli_probe_ip_counts}"
     update_ip_trust_from_behavior_samples "${behavior_ip_stats}"
 
@@ -2621,6 +2667,56 @@ while true; do
     [[ "${top_http_count_raw}" =~ ^[0-9]+$ ]] || top_http_count_raw=0
     top_http_count="$(awk 'NF >= 1 {print $1; exit}' <<< "${access_ip_counts}" 2>/dev/null || true)"
     [[ "${top_http_count}" =~ ^[0-9]+$ ]] || top_http_count=0
+
+    health_gate_degraded=1
+    health_gate_reason="disabled"
+    health_gate_age=0
+    health_gate_signals=0
+    health_gate_p95=0
+    if [[ "${REQUIRE_HEALTH_DEGRADATION_FOR_EMERGENCY}" == "1" ]]; then
+        health_gate_degraded=0
+        now_ts="$(date +%s)"
+        health_ts="$(read_runtime_json_value "${HEALTH_SNAPSHOT_FILE}" ts 0)"
+        [[ "${health_ts}" =~ ^[0-9]+$ ]] || health_ts=0
+        if (( health_ts > 0 )); then
+            health_gate_age=$(( now_ts - health_ts ))
+        else
+            health_gate_age=999999
+        fi
+        health_gate_signals="$(read_runtime_json_value "${HEALTH_SNAPSHOT_FILE}" signals 0)"
+        [[ "${health_gate_signals}" =~ ^[0-9]+$ ]] || health_gate_signals=0
+        health_gate_p95="$(read_runtime_json_value "${HEALTH_SNAPSHOT_FILE}" p95_ms 0)"
+        health_gate_p95="${health_gate_p95%.*}"
+        [[ "${health_gate_p95}" =~ ^[0-9]+$ ]] || health_gate_p95=0
+        health_gate_external_ok="$(read_runtime_json_value "${HEALTH_SNAPSHOT_FILE}" external_ok true)"
+        health_gate_challenge_ok="$(read_runtime_json_value "${HEALTH_SNAPSHOT_FILE}" challenge_ok true)"
+
+        if (( health_gate_age <= HEALTH_SNAPSHOT_MAX_AGE_SEC )); then
+            if (( health_gate_signals >= EMERGENCY_HEALTH_SIGNALS_THRESHOLD )); then
+                health_gate_degraded=1
+                health_gate_reason="signals=${health_gate_signals}"
+            elif (( health_gate_p95 >= EMERGENCY_HEALTH_LATENCY_P95_MS )); then
+                health_gate_degraded=1
+                health_gate_reason="p95=${health_gate_p95}"
+            elif [[ "${health_gate_external_ok}" != "true" || "${health_gate_challenge_ok}" != "true" ]]; then
+                health_gate_degraded=1
+                health_gate_reason="external_ok=${health_gate_external_ok},challenge_ok=${health_gate_challenge_ok}"
+            else
+                health_gate_reason="healthy age=${health_gate_age},signals=${health_gate_signals},p95=${health_gate_p95}"
+            fi
+        else
+            health_gate_reason="stale age=${health_gate_age}"
+        fi
+    fi
+
+    strict_lockdown_signal=0
+    if [[ "${STRICT_LOCKDOWN_ENABLED}" == "1" ]] && {
+        (( established >= STRICT_LOCKDOWN_ESTABLISHED_THRESHOLD )) ||
+        (( syn_recv >= STRICT_LOCKDOWN_SYN_RECV_THRESHOLD )) ||
+        (( top_http_count >= STRICT_LOCKDOWN_HTTP_ACCESS_THRESHOLD ));
+    }; then
+        strict_lockdown_signal=1
+    fi
 
     if [[ "${ADAPTIVE_GUARD_ENABLED}" == "1" ]]; then
         ADAPTIVE_ESTABLISHED_BASE="$(ewma_next "${ADAPTIVE_ESTABLISHED_BASE}" "${established}" "${ADAPTIVE_ALPHA_PCT}")"
@@ -2695,16 +2791,28 @@ while true; do
             emergency_delay_signal=1
         fi
 
-        if (( emergency_load_signal == 1 )) && (( emergency_delay_signal == 1 )); then
+        if (( strict_lockdown_signal == 1 && health_gate_degraded == 1 )); then
             desired_mode="emergency"
-            desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta}"
+            desired_reason="strict-lockdown established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta},health=${health_gate_reason}"
             desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
-        elif (( adaptive_emergency_signal == 1 )); then
+        elif (( swarm_hits >= 1 )) && {
+            (( swarm_peak_req >= SWARM_EMERGENCY_REQ_THRESHOLD )) ||
+            (( swarm_peak_uniq >= SWARM_EMERGENCY_UNIQUE_IP_THRESHOLD ));
+        } && (( health_gate_degraded == 1 )); then
             desired_mode="emergency"
-            desired_reason="adaptive-shock established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},samples=${ADAPTIVE_SAMPLES}"
+            desired_reason="proxy-swarm req=${swarm_peak_req},uniq=${swarm_peak_uniq},hits=${swarm_hits},top_http=${top_http_count},health=${health_gate_reason}"
+            desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
+        elif (( emergency_load_signal == 1 )) && (( emergency_delay_signal == 1 )) && (( health_gate_degraded == 1 )); then
+            desired_mode="emergency"
+            desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta},health=${health_gate_reason}"
+            desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
+        elif (( adaptive_emergency_signal == 1 && health_gate_degraded == 1 )); then
+            desired_mode="emergency"
+            desired_reason="adaptive-shock established=${established},syn_recv=${syn_recv},top_http=${top_http_count},service_pulse=${service_pulse_count},samples=${ADAPTIVE_SAMPLES},health=${health_gate_reason}"
             desired_ttl="${MODE_EMERGENCY_TTL_SEC}"
         else
             if (( swarm_hits >= 1 )) && {
+                (( health_gate_degraded == 1 )) ||
                 (( top_http_count >= SWARM_MODE_MIN_TOP_HTTP )) ||
                 (( top_http_count >= MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )) ||
                 (( established >= http_only_est_floor )) ||
@@ -2714,7 +2822,7 @@ while true; do
                 swarm_mode_signal=1
             fi
 
-            if (( established >= MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) || (( service_pulse_count >= SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) || (( service_pulse_delta >= SERVICE_ACTIVITY_DELTA_AGGRESSIVE )) || (( swarm_mode_signal == 1 )); then
+            if (( established >= MODE_AGGRESSIVE_ESTABLISHED_THRESHOLD )) || (( syn_recv >= MODE_AGGRESSIVE_SYN_RECV_THRESHOLD )) || (( service_pulse_count >= SERVICE_ACTIVITY_AGGRESSIVE_THRESHOLD )) || (( service_pulse_delta >= SERVICE_ACTIVITY_DELTA_AGGRESSIVE )) || (( swarm_mode_signal == 1 )) || (( strict_lockdown_signal == 1 )) || (( adaptive_emergency_signal == 1 )) || (( emergency_load_signal == 1 )); then
                 aggressive_signal=1
             elif (( top_http_count >= MODE_AGGRESSIVE_HTTP_ACCESS_THRESHOLD )); then
                 # Avoid false-positive aggressive mode when only a single high-HTTP
@@ -2727,7 +2835,7 @@ while true; do
 
         if (( aggressive_signal == 1 )); then
             desired_mode="aggressive"
-            desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},top_http_raw=${top_http_count_raw},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta},swarm=${swarm_hits},swarm_mode=${swarm_mode_signal}"
+            desired_reason="established=${established},syn_recv=${syn_recv},top_http=${top_http_count},top_http_raw=${top_http_count_raw},service_pulse=${service_pulse_count},service_delta=${service_pulse_delta},swarm=${swarm_hits},swarm_mode=${swarm_mode_signal},health_gate=${health_gate_reason}"
             desired_ttl="${MODE_AGGRESSIVE_TTL_SEC}"
         elif (( adaptive_aggressive_signal == 1 )); then
             desired_mode="aggressive"
@@ -2742,12 +2850,10 @@ while true; do
     set_mode_state "${desired_mode}" "${desired_reason}" "${desired_ttl}"
     apply_emergency_nginx_profile "${desired_mode}"
 
-    if [[ "${STRICT_LOCKDOWN_ENABLED}" == "1" ]] && {
-        (( established >= STRICT_LOCKDOWN_ESTABLISHED_THRESHOLD )) ||
-        (( syn_recv >= STRICT_LOCKDOWN_SYN_RECV_THRESHOLD )) ||
-        (( top_http_count >= STRICT_LOCKDOWN_HTTP_ACCESS_THRESHOLD ));
-    }; then
+    if (( strict_lockdown_signal == 1 && health_gate_degraded == 1 )); then
         set_lockdown_state "1" "established=${established},syn_recv=${syn_recv},top_http=${top_http_count}" "${STRICT_LOCKDOWN_TTL_SEC}"
+    elif [[ "${desired_mode}" == "emergency" ]]; then
+        set_lockdown_state "1" "${desired_reason}" "${MODE_EMERGENCY_TTL_SEC}"
     else
         set_lockdown_state "0" "" "0"
     fi
@@ -2776,6 +2882,8 @@ while true; do
         echo "${top_bad_token_ips:-none}"
         echo "--- service_pulse ---"
         echo "count=${service_pulse_count} delta=${service_pulse_delta} regex=${SERVICE_ACTIVITY_PATH_REGEX} swarm_hits=${swarm_hits:-0}"
+        echo "--- health_gate ---"
+        echo "require=${REQUIRE_HEALTH_DEGRADATION_FOR_EMERGENCY} degraded=${health_gate_degraded} reason=${health_gate_reason} file=${HEALTH_SNAPSHOT_FILE}"
         echo "--- adaptive_guard ---"
         echo "enabled=${ADAPTIVE_GUARD_ENABLED} samples=${ADAPTIVE_SAMPLES} alpha_pct=${ADAPTIVE_ALPHA_PCT} ready=${adaptive_ready}"
         echo "baseline established=${ADAPTIVE_ESTABLISHED_BASE} syn_recv=${ADAPTIVE_SYN_RECV_BASE} top_http=${ADAPTIVE_HTTP_BASE} service_pulse=${ADAPTIVE_SERVICE_BASE}"
