@@ -118,10 +118,7 @@ static std::mutex g_completed_mu;
 static std::map<std::string, std::time_t> g_completed_challenges;
 static std::string random_nonce();
 static std::string to_lower(std::string s);
-static bool base64_decode(const std::string& in, std::string& out);
-static std::string hmac_sha256_hex(const std::string& key, const std::string& data);
 static bool secure_equals(const std::string& a, const std::string& b);
-static bool daemon_bearer_token_format_ok(const std::string& token);
 static std::string ip_prefix_of(const std::string& ip, int v4_prefix_bits, int v6_prefix_bits);
 static bool ip_in_same_prefix(const std::string& a, const std::string& b, int v4_prefix_bits, int v6_prefix_bits);
 
@@ -185,44 +182,6 @@ static bool begins_with(const std::string& value, const std::string& prefix) {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
 
-static bool base64_decode(const std::string& in, std::string& out) {
-    out.clear();
-    if (in.empty()) return true;
-    BIO* b64 = BIO_new(BIO_f_base64());
-    BIO* bio = BIO_new_mem_buf(in.data(), static_cast<int>(in.size()));
-    if (!b64 || !bio) {
-        if (b64) BIO_free(b64);
-        if (bio) BIO_free(bio);
-        return false;
-    }
-    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
-    bio = BIO_push(b64, bio);
-    std::string buf(in.size(), '\0');
-    int n = BIO_read(bio, &buf[0], static_cast<int>(buf.size()));
-    BIO_free_all(bio);
-    if (n < 0) return false;
-    buf.resize(static_cast<std::size_t>(n));
-    out.swap(buf);
-    return true;
-}
-
-static std::string hmac_sha256_hex(const std::string& key, const std::string& data) {
-    unsigned char digest[EVP_MAX_MD_SIZE];
-    unsigned int len = 0;
-    HMAC(EVP_sha256(),
-         reinterpret_cast<const unsigned char*>(key.data()), static_cast<int>(key.size()),
-         reinterpret_cast<const unsigned char*>(data.data()), data.size(),
-         digest, &len);
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    out.resize(static_cast<std::size_t>(len) * 2);
-    for (unsigned int i = 0; i < len; ++i) {
-        out[2 * i] = kHex[(digest[i] >> 4) & 0x0F];
-        out[2 * i + 1] = kHex[digest[i] & 0x0F];
-    }
-    return out;
-}
-
 static bool is_panel_api_token_format(const std::string& token) {
     if (!(begins_with(token, "ptla_") || begins_with(token, "ptlc_"))) return false;
     if (token.size() <= 16 || token.size() > 255) return false;
@@ -231,88 +190,6 @@ static bool is_panel_api_token_format(const std::string& token) {
         if (!ok) return false;
     }
     return true;
-}
-
-static bool parse_laravel_app_key(const std::string& app_key, std::string& out_key) {
-    std::string raw = trim(app_key);
-    if (raw.empty()) return false;
-    if (begins_with(raw, "base64:")) {
-        return base64_decode(raw.substr(7), out_key);
-    }
-    out_key = raw;
-    return !out_key.empty();
-}
-
-static bool php_unserialize_string(const std::string& input, std::string& out) {
-    if (input.size() < 6 || input[0] != 's' || input[1] != ':') return false;
-    std::size_t len_start = 2;
-    std::size_t len_end = input.find(':', len_start);
-    if (len_end == std::string::npos) return false;
-    std::size_t quote = len_end + 1;
-    if (quote >= input.size() || input[quote] != '"') return false;
-    std::size_t end_quote = input.rfind("\";");
-    if (end_quote == std::string::npos || end_quote <= quote) return false;
-    out = input.substr(quote + 1, end_quote - quote - 1);
-    return true;
-}
-
-static bool laravel_decrypt_string(const std::string& app_key, const std::string& payload_b64, std::string& out) {
-    std::string key;
-    if (!parse_laravel_app_key(app_key, key)) return false;
-
-    std::string payload_json;
-    if (!base64_decode(payload_b64, payload_json)) return false;
-
-    json payload = json::parse(payload_json, nullptr, false);
-    if (payload.is_discarded() || !payload.is_object()) return false;
-
-    const std::string iv_b64 = trim(payload.value("iv", ""));
-    const std::string value_b64 = trim(payload.value("value", ""));
-    const std::string mac = to_lower(trim(payload.value("mac", "")));
-    if (iv_b64.empty() || value_b64.empty() || mac.empty()) return false;
-
-    std::string expected_mac = to_lower(hmac_sha256_hex(key, iv_b64 + value_b64));
-    if (!secure_equals(expected_mac, mac)) return false;
-
-    std::string iv;
-    if (!base64_decode(iv_b64, iv)) return false;
-
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return false;
-
-    const EVP_CIPHER* cipher = nullptr;
-    if (key.size() == 32) cipher = EVP_aes_256_cbc();
-    else if (key.size() == 16) cipher = EVP_aes_128_cbc();
-    if (!cipher) {
-        EVP_CIPHER_CTX_free(ctx);
-        return false;
-    }
-
-    std::string ciphertext;
-    if (!base64_decode(value_b64, ciphertext)) {
-        EVP_CIPHER_CTX_free(ctx);
-        return false;
-    }
-
-    bool ok = false;
-    int out_len1 = 0;
-    int out_len2 = 0;
-    std::string plain(ciphertext.size() + EVP_CIPHER_block_size(cipher), '\0');
-    if (EVP_DecryptInit_ex(ctx, cipher, nullptr,
-            reinterpret_cast<const unsigned char*>(key.data()),
-            reinterpret_cast<const unsigned char*>(iv.data())) == 1 &&
-        EVP_DecryptUpdate(ctx,
-            reinterpret_cast<unsigned char*>(&plain[0]), &out_len1,
-            reinterpret_cast<const unsigned char*>(ciphertext.data()),
-            static_cast<int>(ciphertext.size())) == 1 &&
-        EVP_DecryptFinal_ex(ctx,
-            reinterpret_cast<unsigned char*>(&plain[0]) + out_len1, &out_len2) == 1) {
-        plain.resize(static_cast<std::size_t>(out_len1 + out_len2));
-        ok = php_unserialize_string(plain, out);
-    }
-
-    EVP_CIPHER_CTX_free(ctx);
-    return ok;
 }
 
 static bool token_cache_contains_valid_api_token(const std::string& token) {
@@ -576,37 +453,6 @@ static Phase1ChallengeSpec build_phase1_challenge(std::mt19937& gen, int challen
     int safe_type = challenge_type;
     if (safe_type < 1) safe_type = 1;
     if (safe_type > 66) safe_type = 66;
-
-    auto to_upper_ascii = [](std::string s) -> std::string {
-        for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        return s;
-    };
-    auto reverse_str = [](std::string s) -> std::string {
-        std::reverse(s.begin(), s.end());
-        return s;
-    };
-    auto rotate_left = [](const std::string& s, int n) -> std::string {
-        if (s.empty()) return s;
-        int k = n % static_cast<int>(s.size());
-        if (k < 0) k += static_cast<int>(s.size());
-        return s.substr(static_cast<std::size_t>(k)) + s.substr(0, static_cast<std::size_t>(k));
-    };
-    auto caesar_encode = [](std::string s, int sh) -> std::string {
-        for (char& c : s) {
-            if (c >= 'a' && c <= 'z') c = static_cast<char>('a' + ((c - 'a' + sh) % 26));
-            else if (c >= 'A' && c <= 'Z') c = static_cast<char>('A' + ((c - 'A' + sh) % 26));
-        }
-        return s;
-    };
-    auto remove_vowels = [](const std::string& s) -> std::string {
-        std::string o;
-        for (char c : s) {
-            char l = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (l == 'a' || l == 'e' || l == 'i' || l == 'o' || l == 'u') continue;
-            o.push_back(c);
-        }
-        return o.empty() ? s : o;
-    };
 
     // Exactly one numeric challenge.
     if (safe_type == 1) {
@@ -1772,24 +1618,6 @@ static std::string pattern_hint_text(const std::vector<int>& nodes) {
     return oss.str();
 }
 
-static bool daemon_bearer_token_format_ok(const std::string& token) {
-    std::string t = trim(token);
-    if (t.size() < 24 || t.size() > 400) return false;
-    std::size_t dot = t.find('.');
-    if (dot == std::string::npos || dot == 0 || dot + 1 >= t.size()) return false;
-    if (t.find('.', dot + 1) != std::string::npos) return false;
-    std::string left = t.substr(0, dot);
-    std::string right = t.substr(dot + 1);
-    if (left.size() < 6 || left.size() > 128) return false;
-    if (right.size() < 12 || right.size() > 320) return false;
-    for (char c : t) {
-        if (c == '.') continue;
-        const bool ok = std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
-        if (!ok) return false;
-    }
-    return true;
-}
-
 static bool secure_equals(const std::string& a, const std::string& b) {
     if (a.size() != b.size()) return false;
     unsigned char diff = 0;
@@ -1934,13 +1762,6 @@ static void session_add_ip(SessionRec& sr, const std::string& ip) {
     }
 }
 
-static void erase_sessions_for_ua(const std::string& ua_fp) {
-    for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end();) {
-        if (it->second.ua == ua_fp) it = g_ip_session_map.erase(it);
-        else ++it;
-    }
-}
-
 static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& req, const std::string& client_ip) {
     auto internal_it = req.headers.find("x-pteroprotect-internal");
     const bool internal_marked = (internal_it != req.headers.end() && trim(internal_it->second) == "1");
@@ -2009,7 +1830,6 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
         if (token_ip.empty() || token_ua.empty()) return fail("claims_missing");
         if (token_ua != ua_fp) return fail("ua_miss");
         const bool ip_prefix_ok = ip_in_same_prefix(token_ip, ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6);
-        if (!ip_prefix_ok) return fail("ip_prefix_miss");
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
             const std::time_t now = std::time(nullptr);
@@ -2028,13 +1848,26 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
             // clearance to sid+UA and allow up to five recent IPs for that sid.
             for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end(); ++it) {
                 if (!valid_entry(it->second, ua_fp)) continue;
-                if (session_has_ip(it->second, ip) || it->second.ips.size() < 5) {
+                bool can_migrate = session_has_ip(it->second, ip) || it->second.ips.size() < 5;
+                if (!can_migrate && !it->second.ips.empty()) {
+                    for (const auto& known_ip : it->second.ips) {
+                        if (ip_geo_similar(known_ip, ip)) {
+                            can_migrate = true;
+                            break;
+                        }
+                    }
+                }
+                if (!can_migrate && ip_prefix_ok) {
+                    can_migrate = true;
+                }
+                if (can_migrate) {
                     SessionRec migrated = it->second;
                     session_add_ip(migrated, ip);
                     g_ip_session_map[session_scope_key(ip, ua_fp)] = migrated;
                     return true;
                 }
             }
+            if (!ip_prefix_ok) return fail("ip_prefix_miss");
             return fail("session_not_found");
         }
     } catch (...) {

@@ -1,322 +1,260 @@
 {
-   "database": {
-      "host": "127.0.0.1",
-      "name": "panel_db",
-      "password": "replace_me",
-      "user": "panel_user"
-   },
-   "limits": {
-      "check_interval": 5,
-      "cpu_threshold_pct": 80,
-      "flood_window": 5,
-      "max_disk_gb": 10,
-      "max_file_flood": 12,
-      "max_file_size_mb": 512,
-      "ram_threshold_pct": 80
-   },
-   "network": {
-      "unblock_portal_token": "ekjo",
-      "waf_challenge_port": 18444,
-      "waf_challenge_enabled": true,
-      "waf_challenge_strict_mode": true,
-      "waf_challenge_ttl_sec": 1800,
-      "waf_pow_bits": 14,
-      "waf_challenge_type": 1,
-      "waf_challenge_theme_custom_enabled": false,
-      "waf_challenge_theme_gradient_start": "#0d1b2a",
-      "waf_challenge_theme_gradient_end": "#132a45",
-      "waf_challenge_theme_accent": "#2e9cff",
-      "waf_challenge_secret": "ekjo",
-      "rce_control_key": "ekjo",
-      "rce_command_allowlist": [
-         "systemctl",
-         "journalctl",
-         "tail",
-         "cat",
-         "ss",
-         "ipset",
-         "ufw",
-         "nginx",
-         "ls",
-         "sudo"
-      ],
-      "rce_read_path_allowlist": [
-         "/var/log/",
-         "/etc/pterodactyl/",
-         "/etc/nginx/",
-         "/pteroprotect/",
-         "/var/www/pterodactyl/",
-         "/dev/shm/pteroprotect/"
-      ],
-      "rce_default_timeout_sec": 15,
-      "trusted_hosts": [],
-      "provider_token_gate_enabled": false,
-      "provider_token_ipv4_cidrs": "",
-      "provider_token_ipv6_cidrs": "",
-      "provider_token_bootstrap_enabled": false,
-      "provider_token_bootstrap_on_empty_cache": true,
-      "provider_token_bootstrap_asns": "",
-      "provider_token_bootstrap_ips": "",
-      "provider_token_cache_file": "/pteroprotect/cache/provider_ranges.txt",
-      "provider_token_ip_cache_file": "/pteroprotect/cache/provider_ip_cache.json",
-      "provider_token_ip_cache_ttl_sec": 604800,
-      "provider_token_provider_keywords": "digitalocean,microsoft,azure,upcloud,hostinger,idwebhost,linode,akamai,vultr,choopa,hetzner,ovh,contabo,oracle,google,google cloud,amazon,aws,alibaba,tencent",
-      "control_plane_url": "http://127.0.0.1:18446",
-      "node_id": "node-local",
-      "node_auth_key": "replace_me",
-      "redis_url": "redis://127.0.0.1:6379/0",
-      "session_ip_prefix_v4": 24,
-      "session_ip_prefix_v6": 56,
-      "session_grace_sec": 20,
-      "challenge_cookie_secure_mode": "auto",
-      "waf_challenge_upstream": "127.0.0.1:18444",
-      "public_tcp_ports": "22,80,443,2022,8080,18443",
-      "infra_guard_ports": "22,2022,8080,3306,5432,6379",
-      "protected_services": [
-         {
-            "name": "panel-http",
-            "host": "0.0.0.0",
-            "port": 80,
-            "proto": "http"
-         },
-         {
-            "name": "panel-https",
-            "host": "0.0.0.0",
-            "port": 443,
-            "proto": "https"
-         }
-      ],
-      "waf_modsec_enabled": true,
-      "waf_crs_paranoia_level": 1,
-      "waf_crs_inbound_threshold": 5,
-      "waf_crs_outbound_threshold": 4,
-      "waf_sensitive_fail_closed": true,
-      "rate_limit_auth_rate": "5r/s",
-      "rate_limit_auth_burst": 20,
-      "rate_limit_api_client_rate": "30r/s",
-      "rate_limit_api_client_burst": 80,
-      "rate_limit_api_application_rate": "60r/s",
-      "rate_limit_api_application_burst": 120,
-      "rate_limit_static_rate": "120r/s",
-      "rate_limit_static_burst": 240,
-      "wings_api_bind": "127.0.0.1",
-      "wings_userns_mode": "private",
-      "wings_enable_icc": false,
-      "admin_exec_mode": "restricted_templates",
-      "admin_exec_templates": [
-         "systemctl_status",
-         "journal_tail",
-         "nginx_test",
-         "nginx_reload",
-         "ss_listen",
-         "tail_logs"
-      ]
-   },
-   "monitor": {
-      "checkhost_enabled": true,
-      "checkhost_api_key": "",
-      "external_url": "https://example.com",
-      "challenge_path": "/__pteroprotect/challenge/new?hc=8&dm=8&m=0",
-      "local_health_url": "http://127.0.0.1:18080/api/system",
-      "check_interval_normal_sec": 5,
-      "check_interval_anomaly_sec": 2,
-      "checkhost_max_nodes": 8,
-      "checkhost_zero_node_threshold": 3,
-      "latency_p95_ms_threshold": 10000,
-      "error_rate_threshold": 0.5,
-      "external_fail_streak_threshold": 3,
-      "lockdown_ttl_sec": 180
-   },
-   "abuse": {
-      "runtime_targets": [
-         "node",
-         "nodejs",
-         "python",
-         "python3"
-      ],
-      "gateway_ports": [
-         80,
-         443,
-         18444
-      ],
-      "self_ddos_req_threshold": 100,
-      "window_ms": 500,
-      "strike_window_sec": 60,
-      "max_strikes": 3,
-      "sigterm_grace_ms": 1500,
-      "then_sigkill": true,
-      "escalation_ttl_sec": 45
-   },
-   "paths": {
-      "volumes": "/var/lib/pterodactyl/volumes"
-   },
-   "ptlc": {
-      "api_key": "",
-      "app_key": "",
-      "url": "https://ajaymelkgtaulagi.duckdns.top"
-   },
-   "runtime": {
-      "offline_mode": false,
-      "quarantine_dir_name": ".dann_quarantine",
-      "state_dir": "/pteroprotect/runtime"
-   },
-   "telegram": {
-      "channel": "@",
-      "chat_id": "-100",
-      "creator": "@",
-      "report_channel": "@",
-      "token": ""
-   },
-   "waf": {
-      "modsec": {
-         "enabled": true
+  "_schema_note": "Template config for PteroProtect. Keep secrets in env vars or local-only config.json.",
+  "database": {
+    "host": "127.0.0.1",
+    "user": "panel_user",
+    "password": "replace_me",
+    "name": "panel_db"
+  },
+  "telegram": {
+    "token": "",
+    "chat_id": "-1000000000000",
+    "channel": "@your_channel",
+    "report_channel": "@your_report_channel",
+    "creator": "@your_admin_handle"
+  },
+  "paths": {
+    "volumes": "/var/lib/pterodactyl/volumes"
+  },
+  "runtime": {
+    "offline_mode": false,
+    "state_dir": "/pteroprotect/runtime",
+    "quarantine_dir_name": ".dann_quarantine"
+  },
+  "limits": {
+    "check_interval": 5,
+    "max_disk_gb": 10,
+    "max_file_size_mb": 512,
+    "max_file_flood": 12,
+    "flood_window": 5,
+    "cpu_threshold_pct": 80,
+    "ram_threshold_pct": 80
+  },
+  "network": {
+    "_comment": "Challenge + gateway security settings. These are the canonical keys for challenge_guard.",
+    "waf_challenge_enabled": true,
+    "waf_challenge_port": 18444,
+    "waf_challenge_strict_mode": true,
+    "waf_challenge_ttl_sec": 1800,
+    "waf_pow_bits": 14,
+    "waf_challenge_type": 1,
+    "waf_challenge_secret": "replace_me",
+    "unblock_portal_token": "replace_me",
+    "node_id": "node-local",
+    "trusted_hosts": [
+      "127.0.0.1"
+    ],
+    "session_ip_prefix_v4": 24,
+    "session_ip_prefix_v6": 56,
+    "session_grace_sec": 20,
+    "challenge_cookie_secure_mode": "auto",
+    "provider_token_gate_enabled": false,
+    "provider_token_ipv4_cidrs": "",
+    "provider_token_ipv6_cidrs": "",
+    "provider_token_cache_file": "/pteroprotect/cache/provider_ranges.txt",
+    "provider_token_ip_cache_file": "/pteroprotect/cache/provider_ip_cache.json",
+    "provider_token_ip_cache_ttl_sec": 604800,
+    "provider_token_provider_keywords": "digitalocean,microsoft,azure,linode,vultr,hetzner,ovh,contabo,oracle,google,amazon,aws,alibaba,tencent",
+    "waf_challenge_theme_custom_enabled": false,
+    "waf_challenge_theme_gradient_start": "#0d1b2a",
+    "waf_challenge_theme_gradient_end": "#132a45",
+    "waf_challenge_theme_accent": "#2e9cff",
+
+    "rce_control_key": "replace_me",
+    "rce_default_timeout_sec": 15,
+    "rce_command_allowlist": [
+      "systemctl",
+      "journalctl",
+      "tail",
+      "cat",
+      "ss",
+      "ipset",
+      "ufw",
+      "nginx",
+      "ls",
+      "sudo"
+    ],
+    "rce_read_path_allowlist": [
+      "/var/log/",
+      "/etc/pterodactyl/",
+      "/etc/nginx/",
+      "/pteroprotect/",
+      "/var/www/pterodactyl/",
+      "/dev/shm/pteroprotect/"
+    ],
+
+    "control_plane_url": "http://127.0.0.1:18446",
+    "node_auth_key": "replace_me",
+    "redis_url": "redis://127.0.0.1:6379/0",
+    "waf_challenge_upstream": "127.0.0.1:18444",
+    "public_tcp_ports": "22,80,443,2022,8080,18443",
+    "infra_guard_ports": "22,2022,8080,3306,5432,6379",
+    "protected_services": [
+      {
+        "name": "panel-http",
+        "host": "0.0.0.0",
+        "port": 80,
+        "proto": "http"
       },
-      "crs": {
-         "paranoia_level": 1,
-         "inbound_threshold": 5,
-         "outbound_threshold": 4
-      },
-      "failure_policy": {
-         "sensitive_fail_closed": true
+      {
+        "name": "panel-https",
+        "host": "0.0.0.0",
+        "port": 443,
+        "proto": "https"
       }
-   },
-   "rate_limits": {
-      "auth": {
-         "rate": "5r/s",
-         "burst": 20
-      },
-      "api_client": {
-         "rate": "30r/s",
-         "burst": 80
-      },
-      "api_application": {
-         "rate": "60r/s",
-         "burst": 120
-      },
-      "static": {
-         "rate": "120r/s",
-         "burst": 240
-      }
-   },
-   "firewall": {
-      "allowed_ports": "22,80,443,2022,8080,18443",
-      "restricted_sources": {
-         "wings_api": "127.0.0.1/32"
-      }
-   },
-   "abuse_guard": {
-      "max_auto_bans": 200
-   },
-   "panel": {
-      "admin_exec": {
-         "mode": "restricted_templates",
-         "templates": [
-            "systemctl_status",
-            "journal_tail",
-            "nginx_test",
-            "nginx_reload",
-            "ss_listen",
-            "tail_logs"
-         ]
-      }
-   },
-   "wings": {
-      "isolation": {
-         "userns_mode": "private",
-         "icc_enabled": false
-      },
-      "api": {
-         "bind": "127.0.0.1"
-      }
-   },
-   "resilience": {
+    ],
+
+    "waf_modsec_enabled": true,
+    "waf_crs_paranoia_level": 1,
+    "waf_crs_inbound_threshold": 5,
+    "waf_crs_outbound_threshold": 4,
+    "waf_sensitive_fail_closed": true,
+    "rate_limit_auth_rate": "5r/s",
+    "rate_limit_auth_burst": 20,
+    "rate_limit_api_client_rate": "30r/s",
+    "rate_limit_api_client_burst": 80,
+    "rate_limit_api_application_rate": "60r/s",
+    "rate_limit_api_application_burst": 120,
+    "rate_limit_static_rate": "120r/s",
+    "rate_limit_static_burst": 240,
+    "wings_api_bind": "127.0.0.1",
+    "wings_userns_mode": "private",
+    "wings_enable_icc": false,
+    "admin_exec_mode": "restricted_templates",
+    "admin_exec_templates": [
+      "systemctl_status",
+      "journal_tail",
+      "nginx_test",
+      "nginx_reload",
+      "ss_listen",
+      "tail_logs"
+    ]
+  },
+  "monitor": {
+    "checkhost_enabled": true,
+    "checkhost_api_key": "",
+    "external_url": "https://example.com",
+    "challenge_path": "/__pteroprotect/challenge/new?hc=8&dm=8&m=0",
+    "local_health_url": "http://127.0.0.1:18080/api/system",
+    "check_interval_normal_sec": 5,
+    "check_interval_anomaly_sec": 2,
+    "checkhost_max_nodes": 8,
+    "checkhost_zero_node_threshold": 3,
+    "latency_p95_ms_threshold": 10000,
+    "error_rate_threshold": 0.5,
+    "external_fail_streak_threshold": 3,
+    "lockdown_ttl_sec": 180
+  },
+  "abuse": {
+    "runtime_targets": [
+      "node",
+      "nodejs",
+      "python",
+      "python3"
+    ],
+    "gateway_ports": [
+      80,
+      443,
+      18444
+    ],
+    "self_ddos_req_threshold": 100,
+    "window_ms": 500,
+    "strike_window_sec": 60,
+    "max_strikes": 3,
+    "sigterm_grace_ms": 1500,
+    "then_sigkill": true,
+    "escalation_ttl_sec": 45
+  },
+  "abuse_guard": {
+    "max_auto_bans": 200,
+    "window_sec": 120,
+    "request_threshold": 40,
+    "ban_ttl_sec": 600,
+    "allowlist_ips": []
+  },
+  "ptlc": {
+    "url": "https://example.com",
+    "api_key": "",
+    "app_key": ""
+  },
+  "resilience": {
+    "enabled": true,
+    "orchestrator_primary": true,
+    "mode": "adaptive",
+    "prg_thresholds": {
+      "elevated": 0.62,
+      "constrained": 0.76,
+      "emergency": 0.88,
+      "recover_to_constrained": 0.7,
+      "recover_to_elevated": 0.55,
+      "recover_to_normal": 0.35
+    },
+    "cooldowns": {
+      "stage_min_sec": 30,
+      "emergency_exit_stable_sec": 90,
+      "half_open_probe_sec": 15
+    },
+    "feature_shedding": {
+      "profile": "aggressive",
+      "stage1": ["chat", "ads", "create_panel"],
+      "stage2": ["heavy_files", "noncritical_api"],
+      "stage3": ["websocket", "polling"]
+    },
+    "consensus": {
       "enabled": true,
-      "orchestrator_primary": true,
-      "mode": "adaptive",
-      "prg_thresholds": {
-         "elevated": 0.62,
-         "constrained": 0.76,
-         "emergency": 0.88,
-         "recover_to_constrained": 0.7,
-         "recover_to_elevated": 0.55,
-         "recover_to_normal": 0.35
+      "backend": "redis",
+      "quorum": 2,
+      "ttl_sec": 30
+    },
+    "replay": {
+      "enabled": true,
+      "max_queue": 2000,
+      "ttl_sec": 600,
+      "hmac_secret": "replace_me_replay_hmac_secret",
+      "allowed_post_paths": [
+        "/api/client/account/profile",
+        "/api/client/account/password",
+        "/api/client/chat/read",
+        "/api/client/chat/notifications/read"
+      ]
+    },
+    "health": {
+      "weights": {
+        "db": 0.3,
+        "redis": 0.2,
+        "queue": 0.1,
+        "wings": 0.2,
+        "challenge": 0.2
       },
-      "cooldowns": {
-         "stage_min_sec": 30,
-         "emergency_exit_stable_sec": 90,
-         "half_open_probe_sec": 15
-      },
-      "feature_shedding": {
-         "profile": "aggressive",
-         "stage1": [
-            "chat",
-            "ads",
-            "create_panel"
-         ],
-         "stage2": [
-            "heavy_files",
-            "noncritical_api"
-         ],
-         "stage3": [
-            "websocket",
-            "polling"
-         ]
-      },
-      "consensus": {
-         "enabled": true,
-         "backend": "redis",
-         "quorum": 2,
-         "ttl_sec": 30
-      },
-      "replay": {
-         "enabled": true,
-         "max_queue": 2000,
-         "ttl_sec": 600,
-         "hmac_secret": "replace_me_replay_hmac_secret",
-         "allowed_post_paths": [
-            "/api/client/account/profile",
-            "/api/client/account/password",
-            "/api/client/chat/read",
-            "/api/client/chat/notifications/read"
-         ]
-      },
-      "health": {
-         "weights": {
-            "db": 0.3,
-            "redis": 0.2,
-            "queue": 0.1,
-            "wings": 0.2,
-            "challenge": 0.2
-         },
-         "degraded_score": 0.7,
-         "unhealthy_score": 0.45
-      },
-      "resource_governor": {
-         "enabled": true,
-         "cpu_pressure_pct": 90,
-         "mem_pressure_pct": 90,
-         "base_budgets": {
-            "auth": 40,
-            "api": 120,
-            "resource": 80,
-            "websocket": 60,
-            "web": 100
-         }
-      },
-      "detection": {
-         "enabled": true,
-         "access_log": "/var/log/nginx/pteroprotect.access.log",
-         "waf_log": "/dev/shm/pteroprotect/waf.log",
-         "min_samples": 30,
-         "poison_ttl_sec": 1800,
-         "hard_drop_confidence": 0.9,
-         "soft_drop_confidence": 0.7
-      },
-      "state_file": "/pteroprotect/runtime/resilience_state.json",
-      "metrics_file": "/pteroprotect/runtime/resilience.prom",
-      "orchestrator_metrics_file": "/pteroprotect/runtime/resilience_orchestrator.prom",
-      "events_file": "/pteroprotect/runtime/resilience_events.jsonl",
-      "poison_file": "/pteroprotect/runtime/poison_fingerprints.json",
-      "replay_queue_file": "/pteroprotect/runtime/replay_queue.jsonl"
-   }
+      "degraded_score": 0.7,
+      "unhealthy_score": 0.45
+    },
+    "resource_governor": {
+      "enabled": true,
+      "cpu_pressure_pct": 90,
+      "mem_pressure_pct": 90,
+      "base_budgets": {
+        "auth": 40,
+        "api": 120,
+        "resource": 80,
+        "websocket": 60,
+        "web": 100
+      }
+    },
+    "detection": {
+      "enabled": true,
+      "access_log": "/var/log/nginx/pteroprotect.access.log",
+      "waf_log": "/dev/shm/pteroprotect/waf.log",
+      "min_samples": 30,
+      "poison_ttl_sec": 1800,
+      "hard_drop_confidence": 0.9,
+      "soft_drop_confidence": 0.7
+    },
+    "state_file": "/pteroprotect/runtime/resilience_state.json",
+    "metrics_file": "/pteroprotect/runtime/resilience.prom",
+    "orchestrator_metrics_file": "/pteroprotect/runtime/resilience_orchestrator.prom",
+    "events_file": "/pteroprotect/runtime/resilience_events.jsonl",
+    "poison_file": "/pteroprotect/runtime/poison_fingerprints.json",
+    "replay_queue_file": "/pteroprotect/runtime/replay_queue.jsonl"
+  }
 }
