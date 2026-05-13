@@ -14,6 +14,7 @@ import { ApplicationStore } from '@/state';
 
 const PublicChatPage = lazy(() => import('@/components/dashboard/PublicChatPage'));
 const DanexCoinPage = lazy(() => import('@/components/dashboard/DanexCoinPage'));
+const DanexCPage = lazy(() => import('@/components/dashboard/DanexCPage'));
 const NotificationsPage = lazy(() => import('@/components/dashboard/NotificationsPage'));
 const CreatePanelPage = lazy(() => import('@/components/dashboard/CreatePanelPage'));
 const AccountProfileContainer = lazy(() => import('@/components/dashboard/AccountProfileContainer'));
@@ -110,6 +111,9 @@ export default () => {
                         <NavLink to={'/judi'} exact>
                             Judi
                         </NavLink>
+                        <NavLink to={'/danexc'} exact>
+                            DanexC
+                        </NavLink>
                         {canCreatePanel && (
                             <NavLink to={'/create-panel'} exact>
                                 Create Panel
@@ -150,6 +154,9 @@ export default () => {
                         </Route>
                         <Route path={'/judi'} exact>
                             <DanexCoinPage />
+                        </Route>
+                        <Route path={'/danexc'} exact>
+                            <DanexCPage />
                         </Route>
                         <Route path={'/create-panel'} exact>
                             <CreatePanelPage />
