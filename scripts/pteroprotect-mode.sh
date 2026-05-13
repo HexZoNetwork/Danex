@@ -74,10 +74,12 @@ remove_targets() {
 
 write_mode() {
     local mode="$1"
-    local now
+    local ttl="${2:-600}"
+    local now until
     now="$(date +%s)"
+    until=$(( now + ttl ))
     write_json_to_targets \
-        "$(printf '{"mode":"%s","updated_at":%s}' "${mode}" "${now}")" \
+        "$(printf '{"mode":"%s","updated_at":%s,"until":%s,"source":"pteroprotect_mode"}' "${mode}" "${now}" "${until}")" \
         "${MODE_FILES[@]}"
 }
 
@@ -87,7 +89,7 @@ write_lockdown() {
     now="$(date +%s)"
     until=$(( now + ttl ))
     write_json_to_targets \
-        "$(printf '{"enabled":true,"reason":"manual-mode","until":%s,"updated_at":%s}' "${until}" "${now}")" \
+        "$(printf '{"enabled":true,"reason":"manual-mode","until":%s,"updated_at":%s,"source":"pteroprotect_mode"}' "${until}" "${now}")" \
         "${LOCKDOWN_FILES[@]}"
 }
 
@@ -95,12 +97,12 @@ clear_lockdown() {
     local now
     now="$(date +%s)"
     write_json_to_targets \
-        "$(printf '{"enabled":false,"updated_at":%s}' "${now}")" \
+        "$(printf '{"enabled":false,"updated_at":%s,"until":%s,"source":"pteroprotect_mode"}' "${now}" "${now}")" \
         "${LOCKDOWN_FILES[@]}"
 }
 
 clear_mode() {
-    write_mode "normal"
+    write_mode "normal" "${TTL}"
 }
 
 status() {
@@ -134,11 +136,11 @@ case "${MODE}" in
         clear_lockdown
         ;;
     aggressive)
-        write_mode "aggressive"
+        write_mode "aggressive" "${TTL}"
         clear_lockdown
         ;;
     emergency)
-        write_mode "emergency"
+        write_mode "emergency" "${TTL}"
         write_lockdown "${TTL}"
         ;;
     lockdown)

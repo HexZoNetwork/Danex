@@ -446,7 +446,7 @@ def write_mode_files(stage: str, runtime_dir: str, monitor: Optional[Dict[str, A
     host_mode_value = str(host_mode.get("mode", "normal"))
     host_mode_active = (
         host_mode_source != "resilience_orchestrator"
-        and host_mode_value in {"aggressive", "emergency"}
+        and host_mode_value in {"normal", "aggressive", "emergency"}
         and host_mode_until > now
     )
     host_lock_active = (
@@ -456,7 +456,15 @@ def write_mode_files(stage: str, runtime_dir: str, monitor: Optional[Dict[str, A
     )
     host_health_gate = read_health_gate(runtime_dir, monitor or {})
     host_lock_health_ready = bool(host_health_gate.get("degraded"))
-    if stage != "emergency" and host_lock_active and host_lock_health_ready:
+    if host_mode_active and (host_mode_value != "emergency" or host_lock_health_ready):
+        mode_payload = dict(host_mode)
+        mode_payload["updated_at"] = now
+        if host_mode_value == "emergency":
+            if host_lock_active:
+                lock_payload = host_lock
+        else:
+            lock_payload = {"enabled": False, "updated_at": now, "source": "resilience_orchestrator", "reason": "manual_mode_override"}
+    elif stage != "emergency" and host_lock_active and host_lock_health_ready:
         mode_payload = {
             "mode": "emergency",
             "updated_at": now,
@@ -464,9 +472,6 @@ def write_mode_files(stage: str, runtime_dir: str, monitor: Optional[Dict[str, A
             "reason": "host_guard_lockdown",
         }
         lock_payload = host_lock
-    elif stage not in {"emergency", "constrained"} and host_mode_active and (host_mode_value != "emergency" or host_lock_health_ready):
-        mode_payload = dict(host_mode)
-        mode_payload["updated_at"] = now
 
     write_json(os.path.join(runtime_dir, "mode.json"), mode_payload)
     write_json(os.path.join(runtime_dir, "lockdown.json"), lock_payload)
@@ -597,6 +602,20 @@ def main() -> int:
     emergency_bad_rate = clamp01(as_float(detection.get("emergency_bad_rate", 0.45), 0.45))
     elevated_drop_rate = clamp01(as_float(detection.get("elevated_drop_rate", 0.18), 0.18))
     emergency_drop_rate = clamp01(as_float(detection.get("emergency_drop_rate", 0.35), 0.35))
+    elevated_ratio_req_rate_min = max(
+        0.5,
+        as_float(
+            detection.get("elevated_ratio_req_rate_min", max(2.0, elevated_req_rate * 0.20)),
+            max(2.0, elevated_req_rate * 0.20),
+        ),
+    )
+    emergency_ratio_req_rate_min = max(
+        elevated_ratio_req_rate_min,
+        as_float(
+            detection.get("emergency_ratio_req_rate_min", max(4.0, emergency_req_rate * 0.20)),
+            max(4.0, emergency_req_rate * 0.20),
+        ),
+    )
     require_health_degradation_for_emergency = as_bool(
         detection.get("require_health_degradation_for_emergency", monitor.get("require_health_degradation_for_emergency", True)),
         True,
@@ -767,16 +786,18 @@ def main() -> int:
         elif req_rate >= elevated_req_rate:
             absolute_pressure = max(absolute_pressure, 0.66)
             absolute_reasons.append("elevated_req_rate")
-        if enough_ratio_samples and bad_rate >= emergency_bad_rate:
+        enough_elevated_ratio_pressure = enough_ratio_samples and req_rate >= elevated_ratio_req_rate_min
+        enough_emergency_ratio_pressure = enough_ratio_samples and req_rate >= emergency_ratio_req_rate_min
+        if enough_emergency_ratio_pressure and bad_rate >= emergency_bad_rate:
             absolute_pressure = max(absolute_pressure, 0.94)
             absolute_reasons.append("emergency_bad_rate")
-        elif enough_ratio_samples and bad_rate >= elevated_bad_rate:
+        elif enough_elevated_ratio_pressure and bad_rate >= elevated_bad_rate:
             absolute_pressure = max(absolute_pressure, 0.68)
             absolute_reasons.append("elevated_bad_rate")
-        if enough_ratio_samples and drop_rate >= emergency_drop_rate:
+        if enough_emergency_ratio_pressure and drop_rate >= emergency_drop_rate:
             absolute_pressure = max(absolute_pressure, 0.96)
             absolute_reasons.append("emergency_drop_rate")
-        elif enough_ratio_samples and drop_rate >= elevated_drop_rate:
+        elif enough_elevated_ratio_pressure and drop_rate >= elevated_drop_rate:
             absolute_pressure = max(absolute_pressure, 0.70)
             absolute_reasons.append("elevated_drop_rate")
         if route_asym >= 0.65 and enough_ratio_samples:

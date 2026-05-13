@@ -32,6 +32,7 @@ class PteroProtectWaf
         $stage = strtolower((string) ($resilienceState['stage'] ?? 'normal'));
         $danexcStatusPath = $this->isDanexcStatusPath($path);
         $danexcSoftAllow = $this->shouldSoftAllowDanexcStatus($danexcStatusPath, $stage, $lockdown, $mode, $config);
+        $rumPath = $this->isRumPath($path);
         $featureFlags = is_array($resilienceState['features'] ?? null) ? $resilienceState['features'] : [];
         $governorBudgets = is_array($resilienceState['resource_governor']['budgets'] ?? null)
             ? $resilienceState['resource_governor']['budgets']
@@ -71,7 +72,39 @@ class PteroProtectWaf
             return $next($request);
         }
 
-        if (!$danexcSoftAllow && $this->shouldShedByFeature($path, $featureFlags, $stage) && !$this->isCoreRoute($request, $path)) {
+        if ($this->shouldApplyWebFloodGuard($request, $path, $category, $mode, $stage, $lockdown, $config) && $this->isRateLimitedWebFlood($request, $path, $mode, $config)) {
+            $this->logDecision($config, 'deny', "web-flood:{$mode}", $ip, $path, $userAgent);
+            $this->logResilienceEvent(
+                $resilienceConfig,
+                'l7',
+                'waf',
+                'deny_web_flood',
+                0.96,
+                0.92,
+                'global',
+                ['path' => $path, 'mode' => $mode, 'stage' => $stage]
+            );
+
+            return $this->blockedResponse($request, 429, 'Traffic spike protection is active.');
+        }
+
+        if ($this->shouldCapRumDuringAttack($rumPath, $mode, $stage, $lockdown, $config) && $this->isRateLimitedRumDuringAttack($request, $mode, $config)) {
+            $this->logDecision($config, 'deny', "rum-attack-cap:{$mode}", $ip, $path, $userAgent);
+            $this->logResilienceEvent(
+                $resilienceConfig,
+                'app',
+                'waf',
+                'deny_rum_attack_cap',
+                0.9,
+                0.9,
+                'global',
+                ['path' => $path, 'mode' => $mode, 'stage' => $stage]
+            );
+
+            return $this->blockedResponse($request, 429, 'Telemetry traffic is temporarily limited.');
+        }
+
+        if (!$danexcSoftAllow && !$rumPath && $this->shouldShedByFeature($path, $featureFlags, $stage) && !$this->isCoreRoute($request, $path)) {
             if ($this->shouldQueueReplay($request, $path, $stage, $replayConfig)) {
                 $ticket = $this->queueReplayTicket($request, $path, $replayConfig, $resilienceConfig);
                 $this->logResilienceEvent(
@@ -285,6 +318,11 @@ class PteroProtectWaf
         return preg_match('#^api/client/danexc/(overview|timeline|feed)(?:\d+)?(?:/|$)#i', $path) === 1;
     }
 
+    private function isRumPath(string $path): bool
+    {
+        return preg_match('#^api/client/rum(?:/|$)#i', $path) === 1;
+    }
+
     private function shouldSoftAllowDanexcStatus(bool $isDanexcStatusPath, string $stage, bool $lockdown, string $mode, array $config): bool
     {
         if (!$isDanexcStatusPath) {
@@ -328,6 +366,96 @@ class PteroProtectWaf
         }
 
         return $this->isRateLimited("pteroprotect:waf:danexc-status:subject:{$subject}", $perSessionLimit, $decay);
+    }
+
+    private function shouldApplyWebFloodGuard(Request $request, string $path, string $category, string $mode, string $stage, bool $lockdown, array $config): bool
+    {
+        if (!($config['web_flood_guard_enabled'] ?? true)) {
+            return false;
+        }
+
+        if ($this->isDanexcPagePath($path)) {
+            return false;
+        }
+
+        if ($lockdown) {
+            return true;
+        }
+
+        if (!in_array($mode, ['aggressive', 'emergency'], true) && !in_array($stage, ['constrained', 'emergency'], true)) {
+            return false;
+        }
+
+        if ($category !== 'web') {
+            return false;
+        }
+
+        return strtoupper($request->method()) === 'GET';
+    }
+
+    private function isDanexcPagePath(string $path): bool
+    {
+        return preg_match('#^danexc(?:/|$)#i', trim($path, '/')) === 1;
+    }
+
+    private function isRateLimitedWebFlood(Request $request, string $path, string $mode, array $config): bool
+    {
+        $decay = max(1, (int) ($config['web_flood_decay_seconds'] ?? 5));
+        $isRoot = trim($path, '/') === '' || strtolower(trim($path, '/')) === 'index.php';
+        $perIpLimit = $isRoot
+            ? max(1, (int) ($config['web_flood_root_per_ip_limit'] ?? 10))
+            : max(1, (int) ($config['web_flood_per_ip_limit'] ?? 20));
+        $globalLimit = $isRoot
+            ? max(1, (int) ($config['web_flood_root_global_limit'] ?? 120))
+            : max(1, (int) ($config['web_flood_global_limit'] ?? 240));
+
+        $multiplier = $this->modeMultiplier($mode, $config);
+        $perIpLimit = max(1, (int) ceil($perIpLimit * $multiplier));
+        $globalLimit = max(1, (int) ceil($globalLimit * $multiplier));
+
+        $ip = trim((string) $request->ip());
+        if ($ip === '') {
+            $ip = 'unknown';
+        }
+        $bucket = $isRoot ? 'root' : 'web';
+        if ($this->isRateLimited("pteroprotect:waf:web-flood:ip:{$bucket}:{$ip}", $perIpLimit, $decay)) {
+            return true;
+        }
+
+        return $this->isRateLimited("pteroprotect:waf:web-flood:global:{$bucket}", $globalLimit, $decay);
+    }
+
+    private function shouldCapRumDuringAttack(bool $rumPath, string $mode, string $stage, bool $lockdown, array $config): bool
+    {
+        if (!$rumPath || !($config['rum_attack_cap_enabled'] ?? true)) {
+            return false;
+        }
+
+        if ($lockdown) {
+            return true;
+        }
+
+        return in_array($mode, ['aggressive', 'emergency'], true) || in_array($stage, ['constrained', 'emergency'], true);
+    }
+
+    private function isRateLimitedRumDuringAttack(Request $request, string $mode, array $config): bool
+    {
+        $decay = max(1, (int) ($config['rum_attack_decay_seconds'] ?? 5));
+        $perIpLimit = max(1, (int) ($config['rum_attack_per_ip_limit'] ?? 4));
+        $globalLimit = max(1, (int) ($config['rum_attack_global_limit'] ?? 48));
+        $multiplier = $this->modeMultiplier($mode, $config);
+        $perIpLimit = max(1, (int) ceil($perIpLimit * $multiplier));
+        $globalLimit = max(1, (int) ceil($globalLimit * $multiplier));
+
+        $ip = trim((string) $request->ip());
+        if ($ip === '') {
+            $ip = 'unknown';
+        }
+        if ($this->isRateLimited("pteroprotect:waf:rum-attack:ip:{$ip}", $perIpLimit, $decay)) {
+            return true;
+        }
+
+        return $this->isRateLimited("pteroprotect:waf:rum-attack:global", $globalLimit, $decay);
     }
 
     private function isCoreBrowserNavigationPath(string $path): bool

@@ -171,6 +171,8 @@ def cfg_resilience(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "poison_ttl_sec": 1800,
             "hard_drop_confidence": 0.90,
             "soft_drop_confidence": 0.70,
+            "elevated_ratio_req_rate_min": 3.0,
+            "emergency_ratio_req_rate_min": 9.0,
             "exclude_monitor_traffic_from_scoring": True,
             "exclude_challenge_paths_from_scoring": True,
             "require_secondary_signal_for_elevated_when_healthy": True,

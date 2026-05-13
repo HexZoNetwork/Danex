@@ -268,6 +268,8 @@
       "emergency_bad_rate": 0.45,
       "elevated_drop_rate": 0.18,
       "emergency_drop_rate": 0.35,
+      "elevated_ratio_req_rate_min": 3.0,
+      "emergency_ratio_req_rate_min": 9.0,
       "require_health_degradation_for_emergency": true,
       "exclude_monitor_traffic_from_scoring": true,
       "exclude_challenge_paths_from_scoring": true,

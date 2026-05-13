@@ -1129,6 +1129,8 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{resilience}{detection}{exclude_monitor_traffic_from_scoring} = JSON::PP::true if !defined($j->{resilience}{detection}{exclude_monitor_traffic_from_scoring});
         $j->{resilience}{detection}{exclude_challenge_paths_from_scoring} = JSON::PP::true if !defined($j->{resilience}{detection}{exclude_challenge_paths_from_scoring});
         $j->{resilience}{detection}{require_secondary_signal_for_elevated_when_healthy} = JSON::PP::true if !defined($j->{resilience}{detection}{require_secondary_signal_for_elevated_when_healthy});
+        $j->{resilience}{detection}{elevated_ratio_req_rate_min} = 3.0 if !defined($j->{resilience}{detection}{elevated_ratio_req_rate_min}) || $j->{resilience}{detection}{elevated_ratio_req_rate_min} !~ /^-?\d+(?:\.\d+)?$/ || $j->{resilience}{detection}{elevated_ratio_req_rate_min} <= 0;
+        $j->{resilience}{detection}{emergency_ratio_req_rate_min} = 9.0 if !defined($j->{resilience}{detection}{emergency_ratio_req_rate_min}) || $j->{resilience}{detection}{emergency_ratio_req_rate_min} !~ /^-?\d+(?:\.\d+)?$/ || $j->{resilience}{detection}{emergency_ratio_req_rate_min} < $j->{resilience}{detection}{elevated_ratio_req_rate_min};
         if (!defined($j->{resilience}{detection}{monitor_ua_markers}) || ref($j->{resilience}{detection}{monitor_ua_markers}) ne 'ARRAY' || scalar(@{$j->{resilience}{detection}{monitor_ua_markers}}) == 0) {
             $j->{resilience}{detection}{monitor_ua_markers} = [
                 "checkhost",

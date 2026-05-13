@@ -46,13 +46,14 @@ return [
         ],
         'emergency_block_patterns' => [
             '#^api/application/#i',
+            '#^(?:|index\.php)$#i',
         ],
-        'block_paths_in_emergency' => false,
+        'block_paths_in_emergency' => true,
 
         'mode_multipliers' => [
             'normal' => 1.0,
-            'aggressive' => 0.9,
-            'emergency' => 0.5,
+            'aggressive' => 0.55,
+            'emergency' => 0.25,
         ],
 
         'auth_per_ip_limit' => 20,
@@ -62,6 +63,10 @@ return [
         'api_global_limit' => 320,
         'lockdown_api_per_ip_limit' => 20,
         'lockdown_api_global_limit' => 80,
+        'rum_attack_cap_enabled' => true,
+        'rum_attack_decay_seconds' => 5,
+        'rum_attack_per_ip_limit' => 4,
+        'rum_attack_global_limit' => 48,
         'danexc_status_soft_allow_enabled' => true,
         'danexc_status_soft_limit_per_ip' => 240,
         'danexc_status_soft_limit_per_session' => 480,
@@ -77,8 +82,14 @@ return [
         'lockdown_websocket_per_ip_limit' => 48,
         'lockdown_websocket_global_limit' => 260,
 
-        'web_per_ip_limit' => 180,
-        'web_global_limit' => 700,
+        'web_per_ip_limit' => 120,
+        'web_global_limit' => 420,
+        'web_flood_guard_enabled' => true,
+        'web_flood_decay_seconds' => 5,
+        'web_flood_per_ip_limit' => 20,
+        'web_flood_global_limit' => 240,
+        'web_flood_root_per_ip_limit' => 10,
+        'web_flood_root_global_limit' => 120,
 
         'challenge_cookie_name' => env('PTEROPROTECT_CHALLENGE_COOKIE', 'pp_clearance'),
         'resource_clearance_limit' => 3000,
