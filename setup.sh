@@ -3216,6 +3216,13 @@ fi
 
 if [[ -x "${INSTALL_DIR}/scripts/install_fail2ban.sh" ]]; then
     echo "[setup] applying fail2ban protection profile..."
+
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+        echo "[setup] fail2ban not found, auto-installing..."
+        apt_update_resilient || true
+        apt-get install "${APT_INSTALL_OPTS[@]}" fail2ban || true
+    fi
+
     "${INSTALL_DIR}/scripts/install_fail2ban.sh" "${INSTALL_DIR}" || true
 
     FAIL2BAN_REQUIRED_RAW="$(read_network_setting fail2ban_required true)"
