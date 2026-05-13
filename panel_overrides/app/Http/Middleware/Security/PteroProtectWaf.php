@@ -212,6 +212,10 @@ class PteroProtectWaf
 
     private function isHardDroppedByPoisonFingerprint(Request $request, string $path, array $poisonMap): bool
     {
+        if ($this->isPoisonHardDropBypassPath($request, $path)) {
+            return false;
+        }
+
         if (empty($poisonMap)) {
             return false;
         }
@@ -241,6 +245,17 @@ class PteroProtectWaf
         }
 
         return false;
+    }
+
+    private function isPoisonHardDropBypassPath(Request $request, string $path): bool
+    {
+        if (strtoupper($request->method()) !== 'GET') {
+            return false;
+        }
+
+        // DanexC dashboard telemetry endpoints are high-volume read-only requests
+        // from legitimate browser sessions and prone to poisoning false positives.
+        return preg_match('#^api/client/danexc/(overview|timeline|feed)(?:/|$)#i', $path) === 1;
     }
 
     private function uaFamily(string $ua): string
