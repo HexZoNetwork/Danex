@@ -1,5 +1,5 @@
 {
-  "_schema_note": "Template config for PteroProtect. Keep secrets in env vars or local-only config.json.",
+  "_schema_note": "configs",
   "database": {
     "host": "127.0.0.1",
     "user": "panel_user",
@@ -31,7 +31,7 @@
     "ram_threshold_pct": 80
   },
   "network": {
-    "_comment": "Challenge + gateway security settings. These are the canonical keys for challenge_guard.",
+    "_comment": "Challanges",
     "waf_challenge_enabled": true,
     "waf_challenge_port": 18444,
     "waf_challenge_strict_mode": true,
