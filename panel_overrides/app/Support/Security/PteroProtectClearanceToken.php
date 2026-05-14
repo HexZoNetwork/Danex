@@ -27,7 +27,7 @@ class PteroProtectClearanceToken
 
         $exp = (int) ($payload['exp'] ?? 0);
         $ipClaim = strtolower(trim((string) ($payload['ip'] ?? '')));
-        $uaClaim = trim((string) ($payload['ua'] ?? ''));
+        $uaClaim = trim((string) ($payload['ua_fp'] ?? ($payload['ua'] ?? '')));
         $sid = trim((string) ($payload['sid'] ?? ''));
 
         if ($exp <= time() || $sid === '' || $ipClaim === '' || $uaClaim === '') {

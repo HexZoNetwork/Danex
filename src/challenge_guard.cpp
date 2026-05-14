@@ -1762,6 +1762,14 @@ static void session_add_ip(SessionRec& sr, const std::string& ip) {
     }
 }
 
+static bool has_active_session_binding(const std::string& ip, const std::string& ua_fp) {
+    std::lock_guard<std::mutex> lock(g_session_mu);
+    const std::time_t now = std::time(nullptr);
+    auto it = g_ip_session_map.find(session_scope_key(ip, ua_fp));
+    if (it == g_ip_session_map.end()) return false;
+    return !it->second.sid.empty() && it->second.exp >= now;
+}
+
 static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& req, const std::string& client_ip) {
     auto internal_it = req.headers.find("x-pteroprotect-internal");
     const bool internal_marked = (internal_it != req.headers.end() && trim(internal_it->second) == "1");
@@ -1790,6 +1798,7 @@ static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& re
 static std::string issue_token(const Settings& s, const std::string& ip, const std::string& ua_fp, const std::string& sid) {
     json p;
     p["ip"] = ip;
+    p["ua"] = ua_fp;
     p["ua_fp"] = ua_fp;
     p["sid"] = sid;
     p["iat"] = static_cast<long long>(std::time(nullptr));
@@ -1828,13 +1837,17 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
         const std::string token_ip = p.value("ip", std::string());
         const std::string token_ua = p.value("ua_fp", p.value("ua", std::string()));
         if (token_ip.empty() || token_ua.empty()) return fail("claims_missing");
-        if (token_ua != ua_fp) return fail("ua_miss");
         const bool ip_prefix_ok = ip_in_same_prefix(token_ip, ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6);
+        const bool ua_match = (token_ua == ua_fp);
+        if (!ua_match && !ip_prefix_ok) return fail("ua_miss");
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
             const std::time_t now = std::time(nullptr);
             auto valid_entry = [&](const SessionRec& sr, const std::string& expect_ua) -> bool {
                 return sr.sid == sid && sr.ua == expect_ua && sr.exp >= now;
+            };
+            auto valid_entry_relaxed = [&](const SessionRec& sr) -> bool {
+                return sr.sid == sid && sr.exp >= now;
             };
 
             // Strict binding path.
@@ -1843,11 +1856,20 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
                 session_add_ip(cur_it->second, ip);
                 return true;
             }
+            if (!ua_match && cur_it != g_ip_session_map.end() && valid_entry_relaxed(cur_it->second)) {
+                cur_it->second.ua = ua_fp;
+                session_add_ip(cur_it->second, ip);
+                return true;
+            }
 
             // Mobile networks can rotate client IPs between requests. Bind the
             // clearance to sid+UA and allow up to five recent IPs for that sid.
             for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end(); ++it) {
-                if (!valid_entry(it->second, ua_fp)) continue;
+                if (!valid_entry(it->second, ua_fp)) {
+                    if (!( !ua_match && valid_entry_relaxed(it->second) )) {
+                        continue;
+                    }
+                }
                 bool can_migrate = session_has_ip(it->second, ip) || it->second.ips.size() < 5;
                 if (!can_migrate && !it->second.ips.empty()) {
                     for (const auto& known_ip : it->second.ips) {
@@ -1862,6 +1884,7 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
                 }
                 if (can_migrate) {
                     SessionRec migrated = it->second;
+                    migrated.ua = ua_fp;
                     session_add_ip(migrated, ip);
                     g_ip_session_map[session_scope_key(ip, ua_fp)] = migrated;
                     return true;
@@ -2032,8 +2055,13 @@ static void handle_client(int fd, std::string remote_ip) {
             log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web"}});
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
-            log_event_json("session_mismatch", {{"ip", ip}, {"reason", verify_reason.empty() ? "no_cookie_or_invalid" : verify_reason}, {"node_id", s.node_id}, {"path", "check-web"}});
-            send_response(fd, 401, "Unauthorized", "", {}, head_only);
+            if (has_active_session_binding(ip, ua_fp)) {
+                log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web-session"}});
+                send_response(fd, 204, "No Content", "", {}, head_only);
+            } else {
+                log_event_json("session_mismatch", {{"ip", ip}, {"reason", verify_reason.empty() ? "no_cookie_or_invalid" : verify_reason}, {"node_id", s.node_id}, {"path", "check-web"}});
+                send_response(fd, 401, "Unauthorized", "", {}, head_only);
+            }
         }
         close(fd);
         return;
@@ -2066,8 +2094,35 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
+        std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
+        const bool has_panel_session_cookie = !read_cookie(cookie, "pterodactyl_session").empty();
+        if (has_panel_session_cookie) {
+            send_response(fd, 204, "No Content", "", {}, head_only);
+            close(fd);
+            return;
+        }
+        if (has_active_session_binding(ip, ua_fp)) {
+            send_response(fd, 204, "No Content", "", {}, head_only);
+            close(fd);
+            return;
+        }
+
         const bool token_ok = has_valid_auth_token_header(s, req, ip);
-        if (token_ok) {
+        bool clearance_ok = false;
+        if (!token_ok) {
+            std::string tok = read_cookie(cookie, s.cookie_name);
+            std::string verify_reason;
+            clearance_ok = (!tok.empty() && verify_token(s, tok, ip, ua_fp, &verify_reason));
+            if (!clearance_ok) {
+                log_event_json("session_mismatch", {
+                    {"ip", ip},
+                    {"reason", verify_reason.empty() ? "no_cookie_or_invalid" : verify_reason},
+                    {"node_id", s.node_id},
+                    {"path", "check-provider-api"}
+                });
+            }
+        }
+        if (token_ok || clearance_ok) {
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
             send_response(fd, 401, "Unauthorized", "", {}, head_only);

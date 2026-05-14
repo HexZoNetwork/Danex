@@ -198,6 +198,111 @@ PY
     (( node_major >= 22 ))
 }
 
+ensure_ubuntu_source_repos() {
+    if grep -Rqs '^deb-src .*ubuntu' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+        return 0
+    fi
+
+    local codename
+    local mirror
+    codename="$(
+        . /etc/os-release 2>/dev/null || true
+        printf '%s' "${VERSION_CODENAME:-${UBUNTU_CODENAME:-jammy}}"
+    )"
+    mirror="$(grep -RhsE '^deb\s+(\[[^]]+\]\s+)?https?://[^[:space:]]*ubuntu[^[:space:]]*' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null \
+        | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^https?:/) { print $i; exit } }')"
+    mirror="${mirror:-http://archive.ubuntu.com/ubuntu}"
+
+    {
+        printf 'deb-src %s %s main restricted universe multiverse\n' "${mirror}" "${codename}"
+        printf 'deb-src %s %s-updates main restricted universe multiverse\n' "${mirror}" "${codename}"
+        printf 'deb-src %s %s-backports main restricted universe multiverse\n' "${mirror}" "${codename}"
+        printf 'deb-src http://security.ubuntu.com/ubuntu %s-security main restricted universe multiverse\n' "${codename}"
+    } > /etc/apt/sources.list.d/ubuntu-src.list
+    apt-get update
+}
+
+enable_nginx_modsecurity_module_file() {
+    mkdir -p /etc/nginx/modules-enabled
+    if [[ -f /usr/share/nginx/modules-available/mod-http-modsecurity.conf ]]; then
+        ln -sf /usr/share/nginx/modules-available/mod-http-modsecurity.conf /etc/nginx/modules-enabled/50-mod-http-modsecurity.conf
+        return 0
+    fi
+    if [[ -f /usr/share/nginx/modules-available/mod-http-modsecurity.load ]]; then
+        ln -sf /usr/share/nginx/modules-available/mod-http-modsecurity.load /etc/nginx/modules-enabled/50-mod-http-modsecurity.load
+        return 0
+    fi
+    if [[ -f /usr/lib/nginx/modules/ngx_http_modsecurity_module.so ]]; then
+        printf '%s\n' 'load_module modules/ngx_http_modsecurity_module.so;' > /etc/nginx/modules-enabled/50-mod-http-modsecurity.conf
+        return 0
+    fi
+    return 1
+}
+
+build_nginx_modsecurity_module() {
+    local workdir="/usr/local/src/pteroprotect-modsecurity-nginx"
+    local nginx_version
+    local nginx_pkg_version
+    nginx_version="$(nginx -v 2>&1 | sed -E 's#^nginx version: nginx/##')"
+    [[ -n "${nginx_version}" ]] || return 1
+    nginx_pkg_version="$(dpkg-query -W -f='${Version}' nginx 2>/dev/null || true)"
+
+    apt-get install "${APT_INSTALL_OPTS[@]}" \
+        git ca-certificates build-essential dpkg-dev libmodsecurity-dev libpcre3-dev zlib1g-dev libssl-dev libxml2-dev libyajl-dev pkg-config
+
+    ensure_ubuntu_source_repos
+    rm -rf "${workdir}"
+    mkdir -p "${workdir}"
+    (
+        cd "${workdir}"
+        if [[ -n "${nginx_pkg_version}" ]]; then
+            apt-get source "nginx=${nginx_pkg_version}" || apt-get source nginx
+        else
+            apt-get source nginx
+        fi
+        git clone --depth 1 https://github.com/owasp-modsecurity/ModSecurity-nginx.git
+        cd "nginx-${nginx_version}"
+        ./configure \
+            --with-compat \
+            --with-debug \
+            --with-pcre-jit \
+            --with-http_ssl_module \
+            --with-http_stub_status_module \
+            --with-http_realip_module \
+            --with-http_auth_request_module \
+            --with-http_v2_module \
+            --with-http_dav_module \
+            --with-http_slice_module \
+            --with-threads \
+            --with-http_addition_module \
+            --with-http_gunzip_module \
+            --with-http_gzip_static_module \
+            --with-http_sub_module \
+            --add-dynamic-module=../ModSecurity-nginx
+        make modules
+        install -o root -g root -m 0644 objs/ngx_http_modsecurity_module.so /usr/lib/nginx/modules/ngx_http_modsecurity_module.so
+    )
+}
+
+ensure_nginx_modsecurity_module() {
+    log "installing ModSecurity runtime and OWASP CRS"
+    apt-get install "${APT_INSTALL_OPTS[@]}" modsecurity-crs libmodsecurity3
+
+    if apt-cache show libnginx-mod-http-modsecurity >/dev/null 2>&1; then
+        log "installing packaged nginx ModSecurity connector"
+        apt-get install "${APT_INSTALL_OPTS[@]}" libnginx-mod-http-modsecurity modsecurity-crs
+    fi
+
+    if enable_nginx_modsecurity_module_file; then
+        log "enabled nginx ModSecurity connector module"
+        return 0
+    fi
+
+    warn "nginx ModSecurity connector package unavailable; building dynamic module from source"
+    build_nginx_modsecurity_module
+    enable_nginx_modsecurity_module_file
+}
+
 read_network_setting() {
     local key="$1"
     local default_value="$2"
@@ -1991,45 +2096,10 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
 
     MODSEC_RUNTIME_ENABLED=0
     if [[ "${WAF_MODSEC_ENABLED,,}" == "true" || "${WAF_MODSEC_ENABLED}" == "1" ]]; then
-        MODSEC_PACKAGES=()
-        
-        # Try to install modsecurity module (available in ondrej/nginx PPA for nginx 1.18)
-        if apt-cache show libnginx-mod-http-modsecurity >/dev/null 2>&1; then
-            MODSEC_PACKAGES+=(libnginx-mod-http-modsecurity)
-        elif command -v add-apt-repository >/dev/null 2>&1; then
-            # Try ondrej/nginx PPA for modsecurity support
-            echo "[setup] attempting to add ondrej/nginx PPA for ModSecurity module..."
-            add-apt-repository -y ppa:ondrej/nginx-mainline >/dev/null 2>&1 && apt-get update >/dev/null 2>&1
-            if apt-cache show libnginx-mod-http-modsecurity >/dev/null 2>&1; then
-                MODSEC_PACKAGES+=(libnginx-mod-http-modsecurity)
-            fi
-        fi
-        
-        if apt-cache show modsecurity-crs >/dev/null 2>&1; then
-            MODSEC_PACKAGES+=(modsecurity-crs)
-        fi
-        
-        if (( ${#MODSEC_PACKAGES[@]} > 0 )); then
-            echo "[setup] installing ModSecurity stack: ${MODSEC_PACKAGES[*]}"
-            apt-get install "${APT_INSTALL_OPTS[@]}" "${MODSEC_PACKAGES[@]}"
-            
-            # Verify module was installed and enable it in nginx
-            if [[ -f /usr/share/nginx/modules-available/mod-http-modsecurity.load ]]; then
-                echo "[setup] enabling modsecurity module in nginx..."
-                ln -sf /usr/share/nginx/modules-available/mod-http-modsecurity.load /etc/nginx/modules-enabled/50-mod-http-modsecurity.load
-                MODSEC_RUNTIME_ENABLED=1
-            elif dpkg -l | grep -q libnginx-mod-http-modsecurity; then
-                # Module installed but symlink doesn't exist, try to find and enable it
-                echo "[setup] enabling installed modsecurity module..."
-                find /usr/share/nginx/modules-available -name "*modsecurity*" -type f | while read -r mod_file; do
-                    ln -sf "$mod_file" "/etc/nginx/modules-enabled/$(basename "$mod_file")" 2>/dev/null
-                done
-                MODSEC_RUNTIME_ENABLED=1
-            else
-                echo "[setup] warning: modsecurity module installation failed or module files not found" >&2
-            fi
+        if ensure_nginx_modsecurity_module; then
+            MODSEC_RUNTIME_ENABLED=1
         else
-            echo "[setup] warning: no ModSecurity packages found in apt repositories." >&2
+            warn "ModSecurity requested, but nginx connector could not be installed or built"
         fi
     fi
     if [[ "${HTTP_CONN_LIMIT}" =~ ^[0-9]+$ ]]; then
@@ -2122,8 +2192,10 @@ PY
         cp "${INSTALL_DIR}/host_overrides/nginx/modsec/local-exclusions.conf" "${NGINX_DIR}/modsec/local-exclusions.conf"
         if [[ -d /usr/share/modsecurity-crs/rules ]]; then
             cp -f /usr/share/modsecurity-crs/rules/*.conf "${NGINX_DIR}/modsec/rules/" 2>/dev/null || true
+            cp -f /usr/share/modsecurity-crs/rules/*.data "${NGINX_DIR}/modsec/rules/" 2>/dev/null || true
         elif [[ -d /usr/share/modsecurity-crs/owasp-crs/rules ]]; then
             cp -f /usr/share/modsecurity-crs/owasp-crs/rules/*.conf "${NGINX_DIR}/modsec/rules/" 2>/dev/null || true
+            cp -f /usr/share/modsecurity-crs/owasp-crs/rules/*.data "${NGINX_DIR}/modsec/rules/" 2>/dev/null || true
         fi
         perl -0pi -e "s/setvar:tx.paranoia_level=\\d+/setvar:tx.paranoia_level=${WAF_CRS_PARANOIA_LEVEL}/g; s/setvar:tx.inbound_anomaly_score_threshold=\\d+/setvar:tx.inbound_anomaly_score_threshold=${WAF_CRS_INBOUND_THRESHOLD}/g; s/setvar:tx.outbound_anomaly_score_threshold=\\d+/setvar:tx.outbound_anomaly_score_threshold=${WAF_CRS_OUTBOUND_THRESHOLD}/g;" "${NGINX_DIR}/modsec/crs-setup.conf"
         mkdir -p /var/log/nginx
