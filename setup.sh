@@ -1218,6 +1218,9 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network}{whitelist_overload_bypass_enabled} = JSON::PP::true if !defined($j->{network}{whitelist_overload_bypass_enabled});
         $j->{network}{self_ddos_quarantine_enabled} = JSON::PP::true if !defined($j->{network}{self_ddos_quarantine_enabled});
         $j->{network}{self_ddos_server_req_threshold} = 120 if !defined($j->{network}{self_ddos_server_req_threshold}) || $j->{network}{self_ddos_server_req_threshold} !~ /^\d+$/ || $j->{network}{self_ddos_server_req_threshold} < 20;
+        if (!defined($j->{network}{self_ddos_ignore_path_regex}) || "$j->{network}{self_ddos_ignore_path_regex}" eq "" || "$j->{network}{self_ddos_ignore_path_regex}" eq "^$") {
+            $j->{network}{self_ddos_ignore_path_regex} = '^/api/client/servers/.+/websocket$|^/api/client/servers/.+/resources$|^/api/client/servers/.+/power$|^/api/client/servers/.+/activity$|^/api/client/servers/.+/console$|^/api/client/servers/.+/settings/reinstall$|^/api/client/servers/.+/files/list$|^/api/remote/';
+        }
         $j->{network}{owner_lock_enabled} = JSON::PP::true if !defined($j->{network}{owner_lock_enabled});
         $j->{network}{owner_lock_hits_threshold} = 1 if !defined($j->{network}{owner_lock_hits_threshold}) || $j->{network}{owner_lock_hits_threshold} !~ /^\d+$/ || $j->{network}{owner_lock_hits_threshold} < 1;
         $j->{network}{owner_lock_ttl_sec} = 86400 if !defined($j->{network}{owner_lock_ttl_sec}) || $j->{network}{owner_lock_ttl_sec} !~ /^\d+$/ || $j->{network}{owner_lock_ttl_sec} < 300;

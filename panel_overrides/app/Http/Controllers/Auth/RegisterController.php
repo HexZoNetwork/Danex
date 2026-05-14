@@ -101,9 +101,15 @@ class RegisterController extends AbstractLoginController
             $description = trim((string) ($sendResult['description'] ?? ''));
             $hint = $description !== '' ? (' (' . $description . ')') : '';
             $botHint = $botUsername !== null ? (' Bot: @' . ltrim($botUsername, '@') . '.') : '';
+            $networkIssue = str_contains(strtolower($description), 'timed out')
+                || str_contains(strtolower($description), 'network error')
+                || str_contains(strtolower($description), 'failed to connect');
+            $baseMessage = $networkIssue
+                ? 'Gagal kirim OTP karena koneksi server ke Telegram bermasalah. Coba ulang dalam 10-30 detik.'
+                : 'Gagal kirim OTP. Pastikan ID Telegram benar dan kamu sudah /start bot.';
 
             return new JsonResponse([
-                'error' => 'Gagal kirim OTP. Pastikan ID Telegram benar dan kamu sudah /start bot.' . $botHint . $hint,
+                'error' => $baseMessage . $botHint . $hint,
             ], 422);
         }
 
@@ -375,7 +381,8 @@ class RegisterController extends AbstractLoginController
     {
         try {
             $response = Http::asForm()
-                ->timeout(10)
+                ->connectTimeout(2)
+                ->timeout(4)
                 ->post("https://api.telegram.org/bot{$token}/getChatMember", [
                     'chat_id' => $channel,
                     'user_id' => $telegramId,
@@ -423,7 +430,7 @@ class RegisterController extends AbstractLoginController
     private function getTelegramBotProfile(string $token): array
     {
         try {
-            $response = Http::timeout(8)->get("https://api.telegram.org/bot{$token}/getMe");
+            $response = Http::connectTimeout(2)->timeout(4)->get("https://api.telegram.org/bot{$token}/getMe");
             $json = $response->json();
             $ok = $response->ok() && (bool) data_get($json, 'ok', false);
             $username = trim((string) data_get($json, 'result.username', ''));
@@ -447,10 +454,16 @@ class RegisterController extends AbstractLoginController
             $otp
         );
 
+        $curlAttempt = $this->sendOtpViaCurl($token, $telegramId, $text);
+        if ((bool) ($curlAttempt['ok'] ?? false)) {
+            return $curlAttempt;
+        }
+
         try {
             $response = Http::asForm()
-                ->retry(2, 300)
-                ->timeout(10)
+                ->connectTimeout(3)
+                ->timeout(6)
+                ->retry(0, 0)
                 ->post("https://api.telegram.org/bot{$token}/sendMessage", [
                     'chat_id' => $telegramId,
                     'text' => $text,
@@ -460,18 +473,17 @@ class RegisterController extends AbstractLoginController
             $json = $response->json();
             $ok = $response->ok() && (bool) data_get($json, 'ok', false);
             $description = trim((string) data_get($json, 'description', ''));
-
-            return [
-                'ok' => $ok,
-                'description' => $description !== '' ? $description : ('telegram http ' . $response->status()),
-            ];
-        } catch (\Throwable) {
-            $fallback = $this->sendOtpViaCurl($token, $telegramId, $text);
-            if ((bool) ($fallback['ok'] ?? false)) {
-                return $fallback;
+            if ($ok) {
+                return ['ok' => true];
             }
 
-            $fallbackDesc = trim((string) ($fallback['description'] ?? ''));
+            if ($description !== '') {
+                return ['ok' => false, 'description' => $description];
+            }
+
+            return ['ok' => false, 'description' => 'telegram http ' . $response->status()];
+        } catch (\Throwable) {
+            $fallbackDesc = trim((string) ($curlAttempt['description'] ?? ''));
             if ($fallbackDesc !== '') {
                 return ['ok' => false, 'description' => $fallbackDesc];
             }
@@ -501,37 +513,89 @@ class RegisterController extends AbstractLoginController
             'disable_web_page_preview' => 'true',
         ]);
 
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 10,
-            CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $fields,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-        ]);
+        $resolveCandidates = $this->resolveTelegramApiIpv4Candidates();
+        $lastError = 'network error (cannot reach api.telegram.org from server)';
 
-        $resp = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $error = curl_error($ch);
-        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        foreach ($resolveCandidates as $candidateIp) {
+            $options = [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 6,
+                CURLOPT_CONNECTTIMEOUT => 3,
+                CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $fields,
+                CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            ];
+            if ($candidateIp !== null) {
+                $options[CURLOPT_RESOLVE] = ["api.telegram.org:443:{$candidateIp}"];
+            }
+
+            curl_setopt_array($ch, $options);
+
+            $resp = curl_exec($ch);
+            $errno = curl_errno($ch);
+            $error = trim((string) curl_error($ch));
+            $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            if ($resp === false) {
+                $lastError = 'curl error ' . $errno . ': ' . ($error !== '' ? $error : 'unknown error');
+                continue;
+            }
+
+            $decoded = json_decode((string) $resp, true);
+            $ok = is_array($decoded) && (bool) data_get($decoded, 'ok', false);
+            $description = trim((string) data_get($decoded, 'description', ''));
+
+            if ($ok) {
+                curl_close($ch);
+                return ['ok' => true];
+            }
+
+            if ($description !== '') {
+                curl_close($ch);
+                return ['ok' => false, 'description' => $description];
+            }
+
+            $lastError = 'telegram http ' . $status;
+        }
+
         curl_close($ch);
 
-        if ($resp === false) {
-            return ['ok' => false, 'description' => 'curl error ' . $errno . ': ' . $error];
+        return ['ok' => false, 'description' => $lastError];
+    }
+
+    /**
+     * @return array<int,string|null>
+     */
+    private function resolveTelegramApiIpv4Candidates(): array
+    {
+        $ips = [];
+
+        if (function_exists('dns_get_record')) {
+            $records = @dns_get_record('api.telegram.org', DNS_A);
+            if (is_array($records)) {
+                foreach ($records as $record) {
+                    $ip = trim((string) ($record['ip'] ?? ''));
+                    if ($ip !== '' && !in_array($ip, $ips, true)) {
+                        $ips[] = $ip;
+                    }
+                }
+            }
         }
 
-        $decoded = json_decode((string) $resp, true);
-        $ok = is_array($decoded) && (bool) data_get($decoded, 'ok', false);
-        $description = trim((string) data_get($decoded, 'description', ''));
-
-        if ($ok) {
-            return ['ok' => true];
+        $fallbackIps = ['149.154.166.110', '149.154.167.220', '149.154.167.91'];
+        foreach ($fallbackIps as $ip) {
+            if (!in_array($ip, $ips, true)) {
+                $ips[] = $ip;
+            }
         }
 
-        if ($description !== '') {
-            return ['ok' => false, 'description' => $description];
+        $candidates = [];
+        foreach (array_slice($ips, 0, 3) as $ip) {
+            $candidates[] = $ip;
         }
+        $candidates[] = null;
 
-        return ['ok' => false, 'description' => 'telegram http ' . $status];
+        return $candidates;
     }
 }

@@ -179,9 +179,10 @@ class GuardSuspensionCommand extends Command
         );
 
         try {
-            $targets = $highSignal
-                ? array_values(array_unique(array_merge($config['main_targets'] ?? [], $config['report_targets'] ?? [])))
-                : ($config['report_targets'] ?? []);
+            $targets = $config['report_targets'] ?? [];
+            if ($targets === []) {
+                $targets = $config['main_targets'] ?? [];
+            }
             foreach ($targets as $target) {
                 Http::asForm()
                     ->timeout(8)
@@ -252,10 +253,10 @@ class GuardSuspensionCommand extends Command
         if ($reason === '') {
             return '';
         }
-        if (preg_match('/^(owner_lock:self-ddos:[^:]+):\d+$/', $reason, $m) === 1) {
+        if (preg_match('/^(owner[-_]lock:self[-_]ddos:[^:]+):\d+$/', $reason, $m) === 1) {
             return $m[1];
         }
-        if (preg_match('/^(self_ddos:[^:]+):\d+$/', $reason, $m) === 1) {
+        if (preg_match('/^(self[-_]ddos:[^:]+):\d+$/', $reason, $m) === 1) {
             return $m[1];
         }
 
@@ -320,10 +321,10 @@ class GuardSuspensionCommand extends Command
 
     private function prettifyReason(string $reason): string
     {
-        if (preg_match('/^owner_lock:self-ddos:([^:]+)$/', $reason, $m) === 1) {
+        if (preg_match('/^owner[-_]lock:self[-_]ddos:([^:]+)$/', $reason, $m) === 1) {
             return sprintf('Owner lock (self-ddos, server=%s)', $m[1]);
         }
-        if (preg_match('/^self_ddos:([^:]+)$/', $reason, $m) === 1) {
+        if (preg_match('/^self[-_]ddos:([^:]+)$/', $reason, $m) === 1) {
             return sprintf('Self-ddos detected (server=%s)', $m[1]);
         }
 

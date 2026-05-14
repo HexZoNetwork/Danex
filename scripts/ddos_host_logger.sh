@@ -2338,6 +2338,9 @@ while true; do
     HTTP_IGNORE_PATH_REGEX="$(read_network_setting host_http_ignore_path_regex '^/api/client/servers/.+/websocket$|^/api/remote/')"
     HTTP_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${HTTP_IGNORE_PATH_REGEX}")"
     SELF_DDOS_IGNORE_PATH_REGEX="$(read_network_setting self_ddos_ignore_path_regex '^$')"
+    if [[ -z "${SELF_DDOS_IGNORE_PATH_REGEX}" || "${SELF_DDOS_IGNORE_PATH_REGEX}" == "^$" ]]; then
+        SELF_DDOS_IGNORE_PATH_REGEX='^/api/client/servers/.+/websocket$|^/api/client/servers/.+/resources$|^/api/client/servers/.+/power$|^/api/client/servers/.+/activity$|^/api/client/servers/.+/console$|^/api/client/servers/.+/settings/reinstall$|^/api/client/servers/.+/files/list$|^/api/remote/'
+    fi
     SELF_DDOS_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${SELF_DDOS_IGNORE_PATH_REGEX}")"
     WHITELIST_PANEL_APP_URL_HOST="$(normalize_bool "$(read_network_setting whitelist_panel_app_url_host 0)")"
     WHITELIST_OVERLOAD_BYPASS_ENABLED="$(normalize_bool "$(read_network_setting whitelist_overload_bypass_enabled 1)")"
