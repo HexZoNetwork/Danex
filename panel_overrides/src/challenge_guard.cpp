@@ -116,6 +116,8 @@ static std::mutex g_api_token_cache_mu;
 static std::map<std::string, std::time_t> g_valid_api_token_cache;
 static std::mutex g_completed_mu;
 static std::map<std::string, std::time_t> g_completed_challenges;
+static std::mutex g_source_bucket_mu;
+static std::map<std::string, std::pair<std::time_t, int>> g_source_buckets;
 static std::string random_nonce();
 static std::string to_lower(std::string s);
 static bool base64_decode(const std::string& in, std::string& out);
@@ -749,6 +751,12 @@ static std::string hmac_sha256_b64url(const std::string& key, const std::string&
          reinterpret_cast<const unsigned char*>(payload.data()),
          payload.size(), digest, &digest_len);
     return base64url_encode(digest, digest_len);
+}
+
+static std::string session_cookie_fingerprint(const Settings& s, const std::string& raw_session_cookie) {
+    const std::string cookie = trim(raw_session_cookie);
+    if (cookie.empty() || s.secret.empty()) return "";
+    return hmac_sha256_b64url(s.secret, "sid:" + cookie);
 }
 
 static std::string sha256_hex_24(const std::string& text) {
@@ -1894,6 +1902,23 @@ static bool ip_in_same_prefix(const std::string& a, const std::string& b, int v4
     return !pa.empty() && pa == pb;
 }
 
+static bool source_bucket_allow(const Settings& s, const std::string& ip, const std::string& ua_fp, const std::string& bucket, int per_sec) {
+    const std::time_t now = std::time(nullptr);
+    const std::string key = ip_prefix_of(ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6) + "|" + ua_fp + "|" + bucket;
+    std::lock_guard<std::mutex> lock(g_source_bucket_mu);
+    for (auto it = g_source_buckets.begin(); it != g_source_buckets.end();) {
+        if (it->second.first + 30 < now) it = g_source_buckets.erase(it);
+        else ++it;
+    }
+    auto& rec = g_source_buckets[key];
+    if (rec.first != now) {
+        rec.first = now;
+        rec.second = 0;
+    }
+    rec.second++;
+    return rec.second <= per_sec;
+}
+
 static bool is_provider_range_ip(const Settings& s, const std::string& ip) {
     if (!s.provider_token_gate_enabled) return false;
     for (const auto& cidr : s.provider_token_cidrs) {
@@ -1974,18 +1999,22 @@ static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& re
     return false;
 }
 
-static std::string issue_token(const Settings& s, const std::string& ip, const std::string& ua_fp, const std::string& sid) {
+static std::string issue_token(const Settings& s, const std::string& ip, const std::string& ua_fp, const std::string& sid, const std::string& sid_fp) {
     json p;
+    p["v"] = 2;
     p["ip"] = ip;
     p["ua"] = ua_fp;
     p["ua_fp"] = ua_fp;
     p["sid"] = sid;
+    if (!sid_fp.empty()) p["sid_fp"] = sid_fp;
     p["iat"] = static_cast<long long>(std::time(nullptr));
     p["exp"] = static_cast<long long>(std::time(nullptr) + s.ttl);
     p["iss"] = s.node_id;
-    p["kid"] = "v1";
-    p["net_prefix_v4"] = ip_prefix_of(ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6);
-    p["net_prefix_v6"] = p["net_prefix_v4"];
+    p["kid"] = "v2";
+    p["ip_prefix"] = ip_prefix_of(ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6);
+    p["net_prefix_v4"] = p["ip_prefix"];
+    p["net_prefix_v6"] = p["ip_prefix"];
+    p["risk"] = "normal";
     p["jti"] = random_token(12);
     std::string payload = p.dump();
     std::string b = base64url_encode(payload);
@@ -1993,7 +2022,7 @@ static std::string issue_token(const Settings& s, const std::string& ip, const s
     return b + "." + sig;
 }
 
-static bool verify_token(const Settings& s, const std::string& token, const std::string& ip, const std::string& ua_fp, std::string* reason_out = nullptr) {
+static bool verify_token(const Settings& s, const std::string& token, const std::string& ip, const std::string& ua_fp, const std::string& req_sid_fp = "", std::string* reason_out = nullptr) {
     auto fail = [&](const std::string& why) -> bool {
         if (reason_out) *reason_out = why;
         return false;
@@ -2016,6 +2045,10 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
         const std::string token_ip = p.value("ip", std::string());
         const std::string token_ua = p.value("ua_fp", p.value("ua", std::string()));
         if (token_ip.empty() || token_ua.empty()) return fail("claims_missing");
+        const std::string token_sid_fp = p.value("sid_fp", std::string());
+        if (!token_sid_fp.empty() && (req_sid_fp.empty() || token_sid_fp != req_sid_fp)) {
+            return fail("session_mismatch");
+        }
         const bool ip_prefix_ok = ip_in_same_prefix(token_ip, ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6);
         const bool ua_match = (token_ua == ua_fp);
         if (!ua_match && !ip_prefix_ok) return fail("ua_miss");
@@ -2175,6 +2208,20 @@ static void handle_client(int fd, std::string remote_ip) {
     cleanup_nonce_map();
     cleanup_session_map();
 
+    const bool expensive_path =
+        req.path == "/check" ||
+        req.path == "/check-web" ||
+        req.path == "/new" ||
+        req.path == "/click" ||
+        req.path == "/verify-math" ||
+        req.path == "/solve";
+    if (expensive_path && !source_bucket_allow(s, ip, ua_fp, req.path, req.path == "/check" || req.path == "/check-web" ? 35 : 12)) {
+        log_event_json("rate_limited", {{"ip", ip}, {"path", req.path}, {"reason", "source_bucket"}});
+        send_response(fd, 429, "Too Many Requests", "{\"ok\":false,\"error\":\"rate_limited\"}", {{"Content-Type", "application/json; charset=utf-8"}, {"Retry-After", "1"}}, head_only);
+        close(fd);
+        return;
+    }
+
     if (req.path == "/health") {
         std::string body = std::string("{\"ok\":true,\"enabled\":") + (s.enabled ? "true" : "false") + "}";
         send_response(fd, 200, "OK", body, {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
@@ -2190,8 +2237,9 @@ static void handle_client(int fd, std::string remote_ip) {
         }
         std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
         std::string tok = read_cookie(cookie, s.cookie_name);
+        std::string req_sid_fp = session_cookie_fingerprint(s, read_cookie(cookie, "pterodactyl_session"));
         std::string verify_reason;
-        if (!tok.empty() && verify_token(s, tok, ip, ua_fp, &verify_reason)) {
+        if (!tok.empty() && verify_token(s, tok, ip, ua_fp, req_sid_fp, &verify_reason)) {
             log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}});
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
@@ -2215,8 +2263,9 @@ static void handle_client(int fd, std::string remote_ip) {
         }
         std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
         std::string tok = read_cookie(cookie, s.cookie_name);
+        std::string req_sid_fp = session_cookie_fingerprint(s, read_cookie(cookie, "pterodactyl_session"));
         std::string verify_reason;
-        if (!tok.empty() && verify_token(s, tok, ip, ua_fp, &verify_reason)) {
+        if (!tok.empty() && verify_token(s, tok, ip, ua_fp, req_sid_fp, &verify_reason)) {
             log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web"}});
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
@@ -2276,8 +2325,9 @@ static void handle_client(int fd, std::string remote_ip) {
         bool clearance_ok = false;
         if (!token_ok) {
             std::string tok = read_cookie(cookie, s.cookie_name);
+            std::string req_sid_fp = session_cookie_fingerprint(s, read_cookie(cookie, "pterodactyl_session"));
             std::string verify_reason;
-            clearance_ok = (!tok.empty() && verify_token(s, tok, ip, ua_fp, &verify_reason));
+            clearance_ok = (!tok.empty() && verify_token(s, tok, ip, ua_fp, req_sid_fp, &verify_reason));
             if (!clearance_ok) {
                 log_event_json("session_mismatch", {
                     {"ip", ip},
@@ -2993,7 +3043,9 @@ static void handle_client(int fd, std::string remote_ip) {
             sr.exp = std::time(nullptr) + s.ttl;
             g_ip_session_map[session_scope_key(ip, ua_fp)] = sr;
         }
-        std::string tok = issue_token(s, ip, ua_fp, sid);
+        std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
+        std::string sid_fp = session_cookie_fingerprint(s, read_cookie(cookie, "pterodactyl_session"));
+        std::string tok = issue_token(s, ip, ua_fp, sid, sid_fp);
         std::string secure_attr = "Secure";
         if (s.cookie_secure_mode == "never") secure_attr.clear();
         if (s.cookie_secure_mode == "auto") {

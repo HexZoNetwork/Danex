@@ -1,0 +1,22 @@
+.icons {
+    @apply flex space-x-1 mx-2 transition-colors duration-100;
+    color: #a3a3b2;
+
+    & svg {
+        @apply px-1 py-px cursor-pointer h-5 w-auto;
+
+        &:hover {
+            color: #ffffff;
+            filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.45));
+        }
+    }
+}
+
+.description {
+    @apply mt-1 text-sm break-words line-clamp-2 pr-4;
+
+    & strong {
+        @apply font-semibold break-all;
+        color: #f9fafb;
+    }
+}

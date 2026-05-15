@@ -22,6 +22,23 @@ interface OtpValues {
     otp: string;
 }
 
+const segmentedStyle: React.CSSProperties = {
+    background: '#0b0b10',
+    borderColor: 'rgba(139, 92, 246, 0.28)',
+    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.04)',
+};
+
+const activeTabStyle: React.CSSProperties = {
+    background: '#111117',
+    color: '#ffffff',
+    boxShadow: 'inset 0 -2px 0 #8b5cf6, 0 0 18px rgba(139, 92, 246, 0.12)',
+};
+
+const inactiveTabStyle: React.CSSProperties = {
+    background: '#0b0b10',
+    color: '#a3a3b2',
+};
+
 export default () => {
     const { clearFlashes, addFlash } = useFlash();
     const [requestToken, setRequestToken] = useState('');
@@ -90,17 +107,19 @@ export default () => {
             >
                 {({ isSubmitting }) => (
                     <LoginFormContainer title={'Verifikasi OTP'} css={tw`w-full max-w-md mx-auto`} compact hideLogo>
-                        <div css={tw`mb-4 flex rounded-lg border border-neutral-300 overflow-hidden`}>
+                        <div css={tw`mb-4 flex rounded-lg border overflow-hidden`} style={segmentedStyle}>
                             <button
                                 type={'button'}
-                                css={tw`flex-1 py-2 text-xs font-semibold uppercase tracking-wide bg-neutral-200 text-neutral-600`}
+                                css={tw`flex-1 py-2 text-xs font-semibold uppercase tracking-wide`}
+                                style={inactiveTabStyle}
                                 onClick={() => setStep('register')}
                             >
                                 Data Akun
                             </button>
                             <button
                                 type={'button'}
-                                css={tw`flex-1 py-2 text-xs font-semibold uppercase tracking-wide bg-cyan-600 text-white`}
+                                css={tw`flex-1 py-2 text-xs font-semibold uppercase tracking-wide`}
+                                style={activeTabStyle}
                             >
                                 Kode OTP
                             </button>
@@ -178,16 +197,18 @@ export default () => {
         >
             {({ isSubmitting }) => (
                 <LoginFormContainer title={'Daftar Akun'} css={tw`w-full max-w-md mx-auto`} compact hideLogo>
-                    <div css={tw`mb-4 flex rounded-lg border border-neutral-300 overflow-hidden`}>
+                    <div css={tw`mb-4 flex rounded-lg border overflow-hidden`} style={segmentedStyle}>
                         <button
                             type={'button'}
-                            css={tw`flex-1 py-2 text-xs font-semibold uppercase tracking-wide bg-cyan-600 text-white`}
+                            css={tw`flex-1 py-2 text-xs font-semibold uppercase tracking-wide`}
+                            style={activeTabStyle}
                         >
                             Data Akun
                         </button>
                         <button
                             type={'button'}
-                            css={tw`flex-1 py-2 text-xs font-semibold uppercase tracking-wide bg-neutral-200 text-neutral-600`}
+                            css={tw`flex-1 py-2 text-xs font-semibold uppercase tracking-wide`}
+                            style={inactiveTabStyle}
                         >
                             Kode OTP
                         </button>

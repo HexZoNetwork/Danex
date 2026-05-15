@@ -6,6 +6,7 @@ use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Pterodactyl\Support\Security\PteroProtectClearanceToken;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -70,6 +71,7 @@ class PteroProtectSessionBinding
         $current = $this->fingerprintPayload($request, $userId);
         $boundUserId = (int) ($bound['user_id'] ?? 0);
         if ($boundUserId > 0 && $userId > 0 && $boundUserId !== $userId) {
+            $this->auditMismatch($request, 'user_mismatch', $bound, $current);
             Cache::put($rebindKey, true, $this->ttlSeconds());
             Cache::forget($cacheKey);
             if ($ipChallengeKey !== null) {
@@ -87,7 +89,9 @@ class PteroProtectSessionBinding
             return $next($request);
         }
 
-        if ($this->hasClearanceCookie($request)) {
+        $clearance = $this->clearanceStatus($request);
+        if ((bool) $clearance['ok']) {
+            $this->auditMismatch($request, 'rebound_with_clearance', $bound, $current, $clearance['reason']);
             Cache::put($cacheKey, $current, $this->ttlSeconds());
             Cache::forget($rebindKey);
             if ($ipChallengeKey !== null) {
@@ -97,13 +101,14 @@ class PteroProtectSessionBinding
             return $next($request);
         }
 
+        $this->auditMismatch($request, 'clearance_required', $bound, $current, $clearance['reason']);
         Cache::put($rebindKey, true, $this->ttlSeconds());
         Cache::forget($cacheKey);
         if ($ipChallengeKey !== null) {
             Cache::put($ipChallengeKey, true, $this->ttlSeconds());
         }
 
-        return $this->challengeResponse($request);
+        return $this->challengeResponse($request, $clearance['reason']);
     }
 
     private function shouldBypass(Request $request): bool
@@ -147,13 +152,8 @@ class PteroProtectSessionBinding
     private function normalizeIpForBinding(string $ip, string $ua): string
     {
         unset($ua);
-        $ip = strtolower(trim($ip));
-        if ($ip === '' || filter_var($ip, FILTER_VALIDATE_IP) === false) {
-            return $ip;
-        }
-
-        // Strict binding policy: one session + clearance cookie must stick to one exact IP.
-        return $ip;
+        $prefix = PteroProtectClearanceToken::ipPrefixForBinding($ip);
+        return $prefix !== '' ? $prefix : strtolower(trim($ip));
     }
 
     private function isMobileUserAgent(string $ua): bool
@@ -240,7 +240,8 @@ class PteroProtectSessionBinding
             }
         }
 
-        return "mobile|{$platform}|{$browser}|{$major}";
+        unset($major);
+        return PteroProtectClearanceToken::uaBindingMaterial($uaRaw);
     }
 
     private function ttlSeconds(): int
@@ -260,12 +261,13 @@ class PteroProtectSessionBinding
         return '/__pteroprotect/challenge/page?rd=' . rawurlencode($rd);
     }
 
-    private function challengeResponse(Request $request): Response
+    private function challengeResponse(Request $request, string $reason = 'missing_cookie'): Response
     {
         $challengeUrl = $this->challengeUrl($request);
         if ($request->expectsJson() || str_starts_with((string) $request->path(), 'api/')) {
             return new JsonResponse([
                 'error' => 'session_binding_mismatch',
+                'reason' => $reason,
                 'challenge_url' => $challengeUrl,
             ], 403);
         }
@@ -275,10 +277,22 @@ class PteroProtectSessionBinding
 
     private function hasClearanceCookie(Request $request): bool
     {
+        return (bool) $this->clearanceStatus($request)['ok'];
+    }
+
+    /**
+     * @return array{ok:bool,reason:string}
+     */
+    private function clearanceStatus(Request $request): array
+    {
         $cookieName = PteroProtectClearanceToken::cookieName();
         $token = trim((string) $request->cookie($cookieName, ''));
+        $result = PteroProtectClearanceToken::validate($request, $token, $cookieName);
 
-        return PteroProtectClearanceToken::isValid($request, $token, $cookieName);
+        return [
+            'ok' => (bool) ($result['ok'] ?? false),
+            'reason' => (string) ($result['reason'] ?? 'invalid_clearance'),
+        ];
     }
 
     private function ipChallengeKey(Request $request): ?string
@@ -293,39 +307,24 @@ class PteroProtectSessionBinding
 
     private function clientIpForBinding(Request $request): string
     {
-        // Prefer explicit edge-provided real client IP headers first.
-        $cfConnectingIp = trim((string) $request->headers->get('CF-Connecting-IP', ''));
-        if ($cfConnectingIp !== '' && filter_var($cfConnectingIp, FILTER_VALIDATE_IP) !== false) {
-            return strtolower($cfConnectingIp);
-        }
+        return PteroProtectClearanceToken::clientIpForBinding($request);
+    }
 
-        $xRealIp = trim((string) $request->headers->get('X-Real-IP', ''));
-        if ($xRealIp !== '' && filter_var($xRealIp, FILTER_VALIDATE_IP) !== false) {
-            return strtolower($xRealIp);
+    private function auditMismatch(Request $request, string $action, array $bound, array $current, string $reason = ''): void
+    {
+        try {
+            Log::warning('pteroprotect.session_binding_mismatch', [
+                'action' => $action,
+                'reason' => $reason,
+                'path' => '/' . ltrim((string) $request->path(), '/'),
+                'ip' => $this->clientIpForBinding($request),
+                'bound_fp' => substr((string) ($bound['fp'] ?? ''), 0, 12),
+                'current_fp' => substr((string) ($current['fp'] ?? ''), 0, 12),
+                'bound_user_id' => (int) ($bound['user_id'] ?? 0),
+                'current_user_id' => (int) ($current['user_id'] ?? 0),
+            ]);
+        } catch (\Throwable) {
+            // Logging must never block the request path.
         }
-
-        $xForwardedFor = trim((string) $request->headers->get('X-Forwarded-For', ''));
-        if ($xForwardedFor !== '') {
-            foreach (explode(',', $xForwardedFor) as $part) {
-                $candidate = trim($part);
-                if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
-                    return strtolower($candidate);
-                }
-            }
-        }
-
-        // Fallback to framework resolved IP.
-        $requestIp = trim((string) $request->ip());
-        if ($requestIp !== '' && filter_var($requestIp, FILTER_VALIDATE_IP) !== false) {
-            return strtolower($requestIp);
-        }
-
-        // Last resort: socket peer.
-        $remoteAddr = trim((string) $request->server('REMOTE_ADDR', ''));
-        if ($remoteAddr !== '' && filter_var($remoteAddr, FILTER_VALIDATE_IP) !== false) {
-            return strtolower($remoteAddr);
-        }
-
-        return '';
     }
 }

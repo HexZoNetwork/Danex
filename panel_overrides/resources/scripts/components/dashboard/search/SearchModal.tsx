@@ -22,10 +22,16 @@ interface Values {
 }
 
 const ServerResult = styled(Link)`
-    ${tw`flex items-center bg-neutral-900 p-4 rounded border-l-4 border-neutral-900 no-underline transition-all duration-150`};
+    ${tw`flex items-center p-4 rounded border-l-4 no-underline transition-all duration-150 border`};
+    background: #0b0b10;
+    border-color: rgba(139, 92, 246, 0.22);
+    border-left-color: rgba(139, 92, 246, 0.42);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
 
     &:hover {
-        ${tw`shadow border-cyan-500`};
+        border-color: rgba(139, 92, 246, 0.62);
+        border-left-color: #8b5cf6;
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), 0 0 20px rgba(139, 92, 246, 0.14);
     }
 
     &:not(:last-of-type) {
@@ -119,7 +125,10 @@ export default ({ ...props }: Props) => {
                                         </p>
                                     </div>
                                     <div css={tw`flex-none text-right`}>
-                                        <span css={tw`text-xs py-1 px-2 bg-cyan-800 text-cyan-100 rounded`}>
+                                        <span
+                                            css={tw`text-xs py-1 px-2 rounded border`}
+                                            style={{ background: '#111117', borderColor: 'rgba(139, 92, 246, 0.34)', color: '#ddd6fe' }}
+                                        >
                                             {server.node}
                                         </span>
                                     </div>

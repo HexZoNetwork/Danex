@@ -1,5 +1,5 @@
 import React, { lazy, useEffect, useRef, useState } from 'react';
-import { NavLink, Route, Switch } from 'react-router-dom';
+import { NavLink, Redirect, Route, Switch } from 'react-router-dom';
 import NavigationBar from '@/components/NavigationBar';
 import DashboardContainer from '@/components/dashboard/DashboardContainer';
 import { NotFound } from '@/components/elements/ScreenBlock';
@@ -19,6 +19,8 @@ const NotificationsPage = lazy(() => import('@/components/dashboard/Notification
 const CreatePanelPage = lazy(() => import('@/components/dashboard/CreatePanelPage'));
 const AccountProfileContainer = lazy(() => import('@/components/dashboard/AccountProfileContainer'));
 const AdsSurface = lazy(() => import('@/components/dashboard/AdsSurface'));
+const UsersPage = lazy(() => import('@/components/dashboard/UsersPage'));
+const SettingsHubPage = lazy(() => import('@/components/dashboard/SettingsHubPage'));
 
 export default () => {
     const location = useLocation();
@@ -75,7 +77,6 @@ export default () => {
             void tick();
         };
 
-        // Delay the first poll so initial route render stays snappy.
         const firstTimer = window.setTimeout(scheduleTick, 4000);
         const timer = window.setInterval(scheduleTick, 30000);
 
@@ -96,33 +97,24 @@ export default () => {
         return () => window.clearTimeout(timer);
     }, []);
 
+    const isAccount = location.pathname.startsWith('/account');
+
     return (
         <>
             <NavigationBar />
-            {!location.pathname.startsWith('/account') && (
+            {!isAccount && (
                 <SubNavigation>
                     <div>
-                        <NavLink to={'/'} exact>
-                            Dashboard
-                        </NavLink>
-                        <NavLink to={'/chat'} exact>
-                            Public Chat
-                        </NavLink>
-                        <NavLink to={'/judi'} exact>
-                            Judi
-                        </NavLink>
-                        <NavLink to={'/danexc'} exact>
-                            DanexC
-                        </NavLink>
-                        {canCreatePanel && (
-                            <NavLink to={'/create-panel'} exact>
-                                Create Panel
-                            </NavLink>
-                        )}
+                        <NavLink to={'/dashboard'} exact>Dashboard</NavLink>
+                        <NavLink to={'/servers'} exact>Servers</NavLink>
+                        <NavLink to={'/chat'} exact>Public Chat</NavLink>
+                        <NavLink to={'/judi'} exact>Judi</NavLink>
+                        <NavLink to={'/notifications'} exact>Notifications</NavLink>
+                        {canCreatePanel && <NavLink to={'/create-panel'} exact>Create Panel</NavLink>}
                     </div>
                 </SubNavigation>
             )}
-            {location.pathname.startsWith('/account') && (
+            {isAccount && (
                 <SubNavigation>
                     <div>
                         {accountRoutes
@@ -132,9 +124,7 @@ export default () => {
                                     {name}
                                 </NavLink>
                             ))}
-                        <NavLink to={'/account/profile'} exact>
-                            Profile
-                        </NavLink>
+                        <NavLink to={'/account/profile'} exact>Profile</NavLink>
                     </div>
                 </SubNavigation>
             )}
@@ -146,35 +136,23 @@ export default () => {
             <TransitionRouter>
                 <React.Suspense fallback={<Spinner centered />}>
                     <Switch location={location}>
-                        <Route path={'/'} exact>
-                            <DashboardContainer />
-                        </Route>
-                        <Route path={'/chat'} exact>
-                            <PublicChatPage />
-                        </Route>
-                        <Route path={'/judi'} exact>
-                            <DanexCoinPage />
-                        </Route>
-                        <Route path={'/danexc'} exact>
-                            <DanexCPage />
-                        </Route>
-                        <Route path={'/create-panel'} exact>
-                            <CreatePanelPage />
-                        </Route>
-                        <Route path={'/notifications'} exact>
-                            <NotificationsPage />
-                        </Route>
+                        <Route path={'/'} exact><DashboardContainer /></Route>
+                        <Route path={'/dashboard'} exact><DanexCPage /></Route>
+                        <Route path={'/servers'} exact><DashboardContainer /></Route>
+                        <Route path={'/users'} exact><UsersPage /></Route>
+                        <Route path={'/settings'} exact><SettingsHubPage /></Route>
+                        <Route path={'/chat'} exact><PublicChatPage /></Route>
+                        <Route path={'/judi'} exact><DanexCoinPage /></Route>
+                        <Route path={'/danexc'} exact><Redirect to={'/dashboard'} /></Route>
+                        <Route path={'/create-panel'} exact><CreatePanelPage /></Route>
+                        <Route path={'/notifications'} exact><NotificationsPage /></Route>
                         {accountRoutes.map(({ path, component: Component }) => (
                             <Route key={path} path={`/account/${path}`.replace('//', '/')} exact>
                                 <Component />
                             </Route>
                         ))}
-                        <Route path={'/account/profile'} exact>
-                            <AccountProfileContainer />
-                        </Route>
-                        <Route path={'*'}>
-                            <NotFound />
-                        </Route>
+                        <Route path={'/account/profile'} exact><AccountProfileContainer /></Route>
+                        <Route path={'*'}><NotFound /></Route>
                     </Switch>
                 </React.Suspense>
             </TransitionRouter>

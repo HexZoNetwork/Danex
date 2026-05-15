@@ -1,0 +1,35 @@
+.checkbox_input {
+    @apply w-4 h-4 rounded-sm;
+    background-color: #111117;
+    border: 1px solid rgba(139, 92, 246, 0.36);
+    color: #8b5cf6;
+
+    &:focus, &:active {
+        --tw-ring-color: rgba(139, 92, 246, 0.42);
+        --tw-ring-offset-color: #07070b;
+        @apply ring-2 ring-offset-2;
+    }
+
+    &.indeterminate:checked {
+        color: rgba(139, 92, 246, 0.72);
+        border: 1px solid rgba(139, 92, 246, 0.62);
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='white'%3E%3Cpath fill-rule='evenodd' d='M5 10a1 1 0 011-1h8a1 1 0 110 2H6a1 1 0 01-1-1z' clip-rule='evenodd' /%3E%3C/svg%3E");
+    }
+}
+
+.text_input {
+    @apply transition-shadow duration-75;
+    @apply w-full rounded px-4 py-2 outline-none border;
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.26);
+    color: #f9fafb;
+
+    &:focus, &:active {
+        box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.24);
+        border-color: rgba(139, 92, 246, 0.72);
+    }
+
+    &.loose {
+        @apply px-6 py-3;
+    }
+}

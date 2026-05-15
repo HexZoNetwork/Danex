@@ -25,6 +25,7 @@ class ProtectController extends Controller
     private const VERIFY_TTL_SEC = 900;
     private const RCE_SESSION_KEY = 'pteroprotect_rce_verified_until';
     private const RCE_TTL_SEC = 1800;
+    private const TERMINAL_TICKET_TTL_SEC = 60;
 
     public function __construct(private AlertsMessageBag $alert, private AdsService $ads)
     {
@@ -867,6 +868,84 @@ class ProtectController extends Controller
         return redirect()->route('admin.protect.rce');
     }
 
+    public function terminalUnlock(Request $request): RedirectResponse
+    {
+        return $this->rceUnlock($request);
+    }
+
+    public function terminalSessionCreate(Request $request): JsonResponse|RedirectResponse
+    {
+        $guard = $this->requireRceUnlocked($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $sessionId = rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
+        $ticket = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+        $ticketDir = $this->terminalTicketDir();
+        if (!File::isDirectory($ticketDir)) {
+            File::makeDirectory($ticketDir, 0700, true);
+        }
+        @chmod($ticketDir, 0700);
+
+        $user = $request->user();
+        $payload = [
+            'session_id' => $sessionId,
+            'ticket_hash' => hash('sha256', $ticket),
+            'user_id' => $user ? (int) $user->id : 0,
+            'ip' => (string) $request->ip(),
+            'user_agent_hash' => substr(hash('sha256', (string) $request->userAgent()), 0, 16),
+            'created_at' => time(),
+            'expires_at' => time() + self::TERMINAL_TICKET_TTL_SEC,
+        ];
+
+        File::put($ticketDir . '/' . $sessionId . '.json', json_encode($payload, JSON_UNESCAPED_SLASHES) . "\n");
+        @chmod($ticketDir . '/' . $sessionId . '.json', 0600);
+
+        return response()->json([
+            'ok' => true,
+            'session_id' => $sessionId,
+            'ws_url' => route('admin.protect.terminal.sessions.ws', ['id' => $sessionId], false),
+            'expires_at' => $payload['expires_at'],
+        ])->withCookie(cookie(
+            'pp_term_' . $sessionId,
+            $ticket,
+            1,
+            '/',
+            null,
+            $request->isSecure(),
+            true,
+            false,
+            'Strict'
+        ));
+    }
+
+    public function terminalSessionWebsocket(Request $request, string $id): JsonResponse
+    {
+        unset($request);
+        return response()->json([
+            'ok' => false,
+            'error' => 'websocket_upgrade_required',
+            'message' => 'This route is served by the local PteroProtect terminal helper through nginx websocket proxy.',
+            'session_id' => $id,
+        ], 426);
+    }
+
+    public function terminalSessionDelete(Request $request, string $id): JsonResponse|RedirectResponse
+    {
+        $guard = $this->requireRceUnlocked($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        $safeId = preg_match('/^[A-Za-z0-9_-]{16,80}$/', $id) === 1 ? $id : '';
+        if ($safeId !== '') {
+            File::delete($this->terminalTicketDir() . '/' . $safeId . '.json');
+        }
+
+        return response()->json(['ok' => true]);
+    }
+
     public function verify(Request $request): RedirectResponse
     {
         $this->assertPrimaryAdmin($request);
@@ -1223,6 +1302,11 @@ class ProtectController extends Controller
         }
 
         return null;
+    }
+
+    private function terminalTicketDir(): string
+    {
+        return (string) env('PTEROPROTECT_TERMINAL_TICKET_DIR', '/dev/shm/pteroprotect/terminal_tickets');
     }
 
     private function isVerified(Request $request): bool

@@ -10,33 +10,47 @@ class PteroProtectClearanceToken
 {
     public static function isValid(Request $request, ?string $token, ?string $cookieName = null): bool
     {
+        return (bool) self::validate($request, $token, $cookieName)['ok'];
+    }
+
+    /**
+     * @return array{ok:bool,reason:string,payload:array<string,mixed>|null}
+     */
+    public static function validate(Request $request, ?string $token, ?string $cookieName = null): array
+    {
         $token = trim((string) $token);
         if ($token === '') {
-            return false;
+            return self::result(false, 'missing_cookie');
         }
 
         [$payloadRaw, $sig] = self::splitToken($token);
         if ($payloadRaw === null || $sig === null) {
-            return false;
+            return self::result(false, 'token_format');
         }
 
         $payload = json_decode($payloadRaw, true);
         if (!is_array($payload)) {
-            return false;
+            return self::result(false, 'token_payload');
         }
 
         $exp = (int) ($payload['exp'] ?? 0);
         $ipClaim = strtolower(trim((string) ($payload['ip'] ?? '')));
+        $prefixClaim = strtolower(trim((string) (
+            $payload['ip_prefix'] ?? ($payload['net_prefix_v4'] ?? ($payload['net_prefix_v6'] ?? ''))
+        )));
         $uaClaim = trim((string) ($payload['ua_fp'] ?? ($payload['ua'] ?? '')));
         $sid = trim((string) ($payload['sid'] ?? ''));
 
-        if ($exp <= time() || $sid === '' || $ipClaim === '' || $uaClaim === '') {
-            return false;
+        if ($exp <= time()) {
+            return self::result(false, 'expired', $payload);
+        }
+        if ($sid === '' || ($ipClaim === '' && $prefixClaim === '') || $uaClaim === '') {
+            return self::result(false, 'claims_missing', $payload);
         }
 
-        $requestUaFp = self::sha256Hex24(self::uaBindingMaterial((string) $request->userAgent()));
+        $requestUaFp = self::userAgentFingerprint((string) $request->userAgent());
         if ($requestUaFp === '' || !hash_equals($uaClaim, $requestUaFp)) {
-            return false;
+            return self::result(false, 'ua_mismatch', $payload);
         }
 
         $requestIp = self::clientIpForBinding($request);
@@ -45,15 +59,45 @@ class PteroProtectClearanceToken
         if ($secret !== '') {
             $expectedSig = self::base64urlEncode(hash_hmac('sha256', $payloadRaw, $secret, true));
             if (!hash_equals($expectedSig, $sig)) {
-                return false;
+                return self::result(false, 'invalid_signature', $payload);
             }
 
-            return self::sessionIpAllowed($sid, $uaClaim, $ipClaim, $requestIp, $exp);
+            $sidFpClaim = trim((string) ($payload['sid_fp'] ?? ''));
+            if ($sidFpClaim !== '') {
+                $requestSidFp = self::requestSessionFingerprint($request, $secret);
+                if ($requestSidFp === '' || !hash_equals($sidFpClaim, $requestSidFp)) {
+                    return self::result(false, 'session_mismatch', $payload);
+                }
+            }
+
+            if ($prefixClaim !== '') {
+                $requestPrefix = self::ipPrefixForBinding($requestIp);
+                if ($requestPrefix === '' || !hash_equals($prefixClaim, $requestPrefix)) {
+                    return self::result(false, 'ip_mismatch', $payload);
+                }
+
+                self::rememberSessionIp($sid, $uaClaim, $requestIp, $exp);
+                return self::result(true, 'ok', $payload);
+            }
+
+            return self::sessionIpAllowed($sid, $uaClaim, $ipClaim, $requestIp, $exp)
+                ? self::result(true, 'ok', $payload)
+                : self::result(false, 'ip_mismatch', $payload);
         }
 
         // Fallback: ask challenge_guard directly when secret isn't locally available.
         $cookie = $cookieName ?: self::cookieName();
-        return self::verifyViaChallengeGuard($request, $cookie, $token);
+        return self::verifyViaChallengeGuard($request, $cookie, $token)
+            ? self::result(true, 'ok', $payload)
+            : self::result(false, 'guard_rejected', $payload);
+    }
+
+    /**
+     * @return array{ok:bool,reason:string,payload:array<string,mixed>|null}
+     */
+    private static function result(bool $ok, string $reason, ?array $payload = null): array
+    {
+        return ['ok' => $ok, 'reason' => $reason, 'payload' => $payload];
     }
 
     public static function cookieName(): string
@@ -87,7 +131,12 @@ class PteroProtectClearanceToken
         return [$decoded, $sig];
     }
 
-    private static function uaBindingMaterial(string $uaRaw): string
+    public static function userAgentFingerprint(string $uaRaw): string
+    {
+        return self::sha256Hex24(self::uaBindingMaterial($uaRaw));
+    }
+
+    public static function uaBindingMaterial(string $uaRaw): string
     {
         $ua = strtolower(trim($uaRaw));
         if ($ua === '') {
@@ -161,7 +210,7 @@ class PteroProtectClearanceToken
         return false;
     }
 
-    private static function sha256Hex24(string $text): string
+    public static function sha256Hex24(string $text): string
     {
         if ($text === '') {
             return '';
@@ -218,7 +267,8 @@ class PteroProtectClearanceToken
                 stream_set_timeout($fp, 0, 250000);
                 $ip = trim((string) $request->ip());
                 $ua = trim((string) $request->userAgent());
-                $cookieHeader = $cookieName . '=' . $token;
+                $rawCookieHeader = trim((string) $request->headers->get('Cookie', ''));
+                $cookieHeader = $rawCookieHeader !== '' ? $rawCookieHeader : ($cookieName . '=' . $token);
                 $raw = "GET /check HTTP/1.1\r\n"
                     . "Host: {$host}\r\n"
                     . "Connection: close\r\n"
@@ -280,7 +330,30 @@ class PteroProtectClearanceToken
         return true;
     }
 
-    private static function clientIpForBinding(Request $request): string
+    private static function rememberSessionIp(string $sid, string $uaClaim, string $requestIp, int $exp): void
+    {
+        $requestIp = strtolower(trim($requestIp));
+        if ($requestIp === '' || filter_var($requestIp, FILTER_VALIDATE_IP) === false) {
+            return;
+        }
+
+        $ttl = max(1, min(86400, $exp - time()));
+        $cacheKey = 'pteroprotect:clearance:ips:' . hash('sha256', $sid . '|' . $uaClaim);
+        $ips = Cache::get($cacheKey, []);
+        if (!is_array($ips)) {
+            $ips = [];
+        }
+
+        $ips[] = $requestIp;
+        $ips = array_slice(array_values(array_unique(array_filter(array_map(static function ($ip): string {
+            $ip = strtolower(trim((string) $ip));
+            return filter_var($ip, FILTER_VALIDATE_IP) !== false ? $ip : '';
+        }, $ips)))), -5);
+
+        Cache::put($cacheKey, $ips, $ttl);
+    }
+
+    public static function clientIpForBinding(Request $request): string
     {
         // Prefer explicit edge headers first for real client IP.
         $cfConnectingIp = strtolower(trim((string) $request->headers->get('CF-Connecting-IP', '')));
@@ -316,6 +389,85 @@ class PteroProtectClearanceToken
         }
 
         return '';
+    }
+
+    public static function ipPrefixForBinding(string $ip): string
+    {
+        $ip = strtolower(trim($ip));
+        if ($ip === '' || filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return '';
+        }
+
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            $packed = @inet_pton($ip);
+            if ($packed === false || strlen($packed) !== 4) {
+                return '';
+            }
+            $parts = unpack('N', $packed);
+            $value = (int) ($parts[1] ?? 0);
+            $bits = self::networkPrefixBits('session_ip_prefix_v4', 24, 0, 32);
+            $mask = $bits <= 0 ? 0 : ($bits >= 32 ? 0xFFFFFFFF : ((0xFFFFFFFF << (32 - $bits)) & 0xFFFFFFFF));
+            return 'v4:' . $bits . ':' . (string) ($value & $mask);
+        }
+
+        $packed = @inet_pton($ip);
+        if ($packed === false || strlen($packed) !== 16) {
+            return '';
+        }
+        $bits = self::networkPrefixBits('session_ip_prefix_v6', 48, 0, 128);
+        $bytes = intdiv($bits, 8);
+        $rem = $bits % 8;
+        $out = '';
+        for ($i = 0; $i < $bytes; $i++) {
+            $out .= sprintf('%02x', ord($packed[$i]));
+        }
+        if ($rem > 0 && $bytes < 16) {
+            $out .= sprintf('%02x', ord($packed[$bytes]) & (0xFF << (8 - $rem)));
+        }
+
+        return 'v6:' . $bits . ':' . $out;
+    }
+
+    public static function requestSessionFingerprint(Request $request, ?string $secret = null): string
+    {
+        $secret = trim((string) ($secret ?? self::challengeSecret()));
+        if ($secret === '') {
+            return '';
+        }
+
+        $rawSessionCookie = self::rawCookieValue($request, 'pterodactyl_session');
+        if ($rawSessionCookie === '') {
+            return '';
+        }
+
+        return self::base64urlEncode(hash_hmac('sha256', 'sid:' . $rawSessionCookie, $secret, true));
+    }
+
+    public static function rawCookieValue(Request $request, string $name): string
+    {
+        $cookieHeader = (string) $request->headers->get('Cookie', '');
+        foreach (explode(';', $cookieHeader) as $part) {
+            $part = trim($part);
+            if ($part === '') {
+                continue;
+            }
+            $eq = strpos($part, '=');
+            if ($eq === false) {
+                continue;
+            }
+            if (trim(substr($part, 0, $eq)) === $name) {
+                return trim(substr($part, $eq + 1));
+            }
+        }
+
+        return trim((string) $request->cookie($name, ''));
+    }
+
+    private static function networkPrefixBits(string $key, int $default, int $min, int $max): int
+    {
+        $network = self::networkConfig();
+        $bits = (int) ($network[$key] ?? $default);
+        return max($min, min($max, $bits));
     }
 
     private static function challengeSecret(): string

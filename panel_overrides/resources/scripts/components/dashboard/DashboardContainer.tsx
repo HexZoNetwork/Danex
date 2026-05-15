@@ -54,9 +54,15 @@ export default () => {
 
     return (
         <PageContentBlock title={'Dashboard'} showFlashKey={'dashboard'}>
+            <div css={tw`mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between`}>
+                <div>
+                    <p css={tw`text-[11px] uppercase tracking-widest text-neutral-500 font-semibold`}>DANEX X EL7 SERVER MONITOR</p>
+                    <h1 css={tw`mt-1 text-2xl sm:text-3xl text-neutral-50 font-semibold`}>Servers</h1>
+                </div>
+            </div>
             {rootAdmin && (
-                <div css={tw`mb-2 flex justify-end items-center`}>
-                    <p css={tw`uppercase text-xs text-neutral-400 mr-2`}>
+                <div css={tw`mb-3 flex justify-end items-center rounded-lg px-3 py-2 border`} style={{ background: '#0b0b10', borderColor: 'rgba(139, 92, 246, 0.28)' }}>
+                    <p css={tw`uppercase text-xs text-neutral-300 mr-2 tracking-wider`}>
                         {showOnlyAdmin ? "Showing others' servers" : 'Showing your servers'}
                     </p>
                     <Switch

@@ -171,7 +171,7 @@ export default () => {
                             <div css={tw`px-4 py-3 space-y-2`}>
                                 {popup.text && <p css={tw`text-sm text-neutral-100`}>{popup.text}</p>}
                                 {popup.linkUrl && (
-                                    <a href={popup.linkUrl} target={'_blank'} rel={'noopener noreferrer'} css={tw`text-xs text-cyan-400`}>
+                                    <a href={popup.linkUrl} target={'_blank'} rel={'noopener noreferrer'} css={tw`text-xs text-purple-300 hover:text-white`}>
                                         Open link
                                     </a>
                                 )}

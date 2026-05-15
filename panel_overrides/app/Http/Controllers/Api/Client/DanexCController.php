@@ -41,4 +41,34 @@ class DanexCController extends ClientApiController
             ],
         ]);
     }
+
+    public function threats(Request $request): JsonResponse
+    {
+        $window = max(5, min(240, (int) $request->query('window', 60)));
+        $overview = $this->telemetry->buildOverview($window);
+
+        return new JsonResponse([
+            'threat' => $overview['threat'] ?? ['level' => 'low', 'score' => 0, 'reason_codes' => []],
+            'most_targeted_paths' => $overview['most_targeted_paths'] ?? [],
+            'live_feed' => $overview['live_feed'] ?? [],
+            'meta' => [
+                'window_minutes' => $window,
+                'generated_at' => now()->toIso8601String(),
+            ],
+        ]);
+    }
+
+    public function config(Request $request): JsonResponse
+    {
+        $window = max(5, min(240, (int) $request->query('window', 60)));
+        $overview = $this->telemetry->buildOverview($window);
+
+        return new JsonResponse([
+            'system_config' => $overview['system_config'] ?? [],
+            'meta' => [
+                'window_minutes' => $window,
+                'generated_at' => now()->toIso8601String(),
+            ],
+        ]);
+    }
 }

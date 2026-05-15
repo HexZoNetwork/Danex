@@ -46,6 +46,7 @@ APT_DEPS=(
     iproute2
     iptables
     ipset
+    nftables
     make
     conntrack
     pkg-config
@@ -1323,8 +1324,8 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network}{whitelist_overload_bypass_enabled} = JSON::PP::true if !defined($j->{network}{whitelist_overload_bypass_enabled});
         $j->{network}{self_ddos_quarantine_enabled} = JSON::PP::true if !defined($j->{network}{self_ddos_quarantine_enabled});
         $j->{network}{self_ddos_server_req_threshold} = 120 if !defined($j->{network}{self_ddos_server_req_threshold}) || $j->{network}{self_ddos_server_req_threshold} !~ /^\d+$/ || $j->{network}{self_ddos_server_req_threshold} < 20;
-        if (!defined($j->{network}{self_ddos_ignore_path_regex}) || "$j->{network}{self_ddos_ignore_path_regex}" eq "" || "$j->{network}{self_ddos_ignore_path_regex}" eq "^$") {
-            $j->{network}{self_ddos_ignore_path_regex} = '^/api/client/servers/.+/websocket$|^/api/client/servers/.+/resources$|^/api/client/servers/.+/power$|^/api/client/servers/.+/activity$|^/api/client/servers/.+/console$|^/api/client/servers/.+/settings/reinstall$|^/api/client/servers/.+/files/list$|^/api/remote/';
+        if (!defined($j->{network}{self_ddos_ignore_path_regex}) || "$j->{network}{self_ddos_ignore_path_regex}" eq "" || "$j->{network}{self_ddos_ignore_path_regex}" eq q{^$}) {
+            $j->{network}{self_ddos_ignore_path_regex} = q{^/api/client/servers/.+/websocket$|^/api/client/servers/.+/resources$|^/api/client/servers/.+/power$|^/api/client/servers/.+/activity$|^/api/client/servers/.+/console$|^/api/client/servers/.+/settings/reinstall$|^/api/client/servers/.+/files/list$|^/api/remote/};
         }
         $j->{network}{owner_lock_enabled} = JSON::PP::true if !defined($j->{network}{owner_lock_enabled});
         $j->{network}{owner_lock_hits_threshold} = 1 if !defined($j->{network}{owner_lock_hits_threshold}) || $j->{network}{owner_lock_hits_threshold} !~ /^\d+$/ || $j->{network}{owner_lock_hits_threshold} < 1;
@@ -1656,6 +1657,11 @@ fi
 if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_challenge_api.py" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/pteroprotect_challenge_api.py"
 fi
+if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_terminal_helper.py" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/pteroprotect_terminal_helper.py"
+    mkdir -p /dev/shm/pteroprotect/terminal_tickets /var/log/pteroprotect/terminal
+    chmod 700 /dev/shm/pteroprotect/terminal_tickets /var/log/pteroprotect/terminal
+fi
 if [[ -f "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh"
 fi
@@ -1684,6 +1690,19 @@ fi
 if [[ -f "${INSTALL_DIR}/scripts/resilience_test_harness.py" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/resilience_test_harness.py"
     ln -sf "${INSTALL_DIR}/scripts/resilience_test_harness.py" /usr/local/bin/pteroprotect-resilience-test
+fi
+if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_lab.py" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/pteroprotect_lab.py"
+    ln -sf "${INSTALL_DIR}/scripts/pteroprotect_lab.py" /usr/local/bin/pteroprotect-lab
+fi
+if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_firewall_manager.sh" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/pteroprotect_firewall_manager.sh"
+    ln -sf "${INSTALL_DIR}/scripts/pteroprotect_firewall_manager.sh" /usr/local/bin/pteroprotect-firewall
+    if "${INSTALL_DIR}/scripts/pteroprotect_firewall_manager.sh" dry-run >/dev/null 2>&1; then
+        "${INSTALL_DIR}/scripts/pteroprotect_firewall_manager.sh" apply >/dev/null 2>&1 || warn "pteroprotect firewall apply failed; existing rules left unchanged"
+    else
+        warn "pteroprotect firewall dry-run failed; existing rules left unchanged"
+    fi
 fi
 
 # PHP-FPM capacity hardening for high-traffic/attack windows.
@@ -1780,6 +1799,10 @@ fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-challenge.service" ]]; then
     echo "[setup] installing challenge api service..."
     install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-challenge.service" "${SYSTEMD_DIR}/pteroprotect-challenge.service"
+fi
+if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-terminal.service" ]]; then
+    echo "[setup] installing break-glass terminal service..."
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-terminal.service" "${SYSTEMD_DIR}/pteroprotect-terminal.service"
 fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-panel-sync.service" ]]; then
     echo "[setup] installing panel override sync service..."
@@ -2053,6 +2076,12 @@ PY
 
             if (( PANEL_BUILD_OK == 0 )); then
                 echo "[setup] warning: frontend build failed after yarn/corepack/npm attempts." >&2
+            fi
+            if [[ -f "${PANEL_DIR}/node_modules/xterm/lib/xterm.js" && -f "${PANEL_DIR}/node_modules/xterm/css/xterm.css" ]]; then
+                mkdir -p "${PANEL_DIR}/public/vendor/pteroprotect"
+                cp -f "${PANEL_DIR}/node_modules/xterm/lib/xterm.js" "${PANEL_DIR}/public/vendor/pteroprotect/xterm.js"
+                cp -f "${PANEL_DIR}/node_modules/xterm/css/xterm.css" "${PANEL_DIR}/public/vendor/pteroprotect/xterm.css"
+                chown -R www-data:www-data "${PANEL_DIR}/public/vendor/pteroprotect" >/dev/null 2>&1 || true
             fi
         fi
         fi
@@ -3637,6 +3666,15 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
         if ! systemctl is-active --quiet pteroprotect-challenge; then
             echo "[setup] error: pteroprotect-challenge is not active after setup." >&2
             exit 1
+        fi
+    fi
+    if [[ -f "${SYSTEMD_DIR}/pteroprotect-terminal.service" ]]; then
+        systemctl enable pteroprotect-terminal >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-terminal >/dev/null 2>&1; then
+            systemctl start pteroprotect-terminal >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-terminal; then
+            echo "[setup] warning: pteroprotect-terminal is not active after setup; admin terminal will stay unavailable until fixed." >&2
         fi
     fi
     if [[ -f "${SYSTEMD_DIR}/pteroprotect-panel-sync.service" ]]; then

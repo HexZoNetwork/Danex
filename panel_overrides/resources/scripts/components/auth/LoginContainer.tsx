@@ -16,11 +16,83 @@ interface Values {
     password: string;
 }
 
+type AssetManifest = Record<string, { src?: string }>;
+
+const preloadCoreAssets = async (onProgress: (progress: number) => void): Promise<void> => {
+    const timeout = new Promise<void>((resolve) => window.setTimeout(resolve, 4500));
+    const preload = async () => {
+        const manifest = (await fetch('/assets/manifest.json', { cache: 'no-cache', credentials: 'same-origin' }).then((r) =>
+            r.json()
+        )) as AssetManifest;
+        const assets = Object.entries(manifest)
+            .filter(([name, entry]) => name.endsWith('.js') || ['main.js', 'dashboard.js', 'server.js', 'auth.js'].includes(name))
+            .map(([, entry]) => entry.src)
+            .filter((src): src is string => typeof src === 'string' && src.endsWith('.js'));
+        const uniqueAssets = Array.from(new Set(assets));
+        let completed = 0;
+
+        if (uniqueAssets.length === 0) {
+            onProgress(100);
+            return;
+        }
+
+        await Promise.allSettled(
+            uniqueAssets.map(async (src) => {
+                const link = document.createElement('link');
+                link.rel = 'prefetch';
+                link.setAttribute('as', 'script');
+                link.href = src;
+                document.head.appendChild(link);
+                await fetch(src, { cache: 'force-cache', credentials: 'same-origin' }).catch(() => undefined);
+                completed += 1;
+                onProgress(Math.round((completed / uniqueAssets.length) * 100));
+            })
+        );
+    };
+
+    onProgress(8);
+    await Promise.race([preload(), timeout]);
+    onProgress(100);
+};
+
+const BootOverlay = ({ progress }: { progress: number }) => (
+    <div
+        css={tw`fixed inset-0 z-50 flex items-center justify-center px-6`}
+        style={{ background: 'rgba(7, 7, 11, 0.94)', backdropFilter: 'blur(16px)' }}
+    >
+        <div
+            css={tw`w-full max-w-md rounded-lg border p-5 text-center`}
+            style={{
+                background: '#0b0b10',
+                borderColor: 'rgba(139, 92, 246, 0.36)',
+                boxShadow: '0 26px 80px rgba(0, 0, 0, 0.65), 0 0 34px rgba(139, 92, 246, 0.16)',
+            }}
+        >
+            <p css={tw`text-[11px] uppercase tracking-widest text-neutral-500`}>DANEX X EL7</p>
+            <h1 css={tw`mt-2 text-2xl font-semibold text-neutral-100`}>Registering The Core</h1>
+            <p css={tw`mt-2 text-sm text-neutral-400`}>Preparing dashboard assets...</p>
+            <div css={tw`mt-5 h-2 rounded-full overflow-hidden border`} style={{ background: '#111117', borderColor: 'rgba(139, 92, 246, 0.2)' }}>
+                <div
+                    css={tw`h-full transition-all duration-200`}
+                    style={{
+                        width: `${Math.max(8, progress)}%`,
+                        background: '#8b5cf6',
+                        boxShadow: '0 0 18px rgba(139, 92, 246, 0.56)',
+                    }}
+                />
+            </div>
+            <p css={tw`mt-3 text-xs text-purple-200 tabular-nums`}>{progress}%</p>
+        </div>
+    </div>
+);
+
 const LoginContainer = ({ history }: RouteComponentProps) => {
     const ref = useRef<any>(null);
     const [token, setToken] = useState('');
     const [captchaReady, setCaptchaReady] = useState(false);
     const [captchaLoadError, setCaptchaLoadError] = useState(false);
+    const [booting, setBooting] = useState(false);
+    const [bootProgress, setBootProgress] = useState(0);
 
     const { clearFlashes, clearAndAddHttpError, addFlash } = useFlash();
     const recaptcha = useStoreState((state) => state.settings.data?.recaptcha);
@@ -83,8 +155,11 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
         login({ ...values, recaptchaData: token })
             .then((response) => {
                 if (response.complete) {
-                    // @ts-expect-error this is valid
-                    window.location = response.intended || '/';
+                    setBooting(true);
+                    void preloadCoreAssets(setBootProgress).finally(() => {
+                        // @ts-expect-error this is valid
+                        window.location = response.intended || '/';
+                    });
                     return;
                 }
 
@@ -111,13 +186,15 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
             })}
         >
             {({ isSubmitting, setSubmitting, submitForm }) => (
-                <LoginFormContainer title={'Login to Continue'}>
-                    <Field light type={'text'} label={'Username or Email'} name={'username'} disabled={isSubmitting} />
+                <>
+                    {booting && <BootOverlay progress={bootProgress} />}
+                    <LoginFormContainer title={'Login to Continue'}>
+                    <Field light type={'text'} label={'Username or Email'} name={'username'} disabled={isSubmitting || booting} />
                     <div css={tw`mt-6`}>
-                        <Field light type={'password'} label={'Password'} name={'password'} disabled={isSubmitting} />
+                        <Field light type={'password'} label={'Password'} name={'password'} disabled={isSubmitting || booting} />
                     </div>
                     <div css={tw`mt-6`}>
-                        <Button type={'submit'} size={'xlarge'} isLoading={isSubmitting} disabled={isSubmitting}>
+                        <Button type={'submit'} size={'xlarge'} isLoading={isSubmitting || booting} disabled={isSubmitting || booting}>
                             Login
                         </Button>
                     </div>
@@ -163,12 +240,18 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
                     <div css={tw`mt-3 text-center`}>
                         <Link
                             to={'/auth/register'}
-                            css={tw`inline-flex items-center justify-center px-5 py-2 rounded-md bg-cyan-600 text-white text-xs font-semibold tracking-wide uppercase no-underline shadow-md hover:bg-cyan-500 transition-colors`}
+                            css={tw`inline-flex items-center justify-center px-5 py-2 rounded-md text-white text-xs font-semibold tracking-wide uppercase no-underline shadow-md transition-colors border`}
+                            style={{
+                                background: '#111117',
+                                borderColor: 'rgba(139, 92, 246, 0.46)',
+                                boxShadow: '0 0 20px rgba(139, 92, 246, 0.14)',
+                            }}
                         >
                             Daftar
                         </Link>
                     </div>
-                </LoginFormContainer>
+                    </LoginFormContainer>
+                </>
             )}
         </Formik>
     );

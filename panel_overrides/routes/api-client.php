@@ -68,6 +68,13 @@ Route::prefix('/danexc')->group(function () {
     Route::get('/feed', [Client\DanexCController::class, 'feed'])->middleware('throttle:90,1');
 });
 
+Route::prefix('/waf')->group(function () {
+    Route::get('/stats', [Client\DanexCController::class, 'overview'])->middleware('throttle:90,1');
+    Route::get('/timeline', [Client\DanexCController::class, 'timeline'])->middleware('throttle:90,1');
+    Route::get('/threats', [Client\DanexCController::class, 'threats'])->middleware('throttle:90,1');
+    Route::get('/config', [Client\DanexCController::class, 'config'])->middleware('throttle:90,1');
+});
+
 Route::prefix('/create-panel')->group(function () {
     Route::get('/options', [Client\CreatePanelController::class, 'options']);
     Route::post('/create', [Client\CreatePanelController::class, 'create'])->middleware('throttle:10,1');

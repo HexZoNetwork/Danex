@@ -2,19 +2,33 @@
     @apply flex items-center rounded shadow-lg relative;
     @apply col-span-3 md:col-span-2 lg:col-span-6;
     @apply px-3 py-2 md:p-3 lg:p-4;
+    background: #0b0b10 !important;
+    border: 1px solid rgba(139, 92, 246, 0.22);
+    box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42);
+    transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1), border-color 220ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
 
     & > .status_bar {
         @apply w-1 h-full absolute left-0 top-0 rounded-l sm:hidden;
+        background: #8b5cf6 !important;
     }
 
     & > .icon {
         @apply hidden flex-shrink-0 items-center justify-center rounded-lg shadow-md w-12 h-12;
         @apply transition-colors duration-500;
         @apply sm:flex sm:mr-4;
+        background: #111117 !important;
+        border: 1px solid rgba(139, 92, 246, 0.28);
 
         & > svg {
             @apply w-6 h-6 m-auto;
+            color: #a78bfa;
         }
+    }
+
+    &:hover {
+        transform: translateY(-2px);
+        border-color: rgba(139, 92, 246, 0.52);
+        box-shadow: 0 22px 52px rgba(0, 0, 0, 0.52), 0 0 24px rgba(139, 92, 246, 0.14);
     }
 }
 
@@ -33,15 +47,14 @@
     & > .container {
         @apply rounded-t p-1 sm:p-2 min-h-[16rem] flex-1 font-mono text-sm;
         @apply relative overflow-hidden;
-        background-image: url('https://files.catbox.moe/dmpfsm.jpg');
-        background-size: cover;
-        background-position: center;
-        background-repeat: no-repeat;
+        background: #0b0b10;
+        border: 1px solid rgba(139, 92, 246, 0.26);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
 
         &::before {
             content: '';
             @apply absolute inset-0;
-            background: rgba(0, 0, 0, 0.55);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
             pointer-events: none;
             z-index: 0;
         }
@@ -72,13 +85,17 @@
     }
 
     & .command_input {
-        @apply relative bg-gray-900 px-2 text-gray-100 pl-10 pr-4 py-2 w-full font-mono text-sm sm:rounded-b;
+        @apply relative px-2 text-gray-100 pl-10 pr-4 py-2 w-full font-mono text-sm sm:rounded-b;
         @apply focus:ring-0 outline-none focus-visible:outline-none;
         @apply border-0 border-b-2 border-transparent transition-colors duration-100;
-        @apply active:border-cyan-500 focus:border-cyan-500;
+        @apply active:border-purple-500 focus:border-purple-500;
+        background: #111117 !important;
     }
 }
 
 .chart_container {
-    @apply bg-gray-600 rounded shadow-lg pt-2 border-b-4 border-gray-700 relative;
+    @apply rounded shadow-lg pt-2 border-b-4 relative;
+    background: #0b0b10 !important;
+    border-color: rgba(139, 92, 246, 0.28) !important;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
 }

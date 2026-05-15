@@ -1,0 +1,23 @@
+[Unit]
+Description=PteroProtect break-glass terminal helper
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=PTEROPROTECT_TERMINAL_HOST=127.0.0.1
+Environment=PTEROPROTECT_TERMINAL_PORT=18445
+Environment=PTEROPROTECT_TERMINAL_TICKET_DIR=/dev/shm/pteroprotect/terminal_tickets
+Environment=PTEROPROTECT_TERMINAL_AUDIT_DIR=/var/log/pteroprotect/terminal
+ExecStart=/pteroprotect/scripts/pteroprotect_terminal_helper.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/dev/shm/pteroprotect /var/log/pteroprotect /root /tmp
+
+[Install]
+WantedBy=multi-user.target

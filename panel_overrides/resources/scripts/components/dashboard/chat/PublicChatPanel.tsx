@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import tw from 'twin.macro';
+import styled from 'styled-components/macro';
 import { format } from 'date-fns';
 import { useLocation } from 'react-router-dom';
 import useFlash from '@/plugins/useFlash';
@@ -42,33 +43,122 @@ import {
 } from '@/api/chat/publicChat';
 import { Button } from '@/components/elements/button/index';
 
-const Root = tw.div`bg-neutral-800 rounded-lg border border-neutral-700 h-full min-h-[70vh] max-h-[85vh] flex flex-col lg:flex-row overflow-hidden`;
-const Sidebar = tw.div`w-full lg:w-[21rem] border-b lg:border-b-0 lg:border-r border-neutral-700 bg-neutral-800 flex flex-col`;
-const SideHeader = tw.div`px-4 py-3 border-b border-neutral-700`;
+const Root = styled.div`
+    ${tw`rounded-lg border h-full min-h-[70vh] max-h-[85vh] flex flex-col lg:flex-row overflow-hidden`};
+    background: #0b0b10;
+    border-color: rgba(139, 92, 246, 0.24);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+`;
+const Sidebar = styled.div`
+    ${tw`w-full lg:w-[21rem] border-b lg:border-b-0 lg:border-r flex flex-col`};
+    background: #0b0b10;
+    border-color: rgba(139, 92, 246, 0.18);
+`;
+const SideHeader = styled.div`
+    ${tw`px-4 py-3 border-b`};
+    border-color: rgba(139, 92, 246, 0.18);
+`;
 const SideTitle = tw.h2`text-base font-semibold text-neutral-100`;
-const SideBlock = tw.div`p-3 border-b border-neutral-700`;
+const SideBlock = styled.div`
+    ${tw`p-3 border-b`};
+    border-color: rgba(139, 92, 246, 0.18);
+`;
 const SideList = tw.div`flex-1 overflow-y-auto p-2 space-y-2`;
-const ConvButton = tw.button`w-full text-left p-2 rounded-md border border-neutral-700 bg-neutral-800 hover:bg-neutral-700 transition`;
-const Input = tw.input`w-full rounded-md border border-neutral-600 bg-neutral-800 text-neutral-100 px-3 py-2 text-sm focus:outline-none focus:border-neutral-400`;
-const TextArea = tw.textarea`w-full rounded-md border border-neutral-600 bg-neutral-800 text-neutral-100 px-3 py-2 text-sm min-h-[66px] focus:outline-none focus:border-neutral-400`;
-const Small = tw.button`text-xs text-neutral-300 hover:text-neutral-100`;
-const Tiny = tw.button`text-[11px] text-neutral-300 hover:text-neutral-100 px-2 py-1 rounded border border-neutral-600 hover:border-neutral-400`;
+const ConvButton = styled.button`
+    ${tw`w-full text-left p-2 rounded-md border transition`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.2);
 
-const Main = tw.div`flex-1 flex flex-col min-w-0 min-h-0 bg-neutral-900`;
-const MainHeader = tw.div`px-3 py-2 lg:px-4 lg:py-3 border-b border-neutral-700 flex flex-wrap items-start lg:items-center justify-between gap-2`;
+    &:hover {
+        background: rgba(139, 92, 246, 0.1);
+        border-color: rgba(139, 92, 246, 0.5);
+        box-shadow: inset 2px 0 0 rgba(139, 92, 246, 0.72);
+    }
+`;
+const Input = styled.input`
+    ${tw`w-full rounded-md border text-neutral-100 px-3 py-2 text-sm focus:outline-none`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.24);
+
+    &:focus {
+        border-color: rgba(139, 92, 246, 0.68);
+        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.18);
+    }
+`;
+const TextArea = styled.textarea`
+    ${tw`w-full rounded-md border text-neutral-100 px-3 py-2 text-sm min-h-[66px] focus:outline-none`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.24);
+
+    &:focus {
+        border-color: rgba(139, 92, 246, 0.68);
+        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.18);
+    }
+`;
+const Small = tw.button`text-xs text-neutral-300 hover:text-neutral-100`;
+const Tiny = styled.button`
+    ${tw`text-[11px] text-neutral-300 hover:text-neutral-100 px-2 py-1 rounded border`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.24);
+
+    &:hover {
+        border-color: rgba(139, 92, 246, 0.54);
+    }
+`;
+
+const Main = styled.div`
+    ${tw`flex-1 flex flex-col min-w-0 min-h-0`};
+    background: #07070b;
+`;
+const MainHeader = styled.div`
+    ${tw`px-3 py-2 lg:px-4 lg:py-3 border-b flex flex-wrap items-start lg:items-center justify-between gap-2`};
+    border-color: rgba(139, 92, 246, 0.18);
+`;
 const HeaderTitle = tw.h3`text-base font-semibold text-neutral-100 truncate`;
 const HeaderMeta = tw.div`text-xs text-neutral-400 truncate`;
 const Body = tw.div`flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 py-2 lg:px-4 lg:py-3 space-y-2`;
-const Composer = tw.form`flex-shrink-0 p-3 border-t border-neutral-700 bg-neutral-800 space-y-2`;
+const Composer = styled.form`
+    ${tw`flex-shrink-0 p-3 border-t space-y-2`};
+    background: #0b0b10;
+    border-color: rgba(139, 92, 246, 0.18);
+`;
 
 const BubbleWrap = tw.div`flex`;
 const Bubble = tw.div`relative max-w-[94%] lg:max-w-[84%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words`;
 const Meta = tw.div`mt-1 text-[11px] text-neutral-400 flex items-center gap-2 flex-wrap`;
-const Tag = tw.span`px-1.5 py-0.5 rounded bg-neutral-700 text-[10px] text-neutral-200`;
+const Tag = styled.span`
+    ${tw`px-1.5 py-0.5 rounded text-[10px] text-neutral-200 border`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.22);
+`;
 
 const AvatarImage = tw.img`w-full h-full object-cover`;
-const AvatarFallback = tw.div`w-full h-full bg-neutral-700 text-[10px] font-bold text-neutral-100 flex items-center justify-center`;
-const OnlineDot = tw.span`absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full bg-blue-500 border border-neutral-900`;
+const AvatarFallback = styled.div`
+    ${tw`w-full h-full text-[10px] font-bold text-neutral-100 flex items-center justify-center`};
+    background: #15151d;
+`;
+const OnlineDot = styled.span`
+    ${tw`absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border`};
+    background: #10b981;
+    border-color: #07070b;
+`;
+
+const panelStyle: React.CSSProperties = {
+    background: '#0b0b10',
+    borderColor: 'rgba(139, 92, 246, 0.28)',
+    boxShadow: '0 22px 60px rgba(0, 0, 0, 0.62), 0 0 26px rgba(139, 92, 246, 0.12)',
+};
+
+const panelHeaderStyle: React.CSSProperties = {
+    background: '#111117',
+    borderColor: 'rgba(139, 92, 246, 0.18)',
+};
+
+const chipButtonStyle: React.CSSProperties = {
+    background: '#111117',
+    borderColor: 'rgba(139, 92, 246, 0.22)',
+    color: '#d4d4df',
+};
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/gi;
 const TOKEN_REGEX = /(https?:\/\/[^\s]+|@[a-zA-Z0-9._-]{3,32})/g;
@@ -1976,10 +2066,23 @@ export default () => {
 
                 <SideList>
                     {conversations.map((conversation) => (
-                        <ConvButton key={conversation.id} type={'button'} css={activeConversationId === conversation.id ? tw`border-neutral-600 bg-neutral-800/50` : undefined} onClick={() => {
+                        <ConvButton
+                            key={conversation.id}
+                            type={'button'}
+                            style={
+                                activeConversationId === conversation.id
+                                    ? {
+                                          background: 'rgba(139, 92, 246, 0.12)',
+                                          borderColor: 'rgba(139, 92, 246, 0.58)',
+                                          boxShadow: 'inset 2px 0 0 #8b5cf6',
+                                      }
+                                    : undefined
+                            }
+                            onClick={() => {
                             setActiveConversationId(conversation.id);
                             setMobilePane('room');
-                        }}>
+                        }}
+                        >
                             <div css={tw`flex items-center justify-between gap-2`}>
                                 <div css={tw`flex items-center gap-2 min-w-0`}>
                                     <div css={tw`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 relative`}>
@@ -2057,7 +2160,7 @@ export default () => {
                 </MainHeader>
 
                 {activeConversation?.type === 'group' && (myGroupRole === 'owner' || myGroupRole === 'admin') && (
-                    <div css={tw`px-3 py-2 border-b border-neutral-800 bg-neutral-900 space-y-2`}>
+                    <div css={tw`px-3 py-2 border-b space-y-2`} style={panelHeaderStyle}>
                         <div css={tw`flex items-center justify-between gap-2`}>
                             <p css={tw`text-xs text-neutral-300`}>Group controls</p>
                             <Small type={'button'} onClick={() => setGroupToolsCollapsed((v) => !v)}>
@@ -2213,16 +2316,24 @@ export default () => {
                                     <Bubble
                                         css={[
                                             item.isOwn
-                                                ? tw`bg-neutral-700 border border-neutral-600 text-neutral-100`
-                                                : tw`bg-neutral-800 border border-neutral-700 text-neutral-100`,
+                                                ? tw`border text-neutral-100`
+                                                : tw`border text-neutral-100`,
                                             mentionsMe ? tw`ring-1 ring-neutral-400` : undefined,
                                             highlightedMessageId === item.id ? tw`ring-2 ring-neutral-500` : undefined,
                                         ]}
+                                        style={{
+                                            background: item.isOwn ? '#14111f' : '#0b0b10',
+                                            borderColor: item.isOwn ? 'rgba(139, 92, 246, 0.42)' : 'rgba(139, 92, 246, 0.18)',
+                                            boxShadow: item.isOwn
+                                                ? '0 12px 28px rgba(0, 0, 0, 0.38), inset 2px 0 0 rgba(139, 92, 246, 0.62)'
+                                                : '0 12px 28px rgba(0, 0, 0, 0.32)',
+                                        }}
                                     >
                                         {isPollImage && (
                                             <button
                                                 type={'button'}
-                                                css={tw`absolute top-2 right-2 text-[10px] px-2 py-1 rounded border border-neutral-500 text-neutral-200 hover:bg-neutral-700`}
+                                                css={tw`absolute top-2 right-2 text-[10px] px-2 py-1 rounded border text-neutral-200`}
+                                                style={chipButtonStyle}
                                                 onClick={() => setPreviewImageUrl(item.mediaUrl!)}
                                             >
                                                 See Full
@@ -2258,7 +2369,10 @@ export default () => {
                                         </button>
 
                                         {item.reply && (
-                                                <div css={tw`mb-2 rounded-md border-l-2 border-neutral-600 bg-neutral-800/70 px-2 py-1`}>
+                                                <div
+                                                    css={tw`mb-2 rounded-md border-l-2 px-2 py-1`}
+                                                    style={{ background: '#111117', borderColor: 'rgba(139, 92, 246, 0.48)' }}
+                                                >
                                                 <button type={'button'} css={tw`text-[11px] text-neutral-200`} onClick={() => scrollToMessage(item.reply!.id)}>
                                                     Reply to @{item.reply.username}: {item.reply.body || '[empty]'}
                                                 </button>
@@ -2302,7 +2416,8 @@ export default () => {
                                                         href={previewLink}
                                                         target={'_blank'}
                                                         rel={'noopener noreferrer'}
-                                                        css={tw`mt-2 block rounded-md border border-neutral-700 bg-neutral-900/70 p-2 hover:border-neutral-600`}
+                                                        css={tw`mt-2 block rounded-md border p-2`}
+                                                        style={{ background: '#111117', borderColor: 'rgba(139, 92, 246, 0.18)' }}
                                                     >
                                                         <p css={tw`text-[11px] text-neutral-400 uppercase tracking-wide`}>Link preview</p>
                                                         <p css={tw`text-sm text-neutral-200 break-all`}>{formatLinkLabel(previewLink)}</p>
@@ -2310,7 +2425,10 @@ export default () => {
                                                 )}
 
                                                 {item.poll && safeOptions.length > 0 && (
-                                                    <div css={tw`mt-2 rounded-md border border-neutral-700 bg-neutral-900/60 p-2`}>
+                                                    <div
+                                                        css={tw`mt-2 rounded-md border p-2`}
+                                                        style={{ background: '#111117', borderColor: 'rgba(139, 92, 246, 0.18)' }}
+                                                    >
                                                         <p css={tw`text-sm font-semibold`}>{item.poll.question}</p>
                                                         {isPollImage && (
                                                             <button
@@ -2332,9 +2450,15 @@ export default () => {
                                                                     type={'button'}
                                                                     onClick={() => handleVote(item.id, idx)}
                                                                     css={[
-                                                                        tw`w-full text-left rounded px-2 py-1 border border-neutral-600 hover:border-neutral-500 flex items-center justify-between text-xs`,
-                                                                        item.poll?.myVote === idx ? tw`bg-neutral-700 border-neutral-500` : undefined,
+                                                                        tw`w-full text-left rounded px-2 py-1 border flex items-center justify-between text-xs`,
                                                                     ]}
+                                                                    style={{
+                                                                        background: item.poll?.myVote === idx ? 'rgba(139, 92, 246, 0.16)' : '#0b0b10',
+                                                                        borderColor:
+                                                                            item.poll?.myVote === idx
+                                                                                ? 'rgba(139, 92, 246, 0.52)'
+                                                                                : 'rgba(139, 92, 246, 0.2)',
+                                                                    }}
                                                                 >
                                                                     <span>{opt.text}</span>
                                                                     <span css={tw`opacity-80`}>{opt.votes} vote</span>
@@ -2358,9 +2482,12 @@ export default () => {
                                                         type={'button'}
                                                         onClick={() => reactToMessage(item.id, emoji)}
                                                         css={[
-                                                            tw`text-[10px] px-1.5 py-0.5 rounded border border-neutral-700`,
-                                                            mine ? tw`bg-neutral-700 border-neutral-600` : tw`hover:border-neutral-600`,
+                                                            tw`text-[10px] px-1.5 py-0.5 rounded border`,
                                                         ]}
+                                                        style={{
+                                                            background: mine ? 'rgba(139, 92, 246, 0.18)' : '#111117',
+                                                            borderColor: mine ? 'rgba(139, 92, 246, 0.5)' : 'rgba(139, 92, 246, 0.18)',
+                                                        }}
                                                     >
                                                         {emoji} {count > 0 ? count : ''}
                                                     </button>
@@ -2395,12 +2522,12 @@ export default () => {
 
                 <Composer onSubmit={handleSend}>
                     {dragging && (
-                        <div css={tw`rounded-md border border-neutral-700 bg-neutral-900/60 p-2 text-xs text-neutral-200`}>
+                        <div css={tw`rounded-md border p-2 text-xs text-neutral-200`} style={panelHeaderStyle}>
                             Drop file to choose Quick/Compressed upload...
                         </div>
                     )}
                     {replyingTo && (
-                        <div css={tw`rounded-md border border-neutral-700 bg-neutral-900/60 p-2 text-xs text-neutral-200 flex items-center justify-between gap-2`}>
+                        <div css={tw`rounded-md border p-2 text-xs text-neutral-200 flex items-center justify-between gap-2`} style={panelHeaderStyle}>
                             <span css={tw`truncate`}>
                                 Replying @{replyingTo.username}: {replyingTo.body || '[media]'}
                             </span>
@@ -2412,7 +2539,8 @@ export default () => {
 
                     {pollOpen && (
                         <div
-                            css={tw`rounded-md border border-neutral-700 bg-neutral-900 p-2 space-y-2`}
+                            css={tw`rounded-md border p-2 space-y-2`}
+                            style={panelHeaderStyle}
                             onDragOver={(e) => e.preventDefault()}
                             onDrop={(e) => {
                                 e.preventDefault();
@@ -2611,8 +2739,12 @@ export default () => {
                 </div>
             )}
             {incomingCallPrompt && (
-                <div css={tw`fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4`} onClick={() => respondIncomingCall('ignore')}>
-                    <div css={tw`w-full max-w-sm rounded-lg border border-neutral-700 bg-neutral-900 p-4`} onClick={(e) => e.stopPropagation()}>
+                <div
+                    css={tw`fixed inset-0 z-50 flex items-center justify-center p-4`}
+                    style={{ background: 'rgba(0, 0, 0, 0.68)', backdropFilter: 'blur(10px)' }}
+                    onClick={() => respondIncomingCall('ignore')}
+                >
+                    <div css={tw`w-full max-w-sm rounded-lg border p-4`} style={panelStyle} onClick={(e) => e.stopPropagation()}>
                         <p css={tw`text-sm font-semibold text-neutral-100`}>Incoming Direct Call</p>
                         <p css={tw`text-xs text-neutral-300 mt-1 truncate`}>{incomingCallPrompt.fromName}</p>
                         <div css={tw`mt-4 grid grid-cols-2 gap-2`}>
@@ -2633,8 +2765,8 @@ export default () => {
                 </div>
             )}
             {callOpen && callState.active && (
-                <div css={tw`fixed z-50 bottom-4 right-4 w-[92vw] sm:w-[24rem] rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl overflow-hidden`}>
-                    <div css={tw`px-3 py-2 border-b border-neutral-800 flex items-center justify-between`}>
+                <div css={tw`fixed z-50 bottom-3 right-3 left-3 sm:left-auto sm:bottom-4 sm:right-4 sm:w-[24rem] rounded-lg border shadow-2xl overflow-hidden`} style={panelStyle}>
+                    <div css={tw`px-3 py-2 border-b flex items-center justify-between`} style={panelHeaderStyle}>
                         <div>
                             <p css={tw`text-neutral-100 font-semibold text-xs`}>Voice Call</p>
                             <p css={tw`text-neutral-400 text-[11px] truncate`}>
@@ -2664,7 +2796,7 @@ export default () => {
 
                                     return (
                                         <div key={`call-user-${participant.id}`} css={tw`flex flex-col items-center text-center w-14`}>
-                                            <div css={tw`w-11 h-11 rounded-full overflow-hidden border border-neutral-700`} style={ringStyle}>
+                                            <div css={tw`w-11 h-11 rounded-full overflow-hidden border`} style={{ ...ringStyle, borderColor: 'rgba(139, 92, 246, 0.24)' }}>
                                                 {participant.avatarUrl ? (
                                                     <AvatarImage src={participant.avatarUrl} alt={participant.displayName} />
                                                 ) : (
@@ -2717,11 +2849,12 @@ export default () => {
             )}
             {profilePopup && (
                 <div
-                    css={tw`fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4`}
+                    css={tw`fixed inset-0 z-50 flex items-center justify-center p-4`}
+                    style={{ background: 'rgba(0, 0, 0, 0.75)', backdropFilter: 'blur(10px)' }}
                     onClick={() => setProfilePopup(null)}
                 >
-                    <div css={tw`w-full max-w-md rounded-lg border border-neutral-600 bg-neutral-800 overflow-hidden`} onClick={(e) => e.stopPropagation()}>
-                        <div css={tw`px-4 py-3 border-b border-neutral-700 bg-neutral-700`}>
+                    <div css={tw`w-full max-w-md rounded-lg border overflow-hidden`} style={panelStyle} onClick={(e) => e.stopPropagation()}>
+                        <div css={tw`px-4 py-3 border-b`} style={panelHeaderStyle}>
                             <div css={tw`flex items-center justify-start`}>
                                 <button type={'button'} css={tw`text-neutral-300 hover:text-neutral-100 text-xs`} onClick={() => setProfilePopup(null)}>
                                     Back
@@ -2740,26 +2873,27 @@ export default () => {
                             <p css={tw`text-center text-neutral-100 font-semibold mt-3 text-xl`}>{profilePopup.displayName}</p>
                             <p css={tw`text-center text-neutral-300 text-sm`}>{popupPresence?.text || 'last seen unknown'}</p>
                             <div css={tw`grid grid-cols-4 gap-2 mt-4`}>
-                                <button type={'button'} css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200`} onClick={handlePopupMessage}>
+                                <button type={'button'} css={tw`rounded border py-2 text-xs`} style={chipButtonStyle} onClick={handlePopupMessage}>
                                     Message
                                 </button>
                                 <button
                                     type={'button'}
-                                    css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200 disabled:opacity-50`}
+                                    css={tw`rounded border py-2 text-xs disabled:opacity-50`}
+                                    style={chipButtonStyle}
                                     onClick={handlePopupMuteToggle}
                                     disabled={!activeConversation || !profilePopup.id}
                                 >
                                     {popupTargetMuted ? 'Unmute' : 'Mute'}
                                 </button>
-                                <button type={'button'} css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200`} onClick={handlePopupCall}>
+                                <button type={'button'} css={tw`rounded border py-2 text-xs`} style={chipButtonStyle} onClick={handlePopupCall}>
                                     {callState.active ? (inCall ? 'Show Call' : 'Join Call') : 'Call'}
                                 </button>
-                                <button type={'button'} css={tw`rounded bg-neutral-900/50 py-2 text-xs text-neutral-200`} onClick={() => setProfilePopup(null)}>
+                                <button type={'button'} css={tw`rounded border py-2 text-xs`} style={chipButtonStyle} onClick={() => setProfilePopup(null)}>
                                     More
                                 </button>
                             </div>
                         </div>
-                        <div css={tw`px-5 py-4 space-y-4 bg-neutral-800`}>
+                        <div css={tw`px-5 py-4 space-y-4`} style={{ background: '#0b0b10' }}>
                             <div>
                                 <p css={tw`text-neutral-200`}>{profilePopup.username ? `@${profilePopup.username}` : '-'}</p>
                                 <p css={tw`text-neutral-400 text-sm`}>Username</p>

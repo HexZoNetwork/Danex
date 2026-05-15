@@ -58,19 +58,28 @@ const Layout = styled.div`
 `;
 
 const ProfileHeader = styled.div`
-    ${tw`bg-neutral-700 rounded-lg shadow-lg overflow-hidden`};
+    ${tw`rounded-lg shadow-lg overflow-hidden border`};
+    background: #0b0b10;
+    border-color: rgba(139, 92, 246, 0.24);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
 `;
 
 const ProfileTop = styled.div`
-    ${tw`px-6 py-8 bg-neutral-800 border-b border-neutral-600`};
+    ${tw`px-6 py-8 border-b`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.18);
 `;
 
 const AvatarWrap = styled.div`
-    ${tw`w-24 h-24 rounded-full overflow-hidden border-4 border-black mx-auto`};
+    ${tw`w-24 h-24 rounded-full overflow-hidden border-4 mx-auto`};
+    border-color: #07070b;
+    box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.4), 0 0 28px rgba(139, 92, 246, 0.18);
 `;
 
 const AvatarFallback = styled.div`
-    ${tw`w-full h-full bg-neutral-600 text-neutral-100 flex items-center justify-center text-3xl font-bold`};
+    ${tw`w-full h-full text-neutral-100 flex items-center justify-center text-3xl font-bold`};
+    background: #15151d;
+    color: #a78bfa;
 `;
 
 const ProfileRows = styled.div`
@@ -78,7 +87,8 @@ const ProfileRows = styled.div`
 `;
 
 const ProfileRow = styled.div`
-    ${tw`border-b border-neutral-800 pb-3`};
+    ${tw`border-b pb-3`};
+    border-color: rgba(139, 92, 246, 0.14);
 
     &:last-child {
         ${tw`border-0 pb-0`};
@@ -255,7 +265,12 @@ export default () => {
                 <ProfileHeader>
                     <ProfileTop>
                         <div
-                            css={[tw`rounded-lg p-2 transition`, avatarDragging ? tw`ring-2 ring-cyan-500 bg-neutral-900/40` : undefined]}
+                            css={tw`rounded-lg p-2 transition`}
+                            style={
+                                avatarDragging
+                                    ? { background: 'rgba(139, 92, 246, 0.1)', boxShadow: '0 0 0 2px rgba(139, 92, 246, 0.52)' }
+                                    : undefined
+                            }
                             onDragOver={(event) => {
                                 event.preventDefault();
                                 if (!avatarDragging) setAvatarDragging(true);
@@ -294,7 +309,7 @@ export default () => {
                             <p css={tw`text-neutral-400 text-sm mt-1`}>Email</p>
                         </ProfileRow>
                         <ProfileRow>
-                            <p css={tw`text-cyan-400 break-all`}>@{initialValues.username || '-'}</p>
+                            <p css={tw`text-purple-300 break-all`}>@{initialValues.username || '-'}</p>
                             <p css={tw`text-neutral-400 text-sm mt-1`}>Username</p>
                         </ProfileRow>
                         <ProfileRow>

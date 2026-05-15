@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import tw from 'twin.macro';
+import styled from 'styled-components/macro';
 import PageContentBlock from '@/components/elements/PageContentBlock';
 import { Button } from '@/components/elements/button/index';
 import { DanexCoinSpinLog, getDanexCoinState, spinDanexCoin } from '@/api/danexcoin';
@@ -10,11 +11,56 @@ import diamondImage from '@/assets/danexcoin/diamond.svg';
 import bellImage from '@/assets/danexcoin/bell.svg';
 import starImage from '@/assets/danexcoin/star.svg';
 
-const Panel = tw.div`rounded-xl border border-neutral-700 bg-neutral-800 p-4 shadow-lg`;
-const ReelWrap = tw.div`rounded-xl border border-cyan-800/60 bg-gradient-to-b from-neutral-900 to-neutral-800 p-3`;
-const Reel = tw.div`rounded-lg border border-cyan-700/40 bg-neutral-900 py-4 text-center shadow-inner min-h-[116px] flex items-center justify-center`;
-const ReelImage = tw.img`w-16 h-16 sm:w-20 sm:h-20 object-contain`;
-const ReelFallback = tw.div`text-lg text-cyan-300 font-bold`;
+const Panel = styled.div`
+    ${tw`rounded-xl border p-4 shadow-lg`};
+    background: #0b0b10;
+    border-color: rgba(139, 92, 246, 0.24);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+    transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1), border-color 220ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    &:hover {
+        transform: translateY(-2px);
+        border-color: rgba(139, 92, 246, 0.42);
+        box-shadow: 0 22px 54px rgba(0, 0, 0, 0.55), 0 0 24px rgba(139, 92, 246, 0.12);
+    }
+`;
+const ReelWrap = styled.div`
+    ${tw`rounded-xl border p-3`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.3);
+`;
+const Reel = styled.div`
+    ${tw`rounded-lg border py-4 text-center shadow-inner min-h-[116px] flex items-center justify-center`};
+    background: #07070b;
+    border-color: rgba(139, 92, 246, 0.24);
+    box-shadow: inset 0 0 28px rgba(0, 0, 0, 0.5);
+`;
+const ReelImage = styled.img<{ $spinning?: boolean }>`
+    ${tw`w-16 h-16 sm:w-20 sm:h-20 object-contain`};
+    animation: ${({ $spinning }) => ($spinning ? 'danex-slot-pulse 520ms ease-in-out infinite' : 'none')};
+`;
+const ReelFallback = styled.div<{ $spinning?: boolean }>`
+    ${tw`text-lg text-purple-300 font-bold`};
+    animation: ${({ $spinning }) => ($spinning ? 'danex-slot-pulse 520ms ease-in-out infinite' : 'none')};
+`;
+
+const HistoryRow = styled.div`
+    ${tw`rounded-lg border px-3 py-2 flex items-center justify-between gap-3 flex-wrap`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.18);
+    transition: border-color 180ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    &:hover {
+        border-color: rgba(139, 92, 246, 0.48);
+        box-shadow: inset 2px 0 0 rgba(139, 92, 246, 0.7);
+    }
+`;
+
+const MessageBox = styled.div`
+    ${tw`mt-3 rounded-lg border px-3 py-2`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.2);
+`;
 
 const toNumber = (value: string): number => Number.parseFloat(value || '0') || 0;
 const SYMBOLS = ['7', 'BAR', 'CHERRY', 'DIAMOND', 'BELL', 'STAR'] as const;
@@ -64,10 +110,10 @@ export default () => {
     const renderSymbol = (value: string | '?') => {
         const image = symbolImageMap[value as SymbolKey];
         if (image) {
-            return <ReelImage src={image} alt={value} />;
+            return <ReelImage src={image} alt={value} $spinning={spinning} />;
         }
 
-        return <ReelFallback>{value}</ReelFallback>;
+        return <ReelFallback $spinning={spinning}>{value}</ReelFallback>;
     };
 
     useEffect(() => {
@@ -173,7 +219,7 @@ export default () => {
     return (
         <PageContentBlock title={'DanexCoin Slots'} showFlashKey={'dashboard'}>
             <div css={tw`mx-auto w-full max-w-5xl space-y-4`}>
-                <Panel css={tw`bg-gradient-to-r from-neutral-900 via-neutral-800 to-cyan-900/40`}>
+                <Panel>
                     <div css={tw`flex flex-wrap items-center justify-between gap-3`}>
                         <div>
                             <p css={tw`text-xs uppercase tracking-wider text-neutral-400`}>Wallet</p>
@@ -181,13 +227,19 @@ export default () => {
                         </div>
                         <div css={tw`text-right`}>
                             <p css={tw`text-xs uppercase tracking-wider text-neutral-400`}>Balance</p>
-                            <p css={tw`text-2xl font-bold text-cyan-300`}>{balance}</p>
+                            <p css={tw`text-2xl font-bold text-purple-300`}>{balance}</p>
                         </div>
                     </div>
                     {loadError && <p css={tw`mt-3 text-xs text-red-300`}>{loadError}</p>}
                 </Panel>
 
                 <Panel>
+                    <style>{`
+                        @keyframes danex-slot-pulse {
+                            0%, 100% { transform: translateY(0) scale(1); filter: drop-shadow(0 0 0 rgba(139, 92, 246, 0)); }
+                            50% { transform: translateY(-3px) scale(1.04); filter: drop-shadow(0 0 16px rgba(139, 92, 246, 0.35)); }
+                        }
+                    `}</style>
                     <div css={tw`grid grid-cols-3 gap-2 sm:gap-3`}>
                         <ReelWrap>
                             <Reel>{renderSymbol(reels[0])}</Reel>
@@ -218,15 +270,15 @@ export default () => {
                             type={'button'}
                             onClick={onSpin}
                             disabled={spinning || loading}
-                            css={tw`w-full sm:w-auto bg-cyan-600 hover:bg-cyan-500 border-cyan-500 text-white font-semibold`}
+                            css={tw`w-full sm:w-auto font-semibold`}
                         >
                             {spinning ? 'Spinning...' : 'Spin'}
                         </Button>
                     </div>
 
-                    <div css={tw`mt-3 rounded-lg border border-neutral-700 bg-neutral-900/70 px-3 py-2`}>
+                    <MessageBox>
                         <p css={tw`text-sm text-neutral-200`}>{lastMessage}</p>
-                    </div>
+                    </MessageBox>
                 </Panel>
 
                 <Panel>
@@ -236,10 +288,7 @@ export default () => {
                     ) : (
                         <div css={tw`space-y-2`}>
                             {history.map((row) => (
-                                <div
-                                    key={row.id}
-                                    css={tw`rounded-lg border border-neutral-700 bg-neutral-900/60 px-3 py-2 flex items-center justify-between gap-3 flex-wrap`}
-                                >
+                                <HistoryRow key={row.id}>
                                     <div css={tw`flex items-center gap-2 text-neutral-100`}>
                                         <code>{reelsForRow(row)[0]}</code>
                                         <code>{reelsForRow(row)[1]}</code>
@@ -250,10 +299,10 @@ export default () => {
                                             </span>
                                         )}
                                     </div>
-                                    <div css={tw`text-xs text-neutral-300`}>
+                                    <div css={tw`text-xs text-neutral-300 tabular-nums`}>
                                         Bet {row.bet} | x{row.multiplier} | Payout {row.payout} | Bal {row.balance_after}
                                     </div>
-                                </div>
+                                </HistoryRow>
                             ))}
                         </div>
                     )}

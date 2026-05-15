@@ -35,10 +35,17 @@ const Container = styled.div`
 
 export default forwardRef<HTMLFormElement, Props>(({ title, compact, hideLogo, className, ...props }, ref) => (
     <Container className={className}>
-        {title && <h2 css={tw`text-3xl text-center text-neutral-100 font-medium py-4`}>{title}</h2>}
+        {title && <h2 css={tw`text-3xl text-center text-neutral-100 font-semibold py-4`}>DANEX X EL7</h2>}
         <FlashMessageRender css={tw`mb-2 px-1`} />
         <Form {...props} ref={ref}>
-            <div css={[tw`w-full bg-white shadow-lg rounded-lg p-6 mx-1`, !compact && tw`md:flex md:pl-0`]}>
+            <div
+                css={[tw`w-full shadow-lg rounded-lg p-6 mx-1 border`, !compact && tw`md:flex md:pl-0`]}
+                style={{
+                    background: '#0b0b10',
+                    borderColor: 'rgba(139, 92, 246, 0.32)',
+                    boxShadow: '0 24px 58px rgba(0,0,0,0.55), 0 0 32px rgba(139,92,246,0.16)',
+                }}
+            >
                 {!hideLogo && (
                     <div css={tw`flex-none select-none mb-6 md:mb-0 self-center`}>
                         <img

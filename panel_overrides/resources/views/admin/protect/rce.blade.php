@@ -138,7 +138,153 @@
                 <p class="text-muted" style="margin-top:6px;">Last exit code: <code>{{ is_null($consoleLastExit) ? '-' : $consoleLastExit }}</code></p>
                 <p class="text-muted" style="margin-top:10px;">Template mode aktif. Source template: <code>network.admin_exec_templates</code>.</p>
                 <p class="text-muted">Path untuk template <code>tail_logs</code> dibatasi oleh <code>network.rce_read_path_allowlist</code> dan validasi <code>realpath</code>.</p>
-                <p class="text-muted">Mode <code>TTY</code> menjalankan command via pseudo-terminal per-eksekusi. Full shell interaktif berkelanjutan tetap tidak didukung di web UI.</p>
+                <p class="text-muted">Mode <code>TTY</code> menjalankan command via pseudo-terminal per-eksekusi. Untuk shell penuh gunakan Break-glass PTY di bawah.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <div class="box box-danger">
+            <div class="box-header with-border"><h3 class="box-title">Break-glass PTY</h3></div>
+            <div class="box-body">
+                <link rel="stylesheet" href="/vendor/pteroprotect/xterm.css">
+                <style>
+                    #pp-pty-terminal {
+                        height: 520px;
+                        background: #111827;
+                        border: 1px solid #374151;
+                        border-radius: 6px;
+                        padding: 6px;
+                    }
+                    .pp-pty-toolbar {
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                        margin-bottom: 10px;
+                    }
+                    .pp-pty-status {
+                        color: #a8b7ca;
+                        font-family: Menlo, Monaco, Consolas, monospace;
+                        font-size: 12px;
+                    }
+                </style>
+                <div class="pp-pty-toolbar">
+                    <button type="button" id="pp-pty-connect" class="btn btn-danger" {{ $rceUnlocked ? '' : 'disabled' }}>Start Root PTY</button>
+                    <button type="button" id="pp-pty-disconnect" class="btn btn-default" disabled>Disconnect</button>
+                    <span id="pp-pty-status" class="pp-pty-status">{{ $rceUnlocked ? 'ready' : 'locked' }}</span>
+                </div>
+                <div id="pp-pty-terminal"></div>
+                <p class="text-muted" style="margin-top:10px;">One-time ticket, local root helper, idle timeout, and audit metadata are enforced server-side.</p>
+                <script src="/vendor/pteroprotect/xterm.js"></script>
+                <script>
+                    (function () {
+                        var unlocked = {{ $rceUnlocked ? 'true' : 'false' }};
+                        var token = @json($postProtectToken ?? '');
+                        var termEl = document.getElementById('pp-pty-terminal');
+                        var statusEl = document.getElementById('pp-pty-status');
+                        var connectBtn = document.getElementById('pp-pty-connect');
+                        var disconnectBtn = document.getElementById('pp-pty-disconnect');
+                        var term = null;
+                        var ws = null;
+
+                        function setStatus(text) {
+                            if (statusEl) statusEl.textContent = text;
+                        }
+
+                        function csrfToken() {
+                            var meta = document.querySelector('meta[name="csrf-token"]');
+                            return meta ? meta.getAttribute('content') : '';
+                        }
+
+                        function initTerm() {
+                            if (term) return term;
+                            if (!window.Terminal) {
+                                setStatus('xterm asset missing');
+                                return null;
+                            }
+                            term = new window.Terminal({
+                                cursorBlink: true,
+                                fontFamily: 'Menlo, Monaco, Consolas, monospace',
+                                fontSize: 13,
+                                theme: { background: '#111827', foreground: '#e5e7eb' },
+                                cols: 120,
+                                rows: 32
+                            });
+                            term.open(termEl);
+                            return term;
+                        }
+
+                        async function createSession() {
+                            var resp = await fetch('{{ route('admin.protect.terminal.sessions') }}', {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                headers: {
+                                    'Accept': 'application/json',
+                                    'Content-Type': 'application/json',
+                                    'X-CSRF-TOKEN': csrfToken(),
+                                    'X-PteroProtect-Token': token
+                                },
+                                body: JSON.stringify({ protect_token: token })
+                            });
+                            if (!resp.ok) throw new Error('ticket failed: HTTP ' + resp.status);
+                            var data = await resp.json();
+                            if (!data.ok || !data.ws_url) throw new Error(data.error || 'ticket rejected');
+                            return data.ws_url;
+                        }
+
+                        function resize() {
+                            if (!ws || ws.readyState !== WebSocket.OPEN || !term) return;
+                            ws.send(JSON.stringify({ type: 'resize', cols: term.cols || 120, rows: term.rows || 32 }));
+                        }
+
+                        async function connect() {
+                            if (!unlocked || ws) return;
+                            var t = initTerm();
+                            if (!t) return;
+                            connectBtn.disabled = true;
+                            setStatus('creating ticket');
+                            try {
+                                var wsUrl = await createSession();
+                                var proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+                                ws = new WebSocket(proto + window.location.host + wsUrl);
+                                ws.binaryType = 'arraybuffer';
+                                ws.onopen = function () {
+                                    disconnectBtn.disabled = false;
+                                    setStatus('connected');
+                                    t.focus();
+                                    resize();
+                                };
+                                ws.onmessage = function (event) {
+                                    if (event.data instanceof ArrayBuffer) {
+                                        t.write(new Uint8Array(event.data));
+                                    } else {
+                                        t.write(String(event.data));
+                                    }
+                                };
+                                ws.onclose = function () {
+                                    ws = null;
+                                    connectBtn.disabled = false;
+                                    disconnectBtn.disabled = true;
+                                    setStatus('disconnected');
+                                };
+                                ws.onerror = function () { setStatus('websocket error'); };
+                                t.onData(function (data) {
+                                    if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+                                });
+                            } catch (err) {
+                                connectBtn.disabled = false;
+                                setStatus(String(err && err.message ? err.message : err));
+                            }
+                        }
+
+                        connectBtn && connectBtn.addEventListener('click', connect);
+                        disconnectBtn && disconnectBtn.addEventListener('click', function () {
+                            if (ws) ws.close();
+                        });
+                    })();
+                </script>
             </div>
         </div>
     </div>

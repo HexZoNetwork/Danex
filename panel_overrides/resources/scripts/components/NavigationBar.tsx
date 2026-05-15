@@ -2,10 +2,10 @@ import * as React from 'react';
 import { lazy, useEffect, useRef, useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faBell, faCogs, faLayerGroup, faSignOutAlt } from '@fortawesome/free-solid-svg-icons';
+import { faBell, faCogs, faSignOutAlt } from '@fortawesome/free-solid-svg-icons';
 import { useStoreState } from 'easy-peasy';
 import { ApplicationStore } from '@/state';
-import tw, { theme } from 'twin.macro';
+import tw from 'twin.macro';
 import styled from 'styled-components/macro';
 import http from '@/api/http';
 import SpinnerOverlay from '@/components/elements/SpinnerOverlay';
@@ -19,18 +19,61 @@ const RightNavigation = styled.div`
     & > a,
     & > button,
     & > .navigation-link {
-        ${tw`flex items-center h-full no-underline text-neutral-300 px-2 sm:px-6 cursor-pointer transition-all duration-150`};
+        ${tw`flex items-center justify-center h-full no-underline text-neutral-300 px-3 sm:px-4 cursor-pointer transition-all duration-150`};
+        border-left: 1px solid rgba(139, 92, 246, 0.08);
+        min-width: 3rem;
 
         &:active,
         &:hover {
-            ${tw`text-neutral-100 bg-black`};
+            ${tw`text-neutral-100`};
+            background: rgba(139, 92, 246, 0.12);
         }
 
         &:active,
         &:hover,
         &.active {
-            box-shadow: inset 0 -2px ${theme`colors.cyan.600`.toString()};
+            box-shadow: inset 0 -2px #8b5cf6, 0 0 22px rgba(139, 92, 246, 0.22);
         }
+    }
+
+    @media (max-width: 520px) {
+        & > a,
+        & > button,
+        & > .navigation-link {
+            min-width: 2.6rem;
+            padding-left: 0.65rem;
+            padding-right: 0.65rem;
+        }
+    }
+`;
+
+const Shell = styled.div`
+    ${tw`w-full overflow-x-hidden`};
+    background: rgba(11, 11, 16, 0.94);
+    border-bottom: 1px solid rgba(139, 92, 246, 0.32);
+    box-shadow: 0 14px 38px rgba(0, 0, 0, 0.5), 0 0 24px rgba(139, 92, 246, 0.12);
+    backdrop-filter: blur(16px);
+    animation: danex-fade-up 300ms var(--el7-ease) both;
+`;
+
+const Brand = styled(Link)`
+    ${tw`block truncate text-base sm:text-xl font-header font-semibold px-3 sm:px-4 no-underline transition-colors duration-150`};
+    color: #f7f3ff;
+    letter-spacing: 0;
+    text-shadow: 0 0 20px rgba(139, 92, 246, 0.38);
+
+    &:hover {
+        color: #ffffff;
+    }
+
+    span {
+        color: #a78bfa;
+    }
+
+    @media (max-width: 420px) {
+        font-size: 0.88rem;
+        padding-left: 0.75rem;
+        padding-right: 0.5rem;
     }
 `;
 
@@ -76,28 +119,19 @@ export default () => {
     };
 
     return (
-        <div className={'w-full bg-neutral-900 shadow-md overflow-x-hidden'}>
+        <Shell>
             <SpinnerOverlay visible={isLoggingOut} />
-            <div className={'mx-auto w-full flex items-center h-[3.5rem] max-w-[1200px] min-w-0'}>
+            <div className={'mx-auto w-full flex items-center h-[3.55rem] sm:h-[3.75rem] max-w-[1220px] min-w-0'}>
                 <div id={'logo'} className={'flex-1 min-w-0'}>
-                    <Link
-                        to={'/'}
-                        className={
-                            'block truncate text-lg sm:text-2xl font-header font-medium px-3 sm:px-4 no-underline text-neutral-200 hover:text-neutral-100 transition-colors duration-150'
-                        }
-                    >
-                        {name}
-                    </Link>
+                    <Brand to={'/'}>
+                        DANEX <span>X EL7</span>
+                        <span className={'sr-only'}>{name}</span>
+                    </Brand>
                 </div>
                 <RightNavigation className={'flex h-full items-center justify-center'}>
                     <React.Suspense fallback={null}>
                         <SearchContainer />
                     </React.Suspense>
-                    <Tooltip placement={'bottom'} content={'Dashboard'}>
-                        <NavLink to={'/'} exact>
-                            <FontAwesomeIcon icon={faLayerGroup} />
-                        </NavLink>
-                    </Tooltip>
                     <Tooltip placement={'bottom'} content={'Notifications'}>
                         <NavLink to={'/notifications'} exact>
                             <span className={'relative inline-flex items-center justify-center'}>
@@ -135,6 +169,6 @@ export default () => {
                     </Tooltip>
                 </RightNavigation>
             </div>
-        </div>
+        </Shell>
     );
 };

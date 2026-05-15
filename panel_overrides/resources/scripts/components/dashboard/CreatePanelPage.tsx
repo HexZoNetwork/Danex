@@ -7,6 +7,17 @@ import { httpErrorToHuman } from '@/api/http';
 import { useStoreActions, useStoreState } from 'easy-peasy';
 import { ApplicationStore } from '@/state';
 
+const panelStyle: React.CSSProperties = {
+    background: '#0b0b10',
+    borderColor: 'rgba(139, 92, 246, 0.24)',
+    boxShadow: '0 18px 48px rgba(0, 0, 0, 0.5)',
+};
+
+const insetPanelStyle: React.CSSProperties = {
+    background: '#111117',
+    borderColor: 'rgba(139, 92, 246, 0.18)',
+};
+
 export default () => {
     const user = useStoreState((state: ApplicationStore) => state.user.data);
     const updateUserData = useStoreActions((actions: any) => actions.user.updateUserData);
@@ -60,7 +71,7 @@ export default () => {
     if (!allowed) {
         return (
             <PageContentBlock title={'Create Panel'} showFlashKey={'dashboard'}>
-                <div css={tw`rounded-lg border border-neutral-700 bg-neutral-800 p-4 text-neutral-300`}>
+                <div css={tw`rounded-lg border p-4 text-neutral-300`} style={panelStyle}>
                     Fitur ini hanya tersedia untuk akun dengan lastname <strong>madeinweb</strong>.
                 </div>
             </PageContentBlock>
@@ -70,14 +81,14 @@ export default () => {
     return (
         <PageContentBlock title={'Create Panel'} showFlashKey={'dashboard'}>
             <div css={tw`mx-auto max-w-3xl space-y-4`}>
-                <div css={tw`rounded-xl border border-neutral-700 bg-neutral-800 p-4`}>
+                <div css={tw`rounded-xl border p-4`} style={panelStyle}>
                     <h2 css={tw`text-lg font-semibold text-neutral-100`}>Panel Generator</h2>
                     <p css={tw`text-sm text-neutral-400 mt-1`}>
                         Khusus akun madeinweb. Hanya bisa dipakai sekali.
                     </p>
                 </div>
 
-                <div css={tw`rounded-xl border border-neutral-700 bg-neutral-800 p-4 space-y-4`}>
+                <div css={tw`rounded-xl border p-4 space-y-4`} style={panelStyle}>
                     {loading ? (
                         <p css={tw`text-neutral-300`}>Memuat opsi...</p>
                     ) : created ? (
@@ -133,7 +144,7 @@ export default () => {
                                 </select>
                             </div>
 
-                            <div css={tw`rounded-lg border border-neutral-700 bg-neutral-900/70 px-3 py-2 text-sm text-neutral-300`}>
+                            <div css={tw`rounded-lg border px-3 py-2 text-sm text-neutral-300`} style={insetPanelStyle}>
                                 CPU fixed: <strong>{cpuFixed}%</strong> | Threads pin: <strong>{threadsFixed}</strong>
                             </div>
 

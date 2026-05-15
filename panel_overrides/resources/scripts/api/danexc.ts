@@ -63,16 +63,21 @@ export interface DanexCOverviewResponse {
 }
 
 export const getDanexCOverview = async (windowMinutes = 60): Promise<DanexCOverviewResponse> => {
-    const { data } = await http.get('/api/client/danexc/overview', { params: { window: windowMinutes } });
+    const { data } = await http.get('/api/client/waf/stats', { params: { window: windowMinutes } });
     return data;
 };
 
 export const getDanexCTimeline = async (windowMinutes = 60): Promise<{ timeline: DanexCTimelinePoint[] }> => {
-    const { data } = await http.get('/api/client/danexc/timeline', { params: { window: windowMinutes } });
+    const { data } = await http.get('/api/client/waf/timeline', { params: { window: windowMinutes } });
     return data;
 };
 
 export const getDanexCFeed = async (limit = 40): Promise<{ live_feed: DanexCFeedItem[] }> => {
-    const { data } = await http.get('/api/client/danexc/feed', { params: { limit } });
+    const { data } = await http.get('/api/client/waf/threats', { params: { limit } });
+    return data;
+};
+
+export const getDanexCLegacyOverview = async (windowMinutes = 60): Promise<DanexCOverviewResponse> => {
+    const { data } = await http.get('/api/client/danexc/overview', { params: { window: windowMinutes } });
     return data;
 };

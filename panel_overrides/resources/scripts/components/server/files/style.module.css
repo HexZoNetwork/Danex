@@ -1,0 +1,44 @@
+.manager_actions {
+    @apply grid grid-cols-2 sm:grid-cols-4 w-full gap-2 mb-4;
+
+    & button {
+        @apply w-full;
+    }
+
+    @screen md {
+        @apply flex flex-1 justify-end mb-0 gap-2;
+
+        & button {
+            @apply w-auto;
+        }
+    }
+}
+
+.file_row {
+    @apply flex items-center cursor-pointer rounded-md mb-1 text-sm no-underline;
+    background: #0b0b10;
+    border: 1px solid rgba(139, 92, 246, 0.16);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.3);
+    transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1), border-color 180ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1), background 180ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    & > .details {
+        @apply flex flex-1 items-center text-neutral-300 no-underline px-3 sm:px-4 py-3 overflow-hidden truncate;
+
+        &:not(a) {
+            @apply cursor-default;
+        }
+    }
+
+    &:hover {
+        background: #111117;
+        border-color: rgba(139, 92, 246, 0.46);
+        box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42), inset 2px 0 0 rgba(139, 92, 246, 0.72);
+        transform: translateX(2px);
+    }
+
+    @media (max-width: 640px) {
+        & > .details {
+            @apply py-3;
+        }
+    }
+}

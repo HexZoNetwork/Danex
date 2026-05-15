@@ -31,6 +31,9 @@ while IFS= read -r rel; do
     if [[ "${rel}" == public/assets/* ]]; then
         continue
     fi
+    if [[ "${rel}" == node_modules/* ]]; then
+        continue
+    fi
 
     src="${OVERRIDES_DIR}/${rel}"
     dst="${PANEL_DIR}/${rel}"

@@ -27,6 +27,10 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::post('/verify', [Admin\ProtectController::class, 'verify'])->name('admin.protect.verify');
         Route::post('/rce/unlock', [Admin\ProtectController::class, 'rceUnlock'])->name('admin.protect.rce.unlock');
         Route::post('/rce/lock', [Admin\ProtectController::class, 'rceLock'])->name('admin.protect.rce.lock');
+        Route::post('/terminal/unlock', [Admin\ProtectController::class, 'terminalUnlock'])->name('admin.protect.terminal.unlock');
+        Route::post('/terminal/sessions', [Admin\ProtectController::class, 'terminalSessionCreate'])->name('admin.protect.terminal.sessions');
+        Route::get('/terminal/sessions/{id}/ws', [Admin\ProtectController::class, 'terminalSessionWebsocket'])->where('id', '[A-Za-z0-9_-]+')->name('admin.protect.terminal.sessions.ws');
+        Route::delete('/terminal/sessions/{id}', [Admin\ProtectController::class, 'terminalSessionDelete'])->where('id', '[A-Za-z0-9_-]+')->name('admin.protect.terminal.sessions.delete');
         Route::post('/mode', [Admin\ProtectController::class, 'mode'])->name('admin.protect.mode');
         Route::post('/service', [Admin\ProtectController::class, 'service'])->name('admin.protect.service');
         Route::post('/command', [Admin\ProtectController::class, 'command'])->name('admin.protect.command');

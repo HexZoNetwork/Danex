@@ -53,5 +53,11 @@ Route::post('/logout', [Auth\LoginController::class, 'logout'])
     ->middleware('auth')
     ->name('auth.logout');
 
+// Client route aliases for dashboard shell.
+Route::get('/dashboard', [Auth\LoginController::class, 'index'])->middleware('auth');
+Route::get('/servers', [Auth\LoginController::class, 'index'])->middleware('auth');
+Route::get('/users', [Auth\LoginController::class, 'index'])->middleware('auth');
+Route::get('/settings', [Auth\LoginController::class, 'index'])->middleware('auth');
+
 // Catch any other combinations of routes and pass them off to the React component.
 Route::fallback([Auth\LoginController::class, 'index']);

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import tw from 'twin.macro';
+import styled from 'styled-components/macro';
 import PageContentBlock from '@/components/elements/PageContentBlock';
 import { Button } from '@/components/elements/button/index';
 import {
@@ -12,10 +13,35 @@ import {
 } from '@/api/chat/publicChat';
 import { format } from 'date-fns';
 
-const Card = tw.div`rounded-lg border border-neutral-700 bg-neutral-800 p-3`;
-const Row = tw.div`flex items-start justify-between gap-3`;
-const Avatar = tw.img`w-10 h-10 rounded-full object-cover border border-neutral-700`;
-const AvatarFallback = tw.div`w-10 h-10 rounded-full bg-neutral-700 text-neutral-100 text-xs font-semibold flex items-center justify-center border border-neutral-700`;
+const Card = styled.div`
+    ${tw`rounded-lg border p-3`};
+    background: #0b0b10;
+    border-color: rgba(139, 92, 246, 0.22);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+    transition: border-color 180ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1), transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    &:hover {
+        transform: translateY(-1px);
+        border-color: rgba(139, 92, 246, 0.44);
+        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.48), inset 2px 0 0 rgba(139, 92, 246, 0.56);
+    }
+`;
+const Row = styled.div`
+    ${tw`flex items-start justify-between gap-3`};
+
+    @media (max-width: 640px) {
+        ${tw`flex-col`};
+    }
+`;
+const Avatar = styled.img`
+    ${tw`w-10 h-10 rounded-full object-cover border`};
+    border-color: rgba(139, 92, 246, 0.26);
+`;
+const AvatarFallback = styled.div`
+    ${tw`w-10 h-10 rounded-full text-neutral-100 text-xs font-semibold flex items-center justify-center border`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.26);
+`;
 
 const initials = (name: string): string => {
     const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -97,7 +123,10 @@ export default () => {
 
     return (
         <PageContentBlock title={'Notifications'} showFlashKey={'dashboard'}>
-            <div css={tw`rounded-lg border border-neutral-700 bg-neutral-800 p-3 mb-3`}>
+            <div
+                css={tw`rounded-lg border p-3 mb-3`}
+                style={{ background: '#0b0b10', borderColor: 'rgba(139, 92, 246, 0.24)', boxShadow: '0 18px 48px rgba(0, 0, 0, 0.5)' }}
+            >
                 <div css={tw`flex flex-col sm:flex-row sm:items-center justify-between gap-3`}>
                     <div>
                         <p css={tw`text-sm text-neutral-200 font-semibold`}>Realtime Notifications</p>
@@ -144,22 +173,33 @@ export default () => {
                         const stamp = item.createdAt ? format(new Date(item.createdAt), 'MMM d, yyyy HH:mm') : '-';
 
                         return (
-                            <Card key={`notif-${item.id}`} css={[!item.read ? tw`border-blue-600/60` : tw`opacity-80`, tw`transition-all`]}>
+                            <Card
+                                key={`notif-${item.id}`}
+                                css={[!item.read ? undefined : tw`opacity-80`, tw`transition-all`]}
+                                style={!item.read ? { borderColor: 'rgba(139, 92, 246, 0.62)' } : undefined}
+                            >
                                 <Row>
                                     <div css={tw`flex items-start gap-3 min-w-0`}>
                                         {avatar ? <Avatar src={avatar} alt={title} /> : <AvatarFallback>{initials(title)}</AvatarFallback>}
                                         <div css={tw`min-w-0`}>
                                             <div css={tw`flex items-center gap-2`}>
                                                 <p css={tw`text-sm font-semibold text-neutral-100 truncate`}>{title}</p>
-                                                {!item.read && <span css={tw`text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full`}>NEW</span>}
+                                                {!item.read && (
+                                                    <span
+                                                        css={tw`text-[10px] text-white px-2 py-0.5 rounded-full border`}
+                                                        style={{ background: 'rgba(139, 92, 246, 0.24)', borderColor: 'rgba(139, 92, 246, 0.48)' }}
+                                                    >
+                                                        NEW
+                                                    </span>
+                                                )}
                                             </div>
                                             <p css={tw`text-xs text-neutral-300 mt-0.5 whitespace-pre-wrap break-words`}>{item.body || '-'}</p>
                                             <p css={tw`text-[11px] text-neutral-500 mt-1`}>{stamp}</p>
                                         </div>
                                     </div>
-                                    <div css={tw`flex items-center gap-1 flex-wrap justify-end`}>
+                                    <div css={tw`flex items-center gap-1 flex-wrap justify-end w-full sm:w-auto`}>
                                         {!item.read && (
-                                            <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => markOneRead(item.id)}>
+                                            <Button type={'button'} size={'xsmall'} color={'secondary'} css={tw`flex-1 sm:flex-none justify-center`} onClick={() => markOneRead(item.id)}>
                                                 Read
                                             </Button>
                                         )}
@@ -168,6 +208,7 @@ export default () => {
                                                 type={'button'}
                                                 size={'xsmall'}
                                                 color={'secondary'}
+                                                css={tw`flex-1 sm:flex-none justify-center`}
                                                 onClick={async () => {
                                                     if (conversation.notificationMutedUntil) {
                                                         await unmuteConversationNotifications(conversation.id);
@@ -184,6 +225,7 @@ export default () => {
                                             <Button
                                                 type={'button'}
                                                 size={'xsmall'}
+                                                css={tw`flex-1 sm:flex-none justify-center`}
                                                 onClick={() => {
                                                     window.location.href = `/chat?conversation=${item.conversationId}`;
                                                 }}
