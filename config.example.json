@@ -56,9 +56,9 @@
     "provider_token_ip_cache_ttl_sec": 604800,
     "provider_token_provider_keywords": "digitalocean,microsoft,azure,linode,vultr,hetzner,ovh,contabo,oracle,google,amazon,aws,alibaba,tencent",
     "waf_challenge_theme_custom_enabled": false,
-    "waf_challenge_theme_gradient_start": "#0d1b2a",
-    "waf_challenge_theme_gradient_end": "#132a45",
-    "waf_challenge_theme_accent": "#2e9cff",
+    "waf_challenge_theme_gradient_start": "#07070b",
+    "waf_challenge_theme_gradient_end": "#111117",
+    "waf_challenge_theme_accent": "#8b5cf6",
 
     "rce_control_key": "replace_me",
     "rce_default_timeout_sec": 15,

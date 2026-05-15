@@ -333,6 +333,171 @@
     .pp-theme .dataTables_filter {
         color: #a6a6b8 !important;
     }
+    .pp-theme .pp-tabs {
+        position: sticky;
+        top: 0;
+        z-index: 8;
+        border-radius: 10px;
+    }
+    .pp-theme .pp-tabs > li > a::before {
+        content: "";
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        margin-right: 8px;
+        border-radius: 999px;
+        background: #2b2b34;
+        border: 1px solid rgba(139, 92, 246, 0.35);
+        vertical-align: 1px;
+        transition: background 160ms ease, box-shadow 160ms ease;
+    }
+    .pp-theme .pp-tabs > li.active > a::before {
+        background: #10b981;
+        box-shadow: 0 0 14px rgba(16, 185, 129, 0.45);
+    }
+    .pp-theme .box {
+        position: relative;
+        transform: translateZ(0);
+        animation: pp-card-in 260ms cubic-bezier(0.4, 0, 0.2, 1) both;
+    }
+    .pp-theme .box::before,
+    .pp-theme .panel::before,
+    .pp-theme .well::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: linear-gradient(180deg, #8b5cf6, rgba(139, 92, 246, 0));
+        opacity: 0.72;
+        pointer-events: none;
+    }
+    .pp-theme .box:hover,
+    .pp-theme .panel:hover,
+    .pp-theme .well:hover {
+        border-color: rgba(139, 92, 246, 0.42) !important;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42), 0 0 28px rgba(139, 92, 246, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
+    }
+    .pp-theme .box.box-danger::before,
+    .pp-theme .panel-danger::before {
+        background: linear-gradient(180deg, #ef4444, rgba(239, 68, 68, 0));
+    }
+    .pp-theme .box.box-warning::before,
+    .pp-theme .panel-warning::before {
+        background: linear-gradient(180deg, #f59e0b, rgba(245, 158, 11, 0));
+    }
+    .pp-theme .box.box-success::before,
+    .pp-theme .panel-success::before {
+        background: linear-gradient(180deg, #10b981, rgba(16, 185, 129, 0));
+    }
+    .pp-theme .form-inline {
+        display: flex;
+        align-items: flex-end;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    .pp-theme .form-inline .form-group,
+    .pp-theme .form-inline .btn {
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+    }
+    .pp-theme .btn {
+        min-height: 38px;
+        display: inline-flex !important;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        padding: 9px 14px !important;
+        line-height: 1.15 !important;
+        white-space: normal;
+        text-align: center;
+        position: relative;
+        overflow: hidden;
+    }
+    .pp-theme .btn::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(120deg, transparent, rgba(255, 255, 255, 0.12), transparent);
+        transform: translateX(-120%);
+        transition: transform 420ms cubic-bezier(0.4, 0, 0.2, 1);
+        pointer-events: none;
+    }
+    .pp-theme .btn:hover::after,
+    .pp-theme .btn:focus::after {
+        transform: translateX(120%);
+    }
+    .pp-theme .label-info,
+    .pp-theme .badge-info {
+        background: rgba(6, 182, 212, 0.15) !important;
+        border-color: rgba(6, 182, 212, 0.42);
+        color: #a5f3fc !important;
+    }
+    .pp-theme .text-danger { color: #fca5a5 !important; }
+    .pp-theme .text-warning { color: #fde68a !important; }
+    .pp-theme .text-success { color: #bbf7d0 !important; }
+    .pp-theme .qf-summary,
+    .pp-theme .pp-rum-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+    }
+    .pp-theme .qf-card,
+    .pp-theme .pp-rum-card,
+    .pp-theme .pp-console,
+    .pp-theme .pp-pty-wrap,
+    .pp-theme .pp-dark-shell,
+    .pp-theme .qf-shell {
+        background: #09090d !important;
+        border: 1px solid rgba(139, 92, 246, 0.24) !important;
+        border-radius: 12px !important;
+        color: #d8d8e8 !important;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 12px 34px rgba(0, 0, 0, 0.24) !important;
+    }
+    .pp-theme .qf-card {
+        padding: 12px;
+    }
+    .pp-theme .qf-card .label,
+    .pp-theme .pp-rum-label,
+    .pp-theme .qf-meta {
+        color: #a6a6b8 !important;
+    }
+    .pp-theme .qf-card .value,
+    .pp-theme .qf-title,
+    .pp-theme .pp-rum-value {
+        color: #f7f7fb !important;
+    }
+    .pp-theme .pp-rum-value {
+        font-size: 30px;
+        font-weight: 800;
+        text-shadow: 0 0 18px rgba(139, 92, 246, 0.2);
+    }
+    .pp-theme .pp-pill.good { background: rgba(16, 185, 129, 0.18) !important; color: #bbf7d0 !important; border: 1px solid rgba(16, 185, 129, 0.42); }
+    .pp-theme .pp-pill.ni { background: rgba(245, 158, 11, 0.18) !important; color: #fde68a !important; border: 1px solid rgba(245, 158, 11, 0.42); }
+    .pp-theme .pp-pill.poor { background: rgba(239, 68, 68, 0.18) !important; color: #fecaca !important; border: 1px solid rgba(239, 68, 68, 0.42); }
+    .pp-theme .pp-console-output,
+    .pp-theme #pp-pty-terminal,
+    .pp-theme textarea[style],
+    .pp-theme pre {
+        background: #07070b !important;
+        border-color: rgba(139, 92, 246, 0.24) !important;
+        color: #e8e8f4 !important;
+    }
+    .pp-theme .qf-group.panel,
+    .pp-theme .qf-group .panel-heading,
+    .pp-theme .qf-group .panel-body,
+    .pp-theme .qf-group .panel-collapse {
+        background: #0b0b10 !important;
+        border-color: rgba(139, 92, 246, 0.22) !important;
+    }
+    .pp-theme .qf-group .panel-title > a {
+        color: #f7f7fb !important;
+    }
+    @keyframes pp-card-in {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
     .pp-theme input[type="checkbox"] {
         -webkit-appearance: none;
         appearance: none;
@@ -393,6 +558,17 @@
         }
         .pp-theme .btn {
             margin-bottom: 6px;
+            width: 100%;
+        }
+        .pp-theme .form-inline {
+            display: block;
+        }
+        .pp-theme .form-inline .form-group {
+            margin-bottom: 8px;
+        }
+        .pp-theme .qf-summary,
+        .pp-theme .pp-rum-grid {
+            grid-template-columns: 1fr;
         }
     }
 </style>

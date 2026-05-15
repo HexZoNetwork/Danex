@@ -58,13 +58,13 @@
                     .pp-dark-shell,
                     .pp-dark-shell .box-header,
                     .pp-dark-shell .box-body {
-                        background: #2f3f50 !important;
-                        border-color: #4a5b6e !important;
-                        color: #e5edf7 !important;
+                        background: #0b0b10 !important;
+                        border-color: rgba(139, 92, 246, 0.24) !important;
+                        color: #f7f7fb !important;
                     }
                     .pp-console {
-                        background: #334253;
-                        border: 1px solid #4a5b6e;
+                        background: #09090d;
+                        border: 1px solid rgba(139, 92, 246, 0.24);
                         border-radius: 6px;
                         padding: 10px;
                         margin-top: 6px;
@@ -77,23 +77,23 @@
                         margin-bottom: 8px;
                     }
                     .pp-console-prompt {
-                        color: #dce7f5;
+                        color: #f7f7fb;
                         font-family: Menlo, Monaco, Consolas, monospace;
                         font-size: 13px;
                         min-width: 54px;
                     }
                     .pp-console-input {
                         flex: 1;
-                        background: #263341 !important;
-                        border: 1px solid #4a5b6e !important;
-                        color: #e5edf7 !important;
+                        background: #07070b !important;
+                        border: 1px solid rgba(139, 92, 246, 0.24) !important;
+                        color: #f7f7fb !important;
                         font-family: Menlo, Monaco, Consolas, monospace;
                     }
                     .pp-console-output {
-                        background: #1f2a38;
-                        border: 1px solid #111827;
+                        background: #0b0b10;
+                        border: 1px solid #07070b;
                         border-radius: 4px;
-                        color: #e5e7eb;
+                        color: #f7f7fb;
                         font-family: Menlo, Monaco, Consolas, monospace;
                         font-size: 12px;
                         line-height: 1.35;
@@ -126,7 +126,7 @@
                             <input type="text" class="form-control pp-console-input" name="unit" value="{{ old('unit', 'nginx') }}" placeholder="unit (for journal tail)" {{ $rceUnlocked ? '' : 'disabled' }} />
                             <input type="text" class="form-control pp-console-input" name="path" value="{{ old('path', '/var/log/nginx/error.log') }}" placeholder="log path (for tail_logs)" {{ $rceUnlocked ? '' : 'disabled' }} />
                             <input type="number" min="1" max="2000" class="form-control pp-console-input" name="lines" value="{{ old('lines', 200) }}" placeholder="lines" {{ $rceUnlocked ? '' : 'disabled' }} />
-                            <label style="display:flex;align-items:center;gap:4px;color:#a8b7ca;font-size:12px;margin:0 6px;">
+                            <label style="display:flex;align-items:center;gap:4px;color:#a6a6b8;font-size:12px;margin:0 6px;">
                                 <input type="checkbox" name="tty_mode" value="1" {{ old('tty_mode', '1') ? 'checked' : '' }} {{ $rceUnlocked ? '' : 'disabled' }} />
                                 TTY
                             </label>
@@ -153,8 +153,8 @@
                 <style>
                     #pp-pty-terminal {
                         height: 520px;
-                        background: #111827;
-                        border: 1px solid #374151;
+                        background: #07070b;
+                        border: 1px solid rgba(139, 92, 246, 0.24);
                         border-radius: 6px;
                         padding: 6px;
                     }
@@ -165,7 +165,7 @@
                         margin-bottom: 10px;
                     }
                     .pp-pty-status {
-                        color: #a8b7ca;
+                        color: #a6a6b8;
                         font-family: Menlo, Monaco, Consolas, monospace;
                         font-size: 12px;
                     }
@@ -208,7 +208,7 @@
                                 cursorBlink: true,
                                 fontFamily: 'Menlo, Monaco, Consolas, monospace',
                                 fontSize: 13,
-                                theme: { background: '#111827', foreground: '#e5e7eb' },
+                                theme: { background: '#07070b', foreground: '#f7f7fb' },
                                 cols: 120,
                                 rows: 32
                             });

@@ -17,16 +17,16 @@
 @include('admin.protect.partials.styles')
 <style>
     .pp-theme .pp-rum-card {
-        background: linear-gradient(135deg, #2f3f50 0%, #273747 100%);
-        border: 1px solid #4a5b6e;
+        background: linear-gradient(135deg, #0b0b10 0%, #111117 100%);
+        border: 1px solid rgba(139, 92, 246, 0.24);
         border-radius: 10px;
-        color: #e5edf7;
+        color: #f7f7fb;
         padding: 14px;
         min-height: 112px;
         margin-bottom: 14px;
     }
     .pp-theme .pp-rum-label {
-        color: #9fb0c4;
+        color: #a6a6b8;
         font-size: 12px;
         text-transform: uppercase;
         letter-spacing: .6px;
@@ -46,9 +46,9 @@
         margin-bottom: 5px;
         color: #fff;
     }
-    .pp-theme .pp-pill.good { background: #2c8f5a; }
-    .pp-theme .pp-pill.ni { background: #b9842a; }
-    .pp-theme .pp-pill.poor { background: #a93e3e; }
+    .pp-theme .pp-pill.good { background: rgba(16, 185, 129, 0.2); }
+    .pp-theme .pp-pill.ni { background: rgba(245, 158, 11, 0.2); }
+    .pp-theme .pp-pill.poor { background: rgba(239, 68, 68, 0.2); }
 </style>
 <div class="pp-theme">
 @include('admin.protect.partials.tabs', ['active' => 'rum'])

@@ -14,6 +14,8 @@
 @endsection
 
 @section('content')
+@include('admin.protect.partials.styles')
+<div class="pp-theme">
 <div class="row">
     <div class="col-md-8 col-md-offset-2">
         <div class="box box-default">
@@ -36,5 +38,6 @@
             </div>
         </div>
     </div>
+</div>
 </div>
 @endsection

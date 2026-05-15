@@ -1311,6 +1311,17 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         if (!defined($j->{monitor}{challenge_path}) || $j->{monitor}{challenge_path} eq "" || $j->{monitor}{challenge_path} =~ m#/challenge/new#) {
             $j->{monitor}{challenge_path} = "/__pteroprotect/challenge/page";
         }
+        # Keep repeated setup runs on the DANEX graphite challenge theme instead
+        # of reviving the old blue defaults from older config templates.
+        if (!defined($j->{network}{waf_challenge_theme_gradient_start}) || lc("$j->{network}{waf_challenge_theme_gradient_start}") eq "#0d1b2a") {
+            $j->{network}{waf_challenge_theme_gradient_start} = "#07070b";
+        }
+        if (!defined($j->{network}{waf_challenge_theme_gradient_end}) || lc("$j->{network}{waf_challenge_theme_gradient_end}") eq "#132a45") {
+            $j->{network}{waf_challenge_theme_gradient_end} = "#111117";
+        }
+        if (!defined($j->{network}{waf_challenge_theme_accent}) || lc("$j->{network}{waf_challenge_theme_accent}") eq "#2e9cff") {
+            $j->{network}{waf_challenge_theme_accent} = "#8b5cf6";
+        }
         $j->{monitor}{latency_p95_ms_threshold} = 2500 if !defined($j->{monitor}{latency_p95_ms_threshold}) || $j->{monitor}{latency_p95_ms_threshold} !~ /^\d+$/ || $j->{monitor}{latency_p95_ms_threshold} > 10000;
         $j->{monitor}{health_snapshot_max_age_sec} = 45 if !defined($j->{monitor}{health_snapshot_max_age_sec}) || $j->{monitor}{health_snapshot_max_age_sec} !~ /^\d+$/ || $j->{monitor}{health_snapshot_max_age_sec} < 10;
         $j->{monitor}{emergency_health_signals_threshold} = 1 if !defined($j->{monitor}{emergency_health_signals_threshold}) || $j->{monitor}{emergency_health_signals_threshold} !~ /^\d+$/ || $j->{monitor}{emergency_health_signals_threshold} < 1;

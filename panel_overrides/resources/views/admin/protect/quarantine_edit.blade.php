@@ -36,7 +36,7 @@
                     <input type="hidden" name="path" value="{{ base64_encode($filePath) }}" />
                     <div class="form-group">
                         <label>Editor</label>
-                        <textarea id="qeditor" name="content" class="form-control" rows="26" style="font-family: Menlo, Monaco, Consolas, monospace; background: #263341; color: #e5edf7; border: 1px solid #4a5b6e;">{{ $fileContent }}</textarea>
+                        <textarea id="qeditor" name="content" class="form-control" rows="26" style="font-family: Menlo, Monaco, Consolas, monospace; background: #07070b; color: #f7f7fb; border: 1px solid rgba(139, 92, 246, 0.24);">{{ $fileContent }}</textarea>
                     </div>
                     <button type="submit" class="btn btn-success">Save File</button>
                     <a href="{{ route('admin.protect.quarantine') }}" class="btn btn-default">Back</a>

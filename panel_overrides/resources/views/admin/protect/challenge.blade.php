@@ -75,7 +75,7 @@
                     <div class="checkbox">
                         <label>
                             <input type="checkbox" name="waf_challenge_theme_custom_enabled" value="1" @if((bool)($cs['theme_custom_enabled'] ?? false)) checked @endif>
-                            Enable Custom Gradient Theme (default tetap biru klasik kalau off)
+                            Enable Custom Challenge Colors (default tetap graphite DANEX kalau off)
                         </label>
                     </div>
                     <div class="row">

@@ -47,9 +47,9 @@ struct Settings {
     int pow_bits = 14;
     int challenge_type = 1;
     bool challenge_theme_custom_enabled = false;
-    std::string challenge_theme_gradient_start = "#0d1b2a";
-    std::string challenge_theme_gradient_end = "#132a45";
-    std::string challenge_theme_accent = "#2e9cff";
+    std::string challenge_theme_gradient_start = "#07070b";
+    std::string challenge_theme_gradient_end = "#111117";
+    std::string challenge_theme_accent = "#8b5cf6";
     std::string cookie_name = "pp_clearance";
     std::string cookie_secure_mode = "auto";
     int session_ip_prefix_v4 = 24;
@@ -120,7 +120,10 @@ static std::mutex g_source_bucket_mu;
 static std::map<std::string, std::pair<std::time_t, int>> g_source_buckets;
 static std::string random_nonce();
 static std::string to_lower(std::string s);
+static bool base64_decode(const std::string& in, std::string& out);
+static std::string hmac_sha256_hex(const std::string& key, const std::string& data);
 static bool secure_equals(const std::string& a, const std::string& b);
+static bool daemon_bearer_token_format_ok(const std::string& token);
 static std::string ip_prefix_of(const std::string& ip, int v4_prefix_bits, int v6_prefix_bits);
 static bool ip_in_same_prefix(const std::string& a, const std::string& b, int v4_prefix_bits, int v6_prefix_bits);
 
@@ -184,6 +187,44 @@ static bool begins_with(const std::string& value, const std::string& prefix) {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
 
+static bool base64_decode(const std::string& in, std::string& out) {
+    out.clear();
+    if (in.empty()) return true;
+    BIO* b64 = BIO_new(BIO_f_base64());
+    BIO* bio = BIO_new_mem_buf(in.data(), static_cast<int>(in.size()));
+    if (!b64 || !bio) {
+        if (b64) BIO_free(b64);
+        if (bio) BIO_free(bio);
+        return false;
+    }
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+    bio = BIO_push(b64, bio);
+    std::string buf(in.size(), '\0');
+    int n = BIO_read(bio, &buf[0], static_cast<int>(buf.size()));
+    BIO_free_all(bio);
+    if (n < 0) return false;
+    buf.resize(static_cast<std::size_t>(n));
+    out.swap(buf);
+    return true;
+}
+
+static std::string hmac_sha256_hex(const std::string& key, const std::string& data) {
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int len = 0;
+    HMAC(EVP_sha256(),
+         reinterpret_cast<const unsigned char*>(key.data()), static_cast<int>(key.size()),
+         reinterpret_cast<const unsigned char*>(data.data()), data.size(),
+         digest, &len);
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.resize(static_cast<std::size_t>(len) * 2);
+    for (unsigned int i = 0; i < len; ++i) {
+        out[2 * i] = kHex[(digest[i] >> 4) & 0x0F];
+        out[2 * i + 1] = kHex[digest[i] & 0x0F];
+    }
+    return out;
+}
+
 static bool is_panel_api_token_format(const std::string& token) {
     if (!(begins_with(token, "ptla_") || begins_with(token, "ptlc_"))) return false;
     if (token.size() <= 16 || token.size() > 255) return false;
@@ -192,6 +233,88 @@ static bool is_panel_api_token_format(const std::string& token) {
         if (!ok) return false;
     }
     return true;
+}
+
+static bool parse_laravel_app_key(const std::string& app_key, std::string& out_key) {
+    std::string raw = trim(app_key);
+    if (raw.empty()) return false;
+    if (begins_with(raw, "base64:")) {
+        return base64_decode(raw.substr(7), out_key);
+    }
+    out_key = raw;
+    return !out_key.empty();
+}
+
+static bool php_unserialize_string(const std::string& input, std::string& out) {
+    if (input.size() < 6 || input[0] != 's' || input[1] != ':') return false;
+    std::size_t len_start = 2;
+    std::size_t len_end = input.find(':', len_start);
+    if (len_end == std::string::npos) return false;
+    std::size_t quote = len_end + 1;
+    if (quote >= input.size() || input[quote] != '"') return false;
+    std::size_t end_quote = input.rfind("\";");
+    if (end_quote == std::string::npos || end_quote <= quote) return false;
+    out = input.substr(quote + 1, end_quote - quote - 1);
+    return true;
+}
+
+static bool laravel_decrypt_string(const std::string& app_key, const std::string& payload_b64, std::string& out) {
+    std::string key;
+    if (!parse_laravel_app_key(app_key, key)) return false;
+
+    std::string payload_json;
+    if (!base64_decode(payload_b64, payload_json)) return false;
+
+    json payload = json::parse(payload_json, nullptr, false);
+    if (payload.is_discarded() || !payload.is_object()) return false;
+
+    const std::string iv_b64 = trim(payload.value("iv", ""));
+    const std::string value_b64 = trim(payload.value("value", ""));
+    const std::string mac = to_lower(trim(payload.value("mac", "")));
+    if (iv_b64.empty() || value_b64.empty() || mac.empty()) return false;
+
+    std::string expected_mac = to_lower(hmac_sha256_hex(key, iv_b64 + value_b64));
+    if (!secure_equals(expected_mac, mac)) return false;
+
+    std::string iv;
+    if (!base64_decode(iv_b64, iv)) return false;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return false;
+
+    const EVP_CIPHER* cipher = nullptr;
+    if (key.size() == 32) cipher = EVP_aes_256_cbc();
+    else if (key.size() == 16) cipher = EVP_aes_128_cbc();
+    if (!cipher) {
+        EVP_CIPHER_CTX_free(ctx);
+        return false;
+    }
+
+    std::string ciphertext;
+    if (!base64_decode(value_b64, ciphertext)) {
+        EVP_CIPHER_CTX_free(ctx);
+        return false;
+    }
+
+    bool ok = false;
+    int out_len1 = 0;
+    int out_len2 = 0;
+    std::string plain(ciphertext.size() + EVP_CIPHER_block_size(cipher), '\0');
+    if (EVP_DecryptInit_ex(ctx, cipher, nullptr,
+            reinterpret_cast<const unsigned char*>(key.data()),
+            reinterpret_cast<const unsigned char*>(iv.data())) == 1 &&
+        EVP_DecryptUpdate(ctx,
+            reinterpret_cast<unsigned char*>(&plain[0]), &out_len1,
+            reinterpret_cast<const unsigned char*>(ciphertext.data()),
+            static_cast<int>(ciphertext.size())) == 1 &&
+        EVP_DecryptFinal_ex(ctx,
+            reinterpret_cast<unsigned char*>(&plain[0]) + out_len1, &out_len2) == 1) {
+        plain.resize(static_cast<std::size_t>(out_len1 + out_len2));
+        ok = php_unserialize_string(plain, out);
+    }
+
+    EVP_CIPHER_CTX_free(ctx);
+    return ok;
 }
 
 static bool token_cache_contains_valid_api_token(const std::string& token) {
@@ -455,6 +578,37 @@ static Phase1ChallengeSpec build_phase1_challenge(std::mt19937& gen, int challen
     int safe_type = challenge_type;
     if (safe_type < 1) safe_type = 1;
     if (safe_type > 66) safe_type = 66;
+
+    auto to_upper_ascii = [](std::string s) -> std::string {
+        for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        return s;
+    };
+    auto reverse_str = [](std::string s) -> std::string {
+        std::reverse(s.begin(), s.end());
+        return s;
+    };
+    auto rotate_left = [](const std::string& s, int n) -> std::string {
+        if (s.empty()) return s;
+        int k = n % static_cast<int>(s.size());
+        if (k < 0) k += static_cast<int>(s.size());
+        return s.substr(static_cast<std::size_t>(k)) + s.substr(0, static_cast<std::size_t>(k));
+    };
+    auto caesar_encode = [](std::string s, int sh) -> std::string {
+        for (char& c : s) {
+            if (c >= 'a' && c <= 'z') c = static_cast<char>('a' + ((c - 'a' + sh) % 26));
+            else if (c >= 'A' && c <= 'Z') c = static_cast<char>('A' + ((c - 'A' + sh) % 26));
+        }
+        return s;
+    };
+    auto remove_vowels = [](const std::string& s) -> std::string {
+        std::string o;
+        for (char c : s) {
+            char l = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (l == 'a' || l == 'e' || l == 'i' || l == 'o' || l == 'u') continue;
+            o.push_back(c);
+        }
+        return o.empty() ? s : o;
+    };
 
     // Exactly one numeric challenge.
     if (safe_type == 1) {
@@ -773,16 +927,16 @@ static Settings load_settings() {
             s.challenge_type = std::max(1, std::min(66, json_get_int(net, "waf_challenge_type", 1)));
             s.challenge_theme_custom_enabled = parse_bool(net.value("waf_challenge_theme_custom_enabled", json(false)), false);
             s.challenge_theme_gradient_start = sanitize_hex_color(
-                json_get_string(net, "waf_challenge_theme_gradient_start", "#0d1b2a"),
-                "#0d1b2a"
+                json_get_string(net, "waf_challenge_theme_gradient_start", "#07070b"),
+                "#07070b"
             );
             s.challenge_theme_gradient_end = sanitize_hex_color(
-                json_get_string(net, "waf_challenge_theme_gradient_end", "#132a45"),
-                "#132a45"
+                json_get_string(net, "waf_challenge_theme_gradient_end", "#111117"),
+                "#111117"
             );
             s.challenge_theme_accent = sanitize_hex_color(
-                json_get_string(net, "waf_challenge_theme_accent", "#2e9cff"),
-                "#2e9cff"
+                json_get_string(net, "waf_challenge_theme_accent", "#8b5cf6"),
+                "#8b5cf6"
             );
             s.cookie_name = trim(json_get_string(net, "waf_challenge_cookie_name", "pp_clearance"));
             if (s.cookie_name.empty()) s.cookie_name = "pp_clearance";
@@ -969,29 +1123,29 @@ static std::string challenge_mode_name(int challenge_type) {
 static std::string challenge_theme_css_vars(const Settings& s, int type) {
     (void)type;
     if (!s.challenge_theme_custom_enabled) {
-        return "--bg:#0d1b2a;"
-               "--bg2:#132a45;"
-               "--card:#10233a;"
-               "--line:#325b8a;"
-               "--text:#e8f2ff;"
-               "--muted:#a9c4e4;"
-               "--acc:#2e9cff;"
-               "--acc2:#67b6ff;"
-               "--err:#ff8f8f;"
-               "--radius:10px;";
+        return "--bg:#07070b;"
+               "--bg2:#111117;"
+               "--card:#0b0b10;"
+               "--line:rgba(139,92,246,.42);"
+               "--text:#f7f7fb;"
+               "--muted:#a6a6b8;"
+               "--acc:#8b5cf6;"
+               "--acc2:#06b6d4;"
+               "--err:#ef4444;"
+               "--radius:12px;";
     }
-    const std::string gs = sanitize_hex_color(s.challenge_theme_gradient_start, "#0d1b2a");
-    const std::string ge = sanitize_hex_color(s.challenge_theme_gradient_end, "#132a45");
-    const std::string ac = sanitize_hex_color(s.challenge_theme_accent, "#2e9cff");
+    const std::string gs = sanitize_hex_color(s.challenge_theme_gradient_start, "#07070b");
+    const std::string ge = sanitize_hex_color(s.challenge_theme_gradient_end, "#111117");
+    const std::string ac = sanitize_hex_color(s.challenge_theme_accent, "#8b5cf6");
     return "--bg:" + gs + ";"
            "--bg2:" + ge + ";"
-           "--card:#10233a;"
-           "--line:#325b8a;"
-           "--text:#e8f2ff;"
-           "--muted:#a9c4e4;"
+           "--card:#0b0b10;"
+           "--line:rgba(139,92,246,.42);"
+           "--text:#f7f7fb;"
+           "--muted:#a6a6b8;"
            "--acc:" + ac + ";"
            "--acc2:" + ac + ";"
-           "--err:#ff8f8f;"
+           "--err:#ef4444;"
            "--radius:10px;";
 }
 
@@ -1626,6 +1780,24 @@ static std::string pattern_hint_text(const std::vector<int>& nodes) {
     return oss.str();
 }
 
+static bool daemon_bearer_token_format_ok(const std::string& token) {
+    std::string t = trim(token);
+    if (t.size() < 24 || t.size() > 400) return false;
+    std::size_t dot = t.find('.');
+    if (dot == std::string::npos || dot == 0 || dot + 1 >= t.size()) return false;
+    if (t.find('.', dot + 1) != std::string::npos) return false;
+    std::string left = t.substr(0, dot);
+    std::string right = t.substr(dot + 1);
+    if (left.size() < 6 || left.size() > 128) return false;
+    if (right.size() < 12 || right.size() > 320) return false;
+    for (char c : t) {
+        if (c == '.') continue;
+        const bool ok = std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
 static bool secure_equals(const std::string& a, const std::string& b) {
     if (a.size() != b.size()) return false;
     unsigned char diff = 0;
@@ -1795,6 +1967,13 @@ static bool has_active_session_binding(const std::string& ip, const std::string&
     return !it->second.sid.empty() && it->second.exp >= now;
 }
 
+static void erase_sessions_for_ua(const std::string& ua_fp) {
+    for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end();) {
+        if (it->second.ua == ua_fp) it = g_ip_session_map.erase(it);
+        else ++it;
+    }
+}
+
 static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& req, const std::string& client_ip) {
     auto internal_it = req.headers.find("x-pteroprotect-internal");
     const bool internal_marked = (internal_it != req.headers.end() && trim(internal_it->second) == "1");
@@ -1873,6 +2052,7 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
         const bool ip_prefix_ok = ip_in_same_prefix(token_ip, ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6);
         const bool ua_match = (token_ua == ua_fp);
         if (!ua_match && !ip_prefix_ok) return fail("ua_miss");
+        if (!ip_prefix_ok) return fail("ip_prefix_miss");
         {
             std::lock_guard<std::mutex> lock(g_session_mu);
             const std::time_t now = std::time(nullptr);
@@ -1899,23 +2079,9 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
             // clearance to sid+UA and allow up to five recent IPs for that sid.
             for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end(); ++it) {
                 if (!valid_entry(it->second, ua_fp)) {
-                    if (!( !ua_match && valid_entry_relaxed(it->second) )) {
-                        continue;
-                    }
+                    if (!(!ua_match && valid_entry_relaxed(it->second))) continue;
                 }
-                bool can_migrate = session_has_ip(it->second, ip) || it->second.ips.size() < 5;
-                if (!can_migrate && !it->second.ips.empty()) {
-                    for (const auto& known_ip : it->second.ips) {
-                        if (ip_geo_similar(known_ip, ip)) {
-                            can_migrate = true;
-                            break;
-                        }
-                    }
-                }
-                if (!can_migrate && ip_prefix_ok) {
-                    can_migrate = true;
-                }
-                if (can_migrate) {
+                if (session_has_ip(it->second, ip) || it->second.ips.size() < 5) {
                     SessionRec migrated = it->second;
                     migrated.ua = ua_fp;
                     session_add_ip(migrated, ip);
@@ -1923,7 +2089,6 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
                     return true;
                 }
             }
-            if (!ip_prefix_ok) return fail("ip_prefix_miss");
             return fail("session_not_found");
         }
     } catch (...) {
@@ -2230,9 +2395,9 @@ static void handle_client(int fd, std::string remote_ip) {
             else if (hinted_hc >= 12) adaptive_pow_bits += 1;
         }
         if (hinted_dm > 0.0 && hinted_dm <= 2.0) adaptive_pow_bits -= 1;
-        if (hinted_mobile) adaptive_pow_bits -= 1;
-        if (suspicious_low_power_hint) adaptive_pow_bits = std::max(adaptive_pow_bits + 2, s.pow_bits + 1);
-        const int min_pow_bits = s.strict_mode ? std::max(12, s.pow_bits - 1) : 8;
+        if (hinted_mobile) adaptive_pow_bits -= 2;
+        if (suspicious_low_power_hint) adaptive_pow_bits = std::max(adaptive_pow_bits, s.pow_bits - 1);
+        const int min_pow_bits = s.strict_mode ? (hinted_mobile ? 10 : std::max(11, s.pow_bits - 2)) : 8;
         adaptive_pow_bits = std::max(min_pow_bits, std::min(24, adaptive_pow_bits));
 
         int wait_min_ms = 8 * 1000;
@@ -2257,11 +2422,11 @@ static void handle_client(int fd, std::string remote_ip) {
         if (hinted_dm > 0.0) {
             adaptive_pow_mem_mb = static_cast<int>(std::round(hinted_dm * 1024.0 * 0.10));
         }
-        if (hinted_mobile) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 64);
-        else adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 192);
-        if (hinted_hc > 0 && hinted_hc <= 2) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 48);
-        if (suspicious_low_power_hint) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, 128);
-        if (s.strict_mode) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, hinted_mobile ? 32 : 64);
+        if (hinted_mobile) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 32);
+        else adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 96);
+        if (hinted_hc > 0 && hinted_hc <= 2) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 24);
+        if (suspicious_low_power_hint) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, 32);
+        if (s.strict_mode) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, hinted_mobile ? 16 : 32);
         adaptive_pow_mem_mb = std::max(8, adaptive_pow_mem_mb);
         int adaptive_pow_cpu_level = 4;
         if (hinted_hc > 0) {
@@ -2271,9 +2436,9 @@ static void handle_client(int fd, std::string remote_ip) {
             else if (hinted_hc <= 10) adaptive_pow_cpu_level = 5;
             else adaptive_pow_cpu_level = 6;
         }
-        if (hinted_mobile) adaptive_pow_cpu_level = std::max(2, adaptive_pow_cpu_level - 1);
-        if (suspicious_low_power_hint) adaptive_pow_cpu_level = std::max(adaptive_pow_cpu_level, 5);
-        if (s.strict_mode) adaptive_pow_cpu_level = std::max(adaptive_pow_cpu_level, hinted_mobile ? 3 : 4);
+        if (hinted_mobile) adaptive_pow_cpu_level = std::max(1, adaptive_pow_cpu_level - 2);
+        if (suspicious_low_power_hint) adaptive_pow_cpu_level = std::max(adaptive_pow_cpu_level, 3);
+        if (s.strict_mode) adaptive_pow_cpu_level = std::max(adaptive_pow_cpu_level, hinted_mobile ? 2 : 3);
         adaptive_pow_cpu_level = std::max(1, std::min(8, adaptive_pow_cpu_level));
         apply_challenge_profile_tuning(
             challenge_type,
@@ -2547,62 +2712,82 @@ static void handle_client(int fd, std::string remote_ip) {
         const std::string challenge_theme_vars = challenge_theme_css_vars(s, challenge_type);
         std::string html =
             "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            "<title>PteroProtect Challenge</title>"
+            "<title>DANEX X EL7 Clearance</title>"
             "<style>"
             ":root{" + challenge_theme_vars + "}"
             "*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:18px;"
             "font-family:'Trebuchet MS','Segoe UI',Tahoma,sans-serif;color:var(--text);"
-            "background:radial-gradient(1200px 580px at 5% -5%,#17365e 0%,transparent 62%),"
-            "radial-gradient(1000px 620px at 95% 110%,#0f3954 0%,transparent 60%),"
+            "background:radial-gradient(1200px 580px at 5% -5%,rgba(139,92,246,.16) 0%,transparent 62%),"
+            "radial-gradient(1000px 620px at 95% 110%,rgba(6,182,212,.07) 0%,transparent 60%),"
             "linear-gradient(180deg,var(--bg),var(--bg2))}"
-            ".card{width:min(840px,98vw);background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.015));"
-            "border:1px solid rgba(103,153,204,.36);border-radius:var(--radius,12px);box-shadow:0 30px 80px rgba(0,0,0,.46);overflow-y:auto;max-height:98vh}"
-            ".head{padding:16px 18px;border-bottom:1px solid rgba(103,153,204,.28);display:flex;align-items:center;gap:10px}"
-            ".dot{width:10px;height:10px;border-radius:999px;background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 0 20px rgba(75,184,255,.85)}"
+            ".card{width:min(840px,98vw);background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012)),var(--card);"
+            "border:1px solid var(--line);border-radius:var(--radius,12px);box-shadow:0 30px 80px rgba(0,0,0,.52),0 0 42px rgba(139,92,246,.16);overflow-y:auto;max-height:98vh}"
+            ".head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;background:#111117}"
+            ".dot{width:10px;height:10px;border-radius:999px;background:var(--acc);box-shadow:0 0 20px rgba(139,92,246,.85)}"
             ".title{font-weight:800;letter-spacing:.25px}.sub{margin-left:auto;font-size:12px;color:var(--muted);font-weight:600}"
-            ".body{padding:18px}.tabs{display:flex;gap:8px;margin:0 0 14px}.tab{flex:1;text-align:center;padding:9px 10px;border:1px solid rgba(103,153,204,.32);border-radius:11px;color:var(--muted);font-size:12px}"
-            ".tab.on{color:#d7ebff;background:linear-gradient(180deg,rgba(22,53,88,.92),rgba(14,40,68,.92));border-color:#4f82ba}.pane{display:none}.pane.on{display:block}.big{padding:16px;border:1px solid rgba(103,153,204,.28);border-radius:13px;background:linear-gradient(180deg,#0a1a2d,#0a1728)}"
-            ".phase-ind{display:inline-block;margin:0 0 8px;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.9px;border:1px solid #2f5b8b;color:#cce6ff;background:#132742}"
+            ".body{padding:18px}.tabs{display:flex;gap:8px;margin:0 0 14px}.tab{flex:1;text-align:center;padding:9px 10px;border:1px solid rgba(139,92,246,.28);border-radius:11px;color:var(--muted);font-size:12px;background:#0b0b10}"
+            ".tab.on{color:#fff;background:var(--acc);border-color:rgba(255,255,255,.18);box-shadow:0 0 22px rgba(139,92,246,.26)}.pane{display:none}.pane.on{display:block}.big{padding:16px;border:1px solid rgba(139,92,246,.24);border-radius:13px;background:#0b0b10}"
+            ".phase-ind{display:inline-block;margin:0 0 8px;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.9px;border:1px solid rgba(139,92,246,.38);color:#ddd6fe;background:rgba(139,92,246,.12)}"
             ".phase-ind.p1{border-color:#1f7b4a;background:#113324;color:#bfffe0;box-shadow:0 0 14px rgba(34,180,95,.22)}"
             ".phase-ind.p2{border-color:#7a2db3;background:#2a1440;color:#f2d9ff;box-shadow:0 0 14px rgba(196,103,255,.24)}"
             ".connbox{position:relative;min-height:56vh;max-height:74vh;padding:16px}.human-wrap{position:absolute;left:16px;top:16px;display:block}"
-            ".timer{font-size:32px;font-weight:900;letter-spacing:.7px;color:#d2eaff;text-shadow:0 0 14px rgba(83,171,255,.35)}.q{margin:0 0 10px;color:var(--muted);font-size:14px;line-height:1.5}"
-            ".qa{margin:0 0 12px;padding:12px;border:1px solid rgba(103,153,204,.3);border-radius:10px;background:#0a1a2d;color:#cae6ff;font-weight:700;white-space:pre-wrap}"
-            ".pat{margin:0 0 12px;padding:12px;border:1px solid rgba(103,153,204,.3);border-radius:10px;background:#07172a;display:none}"
-            ".pat canvas{display:block;width:100%;max-width:300px;aspect-ratio:1/1;background:#061221;border:1px solid #2a5279;border-radius:10px;touch-action:none;margin:0 auto}"
+            ".timer{font-size:32px;font-weight:900;letter-spacing:.7px;color:#f7f7fb;text-shadow:0 0 14px rgba(139,92,246,.4)}.q{margin:0 0 10px;color:var(--muted);font-size:14px;line-height:1.5}"
+            ".qa{margin:0 0 12px;padding:12px;border:1px solid rgba(139,92,246,.24);border-radius:10px;background:#111117;color:#f7f7fb;font-weight:700;white-space:pre-wrap}"
+            ".pat{margin:0 0 12px;padding:12px;border:1px solid rgba(139,92,246,.24);border-radius:10px;background:#0b0b10;display:none}"
+            ".pat canvas{display:block;width:100%;max-width:300px;aspect-ratio:1/1;background:#09090d;border:1px solid rgba(139,92,246,.32);border-radius:10px;touch-action:none;margin:0 auto}"
             ".row{display:flex;gap:10px}.row input{flex:1}"
-            "input,button{border-radius:11px;border:1px solid #325b8a;background:#0d2139;color:var(--text);padding:12px 14px;font-size:14px;outline:none}"
-            "input:focus{border-color:#5ca2ea;box-shadow:0 0 0 2px rgba(92,162,234,.22)}"
-            "button{cursor:pointer;background:linear-gradient(135deg,#206be0,#2e9cff);border-color:#45a8ff;font-weight:800;min-width:118px}"
-            "#human_btn{width:200px;min-height:34px;font-size:12px;padding:8px 12px;letter-spacing:.1px;box-shadow:0 8px 20px rgba(22,96,196,.32)}"
-            "button.secondary{background:#142b45;border-color:#2f5b8b;color:#cbe6ff}"
-            "button:hover{filter:brightness(1.07)}button:disabled{opacity:.66;cursor:not-allowed}"
-            ".hint{margin-top:10px;color:var(--muted);font-size:12px}.status{margin-top:10px;color:#9fd2ff;min-height:18px;font-size:13px}.err{margin-top:6px;color:var(--err);min-height:18px;font-size:13px}"
+            "input,button{border-radius:11px;border:1px solid rgba(139,92,246,.42);background:#0b0b10;color:var(--text);padding:12px 14px;font-size:14px;outline:none}"
+            "input:focus{border-color:var(--acc);box-shadow:0 0 0 2px rgba(139,92,246,.22)}"
+            "button{cursor:pointer;background:var(--acc);border-color:rgba(255,255,255,.18);font-weight:800;min-width:118px;box-shadow:0 0 24px rgba(139,92,246,.28);transition:transform .18s ease,box-shadow .18s ease}"
+            "#human_btn{width:200px;min-height:34px;font-size:12px;padding:8px 12px;letter-spacing:.1px;box-shadow:0 8px 22px rgba(139,92,246,.3)}"
+            "button.secondary{background:#0b0b10;border-color:rgba(139,92,246,.34);color:#d8d8e8}"
+            "button:hover{transform:translateY(-1px);box-shadow:0 0 32px rgba(139,92,246,.38)}button:disabled{opacity:.66;cursor:not-allowed;transform:none}"
+            ".hint{margin-top:10px;color:var(--muted);font-size:12px}.status{margin-top:10px;color:#a78bfa;min-height:18px;font-size:13px}.err{margin-top:6px;color:var(--err);min-height:18px;font-size:13px}"
             "@media (max-width:640px){.connbox{min-height:52vh}.row{flex-direction:column}button{width:100%}#human_btn{width:142px;min-height:30px;font-size:10px;padding:6px 8px}}"
             "body{background:linear-gradient(180deg,var(--bg),var(--bg2));font-family:'Segoe UI',Tahoma,sans-serif;padding:14px}"
             ".card{width:min(760px,98vw);background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.22)}"
             ".head{padding:12px 14px;border-bottom:1px solid var(--line)}.title{font-size:15px}.sub{font-size:12px}.dot{background:var(--acc);box-shadow:none}"
-            ".body{padding:14px}.tabs{margin:0 0 10px;gap:8px}.tab{padding:8px 10px;border-radius:7px;border-color:var(--line);background:#2d3a4d;color:var(--muted)}"
-            ".tab.on{background:#253347;border-color:#4d617d;color:var(--text)}"
+            ".body{padding:14px}.tabs{margin:0 0 10px;gap:8px}.tab{padding:8px 10px;border-radius:7px;border-color:var(--line);background:#0b0b10;color:var(--muted)}"
+            ".tab.on{background:#8b5cf6;border-color:rgba(255,255,255,.18);color:var(--text)}"
             ".big{background:transparent;border:0;padding:0}.connbox{min-height:260px;max-height:none;padding:10px 0 0 0;position:relative;display:block;overflow:hidden}"
             ".human-wrap{position:absolute;left:14px;top:90px;display:block;margin:0;z-index:2}"
-            ".phase-ind{border-radius:999px;padding:4px 10px;border-color:#516581;background:#31435a;color:#dce8f7;letter-spacing:.3px}"
-            ".phase-ind.p1,.phase-ind.p2{border-color:#516581;background:#31435a;color:#dce8f7;box-shadow:none}"
-            ".q{font-size:14px;color:var(--muted);margin:0 0 8px}.qa{margin:0 0 10px;padding:12px;border-radius:7px;border:1px solid var(--line);background:#2a3648;color:var(--text)}"
-            ".pat{margin:0 0 10px;padding:10px;border-radius:7px;border:1px solid var(--line);background:#2a3648}"
-            ".row{gap:8px}.row input{min-width:0}input,button{height:40px;padding:9px 12px;border-radius:7px;border:1px solid var(--line);background:#2a3648;color:var(--text)}"
-            "input:focus{border-color:#5d8fd1;box-shadow:0 0 0 1px rgba(93,143,209,.35)}"
-            "button{background:var(--acc);border-color:var(--acc);min-width:110px}button.secondary{background:#2a3648;border-color:var(--line);color:#cfe0f5}"
+            ".phase-ind{border-radius:999px;padding:4px 10px;border-color:rgba(139,92,246,.38);background:rgba(139,92,246,.12);color:#f7f7fb;letter-spacing:.3px}"
+            ".phase-ind.p1,.phase-ind.p2{border-color:rgba(139,92,246,.38);background:rgba(139,92,246,.12);color:#f7f7fb;box-shadow:none}"
+            ".q{font-size:14px;color:var(--muted);margin:0 0 8px}.qa{margin:0 0 10px;padding:12px;border-radius:7px;border:1px solid var(--line);background:#111117;color:var(--text)}"
+            ".pat{margin:0 0 10px;padding:10px;border-radius:7px;border:1px solid var(--line);background:#111117}"
+            ".row{gap:8px}.row input{min-width:0}input,button{height:40px;padding:9px 12px;border-radius:7px;border:1px solid var(--line);background:#111117;color:var(--text)}"
+            "input:focus{border-color:#8b5cf6;box-shadow:0 0 0 1px rgba(139,92,246,.35)}"
+            "button{background:var(--acc);border-color:var(--acc);min-width:110px}button.secondary{background:#111117;border-color:var(--line);color:#d8d8e8}"
             "#human_btn{width:auto;min-width:160px;min-height:34px;padding:0 12px;letter-spacing:.1px;box-shadow:none}"
-            "button:hover{filter:brightness(1.03)}.hint{font-size:13px;color:var(--muted)}.status{color:#9fc5ff}.err{color:var(--err)}.timer{text-shadow:none;font-size:24px}"
+            "button:hover{filter:brightness(1.03)}.hint{font-size:13px;color:var(--muted)}.status{color:#a78bfa}.err{color:var(--err)}.timer{text-shadow:none;font-size:24px}"
             "@media (max-width:640px){.card{width:100%}.body{padding:12px}.tab{padding:7px 8px}.q{font-size:13px}.row{flex-direction:column}button{width:100%}.connbox{min-height:200px;padding-top:8px}.human-wrap{top:76px}#human_btn{width:auto!important;min-width:120px;min-height:30px;font-size:10px;padding:0 8px}}"
+            "@keyframes dx-in{0%{opacity:0;transform:translateY(16px) scale(.985);filter:blur(5px)}100%{opacity:1;transform:translateY(0) scale(1);filter:blur(0)}}"
+            "@keyframes dx-pulse{0%,100%{opacity:.55;transform:scale(.9)}50%{opacity:1;transform:scale(1.14)}}"
+            "@keyframes dx-scan{0%{transform:translateY(-120%);opacity:0}28%,60%{opacity:.52}100%{transform:translateY(120%);opacity:0}}"
+            "@keyframes dx-mark{0%,100%{transform:translateX(-7px);opacity:.58}50%{transform:translateX(7px);opacity:1}}"
+            "html,body{height:100%;overflow:hidden}body{position:relative;display:grid;place-items:center;background:radial-gradient(900px 520px at 12% -8%,rgba(139,92,246,.18),transparent 64%),radial-gradient(760px 520px at 92% 104%,rgba(6,182,212,.08),transparent 62%),linear-gradient(180deg,#07070b,#111117)!important}"
+            "body:before{content:'';position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(90deg,rgba(255,255,255,.025) 0 1px,transparent 1px 64px),repeating-linear-gradient(0deg,rgba(255,255,255,.018) 0 1px,transparent 1px 64px);opacity:.62}"
+            "body:after{content:'';position:fixed;left:0;right:0;top:0;height:34vh;pointer-events:none;background:linear-gradient(180deg,transparent,rgba(139,92,246,.08),transparent);mix-blend-mode:screen;animation:dx-scan 8s linear infinite}"
+            ".card{position:relative;width:min(940px,calc(100vw - 22px))!important;max-height:calc(100vh - 22px)!important;border-radius:18px!important;background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012)),#0b0b10!important;border:1px solid rgba(139,92,246,.42)!important;box-shadow:0 32px 96px rgba(0,0,0,.62),0 0 58px rgba(139,92,246,.18)!important;animation:dx-in .42s cubic-bezier(.4,0,.2,1) both;overflow:hidden!important;display:flex;flex-direction:column}"
+            ".card:before{content:'';position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,transparent,rgba(139,92,246,.08),transparent);transform:translateX(-120%);animation:dx-scan 5.8s ease-in-out infinite}"
+            ".head{position:relative;display:grid!important;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center;padding:18px 20px!important;background:#111117!important;border-bottom:1px solid rgba(139,92,246,.28)!important}"
+            ".dot{display:none}.coremark{width:54px;height:44px;border-radius:13px;border:1px solid rgba(139,92,246,.52);background:#0b0b10;box-shadow:inset 0 0 20px rgba(139,92,246,.12),0 0 24px rgba(139,92,246,.16);position:relative;overflow:hidden}"
+            ".coremark:before{content:'';position:absolute;left:12px;right:12px;top:11px;height:3px;background:#8b5cf6;box-shadow:0 10px 0 #06b6d4,0 20px 0 rgba(139,92,246,.58);animation:dx-mark 1.5s ease-in-out infinite}"
+            ".brand{min-width:0;display:flex;flex-direction:column;gap:3px}.eyebrow{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:#a78bfa;font-weight:900}.title{font-size:22px!important;line-height:1;font-weight:900!important;letter-spacing:.08em;text-transform:uppercase;color:#f7f7fb!important}.sub{margin-left:0!important;justify-self:end;border:1px solid rgba(139,92,246,.3);background:#0b0b10;border-radius:999px;padding:7px 10px;color:#d8d8e8!important;font-size:11px!important;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}"
+            ".body{position:relative;padding:18px!important;overflow:auto!important;min-height:0;flex:1 1 auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}.pane.on{display:block;animation:dx-in .24s cubic-bezier(.4,0,.2,1) both}.telemetry{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:12px}.metric{border:1px solid rgba(139,92,246,.22);border-radius:11px;background:#09090d;padding:9px 10px;color:#a6a6b8;font-size:10px;letter-spacing:.12em;text-transform:uppercase}.metric b{display:block;margin-top:3px;color:#f7f7fb;font-size:12px;letter-spacing:.04em}"
+            ".tabs{display:grid!important;grid-template-columns:1fr 1fr;background:#09090d;border:1px solid rgba(139,92,246,.22);border-radius:12px;padding:6px;gap:6px!important}.tab{border-radius:9px!important;border:1px solid transparent!important;background:transparent!important;text-transform:uppercase;letter-spacing:.1em;font-weight:900}.tab.on{background:#8b5cf6!important;border-color:rgba(255,255,255,.18)!important;box-shadow:0 0 24px rgba(139,92,246,.28)!important;color:#fff!important}"
+            ".connbox{min-height:360px!important;border:1px solid rgba(139,92,246,.22)!important;border-radius:14px!important;background:radial-gradient(circle at 80% 20%,rgba(139,92,246,.12),transparent 18rem),#09090d!important;padding:18px!important;overflow:hidden!important}"
+            ".connbox:before{content:'BOOT SEQUENCE';position:absolute;right:18px;top:18px;color:rgba(167,139,250,.18);font-weight:900;font-size:30px;letter-spacing:.08em}.timer{font-size:44px!important;text-shadow:0 0 22px rgba(139,92,246,.45)!important}.human-wrap{left:auto!important;right:18px!important;top:auto!important;bottom:18px!important}.phase-ind{margin-top:2px!important}.qa,.pat,#phase1_widget{border-radius:12px!important}.pat{position:relative;z-index:2;overflow:visible!important}.pat canvas{width:min(100%,360px)!important;max-width:360px!important;border-color:rgba(139,92,246,.46)!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04),0 0 28px rgba(139,92,246,.12);cursor:pointer}.status,.err{border-radius:10px;padding:8px 10px;background:#09090d;border:1px solid rgba(139,92,246,.18)}"
+            "button{min-height:42px!important;padding:10px 15px!important;border-radius:10px!important;display:inline-flex!important;align-items:center;justify-content:center;gap:7px;line-height:1.1!important}#human_btn{min-width:190px!important;box-shadow:0 0 28px rgba(139,92,246,.34)!important}.row{position:relative;z-index:3;margin-top:10px!important}"
+            ".challenge-grid{display:grid;grid-template-columns:150px minmax(0,1fr);gap:14px;min-height:0}.tabs{display:flex!important;flex-direction:column!important;grid-template-columns:none!important;align-self:start;position:sticky;top:0;padding:8px!important;border-radius:14px!important;background:#09090d!important}.tab{position:relative;text-align:left!important;padding:12px 12px 12px 34px!important}.tab:before{content:'';position:absolute;left:12px;top:50%;width:9px;height:9px;border-radius:999px;background:#2b2b34;border:1px solid rgba(139,92,246,.35);transform:translateY(-50%)}.tab.on:before{background:#10b981;box-shadow:0 0 18px rgba(16,185,129,.52)}.monitor{min-width:0;border:1px solid rgba(139,92,246,.24);border-radius:16px;background:#07070b;box-shadow:inset 0 0 0 1px rgba(255,255,255,.025),0 20px 58px rgba(0,0,0,.34);overflow:hidden}.monitor-top{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:rgba(139,92,246,.18);border-bottom:1px solid rgba(139,92,246,.24)}.monitor-top span{display:block;background:#111117;padding:10px 12px;color:#8e8ea3;font-size:10px;letter-spacing:.12em;text-transform:uppercase}.monitor-top b{display:block;margin-top:3px;color:#f7f7fb;font-size:12px;letter-spacing:0}.pane{padding:16px!important}.pane.on{display:block!important}.connbox{min-height:340px!important;border:0!important;border-radius:0!important;background:radial-gradient(circle at 84% 16%,rgba(139,92,246,.16),transparent 18rem),linear-gradient(180deg,#09090d,#07070b)!important}.phase-ind{display:inline-flex!important;align-items:center;gap:8px}.phase-ind:before{content:'';width:8px;height:8px;border-radius:999px;background:currentColor;box-shadow:0 0 16px currentColor}.qa{font-family:Menlo,Consolas,monospace!important}.status,.err{margin:12px 16px 16px!important}.command-bar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}.hint{border-top:1px solid rgba(139,92,246,.14);padding-top:10px}.card:after{content:'';position:absolute;left:0;right:0;top:0;height:2px;background:linear-gradient(90deg,transparent,#8b5cf6,#06b6d4,transparent);opacity:.9;animation:dx-mark 2.8s ease-in-out infinite}"
+            "@media(max-width:680px){body{padding:10px!important;align-items:center}.card{max-height:calc(100vh - 20px)!important;min-height:0!important}.head{grid-template-columns:auto 1fr!important}.sub{grid-column:1/-1;justify-self:start;white-space:normal}.telemetry{grid-template-columns:1fr}.challenge-grid{grid-template-columns:1fr}.tabs{position:relative;display:grid!important;grid-template-columns:1fr 1fr!important;flex-direction:row!important}.monitor-top{grid-template-columns:1fr 1fr}.connbox{min-height:300px!important}.timer{font-size:32px!important}.human-wrap{left:14px!important;right:14px!important;bottom:14px!important}#human_btn{width:100%!important}.title{font-size:18px!important}.pat{padding:10px!important}.pat canvas{width:min(100%,320px)!important}.command-bar{grid-template-columns:1fr}}"
             "</style></head><body><div class=\"card\">"
-            "<div class=\"head\"><span class=\"dot\"></span><span class=\"title\">PteroProtect Verification</span><span class=\"sub\">Type #" + std::to_string(challenge_type) + " • " + challenge_profile + " • 30m clearance</span></div>"
-            "<div class=\"body\"><div class=\"tabs\"><div class=\"tab on\" id=\"tab_conn\">Connection</div><div class=\"tab\" id=\"tab_chal\">Challenge</div></div>"
-            "<div class=\"pane on\" id=\"pane_conn\"><div class=\"big connbox\" id=\"connbox\"><p class=\"q\">Checking connection integrity...</p><div class=\"timer\" id=\"ctimer\">--</div><p class=\"q\">Klik tombol untuk buka challenge manual. Session tetap dikunci ke IP + User-Agent.</p><div class=\"human-wrap\" id=\"human_wrap\"><button id=\"human_btn\" type=\"button\" disabled>Preparing challenge...</button></div></div></div>"
+            "<div class=\"head\"><span class=\"coremark\" aria-hidden=\"true\"></span><span class=\"brand\"><span class=\"eyebrow\">DANEX X EL7</span><span class=\"title\">Clearance Core</span></span><span class=\"sub\">Type #" + std::to_string(challenge_type) + " • " + challenge_profile + " • 30m</span></div>"
+            "<div class=\"body\"><div class=\"telemetry\"><span class=\"metric\">Binding<b>IP + UA</b></span><span class=\"metric\">Runtime<b>Proof Active</b></span><span class=\"metric\">Mode<b>Interactive</b></span></div><div class=\"challenge-grid\"><div class=\"tabs\"><div class=\"tab on\" id=\"tab_conn\">Link</div><div class=\"tab\" id=\"tab_chal\">Solve</div><div class=\"tab\">Pattern</div><div class=\"tab\">Proof</div></div><div class=\"monitor\"><div class=\"monitor-top\"><span>Connection<b id=\"ctimer\">--</b></span><span>Phase<b>Adaptive</b></span><span>Proof<b>PoW</b></span><span>Clearance<b>30m</b></span></div>"
+            "<div class=\"pane on\" id=\"pane_conn\"><div class=\"big connbox\" id=\"connbox\"><p class=\"q\">Checking connection integrity...</p><div class=\"timer\" aria-hidden=\"true\">SYNC</div><p class=\"q\">Klik tombol untuk buka challenge manual. Session tetap dikunci ke IP + User-Agent.</p><div class=\"human-wrap\" id=\"human_wrap\"><button id=\"human_btn\" type=\"button\" disabled>Preparing challenge...</button></div></div></div>"
             "<div class=\"pane\" id=\"pane_chal\"><div class=\"phase-ind p1\" id=\"phase_ind\">PHASE 1</div><p class=\"q\" id=\"phaseq\">Tahap 1: selesaikan challenge.</p><p class=\"q\" id=\"phint\"></p>"
-            "<p class=\"qa\" id=\"q\">Memuat challenge...</p><div class=\"pat\" id=\"phase1_widget\" style=\"display:block\"></div><div class=\"pat\" id=\"patbox\"><canvas id=\"pc\" width=\"280\" height=\"280\"></canvas></div><div class=\"row\" id=\"ainput_wrap\"><input id=\"a\" placeholder=\"Masukkan jawaban\"/><button id=\"mic_btn\" type=\"button\" class=\"secondary\" style=\"display:none;min-width:120px;\">Use Mic</button></div><div class=\"row\"><button id=\"b\">Continue</button><button id=\"rb\" type=\"button\" class=\"secondary\">Restart (3)</button></div>"
-            "<div class=\"hint\">Tip: gunakan perangkat normal (mouse/touch/scroll) agar lolos validasi anti-bot.</div></div><div class=\"status\" id=\"s\"></div><div class=\"err\" id=\"e\"></div></div></div>"
+            "<p class=\"qa\" id=\"q\">Memuat challenge...</p><div class=\"pat\" id=\"phase1_widget\" style=\"display:block\"></div><div class=\"pat\" id=\"patbox\"><canvas id=\"pc\" width=\"280\" height=\"280\"></canvas></div><div class=\"row command-bar\" id=\"ainput_wrap\"><input id=\"a\" placeholder=\"Masukkan jawaban\"/><button id=\"mic_btn\" type=\"button\" class=\"secondary\" style=\"display:none;min-width:120px;\">Use Mic</button></div><div class=\"row\"><button id=\"b\">Continue</button><button id=\"rb\" type=\"button\" class=\"secondary\">Restart (3)</button></div>"
+            "<div class=\"hint\">Tip: gunakan perangkat normal (mouse/touch/scroll) agar lolos validasi anti-bot.</div></div><div class=\"status\" id=\"s\"></div><div class=\"err\" id=\"e\"></div></div></div></div></div>"
             "<script>const CHALLENGE_TYPE=" + std::to_string(challenge_type) + ";let nonce=\"\",ak=\"\",hk=\"\",bk=\"\",ck=\"\",pk=\"\",powSalt=\"\",powHash=\"\";let powBits=14,powMemMb=48,powCpuLevel=4,powCounter=-1,powReady=false;let phase=1;let pseq=[];let clicked=[];let pTrace=[];let pStart=0;let pDir=0;let pActive=false;let ppx=null,ppy=null,pvdx=0,pvdy=0;let started=Date.now();let unlockAt=0;let waitTimer=null;let humanMoveTimer=null;let humanReady=false;let enteredChallenge=false;let clickVerified=false;let hardOpened=false;let uiLocked=false;let pm=0,pd=0,pdc=0,tm=0,sc=0,kc=0,px=null,py=null,pvx=0,pvy=0;let lastBX=-1,lastBY=-1;let humanPauseUntil=0;let phase2Hint='';let phase1Label='Tahap 1: selesaikan challenge.';let phase1Hint='';let phase1Placeholder='Masukkan jawaban';let phase1Mode='variant_1';let phase1Numeric=true;let phase1VoiceEnabled=false;let phase1ConceptPassed=false;let phase1ConceptType=0;let voiceListening=false;let restartsLeft=3;let clickSamples=[];let clickResetBusy=false;let clickLastMark=0;let hardPenaltyUntil=0;let pendingHumanClick=false;let powTaskActive=false,pendingFinalSubmit=false,powLoopStop=false,challengeSolved=false;const HARD_PENALTY_MS=9*60*60*1000;const CLICK_LIMIT_PER_SEC=(((navigator&&navigator.maxTouchPoints)||0)>=1||/android|iphone|ipad|ipod|mobile/i.test(String((navigator&&navigator.userAgent)||'')))?30:10;"
             "const elQ=document.getElementById('q'),elA=document.getElementById('a'),elB=document.getElementById('b'),elRB=document.getElementById('rb'),elS=document.getElementById('s'),elE=document.getElementById('e'),elCT=document.getElementById('ctimer'),elHB=document.getElementById('human_btn'),elCW=document.getElementById('connbox'),elHW=document.getElementById('human_wrap'),elPC=document.getElementById('pane_conn'),elPH=document.getElementById('pane_chal'),elTC=document.getElementById('tab_conn'),elTH=document.getElementById('tab_chal'),elPI=document.getElementById('phase_ind'),elPQ=document.getElementById('phaseq'),elPHint=document.getElementById('phint'),elPat=document.getElementById('patbox'),elW=document.getElementById('phase1_widget'),elInputWrap=document.getElementById('ainput_wrap'),elMic=document.getElementById('mic_btn'),pc=document.getElementById('pc'),ctx=pc.getContext('2d');"
             "function normAns(v){let s=String(v||'').trim();if(!s)return s;s=s.replace(/[−–—﹣－]/g,'-').replace(/[＋]/g,'+');const sign=(s[0]==='+'||s[0]==='-')?s[0]:'';if(sign)s=s.slice(1);s=s.replace(/[\\s,._'\\u00A0\\u202F]/g,'');return sign+s;}"
@@ -2610,8 +2795,8 @@ static void handle_client(int fd, std::string remote_ip) {
             "const SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition||null;"
             "function configureVoiceUI(){if(!elMic)return;const isVoice=!!phase1VoiceEnabled;if(!isVoice){elMic.style.display='none';elMic.disabled=true;return;}elMic.style.display='';if(!SpeechRec){elMic.disabled=true;elMic.textContent='Mic N/A';if(elPHint){elPHint.textContent=(phase1Hint?phase1Hint+' ':'')+'Mic tidak didukung browser ini, ketik manual.';}return;}elMic.disabled=false;elMic.textContent=voiceListening?'Listening...':'Use Mic';}"
             "async function captureVoiceInput(){if(!SpeechRec||voiceListening||!elMic)return;voiceListening=true;configureVoiceUI();try{const rec=new SpeechRec();rec.lang='id-ID';rec.interimResults=false;rec.maxAlternatives=1;await new Promise((resolve,reject)=>{let done=false;rec.onresult=(ev)=>{try{const tx=String((((ev||{}).results||[])[0]||[])[0]?.transcript||'').trim();if(elA&&tx)elA.value=tx;done=true;resolve();}catch(_e){reject(new Error('voice_parse_failed'));}};rec.onerror=()=>{if(!done)reject(new Error('voice_failed'));};rec.onend=()=>{if(!done)resolve();};rec.start();setTimeout(()=>{try{rec.stop();}catch(_e){}},6500);});if(elS){elS.textContent='Voice input captured.';}}catch(_e){if(elE){elE.textContent='Voice input gagal, ketik manual.';}}voiceListening=false;configureVoiceUI();}"
-            "function setupPhase1Concept(){if(!elW){phase1ConceptPassed=true;return;}if(CHALLENGE_TYPE===1||phase1VoiceEnabled){elW.innerHTML='';elW.style.display='none';phase1ConceptPassed=true;return;}elW.style.display='block';phase1ConceptType=((CHALLENGE_TYPE-2)%64+64)%64;const fam=Math.floor(phase1ConceptType/8),v=phase1ConceptType%8;phase1ConceptPassed=false;const done=()=>{if(phase1ConceptPassed)return;phase1ConceptPassed=true;if(elS)elS.textContent='Concept check passed.';if(elW){elW.setAttribute('data-locked','1');elW.querySelectorAll('button,input,select,textarea').forEach(n=>{try{n.disabled=true;}catch(_e){}});elW.querySelectorAll('[draggable=\"true\"],[data-e],[data-n],[data-b],[data-m],[data-s]').forEach(n=>{n.style.pointerEvents='none';});}};if(elW)elW.removeAttribute('data-locked');if(fam===0){const target=((17*phase1ConceptType+11)%97)+2;const tol=1+(v%3);elW.innerHTML='<div style=\"margin-bottom:6px\">Slider presisi: set ke '+String(target)+' (±'+String(tol)+').</div><input id=\"w_slider\" type=\"range\" min=\"0\" max=\"100\" value=\"0\" style=\"width:100%\"><div id=\"w_sv\">0</div>';const sl=document.getElementById('w_slider');const sv=document.getElementById('w_sv');if(sl&&sv){sl.oninput=()=>{const x=Number(sl.value||0);sv.textContent=String(x);if(Math.abs(x-target)<=tol)done();};}return;}if(fam===1){const count=3+(v>=4?1:0);elW.innerHTML='<div style=\"margin-bottom:6px\">Drag urutkan tile 1..'+String(count)+'.</div><div id=\"w_slots\" style=\"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px\">'+Array.from({length:count},(_,i)=>'<div data-s=\"'+String(i+1)+'\" style=\"flex:1;border:1px dashed #4da0ff;min-height:34px;padding:6px;min-width:64px\"></div>').join('')+'</div><div id=\"w_tiles\" style=\"display:flex;gap:6px;flex-wrap:wrap\">'+Array.from({length:count},(_,i)=>'<div draggable=\"true\" data-v=\"'+String(i+1)+'\" style=\"padding:6px 10px;border:1px solid #4da0ff;cursor:grab\">'+String(i+1)+'</div>').join('')+'</div>';const tiles=Array.from(elW.querySelectorAll('[draggable=\"true\"]'));for(let i=tiles.length-1;i>0;i--){const j=(phase1ConceptType+i*5)%tiles.length;const p=tiles[i].parentNode;if(p&&tiles[j])p.insertBefore(tiles[j],tiles[i]);}let drag=null;elW.querySelectorAll('[draggable=\"true\"]').forEach(t=>t.addEventListener('dragstart',()=>{drag=t;}));elW.querySelectorAll('[data-s]').forEach(s=>{s.addEventListener('dragover',e=>e.preventDefault());s.addEventListener('drop',e=>{e.preventDefault();if(!drag)return;s.innerHTML='';s.appendChild(drag);const ok=Array.from(elW.querySelectorAll('[data-s]')).every(x=>{const c=x.querySelector('[data-v]');return c&&String(c.getAttribute('data-v'))===String(x.getAttribute('data-s'));});if(ok)done();});});return;}if(fam===2){const len=3+(v%3);let seq=[];for(let i=0;i<len;i++)seq.push(((phase1ConceptType*3+i*2)%7)+1);let pos=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Tap sequence: '+seq.join('-')+'</div><div style=\"display:flex;gap:6px;flex-wrap:wrap\">'+[1,2,3,4,5,6,7].map(n=>'<button type=\"button\" class=\"secondary\" data-n=\"'+n+'\" style=\"min-width:44px\">'+n+'</button>').join('')+'</div>';elW.querySelectorAll('[data-n]').forEach(b=>{b.addEventListener('click',()=>{const n=Number(b.getAttribute('data-n'));if(n===seq[pos]){pos++;if(pos>=seq.length)done();}else{pos=0;}});});return;}if(fam===3){const packs=[['🍎','🍏','🍋','🍇'],['⚽','🏀','🏐','🎾'],['🚗','🚕','🚌','🚓'],['⭐','🌙','☀️','☁️']];const arr=packs[v%packs.length];const target=arr[(phase1ConceptType+v)%arr.length];const need=2+(v%3);let hit=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Klik '+String(need)+'x simbol '+target+'.</div><div style=\"display:flex;gap:6px;font-size:24px;flex-wrap:wrap\">'+Array.from({length:9},(_,i)=>{const e=(i%4===0)?target:arr[(i+phase1ConceptType)%arr.length];return '<span data-e=\"'+e+'\" style=\"cursor:pointer;padding:2px 6px;border:1px solid #355c84\">'+e+'</span>';}).join('')+'</div>';elW.querySelectorAll('[data-e]').forEach(x=>{x.addEventListener('click',()=>{if(x.getAttribute('data-e')===target){x.style.opacity='0.35';x.style.pointerEvents='none';hit++;if(hit>=need)done();}});});return;}if(fam===4){const hold=900+v*300;let t0=0,ok=false;elW.innerHTML='<div style=\"margin-bottom:6px\">Hold tepat '+String((hold/1000).toFixed(1))+' detik.</div><button id=\"w_hold\" type=\"button\" class=\"secondary\" style=\"min-width:160px\">Hold</button><div id=\"w_hs\" style=\"margin-top:6px\">0%</div>';const hb=document.getElementById('w_hold');const hs=document.getElementById('w_hs');const start=()=>{t0=Date.now();ok=false;};const stop=()=>{if(!t0)return;const dt=Date.now()-t0;t0=0;if(dt>=hold&&dt<hold+700){ok=true;done();}if(hs)hs.textContent=ok?'OK':'Ulangi';};const tick=()=>{if(!t0||!hs||ok)return;const p=Math.max(0,Math.min(100,Math.floor(((Date.now()-t0)/hold)*100)));hs.textContent=String(p)+'%';if(p>=100)hs.textContent='Lepas sekarang';};if(hb){hb.addEventListener('mousedown',start);hb.addEventListener('touchstart',start,{passive:true});hb.addEventListener('mouseup',stop);hb.addEventListener('mouseleave',stop);hb.addEventListener('touchend',stop);setInterval(tick,80);}return;}if(fam===5){const bits=4+(v>=4?1:0);const max=(1<<bits)-1;const target=((phase1ConceptType*37)+v*11)%Math.max(2,max);let val=0;const bstr=(n)=>n.toString(2).padStart(bits,'0');const bvals=Array.from({length:bits},(_,i)=>(1<<(bits-1-i)));elW.innerHTML='<div style=\"margin-bottom:6px\">Atur bit ke '+bstr(target)+'</div><div id=\"w_bits\" style=\"display:flex;gap:6px;flex-wrap:wrap\">'+bvals.map(b=>'<button type=\"button\" class=\"secondary\" data-b=\"'+b+'\" style=\"min-width:42px\">0</button>').join('')+'</div><div id=\"w_bv\" style=\"margin-top:6px\">'+bstr(0)+'</div>';const bv=document.getElementById('w_bv');elW.querySelectorAll('[data-b]').forEach(b=>{b.addEventListener('click',()=>{const bit=Number(b.getAttribute('data-b')||0);val=(val^bit);b.textContent=((val&bit)!==0)?'1':'0';if(bv)bv.textContent=bstr(val);if(val===target)done();});});return;}if(fam===6){const gx=((phase1ConceptType+v)%4)+1,gy=((phase1ConceptType*2+v)%4)+1;let x=0,y=0,steps=0;const blocks=[[1,1],[3,1],[1,3],[3,3],[2,1],[2,3],[1,2],[3,2]].slice(0,2+(v%3));const isBlock=(ix,iy)=>blocks.some(b=>b[0]===ix&&b[1]===iy);elW.innerHTML='<div style=\"margin-bottom:6px\">Grid route: capai G('+gx+','+gy+') hindari kotak merah.</div><div id=\"w_grid\" style=\"display:grid;grid-template-columns:repeat(5,28px);gap:4px;margin-bottom:8px\"></div><div style=\"display:flex;gap:6px;flex-wrap:wrap\"><button type=\"button\" class=\"secondary\" data-m=\"U\">Up</button><button type=\"button\" class=\"secondary\" data-m=\"L\">Left</button><button type=\"button\" class=\"secondary\" data-m=\"D\">Down</button><button type=\"button\" class=\"secondary\" data-m=\"R\">Right</button></div>';const g=document.getElementById('w_grid');const paint=()=>{if(!g)return;g.innerHTML='';for(let iy=0;iy<5;iy++){for(let ix=0;ix<5;ix++){const c=document.createElement('div');c.style.width='28px';c.style.height='28px';c.style.border='1px solid #355c84';c.style.display='flex';c.style.alignItems='center';c.style.justifyContent='center';if(isBlock(ix,iy)){c.style.background='#5a1f29';c.textContent='■';}if(ix===gx&&iy===gy)c.style.outline='2px solid #35b56a';if(ix===x&&iy===y){c.style.background='#1f5e9a';c.textContent='●';}g.appendChild(c);}}};const mv=(m)=>{let nx=x,ny=y;if(m==='U'&&y>0)ny--;if(m==='D'&&y<4)ny++;if(m==='L'&&x>0)nx--;if(m==='R'&&x<4)nx++;if(isBlock(nx,ny))return;x=nx;y=ny;steps++;paint();if(x===gx&&y===gy&&steps>=4)done();};paint();elW.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>mv(String(b.getAttribute('data-m')||''))));return;}const set=v%2===0?['A','B','C','D']:['K','L','M','N'];const pair=3+(v%2);let vals=[];for(let i=0;i<pair;i++){vals.push(set[i]);vals.push(set[i]);}for(let i=vals.length-1;i>0;i--){const j=(phase1ConceptType+i*7)%vals.length;const t=vals[i];vals[i]=vals[j];vals[j]=t;}let open=[],locked=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Memory pair: buka '+String(pair)+' pasang.</div><div id=\"w_mem\" style=\"display:grid;grid-template-columns:repeat(4,52px);gap:6px\">'+vals.map((_,i)=>'<button type=\"button\" class=\"secondary\" data-i=\"'+i+'\" style=\"height:42px\">?</button>').join('')+'</div>';const btns=Array.from(elW.querySelectorAll('[data-i]'));const show=(idx,on)=>{const b=btns[idx];if(!b)return;b.textContent=on?vals[idx]:'?';};btns.forEach(b=>b.addEventListener('click',()=>{const i=Number(b.getAttribute('data-i'));if(open.includes(i)||b.disabled)return;show(i,true);open.push(i);if(open.length<2)return;const a=open[0],c=open[1];if(vals[a]===vals[c]){btns[a].disabled=true;btns[c].disabled=true;locked++;open=[];if(locked>=pair)done();}else{setTimeout(()=>{show(a,false);show(c,false);open=[];},420);}}));}"
-            "setupPhase1Concept=(()=>{const h32=s=>{let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;};const rng=s=>{let a=(s>>>0)||1;return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;};};const ri=(r,min,max)=>min+Math.floor(r()*(max-min+1));const sh=(arr,r)=>{for(let i=arr.length-1;i>0;i--){const j=Math.floor(r()*(i+1));const t=arr[i];arr[i]=arr[j];arr[j]=t;}return arr;};return function(){if(!elW){phase1ConceptPassed=true;return;}if(CHALLENGE_TYPE===1||phase1VoiceEnabled){elW.innerHTML='';elW.style.display='none';phase1ConceptPassed=true;return;}elW.style.display='block';if(elW)elW.removeAttribute('data-locked');phase1ConceptPassed=false;phase1ConceptType=((CHALLENGE_TYPE-2)%64+64)%64;const fam=phase1ConceptType%8;const lvl=Math.floor(phase1ConceptType/8);const seed=h32(String(nonce||'')+'|'+String(CHALLENGE_TYPE)+'|'+String((Date.now()/977)|0));const r=rng(seed^Math.imul(lvl+1,2654435761));const done=()=>{if(phase1ConceptPassed)return;phase1ConceptPassed=true;if(elS)elS.textContent='Concept check passed.';elW.setAttribute('data-locked','1');elW.querySelectorAll('button,input,select,textarea').forEach(n=>{try{n.disabled=true;}catch(_e){}});elW.querySelectorAll('[data-lock]').forEach(n=>{n.style.pointerEvents='none';});};if(fam===0){const target=ri(r,14,96),tol=ri(r,1,3);elW.innerHTML='<div style=\"margin-bottom:7px\">Set slider ke <b>'+String(target)+'</b> (toleransi ±'+String(tol)+').</div><input id=\"w_slider\" type=\"range\" min=\"0\" max=\"100\" value=\"0\" style=\"width:100%\"><div id=\"w_sv\" style=\"margin-top:6px\">0</div>';const sl=document.getElementById('w_slider'),sv=document.getElementById('w_sv');if(sl&&sv){sl.oninput=()=>{const x=Number(sl.value||0);sv.textContent=String(x);if(Math.abs(x-target)<=tol)done();};}return;}if(fam===1){const count=lvl>=4?5:4;const seq=Array.from({length:count},(_,i)=>i+1);const btns=sh(seq.slice(),r);let pos=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Klik angka berurutan 1 sampai '+String(count)+'.</div><div id=\"w_tap\" style=\"display:flex;gap:8px;flex-wrap:wrap\">'+btns.map(n=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-n=\"'+String(n)+'\" style=\"min-width:56px\">'+String(n)+'</button>').join('')+'</div><div id=\"w_prog\" style=\"margin-top:6px\">Progress: 0/'+String(count)+'</div>';const pg=document.getElementById('w_prog');elW.querySelectorAll('[data-n]').forEach(b=>b.addEventListener('click',()=>{const n=Number(b.getAttribute('data-n')||0);if(n===seq[pos]){pos++;b.disabled=true;if(pg)pg.textContent='Progress: '+String(pos)+'/'+String(count);if(pos>=count)done();}else{pos=0;elW.querySelectorAll('[data-n]').forEach(x=>{x.disabled=false;});if(pg)pg.textContent='Salah urutan, ulang dari 1.';}}));return;}if(fam===2){const pal=['Merah','Biru','Hijau','Kuning','Ungu','Oranye'];const len=ri(r,3,5);const seq=[];for(let i=0;i<len;i++)seq.push(pal[ri(r,0,pal.length-1)]);let i=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Ulangi sequence warna ini:</div><div style=\"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px\">'+seq.map(c=>'<span style=\"padding:4px 8px;border:1px solid #4d78a7;border-radius:8px\">'+c+'</span>').join('')+'</div><div style=\"display:flex;gap:8px;flex-wrap:wrap\">'+pal.map(c=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-c=\"'+c+'\">'+c+'</button>').join('')+'</div><div id=\"w_seq_state\" style=\"margin-top:6px\">Step 1/'+String(len)+'</div>';const st=document.getElementById('w_seq_state');elW.querySelectorAll('[data-c]').forEach(b=>b.addEventListener('click',()=>{const c=String(b.getAttribute('data-c')||'');if(c===seq[i]){i++;if(st)st.textContent='Step '+String(Math.min(i+1,len))+'/'+String(len);if(i>=len)done();}else{i=0;if(st)st.textContent='Salah, ulang dari awal.';}}));return;}if(fam===3){const packs=[['🍎','🍋','🍇','🍉'],['⚽','🏀','🎾','🏐'],['🚗','🚕','🚌','🚓'],['⭐','🌙','☀️','☁️']];const bag=packs[ri(r,0,packs.length-1)],target=bag[ri(r,0,bag.length-1)],need=ri(r,3,5);let hit=0;const cells=[];for(let k=0;k<12;k++)cells.push((r()<0.34)?target:bag[ri(r,0,bag.length-1)]);elW.innerHTML='<div style=\"margin-bottom:7px\">Klik simbol '+target+' sebanyak '+String(need)+' kali.</div><div style=\"display:grid;grid-template-columns:repeat(6,minmax(38px,1fr));gap:6px\">'+cells.map(e=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-e=\"'+e+'\" style=\"font-size:20px;padding:6px\">'+e+'</button>').join('')+'</div><div id=\"w_hit\" style=\"margin-top:6px\">0/'+String(need)+'</div>';const hs=document.getElementById('w_hit');elW.querySelectorAll('[data-e]').forEach(x=>x.addEventListener('click',()=>{if(x.disabled)return;if(String(x.getAttribute('data-e'))===target){hit++;x.disabled=true;x.style.opacity='0.55';if(hs)hs.textContent=String(hit)+'/'+String(need);if(hit>=need)done();}else{x.style.opacity='0.35';setTimeout(()=>{x.style.opacity='1';},120);}}));return;}if(fam===4){const holdMs=ri(r,900,2200);let t0=0,raf=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Tahan tombol selama '+String((holdMs/1000).toFixed(1))+' detik lalu lepas.</div><button id=\"w_hold\" type=\"button\" class=\"secondary\" data-lock=\"1\" style=\"min-width:180px\">Hold</button><div id=\"w_hold_state\" style=\"margin-top:6px\">0%</div>';const hb=document.getElementById('w_hold'),hs=document.getElementById('w_hold_state');const tick=()=>{if(!t0||!hs)return;const p=Math.max(0,Math.min(100,Math.floor(((Date.now()-t0)/holdMs)*100)));hs.textContent=String(p)+'%';raf=requestAnimationFrame(tick);};const begin=()=>{if(t0)return;t0=Date.now();tick();};const end=()=>{if(!t0)return;const dt=Date.now()-t0;t0=0;if(raf){cancelAnimationFrame(raf);raf=0;}if(dt>=holdMs&&dt<holdMs+850){if(hs)hs.textContent='OK';done();}else if(hs){hs.textContent='Belum pas, ulangi.';}};if(hb){hb.addEventListener('mousedown',begin);hb.addEventListener('touchstart',begin,{passive:true});hb.addEventListener('mouseup',end);hb.addEventListener('mouseleave',end);hb.addEventListener('touchend',end);}return;}if(fam===5){const bits=lvl>=4?5:4;const max=(1<<bits)-1;const target=ri(r,1,max);let val=0;const bstr=n=>n.toString(2).padStart(bits,'0');const bvals=Array.from({length:bits},(_,i)=>(1<<(bits-1-i)));elW.innerHTML='<div style=\"margin-bottom:7px\">Atur bit menjadi '+bstr(target)+'.</div><div style=\"display:flex;gap:7px;flex-wrap:wrap\">'+bvals.map(b=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-b=\"'+String(b)+'\" style=\"min-width:46px\">0</button>').join('')+'</div><div id=\"w_bv\" style=\"margin-top:6px\">'+bstr(0)+'</div>';const bv=document.getElementById('w_bv');elW.querySelectorAll('[data-b]').forEach(b=>b.addEventListener('click',()=>{const bit=Number(b.getAttribute('data-b')||0);val=(val^bit);b.textContent=((val&bit)!==0)?'1':'0';if(bv)bv.textContent=bstr(val);if(val===target)done();}));return;}if(fam===6){const size=5;const gx=ri(r,2,4),gy=ri(r,2,4);let x=0,y=0,steps=0;const blocks=[];for(let iy=0;iy<size;iy++){for(let ix=0;ix<size;ix++){if((ix===0&&iy===0)||(ix===gx&&iy===gy))continue;if(r()<0.2)blocks.push([ix,iy]);}}const blockSet=new Set(blocks.map(b=>String(b[0])+','+String(b[1])));const isBlock=(ix,iy)=>blockSet.has(String(ix)+','+String(iy));const canReach=()=>{const q=[[0,0]],seen=new Set(['0,0']);while(q.length){const p=q.shift();if(!p)break;const cx=p[0],cy=p[1];if(cx===gx&&cy===gy)return true;[[1,0],[-1,0],[0,1],[0,-1]].forEach(d=>{const nx=cx+d[0],ny=cy+d[1],k=String(nx)+','+String(ny);if(nx<0||ny<0||nx>=size||ny>=size||isBlock(nx,ny)||seen.has(k))return;seen.add(k);q.push([nx,ny]);});}return false;};if(!canReach()){blockSet.clear();}elW.innerHTML='<div style=\"margin-bottom:7px\">Arahkan titik biru ke G('+String(gx)+','+String(gy)+').</div><div id=\"w_grid\" style=\"display:grid;grid-template-columns:repeat(5,30px);gap:4px;margin-bottom:8px\"></div><div style=\"display:flex;gap:6px;flex-wrap:wrap\"><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"U\">Up</button><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"L\">Left</button><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"D\">Down</button><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"R\">Right</button></div>';const g=document.getElementById('w_grid');const paint=()=>{if(!g)return;g.innerHTML='';for(let iy=0;iy<size;iy++){for(let ix=0;ix<size;ix++){const c=document.createElement('div');c.style.width='30px';c.style.height='30px';c.style.border='1px solid #355c84';c.style.display='flex';c.style.alignItems='center';c.style.justifyContent='center';if(isBlock(ix,iy)){c.style.background='#5a1f29';c.textContent='■';}if(ix===gx&&iy===gy){c.style.outline='2px solid #35b56a';if(!isBlock(ix,iy))c.textContent='G';}if(ix===x&&iy===y){c.style.background='#1f5e9a';c.textContent='●';}g.appendChild(c);}}};const mv=m=>{let nx=x,ny=y;if(m==='U'&&y>0)ny--;if(m==='D'&&y<size-1)ny++;if(m==='L'&&x>0)nx--;if(m==='R'&&x<size-1)nx++;if(isBlock(nx,ny))return;x=nx;y=ny;steps++;paint();if(x===gx&&y===gy&&steps>=3)done();};paint();elW.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>mv(String(b.getAttribute('data-m')||''))));return;}const symbols=['A','B','C','D','E','F','G','H'];const pair=lvl>=4?4:3;const chosen=sh(symbols.slice(),r).slice(0,pair);let vals=[];chosen.forEach(s=>{vals.push(s);vals.push(s);});sh(vals,r);let open=[];let lock=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Memory pair: temukan '+String(pair)+' pasang.</div><div id=\"w_mem\" style=\"display:grid;grid-template-columns:repeat(auto-fit,minmax(58px,1fr));gap:7px\">'+vals.map((_,i)=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-i=\"'+String(i)+'\" style=\"height:44px\">?</button>').join('')+'</div>';const btns=Array.from(elW.querySelectorAll('[data-i]'));const show=(idx,on)=>{const b=btns[idx];if(!b)return;b.textContent=on?vals[idx]:'?';};btns.forEach(b=>b.addEventListener('click',()=>{const i=Number(b.getAttribute('data-i')||-1);if(i<0||open.includes(i)||b.disabled)return;show(i,true);open.push(i);if(open.length<2)return;const a=open[0],c=open[1];if(vals[a]===vals[c]){btns[a].disabled=true;btns[c].disabled=true;lock++;open=[];if(lock>=pair)done();}else{setTimeout(()=>{show(a,false);show(c,false);open=[];},420);}}));};})();"
+            "function setupPhase1Concept(){if(!elW){phase1ConceptPassed=true;return;}if(CHALLENGE_TYPE===1||phase1VoiceEnabled){elW.innerHTML='';elW.style.display='none';phase1ConceptPassed=true;return;}elW.style.display='block';phase1ConceptType=((CHALLENGE_TYPE-2)%64+64)%64;const fam=Math.floor(phase1ConceptType/8),v=phase1ConceptType%8;phase1ConceptPassed=false;const done=()=>{if(phase1ConceptPassed)return;phase1ConceptPassed=true;if(elS)elS.textContent='Concept check passed.';if(elW){elW.setAttribute('data-locked','1');elW.querySelectorAll('button,input,select,textarea').forEach(n=>{try{n.disabled=true;}catch(_e){}});elW.querySelectorAll('[draggable=\"true\"],[data-e],[data-n],[data-b],[data-m],[data-s]').forEach(n=>{n.style.pointerEvents='none';});}};if(elW)elW.removeAttribute('data-locked');if(fam===0){const target=((17*phase1ConceptType+11)%97)+2;const tol=1+(v%3);elW.innerHTML='<div style=\"margin-bottom:6px\">Slider presisi: set ke '+String(target)+' (±'+String(tol)+').</div><input id=\"w_slider\" type=\"range\" min=\"0\" max=\"100\" value=\"0\" style=\"width:100%\"><div id=\"w_sv\">0</div>';const sl=document.getElementById('w_slider');const sv=document.getElementById('w_sv');if(sl&&sv){sl.oninput=()=>{const x=Number(sl.value||0);sv.textContent=String(x);if(Math.abs(x-target)<=tol)done();};}return;}if(fam===1){const count=3+(v>=4?1:0);elW.innerHTML='<div style=\"margin-bottom:6px\">Drag urutkan tile 1..'+String(count)+'.</div><div id=\"w_slots\" style=\"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px\">'+Array.from({length:count},(_,i)=>'<div data-s=\"'+String(i+1)+'\" style=\"flex:1;border:1px dashed #8b5cf6;min-height:34px;padding:6px;min-width:64px\"></div>').join('')+'</div><div id=\"w_tiles\" style=\"display:flex;gap:6px;flex-wrap:wrap\">'+Array.from({length:count},(_,i)=>'<div draggable=\"true\" data-v=\"'+String(i+1)+'\" style=\"padding:6px 10px;border:1px solid #8b5cf6;cursor:grab\">'+String(i+1)+'</div>').join('')+'</div>';const tiles=Array.from(elW.querySelectorAll('[draggable=\"true\"]'));for(let i=tiles.length-1;i>0;i--){const j=(phase1ConceptType+i*5)%tiles.length;const p=tiles[i].parentNode;if(p&&tiles[j])p.insertBefore(tiles[j],tiles[i]);}let drag=null;elW.querySelectorAll('[draggable=\"true\"]').forEach(t=>t.addEventListener('dragstart',()=>{drag=t;}));elW.querySelectorAll('[data-s]').forEach(s=>{s.addEventListener('dragover',e=>e.preventDefault());s.addEventListener('drop',e=>{e.preventDefault();if(!drag)return;s.innerHTML='';s.appendChild(drag);const ok=Array.from(elW.querySelectorAll('[data-s]')).every(x=>{const c=x.querySelector('[data-v]');return c&&String(c.getAttribute('data-v'))===String(x.getAttribute('data-s'));});if(ok)done();});});return;}if(fam===2){const len=3+(v%3);let seq=[];for(let i=0;i<len;i++)seq.push(((phase1ConceptType*3+i*2)%7)+1);let pos=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Tap sequence: '+seq.join('-')+'</div><div style=\"display:flex;gap:6px;flex-wrap:wrap\">'+[1,2,3,4,5,6,7].map(n=>'<button type=\"button\" class=\"secondary\" data-n=\"'+n+'\" style=\"min-width:44px\">'+n+'</button>').join('')+'</div>';elW.querySelectorAll('[data-n]').forEach(b=>{b.addEventListener('click',()=>{const n=Number(b.getAttribute('data-n'));if(n===seq[pos]){pos++;if(pos>=seq.length)done();}else{pos=0;}});});return;}if(fam===3){const packs=[['🍎','🍏','🍋','🍇'],['⚽','🏀','🏐','🎾'],['🚗','🚕','🚌','🚓'],['⭐','🌙','☀️','☁️']];const arr=packs[v%packs.length];const target=arr[(phase1ConceptType+v)%arr.length];const need=2+(v%3);let hit=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Klik '+String(need)+'x simbol '+target+'.</div><div style=\"display:flex;gap:6px;font-size:24px;flex-wrap:wrap\">'+Array.from({length:9},(_,i)=>{const e=(i%4===0)?target:arr[(i+phase1ConceptType)%arr.length];return '<span data-e=\"'+e+'\" style=\"cursor:pointer;padding:2px 6px;border:1px solid rgba(139,92,246,.32)\">'+e+'</span>';}).join('')+'</div>';elW.querySelectorAll('[data-e]').forEach(x=>{x.addEventListener('click',()=>{if(x.getAttribute('data-e')===target){x.style.opacity='0.35';x.style.pointerEvents='none';hit++;if(hit>=need)done();}});});return;}if(fam===4){const hold=900+v*300;let t0=0,ok=false;elW.innerHTML='<div style=\"margin-bottom:6px\">Hold tepat '+String((hold/1000).toFixed(1))+' detik.</div><button id=\"w_hold\" type=\"button\" class=\"secondary\" style=\"min-width:160px\">Hold</button><div id=\"w_hs\" style=\"margin-top:6px\">0%</div>';const hb=document.getElementById('w_hold');const hs=document.getElementById('w_hs');const start=()=>{t0=Date.now();ok=false;};const stop=()=>{if(!t0)return;const dt=Date.now()-t0;t0=0;if(dt>=hold&&dt<hold+700){ok=true;done();}if(hs)hs.textContent=ok?'OK':'Ulangi';};const tick=()=>{if(!t0||!hs||ok)return;const p=Math.max(0,Math.min(100,Math.floor(((Date.now()-t0)/hold)*100)));hs.textContent=String(p)+'%';if(p>=100)hs.textContent='Lepas sekarang';};if(hb){hb.addEventListener('mousedown',start);hb.addEventListener('touchstart',start,{passive:true});hb.addEventListener('mouseup',stop);hb.addEventListener('mouseleave',stop);hb.addEventListener('touchend',stop);setInterval(tick,80);}return;}if(fam===5){const bits=4+(v>=4?1:0);const max=(1<<bits)-1;const target=((phase1ConceptType*37)+v*11)%Math.max(2,max);let val=0;const bstr=(n)=>n.toString(2).padStart(bits,'0');const bvals=Array.from({length:bits},(_,i)=>(1<<(bits-1-i)));elW.innerHTML='<div style=\"margin-bottom:6px\">Atur bit ke '+bstr(target)+'</div><div id=\"w_bits\" style=\"display:flex;gap:6px;flex-wrap:wrap\">'+bvals.map(b=>'<button type=\"button\" class=\"secondary\" data-b=\"'+b+'\" style=\"min-width:42px\">0</button>').join('')+'</div><div id=\"w_bv\" style=\"margin-top:6px\">'+bstr(0)+'</div>';const bv=document.getElementById('w_bv');elW.querySelectorAll('[data-b]').forEach(b=>{b.addEventListener('click',()=>{const bit=Number(b.getAttribute('data-b')||0);val=(val^bit);b.textContent=((val&bit)!==0)?'1':'0';if(bv)bv.textContent=bstr(val);if(val===target)done();});});return;}if(fam===6){const gx=((phase1ConceptType+v)%4)+1,gy=((phase1ConceptType*2+v)%4)+1;let x=0,y=0,steps=0;const blocks=[[1,1],[3,1],[1,3],[3,3],[2,1],[2,3],[1,2],[3,2]].slice(0,2+(v%3));const isBlock=(ix,iy)=>blocks.some(b=>b[0]===ix&&b[1]===iy);elW.innerHTML='<div style=\"margin-bottom:6px\">Grid route: capai G('+gx+','+gy+') hindari kotak merah.</div><div id=\"w_grid\" style=\"display:grid;grid-template-columns:repeat(5,28px);gap:4px;margin-bottom:8px\"></div><div style=\"display:flex;gap:6px;flex-wrap:wrap\"><button type=\"button\" class=\"secondary\" data-m=\"U\">Up</button><button type=\"button\" class=\"secondary\" data-m=\"L\">Left</button><button type=\"button\" class=\"secondary\" data-m=\"D\">Down</button><button type=\"button\" class=\"secondary\" data-m=\"R\">Right</button></div>';const g=document.getElementById('w_grid');const paint=()=>{if(!g)return;g.innerHTML='';for(let iy=0;iy<5;iy++){for(let ix=0;ix<5;ix++){const c=document.createElement('div');c.style.width='28px';c.style.height='28px';c.style.border='1px solid rgba(139,92,246,.32)';c.style.display='flex';c.style.alignItems='center';c.style.justifyContent='center';if(isBlock(ix,iy)){c.style.background='#5a1f29';c.textContent='■';}if(ix===gx&&iy===gy)c.style.outline='2px solid #35b56a';if(ix===x&&iy===y){c.style.background='#6d28d9';c.textContent='●';}g.appendChild(c);}}};const mv=(m)=>{let nx=x,ny=y;if(m==='U'&&y>0)ny--;if(m==='D'&&y<4)ny++;if(m==='L'&&x>0)nx--;if(m==='R'&&x<4)nx++;if(isBlock(nx,ny))return;x=nx;y=ny;steps++;paint();if(x===gx&&y===gy&&steps>=4)done();};paint();elW.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>mv(String(b.getAttribute('data-m')||''))));return;}const set=v%2===0?['A','B','C','D']:['K','L','M','N'];const pair=3+(v%2);let vals=[];for(let i=0;i<pair;i++){vals.push(set[i]);vals.push(set[i]);}for(let i=vals.length-1;i>0;i--){const j=(phase1ConceptType+i*7)%vals.length;const t=vals[i];vals[i]=vals[j];vals[j]=t;}let open=[],locked=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Memory pair: buka '+String(pair)+' pasang.</div><div id=\"w_mem\" style=\"display:grid;grid-template-columns:repeat(4,52px);gap:6px\">'+vals.map((_,i)=>'<button type=\"button\" class=\"secondary\" data-i=\"'+i+'\" style=\"height:42px\">?</button>').join('')+'</div>';const btns=Array.from(elW.querySelectorAll('[data-i]'));const show=(idx,on)=>{const b=btns[idx];if(!b)return;b.textContent=on?vals[idx]:'?';};btns.forEach(b=>b.addEventListener('click',()=>{const i=Number(b.getAttribute('data-i'));if(open.includes(i)||b.disabled)return;show(i,true);open.push(i);if(open.length<2)return;const a=open[0],c=open[1];if(vals[a]===vals[c]){btns[a].disabled=true;btns[c].disabled=true;locked++;open=[];if(locked>=pair)done();}else{setTimeout(()=>{show(a,false);show(c,false);open=[];},420);}}));}"
+            "setupPhase1Concept=(()=>{const h32=s=>{let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;};const rng=s=>{let a=(s>>>0)||1;return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;};};const ri=(r,min,max)=>min+Math.floor(r()*(max-min+1));const sh=(arr,r)=>{for(let i=arr.length-1;i>0;i--){const j=Math.floor(r()*(i+1));const t=arr[i];arr[i]=arr[j];arr[j]=t;}return arr;};return function(){if(!elW){phase1ConceptPassed=true;return;}if(CHALLENGE_TYPE===1||phase1VoiceEnabled){elW.innerHTML='';elW.style.display='none';phase1ConceptPassed=true;return;}elW.style.display='block';if(elW)elW.removeAttribute('data-locked');phase1ConceptPassed=false;phase1ConceptType=((CHALLENGE_TYPE-2)%64+64)%64;const fam=phase1ConceptType%8;const lvl=Math.floor(phase1ConceptType/8);const seed=h32(String(nonce||'')+'|'+String(CHALLENGE_TYPE)+'|'+String((Date.now()/977)|0));const r=rng(seed^Math.imul(lvl+1,2654435761));const done=()=>{if(phase1ConceptPassed)return;phase1ConceptPassed=true;if(elS)elS.textContent='Concept check passed.';elW.setAttribute('data-locked','1');elW.querySelectorAll('button,input,select,textarea').forEach(n=>{try{n.disabled=true;}catch(_e){}});elW.querySelectorAll('[data-lock]').forEach(n=>{n.style.pointerEvents='none';});};if(fam===0){const target=ri(r,14,96),tol=ri(r,1,3);elW.innerHTML='<div style=\"margin-bottom:7px\">Set slider ke <b>'+String(target)+'</b> (toleransi ±'+String(tol)+').</div><input id=\"w_slider\" type=\"range\" min=\"0\" max=\"100\" value=\"0\" style=\"width:100%\"><div id=\"w_sv\" style=\"margin-top:6px\">0</div>';const sl=document.getElementById('w_slider'),sv=document.getElementById('w_sv');if(sl&&sv){sl.oninput=()=>{const x=Number(sl.value||0);sv.textContent=String(x);if(Math.abs(x-target)<=tol)done();};}return;}if(fam===1){const count=lvl>=4?5:4;const seq=Array.from({length:count},(_,i)=>i+1);const btns=sh(seq.slice(),r);let pos=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Klik angka berurutan 1 sampai '+String(count)+'.</div><div id=\"w_tap\" style=\"display:flex;gap:8px;flex-wrap:wrap\">'+btns.map(n=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-n=\"'+String(n)+'\" style=\"min-width:56px\">'+String(n)+'</button>').join('')+'</div><div id=\"w_prog\" style=\"margin-top:6px\">Progress: 0/'+String(count)+'</div>';const pg=document.getElementById('w_prog');elW.querySelectorAll('[data-n]').forEach(b=>b.addEventListener('click',()=>{const n=Number(b.getAttribute('data-n')||0);if(n===seq[pos]){pos++;b.disabled=true;if(pg)pg.textContent='Progress: '+String(pos)+'/'+String(count);if(pos>=count)done();}else{pos=0;elW.querySelectorAll('[data-n]').forEach(x=>{x.disabled=false;});if(pg)pg.textContent='Salah urutan, ulang dari 1.';}}));return;}if(fam===2){const pal=['Merah','Biru','Hijau','Kuning','Ungu','Oranye'];const len=ri(r,3,5);const seq=[];for(let i=0;i<len;i++)seq.push(pal[ri(r,0,pal.length-1)]);let i=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Ulangi sequence warna ini:</div><div style=\"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px\">'+seq.map(c=>'<span style=\"padding:4px 8px;border:1px solid rgba(139,92,246,.32);border-radius:8px\">'+c+'</span>').join('')+'</div><div style=\"display:flex;gap:8px;flex-wrap:wrap\">'+pal.map(c=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-c=\"'+c+'\">'+c+'</button>').join('')+'</div><div id=\"w_seq_state\" style=\"margin-top:6px\">Step 1/'+String(len)+'</div>';const st=document.getElementById('w_seq_state');elW.querySelectorAll('[data-c]').forEach(b=>b.addEventListener('click',()=>{const c=String(b.getAttribute('data-c')||'');if(c===seq[i]){i++;if(st)st.textContent='Step '+String(Math.min(i+1,len))+'/'+String(len);if(i>=len)done();}else{i=0;if(st)st.textContent='Salah, ulang dari awal.';}}));return;}if(fam===3){const packs=[['🍎','🍋','🍇','🍉'],['⚽','🏀','🎾','🏐'],['🚗','🚕','🚌','🚓'],['⭐','🌙','☀️','☁️']];const bag=packs[ri(r,0,packs.length-1)],target=bag[ri(r,0,bag.length-1)],need=ri(r,3,5);let hit=0;const cells=[];for(let k=0;k<12;k++)cells.push((r()<0.34)?target:bag[ri(r,0,bag.length-1)]);elW.innerHTML='<div style=\"margin-bottom:7px\">Klik simbol '+target+' sebanyak '+String(need)+' kali.</div><div style=\"display:grid;grid-template-columns:repeat(6,minmax(38px,1fr));gap:6px\">'+cells.map(e=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-e=\"'+e+'\" style=\"font-size:20px;padding:6px\">'+e+'</button>').join('')+'</div><div id=\"w_hit\" style=\"margin-top:6px\">0/'+String(need)+'</div>';const hs=document.getElementById('w_hit');elW.querySelectorAll('[data-e]').forEach(x=>x.addEventListener('click',()=>{if(x.disabled)return;if(String(x.getAttribute('data-e'))===target){hit++;x.disabled=true;x.style.opacity='0.55';if(hs)hs.textContent=String(hit)+'/'+String(need);if(hit>=need)done();}else{x.style.opacity='0.35';setTimeout(()=>{x.style.opacity='1';},120);}}));return;}if(fam===4){const holdMs=ri(r,900,2200);let t0=0,raf=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Tahan tombol selama '+String((holdMs/1000).toFixed(1))+' detik lalu lepas.</div><button id=\"w_hold\" type=\"button\" class=\"secondary\" data-lock=\"1\" style=\"min-width:180px\">Hold</button><div id=\"w_hold_state\" style=\"margin-top:6px\">0%</div>';const hb=document.getElementById('w_hold'),hs=document.getElementById('w_hold_state');const tick=()=>{if(!t0||!hs)return;const p=Math.max(0,Math.min(100,Math.floor(((Date.now()-t0)/holdMs)*100)));hs.textContent=String(p)+'%';raf=requestAnimationFrame(tick);};const begin=()=>{if(t0)return;t0=Date.now();tick();};const end=()=>{if(!t0)return;const dt=Date.now()-t0;t0=0;if(raf){cancelAnimationFrame(raf);raf=0;}if(dt>=holdMs&&dt<holdMs+850){if(hs)hs.textContent='OK';done();}else if(hs){hs.textContent='Belum pas, ulangi.';}};if(hb){hb.addEventListener('mousedown',begin);hb.addEventListener('touchstart',begin,{passive:true});hb.addEventListener('mouseup',end);hb.addEventListener('mouseleave',end);hb.addEventListener('touchend',end);}return;}if(fam===5){const bits=lvl>=4?5:4;const max=(1<<bits)-1;const target=ri(r,1,max);let val=0;const bstr=n=>n.toString(2).padStart(bits,'0');const bvals=Array.from({length:bits},(_,i)=>(1<<(bits-1-i)));elW.innerHTML='<div style=\"margin-bottom:7px\">Atur bit menjadi '+bstr(target)+'.</div><div style=\"display:flex;gap:7px;flex-wrap:wrap\">'+bvals.map(b=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-b=\"'+String(b)+'\" style=\"min-width:46px\">0</button>').join('')+'</div><div id=\"w_bv\" style=\"margin-top:6px\">'+bstr(0)+'</div>';const bv=document.getElementById('w_bv');elW.querySelectorAll('[data-b]').forEach(b=>b.addEventListener('click',()=>{const bit=Number(b.getAttribute('data-b')||0);val=(val^bit);b.textContent=((val&bit)!==0)?'1':'0';if(bv)bv.textContent=bstr(val);if(val===target)done();}));return;}if(fam===6){const size=5;const gx=ri(r,2,4),gy=ri(r,2,4);let x=0,y=0,steps=0;const blocks=[];for(let iy=0;iy<size;iy++){for(let ix=0;ix<size;ix++){if((ix===0&&iy===0)||(ix===gx&&iy===gy))continue;if(r()<0.2)blocks.push([ix,iy]);}}const blockSet=new Set(blocks.map(b=>String(b[0])+','+String(b[1])));const isBlock=(ix,iy)=>blockSet.has(String(ix)+','+String(iy));const canReach=()=>{const q=[[0,0]],seen=new Set(['0,0']);while(q.length){const p=q.shift();if(!p)break;const cx=p[0],cy=p[1];if(cx===gx&&cy===gy)return true;[[1,0],[-1,0],[0,1],[0,-1]].forEach(d=>{const nx=cx+d[0],ny=cy+d[1],k=String(nx)+','+String(ny);if(nx<0||ny<0||nx>=size||ny>=size||isBlock(nx,ny)||seen.has(k))return;seen.add(k);q.push([nx,ny]);});}return false;};if(!canReach()){blockSet.clear();}elW.innerHTML='<div style=\"margin-bottom:7px\">Arahkan titik ungu ke G('+String(gx)+','+String(gy)+').</div><div id=\"w_grid\" style=\"display:grid;grid-template-columns:repeat(5,30px);gap:4px;margin-bottom:8px\"></div><div style=\"display:flex;gap:6px;flex-wrap:wrap\"><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"U\">Up</button><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"L\">Left</button><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"D\">Down</button><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"R\">Right</button></div>';const g=document.getElementById('w_grid');const paint=()=>{if(!g)return;g.innerHTML='';for(let iy=0;iy<size;iy++){for(let ix=0;ix<size;ix++){const c=document.createElement('div');c.style.width='30px';c.style.height='30px';c.style.border='1px solid rgba(139,92,246,.32)';c.style.display='flex';c.style.alignItems='center';c.style.justifyContent='center';if(isBlock(ix,iy)){c.style.background='#5a1f29';c.textContent='■';}if(ix===gx&&iy===gy){c.style.outline='2px solid #35b56a';if(!isBlock(ix,iy))c.textContent='G';}if(ix===x&&iy===y){c.style.background='#6d28d9';c.textContent='●';}g.appendChild(c);}}};const mv=m=>{let nx=x,ny=y;if(m==='U'&&y>0)ny--;if(m==='D'&&y<size-1)ny++;if(m==='L'&&x>0)nx--;if(m==='R'&&x<size-1)nx++;if(isBlock(nx,ny))return;x=nx;y=ny;steps++;paint();if(x===gx&&y===gy&&steps>=3)done();};paint();elW.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>mv(String(b.getAttribute('data-m')||''))));return;}const symbols=['A','B','C','D','E','F','G','H'];const pair=lvl>=4?4:3;const chosen=sh(symbols.slice(),r).slice(0,pair);let vals=[];chosen.forEach(s=>{vals.push(s);vals.push(s);});sh(vals,r);let open=[];let lock=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Memory pair: temukan '+String(pair)+' pasang.</div><div id=\"w_mem\" style=\"display:grid;grid-template-columns:repeat(auto-fit,minmax(58px,1fr));gap:7px\">'+vals.map((_,i)=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-i=\"'+String(i)+'\" style=\"height:44px\">?</button>').join('')+'</div>';const btns=Array.from(elW.querySelectorAll('[data-i]'));const show=(idx,on)=>{const b=btns[idx];if(!b)return;b.textContent=on?vals[idx]:'?';};btns.forEach(b=>b.addEventListener('click',()=>{const i=Number(b.getAttribute('data-i')||-1);if(i<0||open.includes(i)||b.disabled)return;show(i,true);open.push(i);if(open.length<2)return;const a=open[0],c=open[1];if(vals[a]===vals[c]){btns[a].disabled=true;btns[c].disabled=true;lock++;open=[];if(lock>=pair)done();}else{setTimeout(()=>{show(a,false);show(c,false);open=[];},420);}}));};})();"
             "async function sha256Hex(text){const enc=new TextEncoder();const buf=await crypto.subtle.digest('SHA-256',enc.encode(text));const arr=new Uint8Array(buf);let out='';for(const b of arr){out+=b.toString(16).padStart(2,'0');}return out;}"
             "function hasLeadingZeroBits(hex,bits){if(bits<=0)return true;const n=Math.floor(bits/4),r=bits%4;for(let i=0;i<n;i++){if(hex[i]!=='0')return false;}if(r===0)return true;const v=parseInt(hex[n]||'f',16);if(Number.isNaN(v))return false;return v<(1<<(4-r));}"
             "async function solvePow(nonce,salt,bits,memMb,cpuLvl){if(!nonce||!salt)throw new Error('pow_invalid');const start=Date.now();const n=navigator||{};const hc=Math.max(1,Math.min(64,Number(n.hardwareConcurrency||2)));const mobile=((Number(n.maxTouchPoints||0)>0)||/android|iphone|ipad|ipod|mobile/i.test(String(n.userAgent||'')));const cpuLevel=Math.max(1,Math.min(8,Number(cpuLvl||4)));const baseBatch=(hc<=2?48:(hc<=4?84:(hc<=6?132:220)));const batch=mobile?Math.max(28,Math.floor(baseBatch*0.72)):baseBatch;const sleepBase=(hc<=2?8:(hc<=4?5:(hc<=6?2:1)));const sleepMs=Math.max(0,sleepBase-Math.floor(cpuLevel/2))+(mobile?1:0);let targetMb=Math.max(8,Math.min(mobile?64:192,Number(memMb||48)));let memBytes=Math.max(8*1024*1024,Math.floor(targetMb*1024*1024));let mem=null;while(memBytes>=8*1024*1024){try{mem=new Uint8Array(memBytes);break;}catch(_e){memBytes=Math.floor(memBytes/2);}}if(!mem)throw new Error('pow_mem_alloc_failed');const stride=4096;for(let i=0;i<mem.length;i+=stride){mem[i]=(i^bits)&255;}const touchPerIter=(hc<=2?2:(hc<=4?3:4))+cpuLevel;const cpuMixRounds=(cpuLevel*6)+(hc>=8?4:0);let mix=bits&255;let c=0;while(c<200000000){let idx=((c*1103515245)^(mix*2654435761))>>>0;if(mem.length>0){for(let t=0;t<touchPerIter;t++){idx=(idx+4099+((mix+13*t)&255))%mem.length;const v=mem[idx];mix=(mix+v+c+t)&255;mem[idx]=mix^((idx>>>5)&255);}for(let r=0;r<cpuMixRounds;r++){mix=(mix*33+r+c)&255;idx=(idx+mix+17+r)%mem.length;mem[idx]=(mem[idx]^mix^r)&255;}}const h=await sha256Hex(nonce+'|'+salt+'|'+String(c));if(hasLeadingZeroBits(h,bits)){return{counter:c,hash:h,ms:Date.now()-start,mem_mb:Math.floor(mem.length/1048576),cpu_level:cpuLevel};}c++;if((c%batch)===0){await new Promise(r=>setTimeout(r,sleepMs));}}throw new Error('pow_timeout');}"
@@ -2628,7 +2813,7 @@ static void handle_client(int fd, std::string remote_ip) {
             "function randRGB(){const r=80+Math.floor(Math.random()*176),g=80+Math.floor(Math.random()*176),b=80+Math.floor(Math.random()*176);return'rgb('+r+','+g+','+b+')';}"
             "function segCross(a,b,c,d){const ccw=(p1,p2,p3)=>((p3[1]-p1[1])*(p2[0]-p1[0])>(p2[1]-p1[1])*(p3[0]-p1[0]));return(ccw(a,c,d)!==ccw(b,c,d))&&(ccw(a,b,c)!==ccw(a,b,d));}"
             "function sanitizeHint(v){const s=String(v||'');return(/overlap\\s+terdeteksi/i.test(s))?'':s;}"
-            "function drawPattern(){const w=pc.width,h=pc.height;ctx.clearRect(0,0,w,h);ctx.fillStyle='#061221';ctx.fillRect(0,0,w,h);if(Array.isArray(clicked)&&clicked.length>1){const segs=[];ctx.lineWidth=3;for(let i=1;i<clicked.length;i++){const a=nodes[clicked[i-1]-1],b=nodes[clicked[i]-1];if(!a||!b)continue;const ax=a[0]/100*w,ay=a[1]/100*h,bx=b[0]/100*w,by=b[1]/100*h;let hit=false;for(let j=0;j<segs.length;j++){const s=segs[j];if(segCross([ax,ay],[bx,by],s[0],s[1])){hit=true;break;}}ctx.strokeStyle=hit?randRGB():'#66b6ff';ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.stroke();segs.push([[ax,ay],[bx,by]]);}}for(let i=0;i<nodes.length;i++){const n=nodes[i],x=n[0]/100*w,y=n[1]/100*h;ctx.beginPath();ctx.arc(x,y,11,0,Math.PI*2);ctx.fillStyle='#0f2740';ctx.fill();ctx.strokeStyle='#4da0ff';ctx.stroke();ctx.fillStyle='#bfe1ff';ctx.font='12px sans-serif';ctx.fillText(String(i+1),x-4,y+4);}if(elPHint&&/overlap\\s+terdeteksi/i.test(String(elPHint.textContent||''))){elPHint.textContent=sanitizeHint(phase2Hint);}}"
+            "function drawPattern(){const w=pc.width,h=pc.height;ctx.clearRect(0,0,w,h);ctx.fillStyle='#09090d';ctx.fillRect(0,0,w,h);if(Array.isArray(clicked)&&clicked.length>1){const segs=[];ctx.lineWidth=3;for(let i=1;i<clicked.length;i++){const a=nodes[clicked[i-1]-1],b=nodes[clicked[i]-1];if(!a||!b)continue;const ax=a[0]/100*w,ay=a[1]/100*h,bx=b[0]/100*w,by=b[1]/100*h;let hit=false;for(let j=0;j<segs.length;j++){const s=segs[j];if(segCross([ax,ay],[bx,by],s[0],s[1])){hit=true;break;}}ctx.strokeStyle=hit?randRGB():'#8b5cf6';ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.stroke();segs.push([[ax,ay],[bx,by]]);}}for(let i=0;i<nodes.length;i++){const n=nodes[i],x=n[0]/100*w,y=n[1]/100*h;ctx.beginPath();ctx.arc(x,y,11,0,Math.PI*2);ctx.fillStyle='#111117';ctx.fill();ctx.strokeStyle='#8b5cf6';ctx.stroke();ctx.fillStyle='#f7f7fb';ctx.font='12px sans-serif';ctx.fillText(String(i+1),x-4,y+4);}if(elPHint&&/overlap\\s+terdeteksi/i.test(String(elPHint.textContent||''))){elPHint.textContent=sanitizeHint(phase2Hint);}}"
             "function nearestNode(ev){const r=pc.getBoundingClientRect();const x=((ev.clientX-r.left)/r.width)*100;const y=((ev.clientY-r.top)/r.height)*100;let best=-1,bd=1e9;for(let i=0;i<nodes.length;i++){const dx=x-nodes[i][0],dy=y-nodes[i][1],d=dx*dx+dy*dy;if(d<bd){bd=d;best=i;}}if(best<0||bd>18*18)return -1;return best+1;}"
             "function addClickNode(n){if(n<1||n>9)return;if(!pStart)pStart=Date.now();if(clicked.length&&clicked[clicked.length-1]===n)return;clicked.push(n);const pt=nodes[n-1];const t=Date.now()-pStart;if(ppx!==null&&ppy!==null){const dx=pt[0]-ppx,dy=pt[1]-ppy;if((pvdx!==0||pvdy!==0)&&((dx*pvdx+dy*pvdy)<-1))pDir++;pvdx=dx;pvdy=dy;}ppx=pt[0];ppy=pt[1];pTrace.push([pt[0],pt[1],t]);if(pTrace.length>220)pTrace.shift();drawPattern();}"
             "pc.addEventListener('pointerdown',e=>{if(phase!==2)return;const n=nearestNode(e);if(n>0)addClickNode(n);});"
@@ -2643,12 +2828,12 @@ static void handle_client(int fd, std::string remote_ip) {
             "function setPhasePattern(){phase=2;lockChallengeUI();elQ.style.display='';elQ.textContent='Ikuti urutan titik sesuai petunjuk, lalu tekan Continue.';if(elW)elW.style.display='none';elInputWrap.style.display='none';elPat.style.display='block';if(elPI){elPI.textContent='PHASE 2';elPI.className='phase-ind p2';}}"
             "function randBtn(){if(!elHB||!elCW||!elHW)return;if(Date.now()<humanPauseUntil)return;const pad=14;const topMin=(elCW.clientWidth<640?76:90);const maxX=Math.max(pad,elCW.clientWidth-elHB.offsetWidth-pad);const maxY=Math.max(topMin,elCW.clientHeight-elHB.offsetHeight-pad);let x=pad,y=topMin;for(let i=0;i<6;i++){const nx=pad+Math.floor(Math.random()*(Math.max(1,maxX-pad+1)));const ny=topMin+Math.floor(Math.random()*(Math.max(1,maxY-topMin+1)));if(Math.abs(nx-lastBX)+Math.abs(ny-lastBY)>=12){x=nx;y=ny;break;}x=nx;y=ny;}lastBX=x;lastBY=y;elHW.style.left=String(x)+'px';elHW.style.top=String(y)+'px';}"
             "function fmtMs(ms){const t=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(t/60);const s=t%60;return String(m)+'m '+String(s).padStart(2,'0')+'s';}"
-            "function updateWait(){const now=Date.now();if(now<hardPenaltyUntil){if(elHW)elHW.style.display='none';}else{if(elHW)elHW.style.display='';}const ms=unlockAt-now;if(ms<=0){elCT.textContent='OK';}else{elCT.textContent=fmtMs(ms);}if(uiLocked||hardOpened||enteredChallenge){showChal();elB.disabled=false;if(powTaskActive&&powReady){elS.textContent='PoW aktif terus di background sampai challenge selesai.';}else if(powReady){elS.textContent='Challenge ready. Tap Continue.';}else if(powTaskActive){elS.textContent='Preparing browser proof in background...';}else{elS.textContent='Preparing browser proof...';}if(ms<=0&&waitTimer&&powReady){clearInterval(waitTimer);waitTimer=null;}return;}if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elS.textContent='Connection check passed.';elB.disabled=false;if(elHW){elHW.style.display='';elHB.disabled=false;elHB.textContent='I am human, pass me';}return;}const label=fmtMs(ms);showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}"
+            "function updateWait(){const now=Date.now();if(now<hardPenaltyUntil){if(elHW)elHW.style.display='none';}else{if(elHW)elHW.style.display='';}const ms=unlockAt-now;if(ms<=0){elCT.textContent='OK';}else{elCT.textContent=fmtMs(ms);}if(uiLocked||hardOpened||enteredChallenge){showChal();elB.disabled=false;if(powTaskActive&&powReady){elS.textContent='Browser proof ready. Tap Continue.';}else if(powReady){elS.textContent='Challenge ready. Tap Continue.';}else if(powTaskActive){elS.textContent='Browser proof masih dihitung. RAM '+String(powMemMb)+'MB, CPU L'+String(powCpuLevel)+'. Tunggu sebentar...';}else{elS.textContent='Preparing browser proof...';}if(ms<=0&&waitTimer&&powReady){clearInterval(waitTimer);waitTimer=null;}return;}if(ms<=0){if(waitTimer){clearInterval(waitTimer);waitTimer=null;}elS.textContent='Connection check passed.';elB.disabled=false;if(elHW){elHW.style.display='';elHB.disabled=false;elHB.textContent='I am human, pass me';}return;}const label=fmtMs(ms);showConn();elB.disabled=true;elS.textContent='Checking connection... '+label+' | tap button to open challenge';}"
             "const showErr=(m)=>{elE.textContent=String(m||\"Unknown error\");elE.style.display=\"block\";elS.textContent=\"\";};"
             "const hideErr=()=>{elE.textContent=\"\";elE.style.display=\"none\";};"
             "async function loadC(){hideErr();elS.textContent=\"\";elB.disabled=true;clickSamples=[];if(!hardOpened){uiLocked=false;showConn();humanReady=false;enteredChallenge=false;elHB.disabled=true;elHB.textContent='Preparing challenge...';requestAnimationFrame(randBtn);if(humanMoveTimer)clearInterval(humanMoveTimer);humanMoveTimer=setInterval(()=>{if(!humanReady)randBtn();},900);}else{uiLocked=true;humanReady=true;enteredChallenge=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();}const r=await fetch('/__pteroprotect/challenge/new'+clientHintQuery(),{cache:'no-store'});const j=await r.json();if(!j.ok)throw new Error(String(j.error||'challenge unavailable'));"
             "nonce=j.nonce;ak=j.answer_key||'answer';hk=j.click_key||'click';bk=j.behavior_key||'behavior';ck=j.connection_key||'connection';pk=j.pattern_key||'pattern';powSalt=String(j.pow_salt||'');powBits=Math.max(8,Math.min(24,Number(j.pow_bits||14)));powMemMb=Math.max(8,Math.min(192,Number(j.pow_mem_mb||48)));powCpuLevel=Math.max(1,Math.min(8,Number(j.pow_cpu_level||4)));powCounter=-1;powHash='';powReady=false;powTaskActive=false;pendingFinalSubmit=false;powLoopStop=false;challengeSolved=false;phase1Mode=String(j.challenge_mode||'variant_1');phase1Label=String(j.phase1_label||'Tahap 1: selesaikan challenge.');phase1Hint=String(j.phase1_hint||'');phase1Placeholder=String(j.phase1_input_placeholder||'Masukkan jawaban');phase1Numeric=!!j.phase1_numeric;phase1VoiceEnabled=!!j.phase1_voice_enabled;clickVerified=!!(clickVerified||hardOpened||enteredChallenge||humanReady||uiLocked);setPhaseMath();pseq=[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;phase2Hint='';drawPattern();elQ.textContent=j.question;if(elA){elA.placeholder=phase1Placeholder;}elHB.disabled=false;elHB.textContent='I am human, pass me';if(pendingHumanClick){pendingHumanClick=false;setTimeout(()=>{elHB.click();},0);}restartsLeft=3;elRB.disabled=true;elRB.textContent='Restart ('+String(restartsLeft)+')';"
-            "elS.textContent='Running browser PoW (RAM '+String(powMemMb)+'MB, CPU L'+String(powCpuLevel)+') in background...';powTaskActive=true;(async()=>{try{let firstPass=true;while(!powLoopStop){const pow=await solvePow(nonce,powSalt,powBits,powMemMb,powCpuLevel);if(firstPass){powCounter=pow.counter;powHash=pow.hash;powReady=true;elRB.disabled=false;const usedMb=Number(pow.mem_mb||powMemMb);const usedCpu=Number(pow.cpu_level||powCpuLevel);elS.textContent='PoW passed in '+String(pow.ms)+'ms. RAM '+String(usedMb)+'MB, CPU L'+String(usedCpu)+'. PoW tetap berjalan sampai challenge selesai.';elB.disabled=false;if(pendingFinalSubmit&&phase===2&&clickVerified){pendingFinalSubmit=false;setTimeout(()=>{elB.click();},0);}}firstPass=false;if(challengeSolved||powLoopStop)break;await new Promise(r=>setTimeout(r,0));}powTaskActive=false;}catch(err){powReady=false;powTaskActive=false;const msg=String(err.message||err);elE.textContent=msg;elS.textContent='PoW failed. Restart challenge.';elB.disabled=false;}})();"
+            "elS.textContent='Browser proof mulai. RAM '+String(powMemMb)+'MB, CPU L'+String(powCpuLevel)+'.';powTaskActive=true;(async()=>{try{let firstPass=true;while(!powLoopStop){const pow=await solvePow(nonce,powSalt,powBits,powMemMb,powCpuLevel);if(firstPass){powCounter=pow.counter;powHash=pow.hash;powReady=true;elRB.disabled=false;const usedMb=Number(pow.mem_mb||powMemMb);const usedCpu=Number(pow.cpu_level||powCpuLevel);elS.textContent='Browser proof ready in '+String(pow.ms)+'ms. Tap Continue.';elB.disabled=false;if(pendingFinalSubmit&&phase===2&&clickVerified){pendingFinalSubmit=false;setTimeout(()=>{elB.click();},0);}}firstPass=false;powTaskActive=false;break;}powTaskActive=false;}catch(err){powReady=false;powTaskActive=false;const msg=String(err.message||err);elE.textContent=msg;elS.textContent='PoW failed. Restart challenge.';elB.disabled=false;}})();"
             "const raw=Number(j.connection_delay_ms||0);const baseDelay=Math.min(21600000,Math.max(0,raw));const penaltyLeft=Math.max(0,hardPenaltyUntil-Date.now());const d=Math.max(baseDelay,penaltyLeft);const keepOpened=(uiLocked||hardOpened||clickVerified||enteredChallenge||humanReady||phase===2)&&penaltyLeft<=0;started=Date.now();unlockAt=Date.now()+d;if(keepOpened){lockChallengeUI();elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();elA.focus();}else{humanReady=false;enteredChallenge=false;elHB.disabled=false;elHB.textContent='I am human, pass me';if(penaltyLeft>0&&elHW)elHW.style.display='none';}updateWait();if(waitTimer)clearInterval(waitTimer);waitTimer=setInterval(updateWait,1000);}"
             "elHB.onclick=async()=>{try{if(!nonce||!hk){pendingHumanClick=true;elHB.disabled=true;elHB.textContent='Preparing challenge...';elS.textContent='Preparing challenge...';return;}const c={nonce:nonce,click:hk};const cr=await fetch('/__pteroprotect/challenge/click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});const cj=await cr.json();if(!cj.ok){throw new Error(cj.error||'click_invalid');}lockChallengeUI();clickVerified=true;elHB.disabled=true;elHB.textContent='Challenge opened';if(humanMoveTimer){clearInterval(humanMoveTimer);humanMoveTimer=null;}showChal();if(powReady){elA.focus();}updateWait();}catch(err){const msg=String(err.message||err);if(msg==='click_rate_limited'){resetToConnectionRateLimited();return;}elE.textContent=msg;}};"
             "const pauseHumanBtn=(ms)=>{humanPauseUntil=Math.max(humanPauseUntil,Date.now()+ms);};elHB.addEventListener('pointerenter',()=>pauseHumanBtn(120));elHB.addEventListener('pointerdown',()=>pauseHumanBtn(120));elHB.addEventListener('touchstart',()=>pauseHumanBtn(120),{passive:true});elHB.addEventListener('focus',()=>pauseHumanBtn(120));window.addEventListener('resize',()=>{if(!humanReady)randBtn();});if(elMic){elMic.addEventListener('click',()=>{captureVoiceInput();});}"
@@ -2656,12 +2841,12 @@ static void handle_client(int fd, std::string remote_ip) {
             "elRB.onclick=async()=>{if(restartsLeft<=0){elRB.disabled=true;return;}restartsLeft-=1;elRB.textContent='Restart ('+String(restartsLeft)+')';if(restartsLeft<=0)elRB.disabled=true;elE.textContent='';if(phase===1){phase1ConceptPassed=false;elS.textContent='Step-1 di-reset.';setPhaseMath();if(elA&&elInputWrap&&elInputWrap.style.display!=='none'){elA.value='';elA.focus();}elB.disabled=false;return;}if(phase===2){elS.textContent='Pattern di-reset.';clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;drawPattern();elB.disabled=false;return;}elS.textContent='Challenge di-reset.';elB.disabled=false;};"
             "elB.onclick=async()=>{try{if(Date.now()<unlockAt&&!enteredChallenge){updateWait();return;}if(!clickVerified){throw new Error('click_required');}elE.textContent='';elB.disabled=true;"
             "if(phase===1){if(!phase1ConceptPassed){throw new Error('phase1_widget_required');}const m={nonce:nonce};m[ak]=phase1Value(elA.value||'');const mr=await fetch('/__pteroprotect/challenge/verify-math',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)});const mj=await mr.json();if(!mj.ok){if(mj.error==='answer_wrong'&&Number.isFinite(Number(mj.attempts_left))){elS.textContent='Salah. Sisa percobaan step-1: '+String(Math.max(0,Number(mj.attempts_left)));}throw new Error(mj.error||'phase1_failed');}setPhasePattern();pseq=Array.isArray(mj.pattern_points)?mj.pattern_points:[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 2: klik angka sesuai urutan.';phase2Hint=sanitizeHint(String(mj.pattern_hint||''));elPHint.textContent=phase2Hint;drawPattern();elB.disabled=false;return;}"
-            "if(!powReady){pendingFinalSubmit=true;elS.textContent='PoW masih berjalan di background... auto lanjut saat selesai.';elB.disabled=true;return;}const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=phase1Value(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
+            "if(!powReady){pendingFinalSubmit=true;elS.textContent='Browser proof belum selesai. Auto lanjut saat proof ready.';elB.disabled=true;return;}const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=phase1Value(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
             "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');challengeSolved=true;powLoopStop=true;location.href=j.redirect||'" + rd + "';}"
             "catch(err){const msg=String(err.message||err);showErr(msg);if(msg==='phase1_widget_required'){elS.textContent='Selesaikan captcha interaktif phase-1 dulu.';}else if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
             "async function cleanupOldChallengeCaches(){try{if(window.caches&&caches.keys){const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}if('serviceWorker' in navigator&&navigator.serviceWorker.getRegistrations){const regs=await navigator.serviceWorker.getRegistrations();await Promise.all(regs.filter(r=>{const s=String(r.scope||'');return s===location.origin+'/'||s.includes('/__pteroprotect/challenge/');}).map(r=>r.unregister()));}}catch(_e){}}"
             "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/__pteroprotect/challenge/'});}catch(_e){}}"
-            "document.addEventListener('visibilitychange',()=>{if(document.hidden&&powTaskActive){elS.textContent='PoW tetap jalan di background tab...';}});window.addEventListener('beforeunload',()=>{powLoopStop=true;});cleanupOldChallengeCaches().finally(()=>registerChallengeSW().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));}));</script></body></html>";
+            "document.addEventListener('visibilitychange',()=>{if(document.hidden&&powTaskActive){elS.textContent='Browser proof tetap dihitung saat tab tersembunyi...';}});window.addEventListener('beforeunload',()=>{powLoopStop=true;});cleanupOldChallengeCaches().finally(()=>registerChallengeSW().finally(()=>{loadC().catch(e=>elE.textContent=String(e.message||e));}));</script></body></html>";
         send_response(fd, 200, "OK", html, {{"Content-Type", "text/html; charset=utf-8"}}, head_only);
         close(fd);
         return;

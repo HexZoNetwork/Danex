@@ -24,20 +24,20 @@
         margin-bottom: 12px;
     }
     .qf-card {
-        background: #334253;
-        border: 1px solid #4a5b6e;
+        background: #09090d;
+        border: 1px solid rgba(139, 92, 246, 0.24);
         border-radius: 6px;
         padding: 10px 12px;
     }
     .qf-card .label {
         display: block;
-        color: #9fb0c4;
+        color: #a6a6b8;
         font-size: 11px;
         margin-bottom: 6px;
         letter-spacing: .2px;
     }
     .qf-card .value {
-        color: #e5edf7;
+        color: #f7f7fb;
         font-size: 12px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -47,35 +47,35 @@
     .qf-shell,
     .qf-shell .box-header,
     .qf-shell .box-body {
-        background: #2f3f50 !important;
-        border-color: #4a5b6e !important;
-        color: #e5edf7 !important;
+        background: #0b0b10 !important;
+        border-color: rgba(139, 92, 246, 0.24) !important;
+        color: #f7f7fb !important;
     }
     .qf-shell .box-title {
-        color: #e5edf7 !important;
+        color: #f7f7fb !important;
     }
     .qf-group .panel-heading {
-        background: #36485b;
+        background: #111117;
     }
     .qf-group.panel,
     .qf-group .panel-body,
     .qf-group .panel-collapse,
     .qf-group .panel-default {
-        background: #2f3f50 !important;
-        border-color: #4a5b6e !important;
+        background: #0b0b10 !important;
+        border-color: rgba(139, 92, 246, 0.24) !important;
     }
     .qf-group .panel-heading {
-        border-color: #4a5b6e !important;
+        border-color: rgba(139, 92, 246, 0.24) !important;
     }
     .qf-group .panel-title > a {
-        color: #e5edf7 !important;
+        color: #f7f7fb !important;
     }
     .qf-title {
         font-weight: 600;
-        color: #e5edf7;
+        color: #f7f7fb;
     }
     .qf-meta {
-        color: #9fb0c4;
+        color: #a6a6b8;
         font-size: 12px;
         margin-top: 4px;
     }
@@ -86,31 +86,31 @@
         margin-bottom: 0;
         table-layout: fixed;
         width: 100%;
-        background: #2f3f50;
-        color: #e5edf7;
+        background: #0b0b10;
+        color: #f7f7fb;
     }
     .qf-table th,
     .qf-table td {
         vertical-align: middle !important;
-        border-color: #4a5b6e !important;
-        background: #2f3f50 !important;
+        border-color: rgba(139, 92, 246, 0.24) !important;
+        background: #0b0b10 !important;
     }
     .qf-table th {
         background: #3a4e64;
-        color: #e5edf7;
+        color: #f7f7fb;
     }
     .qf-table.table-striped > tbody > tr:nth-of-type(odd) > td,
     .qf-table.table-striped > tbody > tr:nth-of-type(odd) > th {
-        background: #334253 !important;
+        background: #09090d !important;
     }
     .qf-table.table-striped > tbody > tr:nth-of-type(even) > td,
     .qf-table.table-striped > tbody > tr:nth-of-type(even) > th {
-        background: #2f3f50 !important;
+        background: #0b0b10 !important;
     }
     .qf-file {
         font-family: Menlo, Monaco, Consolas, monospace;
         font-size: 12px;
-        color: #e5edf7;
+        color: #f7f7fb;
         display: block;
         width: 100%;
         max-width: 100%;
@@ -129,14 +129,14 @@
         vertical-align: bottom;
         font-family: Menlo, Monaco, Consolas, monospace;
         font-size: 11px;
-        color: #9fb0c4;
+        color: #a6a6b8;
     }
     .qf-actions .btn {
         margin-right: 4px;
     }
     .qf-empty {
         padding: 16px;
-        border: 1px dashed #4a5b6e;
+        border: 1px dashed rgba(139, 92, 246, 0.24);
         border-radius: 6px;
         color: #b8c7d9;
         background: #293746;

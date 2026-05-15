@@ -4,7 +4,6 @@ namespace Pterodactyl\Http\Middleware\Security;
 
 use Closure;
 use Illuminate\Http\Request;
-use Illuminate\Http\JsonResponse;
 use Pterodactyl\Models\ApiKey;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Models\User;
@@ -36,13 +35,15 @@ class PteroProtectRestrictedApplicationApi
         if (preg_match('#^api/application/(users|servers)(?:/|$)#i', $path) !== 1) {
             // delegated admin: read-only infra endpoints for create-server workflow.
             $isReadOnlyInfraRequest = $request->isMethod('get') && (
-                preg_match('#^api/application/nodes(?:$|/|/deployable)#i', $path) === 1
+                preg_match('#^api/application/nodes(?:$|/|/deployable|/\d+(?:$|/))#i', $path) === 1
                 || preg_match('#^api/application/locations(?:$|/)#i', $path) === 1
                 || preg_match('#^api/application/nests(?:$|/)#i', $path) === 1
             );
 
             if ($isReadOnlyInfraRequest) {
-                return $this->sanitizeInfraResponse($path, $next($request));
+                $this->sanitizeDelegatedInfraIncludes($request, $path);
+
+                return $next($request);
             }
 
             throw new AccessDeniedHttpException('This API scope is disabled for delegated admin accounts.');
@@ -171,82 +172,42 @@ class PteroProtectRestrictedApplicationApi
         return $identifier === '' ? null : $identifier;
     }
 
-    private function sanitizeInfraResponse(string $path, mixed $response): mixed
+    private function sanitizeDelegatedInfraIncludes(Request $request, string $path): void
     {
-        if (!$response instanceof JsonResponse) {
-            return $response;
-        }
-
-        $payload = $response->getData(true);
-        if (!is_array($payload) || !array_key_exists('data', $payload)) {
-            return $response;
-        }
-
-        $resource = $this->infraResourceName($path);
-        if ($resource === null) {
-            return $response;
-        }
-
-        $payload['data'] = $this->mapInfraDataToIdOnly($payload['data'], $resource);
-
-        return new JsonResponse(
-            $payload,
-            $response->getStatusCode(),
-            $response->headers->all(),
-            $response->hasEncodingOption(JSON_PRETTY_PRINT)
-        );
-    }
-
-    private function infraResourceName(string $path): ?string
-    {
+        $allowed = [];
         if (preg_match('#^api/application/nodes(?:/|$)#i', $path) === 1) {
-            return 'nodes';
-        }
-        if (preg_match('#^api/application/locations(?:/|$)#i', $path) === 1) {
-            return 'locations';
-        }
-        if (preg_match('#^api/application/nests(?:/|$)#i', $path) === 1) {
-            return preg_match('#/eggs(?:/|$)#i', $path) === 1 ? 'eggs' : 'nests';
-        }
-
-        return null;
-    }
-
-    private function mapInfraDataToIdOnly(mixed $data, string $resource): mixed
-    {
-        if (is_array($data) && array_is_list($data)) {
-            return array_values(array_filter(array_map(
-                fn (mixed $item): ?array => $this->toIdOnlyItem($item, $resource),
-                $data
-            )));
+            $allowed = ['location'];
+        } elseif (preg_match('#^api/application/locations(?:/|$)#i', $path) === 1) {
+            $allowed = ['nodes'];
+        } elseif (preg_match('#^api/application/nests(?:/|$)#i', $path) === 1) {
+            $allowed = preg_match('#/eggs(?:/|$)#i', $path) === 1
+                ? ['nest', 'variables', 'config', 'script']
+                : ['eggs'];
         }
 
-        return $this->toIdOnlyItem($data, $resource) ?? $data;
-    }
+        if ($allowed === []) {
+            $request->query->remove('include');
+            $request->request->remove('include');
 
-    private function toIdOnlyItem(mixed $item, string $resource): ?array
-    {
-        if (!is_array($item)) {
-            return null;
+            return;
         }
 
-        $id = null;
-        if (array_key_exists('attributes', $item) && is_array($item['attributes'])) {
-            $id = $item['attributes']['id'] ?? null;
-        }
-        if ($id === null && array_key_exists('id', $item)) {
-            $id = $item['id'];
+        $raw = $request->input('include', []);
+        $includes = is_array($raw) ? $raw : explode(',', (string) $raw);
+        $includes = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $value): string => trim((string) $value),
+            $includes
+        ))));
+
+        $safeIncludes = array_values(array_intersect($includes, $allowed));
+        if ($safeIncludes === []) {
+            $request->query->remove('include');
+            $request->request->remove('include');
+
+            return;
         }
 
-        if (!is_numeric($id)) {
-            return null;
-        }
-
-        return [
-            'object' => $resource,
-            'attributes' => [
-                'id' => (int) $id,
-            ],
-        ];
+        $request->merge(['include' => implode(',', $safeIncludes)]);
+        $request->query->set('include', implode(',', $safeIncludes));
     }
 }

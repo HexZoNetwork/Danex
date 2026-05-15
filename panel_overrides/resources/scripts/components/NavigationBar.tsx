@@ -1,13 +1,14 @@
 import * as React from 'react';
-import { lazy, useState } from 'react';
+import { lazy, useEffect, useRef, useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCogs, faSignOutAlt } from '@fortawesome/free-solid-svg-icons';
+import { faBell, faCogs, faSignOutAlt } from '@fortawesome/free-solid-svg-icons';
 import { useStoreState } from 'easy-peasy';
 import { ApplicationStore } from '@/state';
 import tw from 'twin.macro';
 import styled from 'styled-components/macro';
 import http from '@/api/http';
+import { getChatNotifications } from '@/api/chat/publicChat';
 import SpinnerOverlay from '@/components/elements/SpinnerOverlay';
 import Tooltip from '@/components/elements/tooltip/Tooltip';
 import Avatar from '@/components/Avatar';
@@ -76,10 +77,25 @@ const Brand = styled(Link)`
     }
 `;
 
+const NotificationBadge = styled.span`
+    ${tw`absolute flex items-center justify-center text-[10px] font-bold text-white rounded-full`};
+    top: 0.68rem;
+    right: 0.46rem;
+    min-width: 1.1rem;
+    height: 1.1rem;
+    padding: 0 0.28rem;
+    background: #ef4444;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    box-shadow: 0 0 18px rgba(239, 68, 68, 0.48);
+    pointer-events: none;
+`;
+
 export default () => {
     const name = useStoreState((state: ApplicationStore) => state.settings.data!.name);
     const rootAdmin = useStoreState((state: ApplicationStore) => state.user.data!.rootAdmin);
     const [isLoggingOut, setIsLoggingOut] = useState(false);
+    const [unreadNotifications, setUnreadNotifications] = useState(0);
+    const isMounted = useRef(true);
 
     const onTriggerLogout = () => {
         setIsLoggingOut(true);
@@ -88,6 +104,33 @@ export default () => {
             window.location = '/';
         });
     };
+
+    useEffect(() => {
+        isMounted.current = true;
+
+        const refreshNotifications = () => {
+            getChatNotifications(undefined, 1)
+                .then((result) => {
+                    if (isMounted.current) {
+                        setUnreadNotifications(Math.max(0, result.unreadCount || 0));
+                    }
+                })
+                .catch(() => {
+                    // Keep the nav usable if notifications fail.
+                });
+        };
+
+        refreshNotifications();
+        const timer = window.setInterval(refreshNotifications, 30000);
+        const onFocus = () => refreshNotifications();
+        window.addEventListener('focus', onFocus);
+
+        return () => {
+            isMounted.current = false;
+            window.clearInterval(timer);
+            window.removeEventListener('focus', onFocus);
+        };
+    }, []);
 
     return (
         <Shell>
@@ -110,6 +153,14 @@ export default () => {
                             </a>
                         </Tooltip>
                     )}
+                    <Tooltip placement={'bottom'} content={'Notifications'}>
+                        <NavLink to={'/notifications'} exact className={'relative'}>
+                            <FontAwesomeIcon icon={faBell} />
+                            {unreadNotifications > 0 && (
+                                <NotificationBadge>{unreadNotifications > 99 ? '99+' : unreadNotifications}</NotificationBadge>
+                            )}
+                        </NavLink>
+                    </Tooltip>
                     <Tooltip placement={'bottom'} content={'Account Settings'}>
                         <NavLink to={'/account'}>
                             <span className={'flex items-center w-5 h-5'}>
