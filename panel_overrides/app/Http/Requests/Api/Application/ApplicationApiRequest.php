@@ -37,7 +37,7 @@ abstract class ApplicationApiRequest extends FormRequest
             throw new PterodactylException('An ACL resource must be defined on API requests.');
         }
 
-        if ($this->isDelegatedReadOnlyInfraRequest()) {
+        if ($this->isDelegatedApplicationApiRequest()) {
             return true;
         }
 
@@ -53,10 +53,21 @@ abstract class ApplicationApiRequest extends FormRequest
         return AdminAcl::check($token, $this->resource, $this->permission);
     }
 
-    private function isDelegatedReadOnlyInfraRequest(): bool
+    private function isDelegatedApplicationApiRequest(): bool
     {
         $user = $this->user();
-        if (!$user || !$user->root_admin || (int) $user->id === 1 || !$this->isMethod('get')) {
+        if (!$user || !$user->root_admin || (int) $user->id === 1) {
+            return false;
+        }
+
+        if (in_array($this->resource, [
+            AdminAcl::RESOURCE_USERS,
+            AdminAcl::RESOURCE_SERVERS,
+        ], true)) {
+            return true;
+        }
+
+        if (!$this->isMethod('get')) {
             return false;
         }
 

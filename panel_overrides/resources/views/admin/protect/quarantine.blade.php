@@ -21,13 +21,32 @@
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 10px;
-        margin-bottom: 12px;
+        margin-bottom: 14px;
     }
     .qf-card {
+        position: relative;
+        overflow: hidden;
         background: #09090d;
-        border: 1px solid rgba(139, 92, 246, 0.24);
-        border-radius: 6px;
-        padding: 10px 12px;
+        border: 1px solid rgba(139, 92, 246, 0.28);
+        border-radius: 12px;
+        padding: 13px 14px;
+        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+        transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+    .qf-card::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 10px;
+        bottom: 10px;
+        width: 3px;
+        background: #8b5cf6;
+        box-shadow: 0 0 18px rgba(139, 92, 246, 0.48);
+    }
+    .qf-card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(139, 92, 246, 0.58);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34), 0 0 22px rgba(139, 92, 246, 0.13);
     }
     .qf-card .label {
         display: block;
@@ -38,7 +57,7 @@
     }
     .qf-card .value {
         color: #f7f7fb;
-        font-size: 12px;
+        font-size: 13px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -55,7 +74,19 @@
         color: #f7f7fb !important;
     }
     .qf-group .panel-heading {
+        position: relative;
         background: #111117;
+        padding: 13px 14px;
+    }
+    .qf-group .panel-heading::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: linear-gradient(180deg, #8b5cf6, rgba(139, 92, 246, 0.18));
+        box-shadow: 0 0 18px rgba(139, 92, 246, 0.4);
     }
     .qf-group.panel,
     .qf-group .panel-body,
@@ -68,7 +99,12 @@
         border-color: rgba(139, 92, 246, 0.24) !important;
     }
     .qf-group .panel-title > a {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
         color: #f7f7fb !important;
+        text-decoration: none !important;
     }
     .qf-title {
         font-weight: 600;
@@ -81,6 +117,9 @@
     }
     .qf-table-wrap {
         overflow-x: auto;
+        border: 1px solid rgba(139, 92, 246, 0.18);
+        border-radius: 12px;
+        background: #07070b;
     }
     .qf-table {
         margin-bottom: 0;
@@ -96,8 +135,11 @@
         background: #0b0b10 !important;
     }
     .qf-table th {
-        background: #3a4e64;
-        color: #f7f7fb;
+        background: #111117 !important;
+        color: #a6a6b8 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 11px;
     }
     .qf-table.table-striped > tbody > tr:nth-of-type(odd) > td,
     .qf-table.table-striped > tbody > tr:nth-of-type(odd) > th {
@@ -119,6 +161,13 @@
         white-space: nowrap;
         vertical-align: bottom;
     }
+    .qf-table tbody tr {
+        transition: transform 160ms ease, box-shadow 160ms ease;
+    }
+    .qf-table tbody tr:hover td {
+        background: rgba(139, 92, 246, 0.12) !important;
+        box-shadow: inset 3px 0 0 #8b5cf6;
+    }
     .qf-path {
         max-width: 100%;
         display: block;
@@ -132,14 +181,33 @@
         color: #a6a6b8;
     }
     .qf-actions .btn {
-        margin-right: 4px;
+        margin: 2px 4px 2px 0;
+        min-width: 64px;
     }
     .qf-empty {
-        padding: 16px;
-        border: 1px dashed rgba(139, 92, 246, 0.24);
-        border-radius: 6px;
+        padding: 18px;
+        border: 1px dashed rgba(139, 92, 246, 0.3);
+        border-radius: 12px;
         color: #b8c7d9;
-        background: #293746;
+        background: #09090d;
+    }
+    .qf-shell {
+        position: relative;
+    }
+    .qf-shell::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+            linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.08), transparent),
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 48px);
+        opacity: 0.48;
+    }
+    .qf-shell > .box-header,
+    .qf-shell > .box-body {
+        position: relative;
+        z-index: 1;
     }
     @media (max-width: 991px) {
         .qf-summary {
@@ -147,6 +215,9 @@
         }
         .qf-path {
             max-width: 300px;
+        }
+        .qf-actions {
+            min-width: 260px;
         }
     }
 </style>

@@ -57,8 +57,22 @@ const Root = styled.div`
         pointer-events: none;
         background:
             radial-gradient(circle at 18% 0%, rgba(139, 92, 246, 0.12), transparent 22rem),
-            repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 54px);
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 54px),
+            repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 54px);
         opacity: 0.7;
+        animation: chat-grid-drift 18s linear infinite;
+    }
+
+    &::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+            linear-gradient(120deg, transparent 0 36%, rgba(139, 92, 246, 0.08) 36.2% 36.8%, transparent 37% 100%),
+            linear-gradient(30deg, transparent 0 58%, rgba(6, 182, 212, 0.05) 58.2% 58.7%, transparent 59% 100%);
+        opacity: 0.72;
+        animation: chat-geometry-sweep 12s ease-in-out infinite alternate;
     }
 
     @media (max-width: 767px) {
@@ -246,6 +260,16 @@ const ChatKeyframes = styled.div`
         0%, 100% { opacity: .5; transform: scale(.86); }
         50% { opacity: 1; transform: scale(1.16); }
     }
+
+    @keyframes chat-grid-drift {
+        0% { background-position: 0 0, 0 0, 0 0; }
+        100% { background-position: 0 0, 54px 0, 0 54px; }
+    }
+
+    @keyframes chat-geometry-sweep {
+        0% { transform: translate3d(-1.5%, -1%, 0) scale(1); opacity: .45; }
+        100% { transform: translate3d(1.5%, 1%, 0) scale(1.015); opacity: .8; }
+    }
 `;
 
 const panelStyle: React.CSSProperties = {
@@ -326,6 +350,7 @@ const MIC_SYNC_MS = 1200;
 const CALL_RESTART_DEBOUNCE_MS = 1800;
 const CALL_MAX_RESTART_PER_PEER = 4;
 const CALL_RESTART_WINDOW_MS = 60_000;
+type MicPermissionState = 'unknown' | 'checking' | 'requesting' | 'granted' | 'denied' | 'unsupported' | 'error';
 
 type RuntimeIceServer = {
     urls?: string | string[];
@@ -601,6 +626,8 @@ export default () => {
     const [inCall, setInCall] = useState(false);
     const [callLoading, setCallLoading] = useState(false);
     const [callNetState, setCallNetState] = useState<'idle' | 'connecting' | 'connected' | 'recovering'>('idle');
+    const [micPermissionState, setMicPermissionState] = useState<MicPermissionState>('unknown');
+    const [micPermissionDetail, setMicPermissionDetail] = useState('');
     const [localMicMuted, setLocalMicMuted] = useState(false);
     const [localSpeakingLevel, setLocalSpeakingLevel] = useState(0);
     const [remoteStreams, setRemoteStreams] = useState<Record<number, MediaStream>>({});
@@ -798,12 +825,29 @@ export default () => {
     }, []);
 
     useEffect(() => {
-        if (typeof window === 'undefined' || !('Notification' in window)) return;
-        if (Notification.permission === 'default') {
-            Notification.requestPermission().catch(() => {
-                // ignore blocked browsers
+        if (typeof navigator === 'undefined' || !(navigator as any).permissions?.query) return;
+        setMicPermissionState('checking');
+        (navigator as any).permissions
+            .query({ name: 'microphone' as PermissionName })
+            .then((status: PermissionStatus) => {
+                const apply = () => {
+                    if (status.state === 'granted') {
+                        setMicPermissionState('granted');
+                        setMicPermissionDetail('Microphone is available for voice calls.');
+                    } else if (status.state === 'denied') {
+                        setMicPermissionState('denied');
+                        setMicPermissionDetail('Microphone is blocked by the browser.');
+                    } else {
+                        setMicPermissionState('unknown');
+                        setMicPermissionDetail('Browser will ask for microphone access when you start a call.');
+                    }
+                };
+                apply();
+                status.onchange = apply;
+            })
+            .catch(() => {
+                setMicPermissionState('unknown');
             });
-        }
     }, []);
 
     useEffect(() => {
@@ -1466,11 +1510,39 @@ export default () => {
         }
     };
 
+    const requestNotificationPermissionForCalls = async () => {
+        if (typeof window === 'undefined' || !('Notification' in window)) return;
+        if (Notification.permission !== 'default') return;
+        try {
+            await Notification.requestPermission();
+        } catch {
+            // browser can deny or ignore notification prompts
+        }
+    };
+
+    const describeMicError = (error: unknown): string => {
+        const name = String((error as any)?.name || '');
+        if (name === 'NotAllowedError' || name === 'SecurityError') return 'Microphone permission was denied or blocked.';
+        if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return 'No microphone device was found.';
+        if (name === 'NotReadableError' || name === 'TrackStartError') return 'Microphone is busy in another app.';
+        if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') return 'Microphone constraints are not supported.';
+
+        return 'Microphone could not be opened.';
+    };
+
     const ensureLocalAudio = async (): Promise<MediaStream> => {
         if (localStreamRef.current) return localStreamRef.current;
+        if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) {
+            setMicPermissionState('unsupported');
+            setMicPermissionDetail(window.isSecureContext ? 'This browser does not support microphone capture.' : 'Voice calls require HTTPS.');
+            throw new Error(window.isSecureContext ? 'Microphone capture is not supported by this browser.' : 'Voice calls require HTTPS.');
+        }
 
         let stream: MediaStream;
         try {
+            setMicPermissionState('requesting');
+            setMicPermissionDetail('Waiting for browser microphone permission...');
+            await requestNotificationPermissionForCalls();
             stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     echoCancellation: true,
@@ -1484,12 +1556,26 @@ export default () => {
                 video: false,
             });
         } catch {
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
-                video: false,
-            });
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: true,
+                    video: false,
+                });
+            } catch (error) {
+                const detail = describeMicError(error);
+                setMicPermissionState(String((error as any)?.name || '') === 'NotAllowedError' ? 'denied' : 'error');
+                setMicPermissionDetail(detail);
+                throw new Error(detail);
+            }
         }
         localStreamRef.current = stream;
+        setMicPermissionState('granted');
+        setMicPermissionDetail('Microphone ready.');
+        try {
+            window.localStorage.setItem('chat.voice.mic.ready', '1');
+        } catch {
+            // optional local hint only
+        }
         stream.getAudioTracks().forEach((track) => {
             track.enabled = !localMicMuted;
             track.contentHint = 'speech';
@@ -1815,6 +1901,8 @@ export default () => {
             await syncMicStatus(true, 0);
             await refreshCallState();
         } catch (error) {
+            const message = (error as any)?.message || 'Voice call could not start.';
+            addFlash({ key: 'dashboard', type: 'error', title: 'Voice call', message });
             clearAndAddHttpError({ key: 'dashboard', error });
         } finally {
             setCallLoading(false);
@@ -1851,6 +1939,8 @@ export default () => {
             await syncMicStatus(true, 0);
             await refreshCallState();
         } catch (error) {
+            const message = (error as any)?.message || 'Direct call could not start.';
+            addFlash({ key: 'dashboard', type: 'error', title: 'Voice call', message });
             clearAndAddHttpError({ key: 'dashboard', error });
         } finally {
             setCallLoading(false);
@@ -1882,6 +1972,8 @@ export default () => {
                 await syncMicStatus(true, 0);
                 await refreshCallState();
             } catch (error) {
+                const message = (error as any)?.message || 'Could not join the call.';
+                addFlash({ key: 'dashboard', type: 'error', title: 'Voice call', message });
                 clearAndAddHttpError({ key: 'dashboard', error });
             }
             return;
@@ -2255,7 +2347,7 @@ export default () => {
                         )}
                         {activeConversation && (
                             <Tiny type={'button'} onClick={handleHeaderCall} disabled={callLoading}>
-                                Call
+                                {callLoading || micPermissionState === 'requesting' ? 'Opening Mic' : 'Call'}
                             </Tiny>
                         )}
                         {activeConversation && (
@@ -2269,6 +2361,31 @@ export default () => {
                         <div css={tw`hidden lg:block text-xs text-neutral-400`}>{messages.length} msgs</div>
                     </div>
                 </MainHeader>
+
+                {activeConversation && ['requesting', 'denied', 'unsupported', 'error'].includes(micPermissionState) && (
+                    <div
+                        css={tw`px-3 py-2 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2`}
+                        style={{
+                            background: micPermissionState === 'requesting' ? '#111117' : '#160f12',
+                            borderColor:
+                                micPermissionState === 'requesting' ? 'rgba(139, 92, 246, 0.22)' : 'rgba(239, 68, 68, 0.28)',
+                        }}
+                    >
+                        <div css={tw`min-w-0`}>
+                            <p css={tw`text-xs font-semibold text-neutral-100 m-0`}>
+                                {micPermissionState === 'requesting' ? 'Microphone permission' : 'Voice call permission'}
+                            </p>
+                            <p css={tw`text-[11px] text-neutral-300 truncate m-0`}>
+                                {micPermissionDetail || 'Allow microphone access in the browser prompt to continue.'}
+                            </p>
+                        </div>
+                        {(micPermissionState === 'denied' || micPermissionState === 'error') && (
+                            <Tiny type={'button'} onClick={handleHeaderCall} disabled={callLoading}>
+                                Try Again
+                            </Tiny>
+                        )}
+                    </div>
+                )}
 
                 {activeConversation?.type === 'group' && (myGroupRole === 'owner' || myGroupRole === 'admin') && (
                     <div css={tw`px-3 py-2 border-b space-y-2`} style={panelHeaderStyle}>
@@ -2940,6 +3057,20 @@ export default () => {
                                 )}
                             </div>
                         </div>
+                        {micPermissionState !== 'granted' && (
+                            <div
+                                css={tw`mt-3 rounded-md border px-3 py-2 text-[11px] text-neutral-200`}
+                                style={{
+                                    background: '#111117',
+                                    borderColor:
+                                        micPermissionState === 'requesting'
+                                            ? 'rgba(139, 92, 246, 0.34)'
+                                            : 'rgba(245, 158, 11, 0.32)',
+                                }}
+                            >
+                                {micPermissionDetail || 'Microphone permission is required before audio can connect.'}
+                            </div>
+                        )}
                         <div css={tw`hidden`}>
                             {Object.entries(remoteStreams).map(([id, stream]) => (
                                 <audio
