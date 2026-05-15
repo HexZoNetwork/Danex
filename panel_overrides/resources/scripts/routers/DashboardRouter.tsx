@@ -8,7 +8,7 @@ import SubNavigation from '@/components/elements/SubNavigation';
 import { useLocation } from 'react-router';
 import Spinner from '@/components/elements/Spinner';
 import accountRoutes from '@/routers/accountRoutes';
-import { getChatNotifications } from '@/api/chat/publicChat';
+import { getChatNotifications, readChatNotifications } from '@/api/chat/publicChat';
 import { useStoreState } from 'easy-peasy';
 import { ApplicationStore } from '@/state';
 
@@ -56,11 +56,14 @@ export default () => {
                             renotify: false,
                         });
                         n.onclick = () => {
-                            if (item.conversationId) {
-                                window.location.href = `/chat?conversation=${item.conversationId}`;
-                            } else {
-                                window.location.href = '/notifications';
-                            }
+                            const target = item.conversationId ? `/chat?conversation=${item.conversationId}` : '/notifications';
+                            readChatNotifications([item.id])
+                                .catch(() => {
+                                    // notification click should still navigate if the read marker fails
+                                })
+                                .finally(() => {
+                                    window.location.href = target;
+                                });
                         };
                         window.setTimeout(() => n.close(), 7000);
                     } catch {
@@ -109,7 +112,6 @@ export default () => {
                         <NavLink to={'/servers'} exact>Servers</NavLink>
                         <NavLink to={'/chat'} exact>Public Chat</NavLink>
                         <NavLink to={'/judi'} exact>Judi</NavLink>
-                        <NavLink to={'/notifications'} exact>Notifications</NavLink>
                         {canCreatePanel && <NavLink to={'/create-panel'} exact>Create Panel</NavLink>}
                     </div>
                 </SubNavigation>

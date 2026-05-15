@@ -5,6 +5,9 @@
     position: relative;
     overflow: hidden;
     border-radius: 8px;
+    min-height: 38px;
+    line-height: 1.15;
+    gap: 0.45rem;
     background: #111117;
     border: 1px solid rgba(139, 92, 246, 0.3);
     color: #f9fafb;
@@ -34,11 +37,13 @@
     }
 
     &.small {
-        @apply px-3 py-0 h-8 font-normal text-sm focus:ring-2;
+        @apply px-3 py-0 font-normal text-sm focus:ring-2;
+        min-height: 32px;
     }
 
     &.large {
         @apply px-5 py-3;
+        min-height: 46px;
     }
 
     &.secondary {
@@ -59,20 +64,25 @@
 
     &.square {
         @apply p-0 w-12 h-12;
+        min-height: 48px;
 
         &.small {
             @apply w-8 h-8;
+            min-height: 32px;
         }
     }
 }
 
 .primary {
-    background: #111117;
+    background: #8b5cf6;
     color: #f9fafb;
-    border-color: rgba(139, 92, 246, 0.48);
+    border-color: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 0 24px rgba(139, 92, 246, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 
     &.secondary {
         background: #0b0b10;
+        border-color: rgba(139, 92, 246, 0.34);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
 
     &:disabled {

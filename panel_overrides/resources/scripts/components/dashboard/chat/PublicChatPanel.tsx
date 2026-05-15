@@ -47,32 +47,69 @@ const Root = styled.div`
     ${tw`rounded-lg border h-full min-h-[70vh] max-h-[85vh] flex flex-col lg:flex-row overflow-hidden`};
     background: #0b0b10;
     border-color: rgba(139, 92, 246, 0.24);
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.58), 0 0 34px rgba(139, 92, 246, 0.12);
+    position: relative;
+
+    &::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+            radial-gradient(circle at 18% 0%, rgba(139, 92, 246, 0.12), transparent 22rem),
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 54px);
+        opacity: 0.7;
+    }
+
+    @media (max-width: 767px) {
+        min-height: calc(100vh - 86px);
+        max-height: calc(100vh - 86px);
+        border-radius: 12px;
+    }
 `;
 const Sidebar = styled.div`
     ${tw`w-full lg:w-[21rem] border-b lg:border-b-0 lg:border-r flex flex-col`};
     background: #0b0b10;
     border-color: rgba(139, 92, 246, 0.18);
+    position: relative;
+    z-index: 1;
 `;
 const SideHeader = styled.div`
     ${tw`px-4 py-3 border-b`};
     border-color: rgba(139, 92, 246, 0.18);
+    background: #111117;
 `;
-const SideTitle = tw.h2`text-base font-semibold text-neutral-100`;
+const SideTitle = styled.h2`
+    ${tw`text-base font-semibold text-neutral-100 m-0 uppercase`};
+    letter-spacing: 0.08em;
+`;
 const SideBlock = styled.div`
     ${tw`p-3 border-b`};
     border-color: rgba(139, 92, 246, 0.18);
+    background: #09090d;
 `;
 const SideList = tw.div`flex-1 overflow-y-auto p-2 space-y-2`;
 const ConvButton = styled.button`
     ${tw`w-full text-left p-2 rounded-md border transition`};
     background: #111117;
     border-color: rgba(139, 92, 246, 0.2);
+    position: relative;
+    overflow: hidden;
+
+    &::before {
+        content: '';
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 3px;
+        background: rgba(139, 92, 246, 0.34);
+        opacity: 0.55;
+    }
 
     &:hover {
         background: rgba(139, 92, 246, 0.1);
         border-color: rgba(139, 92, 246, 0.5);
         box-shadow: inset 2px 0 0 rgba(139, 92, 246, 0.72);
+        transform: translateX(2px);
     }
 `;
 const Input = styled.input`
@@ -109,22 +146,43 @@ const Tiny = styled.button`
 const Main = styled.div`
     ${tw`flex-1 flex flex-col min-w-0 min-h-0`};
     background: #07070b;
+    position: relative;
+    z-index: 1;
 `;
 const MainHeader = styled.div`
     ${tw`px-3 py-2 lg:px-4 lg:py-3 border-b flex flex-wrap items-start lg:items-center justify-between gap-2`};
     border-color: rgba(139, 92, 246, 0.18);
+    background: #0b0b10;
 `;
-const HeaderTitle = tw.h3`text-base font-semibold text-neutral-100 truncate`;
+const HeaderTitle = styled.h3`
+    ${tw`text-base font-semibold text-neutral-100 truncate m-0`};
+    letter-spacing: 0.03em;
+`;
 const HeaderMeta = tw.div`text-xs text-neutral-400 truncate`;
-const Body = tw.div`flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 py-2 lg:px-4 lg:py-3 space-y-2`;
+const Body = styled.div`
+    ${tw`flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 py-2 lg:px-4 lg:py-3 space-y-2`};
+    background:
+        radial-gradient(circle at 50% 0%, rgba(139, 92, 246, 0.07), transparent 24rem),
+        #07070b;
+`;
 const Composer = styled.form`
     ${tw`flex-shrink-0 p-3 border-t space-y-2`};
     background: #0b0b10;
     border-color: rgba(139, 92, 246, 0.18);
+    box-shadow: 0 -18px 34px rgba(0, 0, 0, 0.22);
 `;
 
 const BubbleWrap = tw.div`flex`;
-const Bubble = tw.div`relative max-w-[94%] lg:max-w-[84%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words`;
+const Bubble = styled.div`
+    ${tw`relative max-w-[94%] lg:max-w-[84%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words`};
+    animation: chat-message-in 220ms ease both;
+    transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+
+    &:hover {
+        transform: translateY(-1px);
+        border-color: rgba(139, 92, 246, 0.54) !important;
+    }
+`;
 const Meta = tw.div`mt-1 text-[11px] text-neutral-400 flex items-center gap-2 flex-wrap`;
 const Tag = styled.span`
     ${tw`px-1.5 py-0.5 rounded text-[10px] text-neutral-200 border`};
@@ -141,6 +199,53 @@ const OnlineDot = styled.span`
     ${tw`absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border`};
     background: #10b981;
     border-color: #07070b;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.66);
+`;
+
+const VoiceStatusPill = styled.div<{ $active: boolean; $state: 'idle' | 'connecting' | 'connected' | 'recovering' }>`
+    ${tw`hidden sm:inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase`};
+    color: ${({ $state }) => ($state === 'connected' ? '#bbf7d0' : $state === 'recovering' ? '#fde68a' : $state === 'connecting' ? '#bae6fd' : '#a6a6b8')};
+    background: #0b0b10;
+    border-color: ${({ $state }) =>
+        $state === 'connected'
+            ? 'rgba(16,185,129,.42)'
+            : $state === 'recovering'
+            ? 'rgba(245,158,11,.46)'
+            : $state === 'connecting'
+            ? 'rgba(6,182,212,.42)'
+            : 'rgba(139,92,246,.22)'};
+
+    &::before {
+        content: '';
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: ${({ $state, $active }) =>
+            !$active ? '#74748a' : $state === 'connected' ? '#10b981' : $state === 'recovering' ? '#f59e0b' : '#06b6d4'};
+        box-shadow: ${({ $state, $active }) =>
+            !$active
+                ? 'none'
+                : $state === 'connected'
+                ? '0 0 14px rgba(16,185,129,.7)'
+                : $state === 'recovering'
+                ? '0 0 14px rgba(245,158,11,.7)'
+                : '0 0 14px rgba(6,182,212,.7)'};
+        animation: ${({ $active }) => ($active ? 'chat-call-pulse 1.2s ease-in-out infinite' : 'none')};
+    }
+`;
+
+const ChatKeyframes = styled.div`
+    display: none;
+
+    @keyframes chat-message-in {
+        0% { opacity: 0; transform: translateY(8px) scale(0.985); }
+        100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes chat-call-pulse {
+        0%, 100% { opacity: .5; transform: scale(.86); }
+        50% { opacity: 1; transform: scale(1.16); }
+    }
 `;
 
 const panelStyle: React.CSSProperties = {
@@ -1948,6 +2053,7 @@ export default () => {
 
     return (
         <Root>
+            <ChatKeyframes />
             <Sidebar css={mobilePane === 'room' ? tw`hidden lg:flex` : undefined}>
                 <SideHeader>
                     <div css={tw`flex items-center justify-between gap-2`}>
@@ -2142,6 +2248,11 @@ export default () => {
                         </div>
                     </div>
                     <div css={tw`w-full lg:w-auto flex flex-wrap items-center justify-end gap-1.5 lg:gap-2`}>
+                        {activeConversation && (
+                            <VoiceStatusPill $active={callState.active || inCall} $state={callNetState}>
+                                {callState.active || inCall ? callNetLabel : 'Voice idle'}
+                            </VoiceStatusPill>
+                        )}
                         {activeConversation && (
                             <Tiny type={'button'} onClick={handleHeaderCall} disabled={callLoading}>
                                 Call

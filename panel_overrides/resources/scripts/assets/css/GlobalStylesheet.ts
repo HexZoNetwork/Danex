@@ -13,6 +13,7 @@ export default createGlobalStyle`
         --accent-teal: #06B6D4;
         --accent-pink: #8B5CF6;
         --accent-lime: #10B981;
+        --el7-accent-light: #A78BFA;
         --el7-bg-1: #07070B;
         --el7-bg-2: #0B0B10;
         --el7-bg-3: #111117;
@@ -51,6 +52,17 @@ export default createGlobalStyle`
         100% { box-shadow: inset 1px 0 0 rgba(139, 92, 246, 0.2); }
     }
 
+    @keyframes danex-background-drift {
+        0%, 100% { transform: translate3d(0, 0, 0); opacity: 0.78; }
+        50% { transform: translate3d(0, 18px, 0); opacity: 1; }
+    }
+
+    @keyframes danex-scanline {
+        0% { transform: translateY(-18%); opacity: 0; }
+        20%, 58% { opacity: 0.5; }
+        100% { transform: translateY(118%); opacity: 0; }
+    }
+
     @font-face {
         font-family: 'IBM Plex Sans';
         font-style: normal;
@@ -64,11 +76,12 @@ export default createGlobalStyle`
         ${tw`font-sans text-neutral-200`};
         letter-spacing: 0;
         background:
-            linear-gradient(rgba(139, 92, 246, 0.035) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(139, 92, 246, 0.028) 1px, transparent 1px),
-            radial-gradient(circle at 50% -10%, rgba(139, 92, 246, 0.1), transparent 38rem),
+            radial-gradient(circle at 15% -10%, rgba(139, 92, 246, 0.12), transparent 34rem),
+            radial-gradient(circle at 88% 0%, rgba(6, 182, 212, 0.06), transparent 28rem),
+            linear-gradient(rgba(139, 92, 246, 0.03) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(139, 92, 246, 0.024) 1px, transparent 1px),
             var(--el7-bg-1);
-        background-size: 46px 46px, 46px 46px, auto, auto;
+        background-size: auto, auto, 46px 46px, 46px 46px, auto;
         background-attachment: fixed;
         min-height: 100vh;
         color: var(--el7-text);
@@ -81,16 +94,33 @@ export default createGlobalStyle`
         position: fixed;
         inset: 0;
         pointer-events: none;
-        z-index: -1;
+        z-index: 0;
         background:
             linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 22rem),
-            linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.035), transparent);
-        opacity: 0.85;
+            linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.04), transparent),
+            radial-gradient(circle at 32% 70%, rgba(16, 185, 129, 0.035), transparent 28rem),
+            radial-gradient(circle at 72% 64%, rgba(245, 158, 11, 0.026), transparent 26rem);
+        opacity: 0.9;
+        animation: danex-background-drift 16s ease-in-out infinite;
+    }
+
+    body::after {
+        content: '';
+        position: fixed;
+        left: 0;
+        right: 0;
+        top: 0;
+        height: 34vh;
+        pointer-events: none;
+        z-index: 0;
+        background: linear-gradient(180deg, transparent, rgba(139, 92, 246, 0.055), transparent);
+        mix-blend-mode: screen;
+        animation: danex-scanline 9s linear infinite;
     }
 
     @media (max-width: 640px) {
         body {
-            background-size: 34px 34px, 34px 34px, auto, auto;
+            background-size: auto, auto, 34px 34px, 34px 34px, auto;
         }
     }
 
@@ -105,10 +135,31 @@ export default createGlobalStyle`
 
     #app, #root {
         min-height: 100vh;
+        position: relative;
+        z-index: 1;
     }
 
     a, button {
         transition: color 220ms var(--el7-ease), border-color 220ms var(--el7-ease), background-color 220ms var(--el7-ease), box-shadow 220ms var(--el7-ease), transform 220ms var(--el7-ease);
+    }
+
+    button {
+        line-height: 1.15;
+    }
+
+    button + button,
+    a + button,
+    button + a {
+        margin-left: 0.35rem;
+    }
+
+    @media (max-width: 640px) {
+        button + button,
+        a + button,
+        button + a {
+            margin-left: 0;
+            margin-top: 0.35rem;
+        }
     }
 
     button:hover {

@@ -81,20 +81,20 @@
                     <div class="row">
                         <div class="col-md-4">
                             <div class="form-group">
-                                <label for="waf_challenge_theme_gradient_start">Gradient Start</label>
-                                <input id="waf_challenge_theme_gradient_start" type="color" class="form-control" name="waf_challenge_theme_gradient_start" value="{{ (string) ($cs['theme_gradient_start'] ?? '#0d1b2a') }}">
+                                <label for="waf_challenge_theme_gradient_start">Surface Start</label>
+                                <input id="waf_challenge_theme_gradient_start" type="color" class="form-control" name="waf_challenge_theme_gradient_start" value="{{ (string) ($cs['theme_gradient_start'] ?? '#07070b') }}">
                             </div>
                         </div>
                         <div class="col-md-4">
                             <div class="form-group">
-                                <label for="waf_challenge_theme_gradient_end">Gradient End</label>
-                                <input id="waf_challenge_theme_gradient_end" type="color" class="form-control" name="waf_challenge_theme_gradient_end" value="{{ (string) ($cs['theme_gradient_end'] ?? '#132a45') }}">
+                                <label for="waf_challenge_theme_gradient_end">Surface End</label>
+                                <input id="waf_challenge_theme_gradient_end" type="color" class="form-control" name="waf_challenge_theme_gradient_end" value="{{ (string) ($cs['theme_gradient_end'] ?? '#111117') }}">
                             </div>
                         </div>
                         <div class="col-md-4">
                             <div class="form-group">
                                 <label for="waf_challenge_theme_accent">Accent</label>
-                                <input id="waf_challenge_theme_accent" type="color" class="form-control" name="waf_challenge_theme_accent" value="{{ (string) ($cs['theme_accent'] ?? '#2e9cff') }}">
+                                <input id="waf_challenge_theme_accent" type="color" class="form-control" name="waf_challenge_theme_accent" value="{{ (string) ($cs['theme_accent'] ?? '#8b5cf6') }}">
                             </div>
                         </div>
                     </div>

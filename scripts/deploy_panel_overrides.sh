@@ -51,8 +51,9 @@ done < <(cd "${OVERRIDES_DIR}" && find . -type f | sed 's#^\./##' | sort)
 if [[ -d "${OVERRIDES_DIR}/public/assets" ]]; then
     echo "[deploy-panel] Syncing public/assets..."
     if command -v rsync >/dev/null 2>&1; then
-        rsync -a "${OVERRIDES_DIR}/public/assets/" "${PANEL_DIR}/public/assets/"
+        rsync -a --delete "${OVERRIDES_DIR}/public/assets/" "${PANEL_DIR}/public/assets/"
     else
+        find "${PANEL_DIR}/public/assets" -maxdepth 1 -type f \( -name '*.js' -o -name '*.map' -o -name 'manifest.json' \) -delete >/dev/null 2>&1 || true
         cp -rp "${OVERRIDES_DIR}/public/assets/." "${PANEL_DIR}/public/assets/"
     fi
 fi

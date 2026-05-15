@@ -657,6 +657,34 @@ copy_tree() {
     tar -C "${src}" -cf - . | tar -C "${dest}" -xf -
 }
 
+sync_panel_built_assets_to_overrides() {
+    local panel_dir="$1"
+    local override_dir="$2"
+    local panel_assets="${panel_dir}/public/assets"
+    local override_assets="${override_dir}/public/assets"
+    local manifest="${panel_assets}/manifest.json"
+
+    [[ -d "${panel_assets}" && -d "${override_dir}" && -s "${manifest}" ]] || return 0
+    if ! grep -q '"main.js"' "${manifest}" || ! grep -q '"dashboard.js"' "${manifest}"; then
+        warn "panel asset manifest exists but does not look complete; leaving bundled override assets unchanged"
+        return 0
+    fi
+
+    mkdir -p "${override_assets}"
+    find "${override_assets}" -maxdepth 1 -type f \( -name '*.js' -o -name '*.map' -o -name 'manifest.json' \) -delete >/dev/null 2>&1 || true
+
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a \
+            --include='*.js' \
+            --include='*.map' \
+            --include='manifest.json' \
+            --exclude='*' \
+            "${panel_assets}/" "${override_assets}/"
+    else
+        find "${panel_assets}" -maxdepth 1 -type f \( -name '*.js' -o -name '*.map' -o -name 'manifest.json' \) -exec cp -f {} "${override_assets}/" \;
+    fi
+}
+
 install_rendered_systemd_unit() {
     local src="$1"
     local dst="$2"
@@ -2076,6 +2104,9 @@ PY
 
             if (( PANEL_BUILD_OK == 0 )); then
                 echo "[setup] warning: frontend build failed after yarn/corepack/npm attempts." >&2
+            else
+                echo "[setup] syncing freshly built panel assets back to override bundle..."
+                sync_panel_built_assets_to_overrides "${PANEL_DIR}" "${PANEL_OVERRIDE_SOURCE}"
             fi
             if [[ -f "${PANEL_DIR}/node_modules/xterm/lib/xterm.js" && -f "${PANEL_DIR}/node_modules/xterm/css/xterm.css" ]]; then
                 mkdir -p "${PANEL_DIR}/public/vendor/pteroprotect"

@@ -51,6 +51,7 @@ Route::prefix('/chat')->group(function () {
     Route::post('/polls', [Client\PublicChatController::class, 'storePoll'])->middleware('throttle:20,1');
     Route::post('/polls/{message}/vote', [Client\PublicChatController::class, 'votePoll'])->middleware('throttle:60,1');
     Route::post('/messages/{message}/reactions', [Client\PublicChatController::class, 'react'])->middleware('throttle:80,1');
+    Route::post('/messages/{message}/edit', [Client\PublicChatController::class, 'update'])->middleware('throttle:40,1');
     Route::patch('/messages/{message}', [Client\PublicChatController::class, 'update'])->middleware('throttle:40,1');
     Route::delete('/messages/{message}', [Client\PublicChatController::class, 'destroy'])->middleware('throttle:40,1');
     Route::post('/read', [Client\PublicChatController::class, 'markRead']);

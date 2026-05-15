@@ -498,9 +498,9 @@ class ProtectController extends Controller
         $powBits = max(8, min(24, (int) $request->input('waf_pow_bits', 14)));
         $ttlSec = max(60, min(86400, (int) $request->input('waf_challenge_ttl_sec', 1800)));
         $themeCustomEnabled = $request->boolean('waf_challenge_theme_custom_enabled');
-        $themeGradientStart = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_gradient_start', '#0d1b2a'), '#0d1b2a');
-        $themeGradientEnd = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_gradient_end', '#132a45'), '#132a45');
-        $themeAccent = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_accent', '#2e9cff'), '#2e9cff');
+        $themeGradientStart = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_gradient_start', '#07070b'), '#07070b');
+        $themeGradientEnd = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_gradient_end', '#111117'), '#111117');
+        $themeAccent = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_accent', '#8b5cf6'), '#8b5cf6');
 
         $configPath = (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
         if (!File::exists($configPath) || !File::isWritable($configPath) || !File::isReadable($configPath)) {
@@ -1923,9 +1923,9 @@ class ProtectController extends Controller
             'pow_bits' => max(8, min(24, (int) ($net['waf_pow_bits'] ?? 14))),
             'ttl_sec' => max(60, min(86400, (int) ($net['waf_challenge_ttl_sec'] ?? 1800))),
             'theme_custom_enabled' => (bool) ($net['waf_challenge_theme_custom_enabled'] ?? false),
-            'theme_gradient_start' => $this->sanitizeHexColor((string) ($net['waf_challenge_theme_gradient_start'] ?? '#0d1b2a'), '#0d1b2a'),
-            'theme_gradient_end' => $this->sanitizeHexColor((string) ($net['waf_challenge_theme_gradient_end'] ?? '#132a45'), '#132a45'),
-            'theme_accent' => $this->sanitizeHexColor((string) ($net['waf_challenge_theme_accent'] ?? '#2e9cff'), '#2e9cff'),
+            'theme_gradient_start' => $this->sanitizeHexColor((string) ($net['waf_challenge_theme_gradient_start'] ?? '#07070b'), '#07070b'),
+            'theme_gradient_end' => $this->sanitizeHexColor((string) ($net['waf_challenge_theme_gradient_end'] ?? '#111117'), '#111117'),
+            'theme_accent' => $this->sanitizeHexColor((string) ($net['waf_challenge_theme_accent'] ?? '#8b5cf6'), '#8b5cf6'),
         ];
     }
 

@@ -114,7 +114,11 @@ class PteroProtectSessionBinding
     private function shouldBypass(Request $request): bool
     {
         $path = ltrim((string) $request->path(), '/');
-        if ($path === '' || str_starts_with($path, '__pteroprotect/challenge')) {
+        if (
+            $path === '' ||
+            str_starts_with($path, '__pteroprotect/challenge') ||
+            str_starts_with($path, '__pteroprotect/session')
+        ) {
             return true;
         }
 
@@ -264,15 +268,77 @@ class PteroProtectSessionBinding
     private function challengeResponse(Request $request, string $reason = 'missing_cookie'): Response
     {
         $challengeUrl = $this->challengeUrl($request);
+        $attempts = $this->recordClearanceAttempt($request);
+        $showReset = $attempts >= 3;
+        $resetUrl = $this->clearanceResetUrl($request);
+        $errorUrl = $this->clearanceErrorUrl($request);
+
         if ($request->expectsJson() || str_starts_with((string) $request->path(), 'api/')) {
             return new JsonResponse([
                 'error' => 'session_binding_mismatch',
                 'reason' => $reason,
                 'challenge_url' => $challengeUrl,
+                'clearance_reset_url' => $resetUrl,
+                'clearance_error_url' => $errorUrl,
+                'clearance_attempts' => $attempts,
+                'show_clearance_reset' => $showReset,
             ], 403);
         }
 
+        if ($showReset) {
+            return redirect()->to($errorUrl);
+        }
+
         return redirect()->to($challengeUrl);
+    }
+
+    private function clearanceResetUrl(Request $request): string
+    {
+        return '/__pteroprotect/session/reset-clearance?rd=' . rawurlencode($this->redirectPath($request));
+    }
+
+    private function clearanceErrorUrl(Request $request): string
+    {
+        return '/__pteroprotect/session/clearance-error?rd=' . rawurlencode($this->redirectPath($request));
+    }
+
+    private function redirectPath(Request $request): string
+    {
+        $rd = '/' . ltrim((string) $request->path(), '/');
+        $query = trim((string) $request->server('QUERY_STRING', ''));
+        if ($query !== '') {
+            $rd .= '?' . $query;
+        }
+
+        return $rd;
+    }
+
+    private function recordClearanceAttempt(Request $request): int
+    {
+        $key = $this->clearanceAttemptKey($request);
+        if ($key === null) {
+            return 1;
+        }
+
+        Cache::add($key, 0, 1800);
+        $attempts = Cache::increment($key);
+
+        return is_numeric($attempts) ? (int) $attempts : 1;
+    }
+
+    private function clearanceAttemptKey(Request $request): ?string
+    {
+        if (!$request->hasSession()) {
+            return null;
+        }
+
+        $sessionId = trim((string) $request->session()->getId());
+        $ip = strtolower(trim($this->clientIpForBinding($request)));
+        if ($sessionId === '' || $ip === '') {
+            return null;
+        }
+
+        return 'pteroprotect:session:clearance_errors:' . hash('sha256', $sessionId . '|' . $ip);
     }
 
     private function hasClearanceCookie(Request $request): bool

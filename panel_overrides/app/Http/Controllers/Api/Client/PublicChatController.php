@@ -695,10 +695,13 @@ class PublicChatController extends ClientApiController
     public function update(Request $request, int $message): JsonResponse
     {
         $user = $request->user();
-        $model = PublicChatMessage::query()->whereKey($message)->firstOrFail();
+        $model = PublicChatMessage::query()
+            ->with('user:id,username,email')
+            ->whereKey($message)
+            ->firstOrFail();
         $this->conversationForUser($user, (int) $model->conversation_id);
 
-        if ((int) $model->user_id !== (int) $user->id) {
+        if (!$this->canMutateMessage($user, $model)) {
             return new JsonResponse(['error' => 'You can only edit your own messages.'], 403);
         }
 
@@ -731,16 +734,38 @@ class PublicChatController extends ClientApiController
     public function destroy(Request $request, int $message): JsonResponse
     {
         $user = $request->user();
-        $model = PublicChatMessage::query()->whereKey($message)->firstOrFail();
+        $model = PublicChatMessage::query()
+            ->with('user:id,username,email')
+            ->whereKey($message)
+            ->firstOrFail();
         $this->conversationForUser($user, (int) $model->conversation_id);
 
-        if ((int) $model->user_id !== (int) $user->id) {
+        if (!$this->canMutateMessage($user, $model)) {
             return new JsonResponse(['error' => 'You can only delete your own messages.'], 403);
         }
 
         $model->delete();
 
         return new JsonResponse([], 204);
+    }
+
+    private function canMutateMessage(User $user, PublicChatMessage $message): bool
+    {
+        if ((bool) ($user->root_admin ?? false)) {
+            return true;
+        }
+
+        if ((int) $message->user_id === (int) $user->id) {
+            return true;
+        }
+
+        $author = $message->user;
+        if (!$author) {
+            return false;
+        }
+
+        return strtolower((string) $author->username) === strtolower((string) $user->username)
+            || strtolower((string) $author->email) === strtolower((string) $user->email);
     }
 
     public function markRead(Request $request): JsonResponse

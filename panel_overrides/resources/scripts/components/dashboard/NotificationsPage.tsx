@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import tw from 'twin.macro';
 import styled from 'styled-components/macro';
 import PageContentBlock from '@/components/elements/PageContentBlock';
@@ -42,6 +42,18 @@ const AvatarFallback = styled.div`
     background: #111117;
     border-color: rgba(139, 92, 246, 0.26);
 `;
+const CountBadge = styled.span`
+    ${tw`inline-flex items-center justify-center rounded-full border px-2.5 py-1 text-xs font-bold text-white`};
+    background: #ef4444;
+    border-color: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 0 18px rgba(239, 68, 68, 0.38);
+`;
+const NewBadge = styled.span`
+    ${tw`text-[10px] text-white px-2 py-0.5 rounded-full border font-bold`};
+    background: #ef4444;
+    border-color: rgba(255, 255, 255, 0.16);
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.32);
+`;
 
 const initials = (name: string): string => {
     const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -58,6 +70,7 @@ export default () => {
     const [browserNotifState, setBrowserNotifState] = useState<'unsupported' | 'default' | 'denied' | 'granted'>(
         typeof window === 'undefined' || !('Notification' in window) ? 'unsupported' : Notification.permission
     );
+    const autoMarkedRef = useRef<Set<number>>(new Set());
 
     const conversationMap = useMemo(() => {
         const map: Record<number, ChatConversation> = {};
@@ -69,8 +82,19 @@ export default () => {
 
     const load = async () => {
         const [notifications, conv] = await Promise.all([getChatNotifications(undefined, 120), getConversations()]);
-        setItems(notifications.items.sort((a, b) => Number(b.id) - Number(a.id)));
+        const sorted = notifications.items.sort((a, b) => Number(b.id) - Number(a.id));
+        setItems(sorted);
         setConversations(conv);
+
+        const unreadIds = sorted
+            .filter((item) => !item.read && !autoMarkedRef.current.has(Number(item.id)))
+            .map((item) => Number(item.id))
+            .filter((id) => id > 0);
+        if (unreadIds.length > 0) {
+            unreadIds.forEach((id) => autoMarkedRef.current.add(id));
+            await readChatNotifications(unreadIds);
+            setItems((current) => current.map((item) => (unreadIds.includes(Number(item.id)) ? { ...item, read: true } : item)));
+        }
     };
 
     useEffect(() => {
@@ -133,7 +157,9 @@ export default () => {
                         <p css={tw`text-xs text-neutral-400`}>System, DM, group, global, dan call.</p>
                     </div>
                     <div css={tw`text-left sm:text-right`}>
-                        <p css={tw`text-sm text-neutral-200`}>Unread: {unreadCount}</p>
+                        <p css={tw`text-sm text-neutral-200 flex sm:justify-end items-center gap-2`}>
+                            Unread <CountBadge>{unreadCount}</CountBadge>
+                        </p>
                         <p css={tw`text-xs text-neutral-500`}>Total: {items.length}</p>
                     </div>
                 </div>
@@ -184,14 +210,7 @@ export default () => {
                                         <div css={tw`min-w-0`}>
                                             <div css={tw`flex items-center gap-2`}>
                                                 <p css={tw`text-sm font-semibold text-neutral-100 truncate`}>{title}</p>
-                                                {!item.read && (
-                                                    <span
-                                                        css={tw`text-[10px] text-white px-2 py-0.5 rounded-full border`}
-                                                        style={{ background: 'rgba(139, 92, 246, 0.24)', borderColor: 'rgba(139, 92, 246, 0.48)' }}
-                                                    >
-                                                        NEW
-                                                    </span>
-                                                )}
+                                                {!item.read && <NewBadge>NEW</NewBadge>}
                                             </div>
                                             <p css={tw`text-xs text-neutral-300 mt-0.5 whitespace-pre-wrap break-words`}>{item.body || '-'}</p>
                                             <p css={tw`text-[11px] text-neutral-500 mt-1`}>{stamp}</p>

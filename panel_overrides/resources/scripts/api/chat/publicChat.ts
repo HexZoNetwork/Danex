@@ -485,7 +485,7 @@ export const votePoll = async (messageId: number, optionIndex: number): Promise<
 };
 
 export const editPublicMessage = async (messageId: number, message: string): Promise<PublicChatMessage> => {
-    const { data } = await http.patch(`/api/client/chat/messages/${messageId}`, { message });
+    const { data } = await http.post(`/api/client/chat/messages/${messageId}/edit`, { message });
 
     return rawDataToMessage(data?.data || {});
 };
