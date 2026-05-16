@@ -95,6 +95,22 @@ if ! command -v apt-get >/dev/null 2>&1; then
     exit 1
 fi
 
+reload_or_start_nginx() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        # Non-systemd environments: best effort direct signal.
+        nginx -s reload >/dev/null 2>&1 || return 1
+        return 0
+    fi
+
+    if systemctl is-active --quiet nginx; then
+        systemctl reload nginx
+        return $?
+    fi
+
+    echo "[setup] nginx service is inactive; attempting to start nginx..."
+    systemctl start nginx
+}
+
 APT_DEPS=(
     build-essential
     g++
@@ -3498,7 +3514,7 @@ EOF
                     exit 1
                 fi
             fi
-            if ! systemctl reload nginx; then
+            if ! reload_or_start_nginx; then
                 if [[ "${WINGS_GUARD_PREPARED}" == "1" ]]; then
                     echo "[setup] error: nginx reload failed after Wings switch; rolling back..." >&2
                     [[ -n "${WINGS_CONFIG_BACKUP}" && -f "${WINGS_CONFIG_BACKUP}" ]] && cp "${WINGS_CONFIG_BACKUP}" /etc/pterodactyl/config.yml
@@ -3513,7 +3529,7 @@ EOF
                         rm -f "${NGINX_DIR}/sites-enabled/wings-guard.conf"
                     fi
                     nginx -t >/dev/null 2>&1 || true
-                    systemctl reload nginx >/dev/null 2>&1 || true
+                    reload_or_start_nginx >/dev/null 2>&1 || true
                     systemctl restart wings >/dev/null 2>&1 || true
                 fi
                 exit 1
