@@ -1575,10 +1575,11 @@ if [[ -n "${INFRA_HOSTS_CSV}" ]]; then
 fi
 
 BUILD_JOBS="$(nproc 2>/dev/null || echo 1)"
+BUILD_CXXFLAGS="${PTEROPROTECT_CXXFLAGS:--std=c++11 -Wall -Wno-unused-function -Wno-unused-but-set-variable -Wno-unused-variable -Iinclude}"
 
 echo "[setup] rebuilding dann_guard in ${INSTALL_DIR} with ${BUILD_JOBS} job(s)..."
 make -C "${INSTALL_DIR}" clean
-make -C "${INSTALL_DIR}" -j"${BUILD_JOBS}"
+make -C "${INSTALL_DIR}" -j"${BUILD_JOBS}" CXXFLAGS="${BUILD_CXXFLAGS}"
 
 echo "[setup] force-installing fresh binary..."
 install -m 755 "${INSTALL_DIR}/dann_guard" "${INSTALL_DIR}/dann_guard.new"
@@ -1587,6 +1588,15 @@ if [[ -f "${INSTALL_DIR}/challenge_guard" ]]; then
     install -m 755 "${INSTALL_DIR}/challenge_guard" "${INSTALL_DIR}/challenge_guard.new"
     mv -f "${INSTALL_DIR}/challenge_guard.new" "${INSTALL_DIR}/challenge_guard"
 fi
+if [[ ! -x "${INSTALL_DIR}/dann_guard" ]]; then
+    echo "[setup] error: dann_guard binary is missing after build/install." >&2
+    exit 1
+fi
+if [[ -f "${INSTALL_DIR}/challenge_guard" && ! -x "${INSTALL_DIR}/challenge_guard" ]]; then
+    echo "[setup] error: challenge_guard binary exists but is not executable." >&2
+    exit 1
+fi
+echo "[setup] binaries installed successfully."
 
 ln -sf "${INSTALL_DIR}/dann_guard" /usr/local/bin/dann_guard
 touch "${INSTALL_DIR}/dann_guard.log"
