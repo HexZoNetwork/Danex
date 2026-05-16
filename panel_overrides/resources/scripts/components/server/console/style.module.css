@@ -55,8 +55,23 @@
             content: '';
             @apply absolute inset-0;
             border-top: 1px solid rgba(255, 255, 255, 0.05);
+            background:
+                linear-gradient(180deg, rgba(255,255,255,0.025), transparent 22%),
+                repeating-linear-gradient(0deg, rgba(139,92,246,0.035) 0 1px, transparent 1px 22px);
             pointer-events: none;
             z-index: 0;
+            animation: console-scan 4.8s linear infinite;
+        }
+
+        &::after {
+            content: '';
+            @apply absolute left-0 right-0;
+            top: 0;
+            height: 42px;
+            pointer-events: none;
+            z-index: 2;
+            background: linear-gradient(180deg, rgba(139, 92, 246, 0.13), transparent);
+            animation: console-stream 2.8s ease-in-out infinite;
         }
 
         & #terminal {
@@ -91,6 +106,16 @@
         @apply active:border-purple-500 focus:border-purple-500;
         background: #111117 !important;
     }
+}
+
+@keyframes console-scan {
+    0% { background-position: 0 0, 0 0; }
+    100% { background-position: 0 0, 0 44px; }
+}
+
+@keyframes console-stream {
+    0%, 100% { opacity: .18; transform: translateY(-38px); }
+    50% { opacity: .46; transform: translateY(260px); }
 }
 
 .chart_container {

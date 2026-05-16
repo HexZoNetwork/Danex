@@ -39,6 +39,12 @@ const inactiveTabStyle: React.CSSProperties = {
     color: '#a3a3b2',
 };
 
+const helperPanelStyle: React.CSSProperties = {
+    background: '#09090d',
+    borderColor: 'rgba(139, 92, 246, 0.2)',
+    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.035)',
+};
+
 export default () => {
     const { clearFlashes, addFlash } = useFlash();
     const [requestToken, setRequestToken] = useState('');
@@ -106,7 +112,7 @@ export default () => {
                 onSubmit={submitOtp}
             >
                 {({ isSubmitting }) => (
-                    <LoginFormContainer title={'Verifikasi OTP'} css={tw`w-full max-w-md mx-auto`} compact hideLogo>
+                    <LoginFormContainer title={'Verify OTP'} css={tw`w-full mx-auto`} compact>
                         <div css={tw`mb-4 flex rounded-lg border overflow-hidden`} style={segmentedStyle}>
                             <button
                                 type={'button'}
@@ -132,6 +138,9 @@ export default () => {
                             disabled={isSubmitting}
                             description={'Masukkan OTP dari bot Telegram untuk menyelesaikan pendaftaran.'}
                         />
+                        <div css={tw`mt-4 rounded-lg border p-3 text-xs text-neutral-400`} style={helperPanelStyle}>
+                            OTP hanya valid untuk sesi pendaftaran ini. Jika bot belum mengirim kode, buka Telegram bot lalu tekan kirim ulang.
+                        </div>
                         <div css={tw`mt-6`}>
                             <Button type={'submit'} size={'xlarge'} isLoading={isSubmitting} disabled={isSubmitting}>
                                 Verifikasi & Masuk
@@ -196,7 +205,7 @@ export default () => {
             onSubmit={submitRegister}
         >
             {({ isSubmitting }) => (
-                <LoginFormContainer title={'Daftar Akun'} css={tw`w-full max-w-md mx-auto`} compact hideLogo>
+                <LoginFormContainer title={'Create Account'} css={tw`w-full mx-auto`} compact>
                     <div css={tw`mb-4 flex rounded-lg border overflow-hidden`} style={segmentedStyle}>
                         <button
                             type={'button'}
@@ -213,14 +222,10 @@ export default () => {
                             Kode OTP
                         </button>
                     </div>
-                    <Field light type={'email'} label={'Email'} name={'email'} disabled={isSubmitting} />
-                    <div css={tw`mt-3`}>
+                    <div css={tw`grid grid-cols-1 md:grid-cols-2 gap-3`}>
+                        <Field light type={'email'} label={'Email'} name={'email'} disabled={isSubmitting} />
                         <Field light type={'text'} label={'Username'} name={'username'} disabled={isSubmitting} />
-                    </div>
-                    <div css={tw`mt-3`}>
                         <Field light type={'text'} label={'FirstName'} name={'name_first'} disabled={isSubmitting} />
-                    </div>
-                    <div css={tw`mt-3`}>
                         <Field light type={'password'} label={'Password'} name={'password'} disabled={isSubmitting} />
                     </div>
                     <div css={tw`mt-3`}>
@@ -237,38 +242,40 @@ export default () => {
                             }
                         />
                     </div>
-                    <div css={tw`mt-2 text-xs text-neutral-500`}>
-                        Bot Telegram:{' '}
-                        {botUsername !== '' ? (
-                            botStartUrl !== '' ? (
-                                <a href={botStartUrl} target={'_blank'} rel={'noreferrer'}>
-                                    @{botUsername}
-                                </a>
+                    <div css={tw`mt-4 grid grid-cols-1 md:grid-cols-2 gap-3`}>
+                        <div css={tw`rounded-lg border p-3 text-xs text-neutral-400`} style={helperPanelStyle}>
+                            <div css={tw`uppercase tracking-widest text-neutral-500 mb-1`}>Telegram Bot</div>
+                            {botUsername !== '' ? (
+                                botStartUrl !== '' ? (
+                                    <a href={botStartUrl} target={'_blank'} rel={'noreferrer'} css={tw`text-purple-200 no-underline hover:text-white`}>
+                                        @{botUsername}
+                                    </a>
+                                ) : (
+                                    <strong css={tw`text-purple-200`}>@{botUsername}</strong>
+                                )
                             ) : (
-                                <strong>@{botUsername}</strong>
-                            )
-                        ) : (
-                            <strong>tidak terdeteksi</strong>
-                        )}
-                        {!telegramReady && <span css={tw`ml-1 text-red-500`}>(token bot belum valid)</span>}
+                                <strong css={tw`text-red-300`}>tidak terdeteksi</strong>
+                            )}
+                            {!telegramReady && <span css={tw`block mt-1 text-red-400`}>token bot belum valid</span>}
+                        </div>
+                        <div css={tw`rounded-lg border p-3 text-xs text-neutral-400`} style={helperPanelStyle}>
+                            <div css={tw`uppercase tracking-widest text-neutral-500 mb-1`}>Identity Lock</div>
+                            LastName otomatis dikunci menjadi <strong css={tw`text-neutral-100`}>madeinweb</strong>.
+                        </div>
                     </div>
                     {requiredChannels.length > 0 && (
-                        <div css={tw`mt-2 text-xs text-neutral-500`}>
-                            Wajib join channel:{' '}
+                        <div css={tw`mt-3 rounded-lg border p-3 text-xs text-neutral-400`} style={helperPanelStyle}>
+                            <span css={tw`uppercase tracking-widest text-neutral-500`}>Required Channel</span>{' '}
                             {requiredChannels.map((channel, index) => (
                                 <React.Fragment key={channel}>
                                     {index > 0 && ', '}
-                                    <a href={`https://t.me/${channel.replace(/^@/, '')}`} target={'_blank'} rel={'noreferrer'}>
+                                    <a href={`https://t.me/${channel.replace(/^@/, '')}`} target={'_blank'} rel={'noreferrer'} css={tw`text-purple-200 no-underline hover:text-white`}>
                                         {channel}
                                     </a>
                                 </React.Fragment>
-                            ))}{' '}
-                            lalu retry kalau belum bisa lanjut.
+                            ))}
                         </div>
                     )}
-                    <div css={tw`mt-2 text-xs text-neutral-500`}>
-                        LastName otomatis dikunci menjadi <strong>madeinweb</strong>.
-                    </div>
                     <div css={tw`mt-6`}>
                         <Button
                             type={'submit'}

@@ -54,6 +54,21 @@ const Shell = styled.div`
     box-shadow: 0 14px 38px rgba(0, 0, 0, 0.5), 0 0 24px rgba(139, 92, 246, 0.12);
     backdrop-filter: blur(16px);
     animation: danex-fade-up 300ms var(--el7-ease) both;
+
+    &::after {
+        content: '';
+        display: block;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.7), transparent);
+        opacity: 0.72;
+        transform-origin: center;
+        animation: nav-scan-line 3.6s ease-in-out infinite;
+    }
+
+    @keyframes nav-scan-line {
+        0%, 100% { transform: scaleX(0.18); opacity: 0.28; }
+        50% { transform: scaleX(0.92); opacity: 0.86; }
+    }
 `;
 
 const Brand = styled(Link)`
@@ -135,17 +150,19 @@ export default () => {
     return (
         <Shell>
             <SpinnerOverlay visible={isLoggingOut} />
-            <div className={'mx-auto w-full flex items-center h-[3.55rem] sm:h-[3.75rem] max-w-[1220px] min-w-0'}>
-                <div id={'logo'} className={'flex-1 min-w-0'}>
+            <div className={'mx-auto w-full grid grid-cols-[1fr_auto_1fr] items-center h-[3.55rem] sm:h-[3.75rem] max-w-[1220px] min-w-0'}>
+                <div className={'min-w-0 flex items-center'}>
+                    <React.Suspense fallback={null}>
+                        <SearchContainer />
+                    </React.Suspense>
+                </div>
+                <div id={'logo'} className={'min-w-0 text-center'}>
                     <Brand to={'/'}>
                         DANEX <span>X EL7</span>
                         <span className={'sr-only'}>{name}</span>
                     </Brand>
                 </div>
-                <RightNavigation className={'flex h-full items-center justify-center'}>
-                    <React.Suspense fallback={null}>
-                        <SearchContainer />
-                    </React.Suspense>
+                <RightNavigation className={'flex h-full items-center justify-end'}>
                     {rootAdmin && (
                         <Tooltip placement={'bottom'} content={'Admin'}>
                             <a href={'/admin'} rel={'noreferrer'}>

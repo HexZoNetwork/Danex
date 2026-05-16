@@ -87,7 +87,7 @@ export default () => {
     const [history, setHistory] = useState<DanexCoinSpinLog[]>([]);
     const [loadError, setLoadError] = useState('');
     const [reels, setReels] = useState<[SymbolKey | '?', SymbolKey | '?', SymbolKey | '?']>(['?', '?', '?']);
-    const [lastMessage, setLastMessage] = useState('Masukkan bet lalu spin.');
+    const [lastMessage, setLastMessage] = useState('Set amount, then run the reward cycle.');
 
     const load = async () => {
         const state = await getDanexCoinState();
@@ -143,13 +143,13 @@ export default () => {
 
         const betValue = Number.parseFloat(bet);
         if (!Number.isFinite(betValue) || betValue <= 0) {
-            setLastMessage('Bet harus angka dan lebih dari 0.');
+            setLastMessage('Amount must be a number greater than 0.');
             return;
         }
 
         spinLockRef.current = true;
         setSpinning(true);
-        setLastMessage('Mesin lagi muter...');
+        setLastMessage('Reward cycle running...');
         let spinFrame: number | null = null;
         try {
             spinFrame = window.setInterval(() => {
@@ -167,13 +167,13 @@ export default () => {
 
             const multiplier = toNumber(result.multiplier);
             if (multiplier >= 2) {
-                setLastMessage(`JACKPOT! 777 kena x${result.multiplier}.`);
+                setLastMessage(`Prime reward matched x${result.multiplier}.`);
             } else if (multiplier >= 1.5) {
-                setLastMessage(`Menang! 3 simbol sama kena x${result.multiplier}.`);
+                setLastMessage(`Triple signal matched x${result.multiplier}.`);
             } else if (multiplier >= 0.25) {
-                setLastMessage(`Lumayan! 2 simbol sama kena x${result.multiplier}.`);
+                setLastMessage(`Partial signal matched x${result.multiplier}.`);
             } else {
-                setLastMessage('Zonk. Tidak ada payout di spin ini.');
+                setLastMessage('No reward on this cycle.');
             }
 
             setHistory((current) => [
@@ -200,7 +200,7 @@ export default () => {
                 payload?.errors?.[0]?.title ||
                 null;
             const message =
-                status === 429 ? 'Terlalu cepat spin. Tunggu sebentar lalu coba lagi.' : detail || 'Spin gagal. Coba lagi.';
+                status === 429 ? 'Too many reward runs. Wait a moment and try again.' : detail || 'Reward run failed. Try again.';
             setLastMessage(String(message));
             try {
                 await load();
@@ -217,13 +217,13 @@ export default () => {
     };
 
     return (
-        <PageContentBlock title={'DanexCoin Slots'} showFlashKey={'dashboard'}>
+        <PageContentBlock title={'DanexCoin Arcade'} showFlashKey={'dashboard'}>
             <div css={tw`mx-auto w-full max-w-5xl space-y-4`}>
                 <Panel>
                     <div css={tw`flex flex-wrap items-center justify-between gap-3`}>
                         <div>
                             <p css={tw`text-xs uppercase tracking-wider text-neutral-400`}>Wallet</p>
-                            <p css={tw`text-lg font-semibold text-neutral-100`}>DanexCoin</p>
+                            <p css={tw`text-lg font-semibold text-neutral-100`}>Reward Console</p>
                         </div>
                         <div css={tw`text-right`}>
                             <p css={tw`text-xs uppercase tracking-wider text-neutral-400`}>Balance</p>
@@ -254,7 +254,7 @@ export default () => {
 
                     <div css={tw`mt-4 grid grid-cols-1 sm:grid-cols-[auto_1fr_auto] items-center gap-2`}>
                         <label htmlFor={'bet'} css={tw`text-sm text-neutral-300`}>
-                            Bet
+                            Amount
                         </label>
                         <input
                             id={'bet'}
@@ -272,7 +272,7 @@ export default () => {
                             disabled={spinning || loading}
                             css={tw`w-full sm:w-auto font-semibold`}
                         >
-                            {spinning ? 'Spinning...' : 'Spin'}
+                            {spinning ? 'Running...' : 'Run'}
                         </Button>
                     </div>
 
@@ -282,9 +282,9 @@ export default () => {
                 </Panel>
 
                 <Panel>
-                    <h2 css={tw`text-sm font-semibold text-neutral-100 mb-2`}>Riwayat Spin</h2>
+                    <h2 css={tw`text-sm font-semibold text-neutral-100 mb-2`}>Reward History</h2>
                     {history.length === 0 ? (
-                        <p css={tw`text-sm text-neutral-400`}>Belum ada spin.</p>
+                        <p css={tw`text-sm text-neutral-400`}>No reward run yet.</p>
                     ) : (
                         <div css={tw`space-y-2`}>
                             {history.map((row) => (
@@ -295,12 +295,12 @@ export default () => {
                                         <code>{reelsForRow(row)[2]}</code>
                                         {row.is_jackpot && (
                                             <span css={tw`text-[10px] px-2 py-0.5 rounded-full bg-green-600/30 text-green-300 border border-green-500/40`}>
-                                                JACKPOT
+                                                PRIME
                                             </span>
                                         )}
                                     </div>
                                     <div css={tw`text-xs text-neutral-300 tabular-nums`}>
-                                        Bet {row.bet} | x{row.multiplier} | Payout {row.payout} | Bal {row.balance_after}
+                                        Amount {row.bet} | x{row.multiplier} | Reward {row.payout} | Bal {row.balance_after}
                                     </div>
                                 </HistoryRow>
                             ))}

@@ -1522,7 +1522,9 @@ export default () => {
 
     const describeMicError = (error: unknown): string => {
         const name = String((error as any)?.name || '');
-        if (name === 'NotAllowedError' || name === 'SecurityError') return 'Microphone permission was denied or blocked.';
+        if (name === 'NotAllowedError' || name === 'SecurityError') {
+            return 'Microphone permission was denied or blocked. Check the browser site permission for this panel.';
+        }
         if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return 'No microphone device was found.';
         if (name === 'NotReadableError' || name === 'TrackStartError') return 'Microphone is busy in another app.';
         if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') return 'Microphone constraints are not supported.';
@@ -1542,7 +1544,6 @@ export default () => {
         try {
             setMicPermissionState('requesting');
             setMicPermissionDetail('Waiting for browser microphone permission...');
-            await requestNotificationPermissionForCalls();
             stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     echoCancellation: true,
@@ -1571,6 +1572,9 @@ export default () => {
         localStreamRef.current = stream;
         setMicPermissionState('granted');
         setMicPermissionDetail('Microphone ready.');
+        requestNotificationPermissionForCalls().catch(() => {
+            // call notifications are optional; voice capture is already active
+        });
         try {
             window.localStorage.setItem('chat.voice.mic.ready', '1');
         } catch {
@@ -2532,27 +2536,31 @@ export default () => {
                             const isPollImage = Boolean(item.poll && item.mediaType === 'image' && item.mediaUrl);
                             const previewLink = item.mediaType === 'link' && item.mediaUrl ? item.mediaUrl : firstUrlInText(item.body || '');
                             const mentionsMe = safeMentions(item.mentions).includes(selfUsername.toLowerCase());
+                            const isMine =
+                                Boolean(item.isOwn) ||
+                                (selfUserId > 0 && Number(item.userId) === selfUserId) ||
+                                (!!selfUsername && String(item.username || '').toLowerCase() === selfUsername.toLowerCase());
 
                             return (
                                 <BubbleWrap
                                     key={item.id}
-                                    css={item.isOwn ? tw`justify-end` : tw`justify-start`}
+                                    css={isMine ? tw`justify-end` : tw`justify-start`}
                                     ref={(el) => {
                                         messageRefs.current[item.id] = el;
                                     }}
                                 >
                                     <Bubble
                                         css={[
-                                            item.isOwn
+                                            isMine
                                                 ? tw`border text-neutral-100`
                                                 : tw`border text-neutral-100`,
                                             mentionsMe ? tw`ring-1 ring-neutral-400` : undefined,
                                             highlightedMessageId === item.id ? tw`ring-2 ring-neutral-500` : undefined,
                                         ]}
                                         style={{
-                                            background: item.isOwn ? '#14111f' : '#0b0b10',
-                                            borderColor: item.isOwn ? 'rgba(139, 92, 246, 0.42)' : 'rgba(139, 92, 246, 0.18)',
-                                            boxShadow: item.isOwn
+                                            background: isMine ? '#14111f' : '#0b0b10',
+                                            borderColor: isMine ? 'rgba(139, 92, 246, 0.42)' : 'rgba(139, 92, 246, 0.18)',
+                                            boxShadow: isMine
                                                 ? '0 12px 28px rgba(0, 0, 0, 0.38), inset 2px 0 0 rgba(139, 92, 246, 0.62)'
                                                 : '0 12px 28px rgba(0, 0, 0, 0.32)',
                                         }}
@@ -2726,11 +2734,11 @@ export default () => {
                                         <Meta>
                                             <span>{safeTime(item.createdAt)}</span>
                                             {item.editedAt && <span>(edited)</span>}
-                                            {item.isOwn && <span>{item.isReadByOthers ? '✓✓' : '✓'}</span>}
+                                            {isMine && <span>{item.isReadByOthers ? '✓✓' : '✓'}</span>}
                                             <Small type={'button'} onClick={() => setReplyingTo(item)}>
                                                 Reply
                                             </Small>
-                                            {item.isOwn && (
+                                            {isMine && (
                                                 <>
                                                     <Small type={'button'} onClick={() => startEdit(item)}>
                                                         Edit

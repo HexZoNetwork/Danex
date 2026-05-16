@@ -19,8 +19,15 @@ const statusColor = (status: ServerPowerState | undefined, suspended: boolean) =
     return '#f59e0b';
 };
 
-const StatusIndicatorBox = styled(Link)<{ $status: ServerPowerState | undefined; $suspended: boolean }>`
-    ${tw`grid grid-cols-12 gap-4 relative rounded-lg no-underline p-4 overflow-hidden`};
+const StatusIndicatorBox = styled(Link)<{ $status: ServerPowerState | undefined; $suspended: boolean; $compact?: boolean }>`
+    ${tw`relative rounded-lg no-underline overflow-hidden`};
+    display: ${({ $compact }) => ($compact ? 'grid' : 'flex')};
+    grid-template-columns: ${({ $compact }) => ($compact ? 'repeat(12, minmax(0, 1fr))' : 'none')};
+    flex-direction: ${({ $compact }) => ($compact ? 'row' : 'column')};
+    min-height: auto;
+    height: ${({ $compact }) => ($compact ? 'auto' : '100%')};
+    gap: ${({ $compact }) => ($compact ? '0.75rem' : '0.65rem')};
+    padding: ${({ $compact }) => ($compact ? '0.85rem' : '0.85rem')};
     background: #0b0b10;
     border: 1px solid rgba(139, 92, 246, 0.24);
     box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -32,29 +39,53 @@ const StatusIndicatorBox = styled(Link)<{ $status: ServerPowerState | undefined;
         inset: 0;
         pointer-events: none;
         border-top: 1px solid rgba(255, 255, 255, 0.05);
+        background:
+            linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.05), transparent),
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 44px);
+        opacity: 0.7;
+        transform: translateX(-20%);
+        transition: transform 700ms var(--el7-ease), opacity 240ms var(--el7-ease);
     }
 
     & .status-bar {
         position: absolute;
-        left: 0;
-        top: 0.5rem;
-        bottom: 0.5rem;
-        width: 3px;
+        left: ${({ $compact }) => ($compact ? '0' : '1rem')};
+        right: ${({ $compact }) => ($compact ? 'auto' : '1rem')};
+        top: ${({ $compact }) => ($compact ? '0.5rem' : '0')};
+        bottom: ${({ $compact }) => ($compact ? '0.5rem' : 'auto')};
+        width: ${({ $compact }) => ($compact ? '3px' : 'auto')};
+        height: ${({ $compact }) => ($compact ? 'auto' : '3px')};
         border-radius: 999px;
         background: ${({ $status, $suspended }) => statusColor($status, $suspended)};
         box-shadow: 0 0 18px ${({ $status, $suspended }) => statusColor($status, $suspended)};
     }
 
+    & .server-card-open {
+        opacity: ${({ $compact }) => ($compact ? 1 : 0)};
+        transform: ${({ $compact }) => ($compact ? 'none' : 'translateX(-4px)')};
+        transition: opacity 220ms var(--el7-ease), transform 220ms var(--el7-ease);
+    }
+
     &:hover {
-        transform: translateY(-3px);
+        transform: translateY(${({ $compact }) => ($compact ? '-3px' : '-4px')});
         background: #111117;
         border-color: rgba(139, 92, 246, 0.7);
-        box-shadow: 0 24px 58px rgba(0, 0, 0, 0.54), 0 0 28px rgba(139, 92, 246, 0.2);
+        box-shadow: 0 24px 58px rgba(0, 0, 0, 0.54), 0 0 32px rgba(139, 92, 246, 0.24);
+    }
+
+    &:hover::before {
+        opacity: 1;
+        transform: translateX(10%);
+    }
+
+    &:hover .server-card-open {
+        opacity: 1;
+        transform: translateY(0);
     }
 `;
 
 const IconBox = styled.div`
-    ${tw`rounded-lg w-14 flex items-center justify-center p-3 flex-shrink-0`};
+    ${tw`rounded-lg w-11 h-11 flex items-center justify-center p-3 flex-shrink-0`};
     background: #111117;
     border: 1px solid rgba(139, 92, 246, 0.36);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 20px rgba(139, 92, 246, 0.16);
@@ -62,7 +93,7 @@ const IconBox = styled.div`
 `;
 
 const ResourceCell = styled.div<{ $alarm?: boolean }>`
-    ${tw`rounded-lg border px-3 py-2 min-w-0`};
+    ${tw`rounded-lg border px-2 py-2 min-w-0`};
     background: #111117;
     border-color: ${({ $alarm }) => ($alarm ? 'rgba(239, 68, 68, 0.42)' : 'rgba(139, 92, 246, 0.18)')};
 
@@ -122,7 +153,7 @@ const ResourceMetric = ({
     </ResourceCell>
 );
 
-const ServerRow = ({ server, className, eager = false }: { server: Server; className?: string; eager?: boolean }) => {
+const ServerRow = ({ server, className, eager = false, compact = false }: { server: Server; className?: string; eager?: boolean; compact?: boolean }) => {
     const interval = useRef<Timer | null>(null);
     const rowRef = useRef<HTMLDivElement | null>(null);
     const [isSuspended, setIsSuspended] = useState(server.status === 'suspended');
@@ -204,33 +235,45 @@ const ServerRow = ({ server, className, eager = false }: { server: Server; class
         .filter((alloc) => alloc.isDefault)
         .map((allocation) => `${allocation.alias || ip(allocation.ip)}:${allocation.port}`)
         .join(', ');
+    const identityCss = compact
+        ? tw`relative z-10 flex items-center col-span-12 md:col-span-6 lg:col-span-5 min-w-0`
+        : tw`relative z-10 flex items-start min-w-0 pb-3 border-b`;
+    const networkCss = compact ? tw`relative z-10 hidden xl:flex xl:col-span-2 items-center min-w-0` : tw`hidden`;
+    const resourcesCss = compact
+        ? tw`relative z-10 hidden md:block md:col-span-6 lg:col-span-5`
+        : tw`relative z-10 flex-1`;
+    const resourceGridCss = compact ? tw`grid grid-cols-3 gap-2` : tw`grid grid-cols-1 sm:grid-cols-3 gap-2`;
+    const descriptionCss = compact ? tw`hidden sm:block mt-1 text-xs text-neutral-400 break-words line-clamp-1` : tw`mt-1 text-xs text-neutral-400 break-words line-clamp-1`;
 
     return (
         <div className={className} ref={rowRef}>
-            <StatusIndicatorBox to={`/server/${server.id}`} $status={stats?.status} $suspended={isSuspended}>
+            <StatusIndicatorBox to={`/server/${server.id}`} $status={stats?.status} $suspended={isSuspended} $compact={compact}>
                 <div className={'status-bar'} />
-                <div css={tw`relative z-10 flex items-center col-span-12 lg:col-span-5 min-w-0`}>
+                <div css={identityCss} style={compact ? undefined : { borderColor: 'rgba(139, 92, 246, 0.18)' }}>
                     <IconBox>
                         <FontAwesomeIcon icon={faServer} />
                     </IconBox>
-                    <div css={tw`ml-4 min-w-0`}>
-                        <div css={tw`flex flex-wrap items-center gap-2`}>
-                            <p css={tw`text-lg break-words text-white font-semibold`}>{server.name}</p>
-                            <span css={tw`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider`} style={{ color: statusColor(stats?.status, isSuspended), borderColor: 'rgba(139, 92, 246, 0.2)', background: '#111117' }}>
+                    <div css={tw`ml-3 min-w-0 flex-1`}>
+                        <div css={tw`flex flex-wrap items-start justify-between gap-2`}>
+                            <p css={tw`text-base break-words text-white font-semibold`}>{server.name}</p>
+                            <span css={tw`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider flex-shrink-0`} style={{ color: statusColor(stats?.status, isSuspended), borderColor: 'rgba(139, 92, 246, 0.2)', background: '#111117' }}>
                                 {status}
                             </span>
                         </div>
-                        {!!server.description && (
-                            <p css={tw`mt-1 text-sm text-neutral-400 break-words line-clamp-2`}>{server.description}</p>
-                        )}
-                        <div css={tw`mt-2 flex items-center text-xs text-neutral-500 lg:hidden`}>
+                        <p css={descriptionCss}>
+                            {server.description || 'No description configured.'}
+                        </p>
+                        <div css={compact ? tw`mt-1 flex items-center text-xs text-neutral-500 lg:hidden` : tw`mt-2 flex items-center text-xs text-neutral-500`}>
                             <FontAwesomeIcon icon={faEthernet} css={tw`mr-2 text-purple-300`} />
                             <span css={tw`font-mono truncate`}>{allocation || 'no allocation'}</span>
                         </div>
+                        {!compact && (
+                            <div className={'server-card-open'} css={tw`mt-2 h-0.5 w-12 rounded-full`} style={{ background: 'rgba(139, 92, 246, 0.75)', boxShadow: '0 0 14px rgba(139, 92, 246, 0.45)' }} />
+                        )}
                     </div>
                 </div>
 
-                <div css={tw`relative z-10 hidden lg:flex lg:col-span-2 items-center min-w-0`}>
+                <div css={networkCss}>
                     <div css={tw`rounded-lg border px-3 py-2 w-full`} style={{ background: '#111117', borderColor: 'rgba(139, 92, 246, 0.18)' }}>
                         <div css={tw`flex items-center text-xs text-neutral-500 uppercase tracking-wider`}>
                             <FontAwesomeIcon icon={faEthernet} css={tw`mr-2 text-purple-300`} />
@@ -240,7 +283,7 @@ const ServerRow = ({ server, className, eager = false }: { server: Server; class
                     </div>
                 </div>
 
-                <div css={tw`relative z-10 col-span-12 lg:col-span-5`}>
+                <div css={resourcesCss}>
                     {!stats || isSuspended ? (
                         isSuspended ? (
                             <div css={tw`rounded-lg border px-3 py-4 text-center text-sm text-red-200`} style={{ background: '#111117', borderColor: 'rgba(239, 68, 68, 0.38)' }}>
@@ -262,7 +305,7 @@ const ServerRow = ({ server, className, eager = false }: { server: Server; class
                             </div>
                         )
                     ) : (
-                        <div css={tw`grid grid-cols-1 sm:grid-cols-3 gap-2`}>
+                        <div css={resourceGridCss}>
                             <ResourceMetric
                                 icon={faMicrochip}
                                 label={'CPU'}

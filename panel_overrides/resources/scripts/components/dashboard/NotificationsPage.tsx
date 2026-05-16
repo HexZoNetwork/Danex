@@ -54,6 +54,18 @@ const NewBadge = styled.span`
     border-color: rgba(255, 255, 255, 0.16);
     box-shadow: 0 0 16px rgba(239, 68, 68, 0.32);
 `;
+const TabButton = styled.button<{ $active?: boolean }>`
+    ${tw`rounded-md border px-3 py-2 text-xs font-semibold uppercase tracking-wider transition`};
+    background: ${({ $active }) => ($active ? '#8b5cf6' : '#111117')};
+    color: ${({ $active }) => ($active ? '#ffffff' : '#d4d4df')};
+    border-color: ${({ $active }) => ($active ? 'rgba(167, 139, 250, 0.72)' : 'rgba(139, 92, 246, 0.24)')};
+    box-shadow: ${({ $active }) => ($active ? '0 0 22px rgba(139, 92, 246, 0.32)' : 'none')};
+
+    &:hover {
+        border-color: rgba(139, 92, 246, 0.62);
+        background: ${({ $active }) => ($active ? '#8b5cf6' : '#15151d')};
+    }
+`;
 
 const initials = (name: string): string => {
     const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -67,6 +79,7 @@ export default () => {
     const [conversations, setConversations] = useState<ChatConversation[]>([]);
     const [loading, setLoading] = useState(true);
     const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+    const [channelFilter, setChannelFilter] = useState<'all' | 'direct' | 'public' | 'system'>('all');
     const [browserNotifState, setBrowserNotifState] = useState<'unsupported' | 'default' | 'denied' | 'granted'>(
         typeof window === 'undefined' || !('Notification' in window) ? 'unsupported' : Notification.permission
     );
@@ -142,7 +155,13 @@ export default () => {
         }
     };
 
-    const visibleItems = showUnreadOnly ? items.filter((item) => !item.read) : items;
+    const filteredByChannel = items.filter((item) => {
+        if (channelFilter === 'direct') return item.sourceType === 'dm' || item.sourceType === 'group' || item.sourceType === 'call';
+        if (channelFilter === 'public') return item.sourceType === 'global';
+        if (channelFilter === 'system') return item.sourceType === 'system';
+        return true;
+    });
+    const visibleItems = showUnreadOnly ? filteredByChannel.filter((item) => !item.read) : filteredByChannel;
     const unreadCount = items.filter((item) => !item.read).length;
 
     return (
@@ -162,6 +181,20 @@ export default () => {
                         </p>
                         <p css={tw`text-xs text-neutral-500`}>Total: {items.length}</p>
                     </div>
+                </div>
+                <div css={tw`mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2`}>
+                    <TabButton type={'button'} $active={channelFilter === 'all'} onClick={() => setChannelFilter('all')}>
+                        All
+                    </TabButton>
+                    <TabButton type={'button'} $active={channelFilter === 'direct'} onClick={() => setChannelFilter('direct')}>
+                        DM / Group
+                    </TabButton>
+                    <TabButton type={'button'} $active={channelFilter === 'public'} onClick={() => setChannelFilter('public')}>
+                        Public
+                    </TabButton>
+                    <TabButton type={'button'} $active={channelFilter === 'system'} onClick={() => setChannelFilter('system')}>
+                        System
+                    </TabButton>
                 </div>
                 <div css={tw`mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2`}>
                     <Button

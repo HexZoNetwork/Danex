@@ -7,12 +7,15 @@ import PageContentBlock from '@/components/elements/PageContentBlock';
 import useFlash from '@/plugins/useFlash';
 import { useStoreState } from 'easy-peasy';
 import { usePersistedState } from '@/plugins/usePersistedState';
-import Switch from '@/components/elements/Switch';
 import tw from 'twin.macro';
 import useSWR from 'swr';
 import { PaginatedResult } from '@/api/http';
 import Pagination from '@/components/elements/Pagination';
 import { useLocation } from 'react-router-dom';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faBorderAll, faList } from '@fortawesome/free-solid-svg-icons';
+
+const SERVERS_PER_PAGE = 6;
 
 export default () => {
     const { search } = useLocation();
@@ -23,10 +26,11 @@ export default () => {
     const uuid = useStoreState((state) => state.user.data!.uuid);
     const rootAdmin = useStoreState((state) => state.user.data!.rootAdmin);
     const [showOnlyAdmin, setShowOnlyAdmin] = usePersistedState(`${uuid}:show_all_servers`, false);
+    const [denseMode, setDenseMode] = usePersistedState(`${uuid}:server_grid_dense`, false);
 
     const { data: servers, error } = useSWR<PaginatedResult<Server>>(
-        ['/api/client/servers', showOnlyAdmin && rootAdmin, page],
-        () => getServers({ page, type: showOnlyAdmin && rootAdmin ? 'admin' : undefined })
+        ['/api/client/servers', showOnlyAdmin && rootAdmin, page, SERVERS_PER_PAGE],
+        () => getServers({ page, perPage: SERVERS_PER_PAGE, type: showOnlyAdmin && rootAdmin ? 'admin' : undefined })
     );
 
     useEffect(() => {
@@ -60,32 +64,58 @@ export default () => {
                     <h1 css={tw`mt-1 text-2xl sm:text-3xl text-neutral-50 font-semibold`}>Servers</h1>
                 </div>
             </div>
-            {rootAdmin && (
-                <div css={tw`mb-3 flex justify-end items-center rounded-lg px-3 py-2 border`} style={{ background: '#0b0b10', borderColor: 'rgba(139, 92, 246, 0.28)' }}>
-                    <p css={tw`uppercase text-xs text-neutral-300 mr-2 tracking-wider`}>
-                        {showOnlyAdmin ? "Showing others' servers" : 'Showing your servers'}
-                    </p>
-                    <Switch
-                        name={'show_all_servers'}
-                        defaultChecked={showOnlyAdmin}
-                        onChange={() => setShowOnlyAdmin((s) => !s)}
-                    />
+            <div css={tw`mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2`} style={{ background: '#0b0b10', borderColor: 'rgba(139, 92, 246, 0.24)' }}>
+                <div>
+                    {rootAdmin && (
+                        <button
+                            type={'button'}
+                            css={tw`h-9 rounded-md border px-3 text-xs uppercase tracking-wider transition`}
+                            style={{ background: showOnlyAdmin ? '#8b5cf6' : '#07070b', color: showOnlyAdmin ? '#ffffff' : '#d6d3e8', borderColor: showOnlyAdmin ? 'rgba(167, 139, 250, 0.72)' : 'rgba(139, 92, 246, 0.24)', boxShadow: showOnlyAdmin ? '0 0 18px rgba(139, 92, 246, 0.35)' : 'none' }}
+                            onClick={() => setShowOnlyAdmin((s) => !s)}
+                        >
+                            {showOnlyAdmin ? "Showing others' servers" : 'Showing your servers'}
+                        </button>
+                    )}
                 </div>
-            )}
+                <div css={tw`flex flex-wrap items-center gap-2`}>
+                    <div css={tw`flex items-center gap-1 rounded-md border p-1`} style={{ background: '#07070b', borderColor: 'rgba(139, 92, 246, 0.22)' }}>
+                        <button
+                            type={'button'}
+                            aria-label={'Comfort box view'}
+                            css={tw`w-9 h-8 rounded flex items-center justify-center transition`}
+                            style={!denseMode ? { background: '#8b5cf6', color: '#ffffff', boxShadow: '0 0 18px rgba(139, 92, 246, 0.42)' } : { color: '#a6a6b8' }}
+                            onClick={() => setDenseMode(false)}
+                        >
+                            <FontAwesomeIcon icon={faBorderAll} />
+                        </button>
+                        <button
+                            type={'button'}
+                            aria-label={'Dense row view'}
+                            css={tw`w-9 h-8 rounded flex items-center justify-center transition`}
+                            style={denseMode ? { background: '#8b5cf6', color: '#ffffff', boxShadow: '0 0 18px rgba(139, 92, 246, 0.42)' } : { color: '#a6a6b8' }}
+                            onClick={() => setDenseMode(true)}
+                        >
+                            <FontAwesomeIcon icon={faList} />
+                        </button>
+                    </div>
+                </div>
+            </div>
             {!servers ? (
                 <Spinner centered size={'large'} />
             ) : (
                 <Pagination data={servers} onPageSelect={setPage}>
                     {({ items }) =>
                         items.length > 0 ? (
-                            items.map((server, index) => (
-                                <ServerRow
-                                    key={server.uuid}
-                                    server={server}
-                                    eager={index < 3}
-                                    css={index > 0 ? tw`mt-2` : undefined}
-                                />
-                            ))
+                            <div css={denseMode ? tw`space-y-2` : tw`grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3`}>
+                                {items.map((server, index) => (
+                                    <ServerRow
+                                        key={server.uuid}
+                                        server={server}
+                                        compact={denseMode}
+                                        eager={index < 3}
+                                    />
+                                ))}
+                            </div>
                         ) : (
                             <p css={tw`text-center text-sm text-neutral-400`}>
                                 {showOnlyAdmin

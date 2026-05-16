@@ -1,11 +1,11 @@
 @extends('layouts.admin')
 
 @section('title')
-    DanexCoin Management
+    DanexCoin Rewards
 @endsection
 
 @section('content-header')
-    <h1>DanexCoin Management<small>Tambah atau kurangi coin user tertentu dengan jujur dan transparan.</small></h1>
+    <h1>DanexCoin Rewards<small>Adjust wallet balance and audit reward cycle activity.</small></h1>
     <ol class="breadcrumb">
         <li><a href="{{ route('admin.index') }}">Admin</a></li>
         <li class="active">DanexCoin</li>
@@ -17,7 +17,7 @@
         <div class="col-md-6">
             <div class="box box-primary">
                 <div class="box-header with-border">
-                    <h3 class="box-title">Adjust DanexCoin</h3>
+                    <h3 class="box-title">Adjust Wallet</h3>
                 </div>
                 <div class="box-body">
                     <form method="POST" action="{{ route('admin.management.danexcoin.adjust') }}">
@@ -28,11 +28,11 @@
                                 type="text"
                                 class="form-control"
                                 name="identifier"
-                                placeholder="Contoh: 15 / username / email"
+                                placeholder="15 / username / email"
                                 required
                             />
                             <p class="text-muted" style="margin-top: 6px;">
-                                Bisa isi user id, username, atau email.
+                                Use user id, username, or email.
                             </p>
                         </div>
 
@@ -49,7 +49,7 @@
                             <input type="number" min="0.01" max="100000000" step="0.01" class="form-control" name="amount" required />
                         </div>
 
-                        <button type="submit" class="btn btn-primary">Simpan Perubahan</button>
+                        <button type="submit" class="btn btn-primary">Apply Change</button>
                     </form>
                 </div>
             </div>
@@ -58,11 +58,11 @@
         <div class="col-md-6">
             <div class="box box-default">
                 <div class="box-header with-border">
-                    <h3 class="box-title">DanexCoin Logs</h3>
+                    <h3 class="box-title">Reward Logs</h3>
                 </div>
                 <div class="box-body">
                     <p class="text-muted" style="margin: 0;">
-                        Gunakan tabel log untuk audit spin user dan tracking perubahan saldo.
+                        Audit reward cycles and wallet balance changes from one controlled surface.
                     </p>
                 </div>
             </div>
@@ -73,7 +73,7 @@
         <div class="col-xs-12">
             <div class="box box-default">
                 <div class="box-header with-border">
-                    <h3 class="box-title">Recent Spin Logs</h3>
+                    <h3 class="box-title">Recent Reward Runs</h3>
                 </div>
                 <div class="box-body table-responsive no-padding">
                     <table class="table table-hover">
@@ -81,10 +81,10 @@
                             <tr>
                                 <th>ID</th>
                                 <th>User</th>
-                                <th>Bet</th>
+                                <th>Amount</th>
                                 <th>Result</th>
                                 <th>Multiplier</th>
-                                <th>Payout</th>
+                                <th>Reward</th>
                                 <th>Balance</th>
                                 <th>Time</th>
                             </tr>
@@ -104,7 +104,7 @@
                                         <code>{{ $row->reel_2 }}</code>
                                         <code>{{ $row->reel_3 }}</code>
                                         @if((bool) $row->is_jackpot)
-                                            <span class="label label-success" style="margin-left: 6px;">JACKPOT</span>
+                                            <span class="label label-success" style="margin-left: 6px;">PRIME</span>
                                         @endif
                                     </td>
                                     <td>x{{ number_format((float) $row->multiplier, 2) }}</td>
@@ -114,7 +114,7 @@
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="8" class="text-center text-muted">Belum ada spin log.</td>
+                                    <td colspan="8" class="text-center text-muted">No reward run log yet.</td>
                                 </tr>
                             @endforelse
                         </tbody>

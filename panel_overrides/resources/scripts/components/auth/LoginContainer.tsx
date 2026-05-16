@@ -188,7 +188,7 @@ const LoginContainer = ({ history }: RouteComponentProps) => {
             {({ isSubmitting, setSubmitting, submitForm }) => (
                 <>
                     {booting && <BootOverlay progress={bootProgress} />}
-                    <LoginFormContainer title={'Login to Continue'}>
+                    <LoginFormContainer title={'Sign In'}>
                     <Field light type={'text'} label={'Username or Email'} name={'username'} disabled={isSubmitting || booting} />
                     <div css={tw`mt-6`}>
                         <Field light type={'password'} label={'Password'} name={'password'} disabled={isSubmitting || booting} />
