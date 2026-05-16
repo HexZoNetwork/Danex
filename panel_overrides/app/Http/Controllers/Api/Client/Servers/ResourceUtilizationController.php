@@ -30,31 +30,45 @@ class ResourceUtilizationController extends ClientApiController
     public function __invoke(GetServerRequest $request, Server $server): array
     {
         $key = "resources:$server->uuid";
+        $staleKey = "$key:stale";
+
         try {
             $stats = $this->cache->remember($key, Carbon::now()->addSeconds(20), function () use ($server) {
                 return $this->repository->setServer($server)->getDetails();
             });
-        } catch (Throwable $exception) {
-            Log::warning('Failed to fetch daemon stats, returning offline fallback.', [
-                'server_id' => $server->id,
-                'server_uuid' => $server->uuid,
-                'error' => $exception->getMessage(),
-            ]);
 
-            $stats = [
-                'state' => 'offline',
-                'is_suspended' => (string) $server->status === 'suspended',
-                'utilization' => [
-                    'memory_bytes' => 0,
-                    'cpu_absolute' => 0,
-                    'disk_bytes' => 0,
-                    'network' => [
-                        'rx_bytes' => 0,
-                        'tx_bytes' => 0,
+            $this->cache->put($staleKey, $stats, Carbon::now()->addMinutes(3));
+        } catch (Throwable $exception) {
+            $stats = $this->cache->get($staleKey);
+
+            if (is_array($stats)) {
+                Log::notice('Failed to fetch daemon stats, returning stale cached stats.', [
+                    'server_id' => $server->id,
+                    'server_uuid' => $server->uuid,
+                    'error' => $exception->getMessage(),
+                ]);
+            } else {
+                Log::warning('Failed to fetch daemon stats, returning offline fallback.', [
+                    'server_id' => $server->id,
+                    'server_uuid' => $server->uuid,
+                    'error' => $exception->getMessage(),
+                ]);
+
+                $stats = [
+                    'state' => 'offline',
+                    'is_suspended' => (string) $server->status === 'suspended',
+                    'utilization' => [
+                        'memory_bytes' => 0,
+                        'cpu_absolute' => 0,
+                        'disk_bytes' => 0,
+                        'network' => [
+                            'rx_bytes' => 0,
+                            'tx_bytes' => 0,
+                        ],
+                        'uptime' => 0,
                     ],
-                    'uptime' => 0,
-                ],
-            ];
+                ];
+            }
 
             $this->cache->put($key, $stats, Carbon::now()->addSeconds(5));
         }

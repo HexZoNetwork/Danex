@@ -135,6 +135,13 @@ class PteroProtectSessionBinding
             return true;
         }
 
+        if (
+            $request->isMethod('GET') &&
+            preg_match('#^api/client/servers/[^/]+/(resources|activity)(?:/|$)#i', $path) === 1
+        ) {
+            return true;
+        }
+
         return false;
     }
 

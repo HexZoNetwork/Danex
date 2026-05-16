@@ -159,12 +159,17 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
     const [isSuspended, setIsSuspended] = useState(server.status === 'suspended');
     const [isVisible, setIsVisible] = useState(eager);
     const [stats, setStats] = useState<ServerStats | null>(null);
+    const [resourceError, setResourceError] = useState(false);
 
     const getStats = () =>
         getServerResourceUsage(server.uuid)
-            .then((data) => setStats(data))
+            .then((data) => {
+                setResourceError(false);
+                setStats(data);
+            })
             .catch((error) => {
                 if (error?.response?.status === 409) return;
+                setResourceError(true);
                 console.error(error);
             });
 
@@ -230,7 +235,10 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
     const diskLimit = server.limits.disk !== 0 ? bytesToString(mbToBytes(server.limits.disk)) : 'Unlimited';
     const memoryLimit = server.limits.memory !== 0 ? bytesToString(mbToBytes(server.limits.memory)) : 'Unlimited';
     const cpuLimit = server.limits.cpu !== 0 ? server.limits.cpu + ' %' : 'Unlimited';
-    const status = isSuspended ? 'suspended' : stats?.status || server.status || 'unknown';
+    const status = isSuspended
+        ? 'suspended'
+        : stats?.status || server.status || (resourceError ? 'poll delayed' : 'checking');
+    const statusForColor = stats?.status || (server.status === 'suspended' ? 'offline' : undefined);
     const allocation = server.allocations
         .filter((alloc) => alloc.isDefault)
         .map((allocation) => `${allocation.alias || ip(allocation.ip)}:${allocation.port}`)
@@ -247,7 +255,7 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
 
     return (
         <div className={className} ref={rowRef}>
-            <StatusIndicatorBox to={`/server/${server.id}`} $status={stats?.status} $suspended={isSuspended} $compact={compact}>
+            <StatusIndicatorBox to={`/server/${server.id}`} $status={statusForColor} $suspended={isSuspended} $compact={compact}>
                 <div className={'status-bar'} />
                 <div css={identityCss} style={compact ? undefined : { borderColor: 'rgba(139, 92, 246, 0.18)' }}>
                     <IconBox>
@@ -256,7 +264,7 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
                     <div css={tw`ml-3 min-w-0 flex-1`}>
                         <div css={tw`flex flex-wrap items-start justify-between gap-2`}>
                             <p css={tw`text-base break-words text-white font-semibold`}>{server.name}</p>
-                            <span css={tw`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider flex-shrink-0`} style={{ color: statusColor(stats?.status, isSuspended), borderColor: 'rgba(139, 92, 246, 0.2)', background: '#111117' }}>
+                            <span css={tw`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider flex-shrink-0`} style={{ color: resourceError && !stats ? '#f59e0b' : statusColor(statusForColor, isSuspended), borderColor: 'rgba(139, 92, 246, 0.2)', background: '#111117' }}>
                                 {status}
                             </span>
                         </div>
@@ -288,6 +296,10 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
                         isSuspended ? (
                             <div css={tw`rounded-lg border px-3 py-4 text-center text-sm text-red-200`} style={{ background: '#111117', borderColor: 'rgba(239, 68, 68, 0.38)' }}>
                                 {server.status === 'suspended' ? 'Suspended' : 'Connection Error'}
+                            </div>
+                        ) : resourceError ? (
+                            <div css={tw`rounded-lg border px-3 py-4 text-center text-sm text-yellow-200`} style={{ background: '#111117', borderColor: 'rgba(245, 158, 11, 0.34)' }}>
+                                Poll delayed
                             </div>
                         ) : server.isTransferring || server.status ? (
                             <div css={tw`rounded-lg border px-3 py-4 text-center text-sm text-neutral-300`} style={{ background: '#111117', borderColor: 'rgba(139, 92, 246, 0.18)' }}>

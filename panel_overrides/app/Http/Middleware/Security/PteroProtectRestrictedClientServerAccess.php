@@ -36,6 +36,18 @@ class PteroProtectRestrictedClientServerAccess
             return $next($request);
         }
 
+        if ($server instanceof Server && $request->isMethod('GET')) {
+            $route = (string) ($request->route()?->getName() ?? '');
+            $path = trim($request->path(), '/');
+
+            if (
+                in_array($route, ['api:client:server.resources', 'api:client:server.activity'], true)
+                || preg_match('#^api/client/servers/[^/]+/(resources|activity)(?:/|$)#i', $path) === 1
+            ) {
+                return $next($request);
+            }
+        }
+
         // Delegated admin accounts may use their own servers, but not runtime
         // resources that belong to other accounts.
         throw new AccessDeniedHttpException('Delegated admin cannot access server runtime resources.');

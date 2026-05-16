@@ -136,16 +136,16 @@
     "integrity": "sha384-l0I48CZdshyRuRGdSbJylAiri3mLLxmFjkkrgF0rVAdxOcyYUjj3ylwROtUno/Gm"
   },
   "dashboard.js": {
-    "src": "/assets/dashboard.940cdad9.js",
-    "integrity": "sha384-X7b1n1/MJ6ypOLERqf7an0i6udlYowqo/PaE0OoJlkc4k1jIfvBPJ/SNDZ9e7mQF"
+    "src": "/assets/dashboard.aa282ced.js",
+    "integrity": "sha384-knoMYZuKgS9vsAUt9oIFunTW3ypsMP5dcpNhgykoGbTBDTGImQ8TSRZeKdfLewwO"
   },
   "ibm-plex-sans-latin-wght-normal.woff2": {
     "src": "/assets/b33a81b76947ac354369.woff2",
     "integrity": ""
   },
   "main.js": {
-    "src": "/assets/bundle.fab2513f.js",
-    "integrity": "sha384-5Scj0Mz3aHH05mcKWvHDuHvN2/4CncMd5tdzriczGlVUrRPFsQe+pDMQ+r8h+1go"
+    "src": "/assets/bundle.6fd73cdd.js",
+    "integrity": "sha384-Mnjh7iKIqwJREvzCFmVDwc8dFzUNJExqRyeI9VGRPTFORYB/RhtRILTQ4AbwUc+D"
   },
   "main.woff2": {
     "src": "/assets/b33a81b76947ac354369.woff2",
