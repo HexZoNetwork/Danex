@@ -48,7 +48,7 @@ return [
             '#^api/application/#i',
             '#^(?:|index\.php)$#i',
         ],
-        'block_paths_in_emergency' => true,
+        'block_paths_in_emergency' => env('PTEROPROTECT_WAF_BLOCK_PATHS_IN_EMERGENCY', false),
 
         'mode_multipliers' => [
             'normal' => 1.0,

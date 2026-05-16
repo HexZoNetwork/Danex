@@ -15,6 +15,7 @@ CONFIG_PATH = os.environ.get("DANN_CONFIG_PATH", "/pteroprotect/config.json")
 SHM_RUNTIME_DIR = os.environ.get("PTEROPROTECT_RUNTIME_DIR", "/dev/shm/pteroprotect")
 PANEL_RUNTIME_DIR = os.environ.get("PTEROPROTECT_PANEL_RUNTIME_DIR", "/pteroprotect/runtime")
 DEFAULT_CHALLENGE_PATH = "/__pteroprotect/challenge/page"
+DEFAULT_EXTERNAL_CHECK_API = "https://mywebcheck.netlify.app/.netlify/functions/check"
 
 
 def is_placeholder_url(value: str) -> bool:
@@ -95,103 +96,42 @@ def http_probe(url: str, timeout_sec: float = 6.0) -> Tuple[bool, int, float, st
         return False, 0, elapsed, str(exc)
 
 
-def checkhost_probe(url: str, max_nodes: int = 8, zero_threshold: int = 3) -> Tuple[bool, float, str]:
+def checkhost_probe(url: str, max_nodes: int = 8, zero_threshold: int = 3, api_url: str = "") -> Tuple[bool, float, str]:
     if not url:
         return False, 0.0, "empty-url"
     try:
-        req_init = urllib.request.Request(
-            f"https://check-host.net/check-http?{urllib.parse.urlencode({'host': url, 'max_nodes': str(max(1, max_nodes))})}",
-            headers={"Accept": "application/json", "User-Agent": "DanexSelfHeal/1.0"},
+        api_base = (api_url or os.environ.get("PTEROPROTECT_CHECK_API", DEFAULT_EXTERNAL_CHECK_API)).strip() or DEFAULT_EXTERNAL_CHECK_API
+        separator = "&" if "?" in api_base else "?"
+        req = urllib.request.Request(
+            f"{api_base}{separator}{urllib.parse.urlencode({'url': url})}",
+            headers={"Accept": "application/json", "User-Agent": "DanexSelfHeal/1.0 mywebcheck"},
             method="GET",
         )
-        with urllib.request.urlopen(req_init, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="ignore"))
 
-        if as_int(data.get("ok", 0), 0) != 1:
-            return False, 0.0, "checkhost-init-not-ok"
-        req_id = data.get("request_id", "")
-        nodes = data.get("nodes", {})
-        if not req_id or not isinstance(nodes, dict) or not nodes:
-            return False, 0.0, "checkhost-init-invalid"
-        node_ids = list(nodes.keys())
+        latency_info = data.get("latency", {}) if isinstance(data.get("latency"), dict) else {}
+        latency = as_float(latency_info.get("avg_ms", 0.0), 0.0)
+        if latency <= 0:
+            result_latencies = []
+            for item in data.get("results", []) if isinstance(data.get("results", []), list) else []:
+                if isinstance(item, dict):
+                    result_latencies.append(as_float(item.get("latency_ms", 0.0), 0.0))
+            result_latencies = [value for value in result_latencies if value > 0]
+            latency = sum(result_latencies) / len(result_latencies) if result_latencies else 0.0
 
-        res = {}
-        for _ in range(3):
-            time.sleep(1.0)
-            req_res = urllib.request.Request(
-                f"https://check-host.net/check-result/{req_id}",
-                headers={"Accept": "application/json", "User-Agent": "DanexSelfHeal/1.0"},
-                method="GET",
-            )
-            with urllib.request.urlopen(req_res, timeout=5) as resp:
-                res = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            if any(res.get(n) is not None for n in node_ids):
-                break
+        ok = bool(data.get("ok"))
+        status = str(data.get("status", "unknown")).upper()
+        success = as_int(data.get("success", 0), 0)
+        failed = as_int(data.get("failed", 0), 0)
+        tries = as_int(data.get("tries", success + failed), success + failed)
 
-        completed_nodes = 0
-        ok_nodes = 0
-        zero_nodes = 0
-        latencies_ms = []
-        last_summary = "unknown"
+        if not ok or status != "UP" or success <= 0:
+            return False, latency, f"mywebcheck status={status} success={success}/{tries} failed={failed}"
 
-        for nid in node_ids:
-            node_payload = res.get(nid)
-            if node_payload is None:
-                continue
-
-            first = None
-            if isinstance(node_payload, list) and node_payload:
-                first = node_payload[0]
-                if isinstance(first, list) and first and isinstance(first[0], list):
-                    first = first[0]
-            if not isinstance(first, list) or len(first) < 2:
-                continue
-
-            completed_nodes += 1
-            ok_flag = first[0]
-            latency_sec = as_float(first[1], 0.0)
-            status_text = str(first[2]) if len(first) > 2 and first[2] is not None else ""
-            status_code = str(first[3]) if len(first) > 3 and first[3] is not None else ""
-
-            ok = False
-            if isinstance(ok_flag, bool):
-                ok = ok_flag
-            else:
-                ok = as_int(ok_flag, 0) == 1
-            is_zero_node = False
-            if status_code.isdigit():
-                code_num = int(status_code)
-                ok = code_num == 200
-                if code_num == 0:
-                    is_zero_node = True
-            elif as_int(ok_flag, 1) == 0:
-                is_zero_node = True
-
-            if ok:
-                ok_nodes += 1
-                latencies_ms.append(max(0.0, latency_sec * 1000.0))
-
-            status_l = status_text.lower()
-            if "timed out" in status_l or "timeout" in status_l:
-                is_zero_node = True
-
-            if is_zero_node:
-                zero_nodes += 1
-
-            last_summary = status_code if status_code else (status_text or "unknown")
-
-        if completed_nodes == 0:
-            return False, 0.0, "checkhost-result-missing"
-
-        if zero_nodes >= max(1, zero_threshold):
-            latency = sum(latencies_ms) / len(latencies_ms) if latencies_ms else 0.0
-            return False, latency, f"zero_nodes={zero_nodes}/{completed_nodes}"
-
-        latency = sum(latencies_ms) / len(latencies_ms) if latencies_ms else 0.0
-        success = ok_nodes > 0
-        return success, latency, f"ok_nodes={ok_nodes}/{completed_nodes};last={last_summary}"
+        return True, latency, f"mywebcheck status={status} success={success}/{tries} failed={failed}"
     except Exception as exc:
-        return False, 0.0, str(exc)
+        return False, 0.0, f"mywebcheck-error:{exc}"
 
 
 def systemd_active(name: str) -> bool:
@@ -301,6 +241,7 @@ def main() -> int:
                 challenge_url,
                 max_nodes=checkhost_max_nodes,
                 zero_threshold=checkhost_zero_node_threshold,
+                api_url=str(monitor.get("check_api_url", "")),
             )
             external_ok, external_latency, external_src = ok, lat, src
             if not external_ok:

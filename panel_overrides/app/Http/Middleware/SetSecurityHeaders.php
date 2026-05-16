@@ -3,6 +3,7 @@
 namespace Pterodactyl\Http\Middleware;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 class SetSecurityHeaders
 {
@@ -35,13 +36,39 @@ class SetSecurityHeaders
     public function handle(Request $request, \Closure $next): mixed
     {
         $response = $next($request);
+        $imageSources = [
+            "'self'",
+            'data:',
+            'blob:',
+            'https://www.gravatar.com',
+            'https://gravatar.com',
+            'https://files.catbox.moe',
+            'https://www.google.com',
+            'https://www.gstatic.com',
+            'https://recaptcha.net',
+        ];
+
+        foreach (array_filter([config('app.url'), $request->getSchemeAndHttpHost()]) as $url) {
+            $host = parse_url($url, PHP_URL_HOST);
+            $scheme = parse_url($url, PHP_URL_SCHEME) ?: 'https';
+            if ($host) {
+                $imageSources[] = sprintf('%s://%s', $scheme, $host);
+            }
+        }
+
+        // Keep legacy absolute avatar URLs renderable after a panel domain migration.
+        foreach (['hecker.apcb.biz.id', 'hecker.el7.web.id'] as $host) {
+            $imageSources[] = 'https://' . $host;
+        }
+
+        $imageSources = array_values(array_unique(array_filter($imageSources, static fn ($source) => Str::of($source)->trim()->isNotEmpty())));
 
         $csp = implode('; ', [
             "default-src 'self'",
             // Existing templates still use inline scripts/styles. Keep functionality while blocking third-party script injection.
             "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://www.google.com https://www.gstatic.com https://recaptcha.net",
             "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
-            "img-src 'self' data: blob: https://www.gravatar.com https://files.catbox.moe https://www.google.com https://www.gstatic.com https://recaptcha.net",
+            'img-src ' . implode(' ', $imageSources),
             "font-src 'self' data: https://cdnjs.cloudflare.com",
             "connect-src 'self' wss: https:",
             "frame-src 'self' https://www.google.com https://www.gstatic.com https://recaptcha.net",

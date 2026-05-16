@@ -240,11 +240,19 @@ enable_nginx_modsecurity_module_file() {
     return 1
 }
 
+strip_nginx_modsecurity_directives() {
+    local target="$1"
+    [[ -f "${target}" ]] || return 0
+    perl -0pi -e '
+        s/^[ \t]*modsecurity(?:_[A-Za-z0-9_]+)?[ \t]+[^;]+;[ \t]*(?:\r?\n)?//mg;
+    ' "${target}"
+}
+
 build_nginx_modsecurity_module() {
     local workdir="/usr/local/src/pteroprotect-modsecurity-nginx"
     local nginx_version
     local nginx_pkg_version
-    nginx_version="$(nginx -v 2>&1 | sed -E 's#^nginx version: nginx/##')"
+    nginx_version="$(nginx -v 2>&1 | sed -E 's#^nginx version: nginx/##; s/[[:space:]].*$//')"
     [[ -n "${nginx_version}" ]] || return 1
     nginx_pkg_version="$(dpkg-query -W -f='${Version}' nginx 2>/dev/null || true)"
 
@@ -262,7 +270,9 @@ build_nginx_modsecurity_module() {
             apt-get source nginx
         fi
         git clone --depth 1 https://github.com/owasp-modsecurity/ModSecurity-nginx.git
-        cd "nginx-${nginx_version}"
+        nginx_source_dir="$(find . -maxdepth 1 -type d -name 'nginx-*' ! -name '*ModSecurity*' | sort -V | tail -n1)"
+        [[ -n "${nginx_source_dir}" && -d "${nginx_source_dir}" ]] || exit 1
+        cd "${nginx_source_dir}"
         ./configure \
             --with-compat \
             --with-debug \
@@ -281,6 +291,7 @@ build_nginx_modsecurity_module() {
             --with-http_sub_module \
             --add-dynamic-module=../ModSecurity-nginx
         make modules
+        [[ -f objs/ngx_http_modsecurity_module.so ]] || exit 1
         install -o root -g root -m 0644 objs/ngx_http_modsecurity_module.so /usr/lib/nginx/modules/ngx_http_modsecurity_module.so
     )
 }
@@ -300,8 +311,8 @@ ensure_nginx_modsecurity_module() {
     fi
 
     warn "nginx ModSecurity connector package unavailable; building dynamic module from source"
-    build_nginx_modsecurity_module
-    enable_nginx_modsecurity_module_file
+    build_nginx_modsecurity_module || return 1
+    enable_nginx_modsecurity_module_file || return 1
 }
 
 read_network_setting() {
@@ -1326,7 +1337,9 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{monitor}{health_snapshot_max_age_sec} = 45 if !defined($j->{monitor}{health_snapshot_max_age_sec}) || $j->{monitor}{health_snapshot_max_age_sec} !~ /^\d+$/ || $j->{monitor}{health_snapshot_max_age_sec} < 10;
         $j->{monitor}{emergency_health_signals_threshold} = 1 if !defined($j->{monitor}{emergency_health_signals_threshold}) || $j->{monitor}{emergency_health_signals_threshold} !~ /^\d+$/ || $j->{monitor}{emergency_health_signals_threshold} < 1;
         $j->{monitor}{require_health_degradation_for_emergency} = JSON::PP::true if !defined($j->{monitor}{require_health_degradation_for_emergency});
+        $j->{monitor}{check_api_url} = "https://mywebcheck.netlify.app/.netlify/functions/check" if !defined($j->{monitor}{check_api_url}) || "$j->{monitor}{check_api_url}" eq "" || "$j->{monitor}{check_api_url}" =~ /check-host\.net/i;
         $j->{resilience} = {} if !defined($j->{resilience}) || ref($j->{resilience}) ne 'HASH';
+        $j->{resilience}{mode} = "normal" if !defined($j->{resilience}{mode}) || "$j->{resilience}{mode}" eq "" || "$j->{resilience}{mode}" eq "adaptive";
         $j->{resilience}{detection} = {} if !defined($j->{resilience}{detection}) || ref($j->{resilience}{detection}) ne 'HASH';
         $j->{resilience}{detection}{exclude_monitor_traffic_from_scoring} = JSON::PP::true if !defined($j->{resilience}{detection}{exclude_monitor_traffic_from_scoring});
         $j->{resilience}{detection}{exclude_challenge_paths_from_scoring} = JSON::PP::true if !defined($j->{resilience}{detection}{exclude_challenge_paths_from_scoring});
@@ -1335,6 +1348,7 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{resilience}{detection}{emergency_ratio_req_rate_min} = 9.0 if !defined($j->{resilience}{detection}{emergency_ratio_req_rate_min}) || $j->{resilience}{detection}{emergency_ratio_req_rate_min} !~ /^-?\d+(?:\.\d+)?$/ || $j->{resilience}{detection}{emergency_ratio_req_rate_min} < $j->{resilience}{detection}{elevated_ratio_req_rate_min};
         if (!defined($j->{resilience}{detection}{monitor_ua_markers}) || ref($j->{resilience}{detection}{monitor_ua_markers}) ne 'ARRAY' || scalar(@{$j->{resilience}{detection}{monitor_ua_markers}}) == 0) {
             $j->{resilience}{detection}{monitor_ua_markers} = [
+                "mywebcheck",
                 "checkhost",
                 "pteroprotectresilience",
                 "danexselfheal",
@@ -1369,6 +1383,8 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network}{owner_lock_enabled} = JSON::PP::true if !defined($j->{network}{owner_lock_enabled});
         $j->{network}{owner_lock_hits_threshold} = 1 if !defined($j->{network}{owner_lock_hits_threshold}) || $j->{network}{owner_lock_hits_threshold} !~ /^\d+$/ || $j->{network}{owner_lock_hits_threshold} < 1;
         $j->{network}{owner_lock_ttl_sec} = 86400 if !defined($j->{network}{owner_lock_ttl_sec}) || $j->{network}{owner_lock_ttl_sec} !~ /^\d+$/ || $j->{network}{owner_lock_ttl_sec} < 300;
+        $j->{network}{strict_lockdown_enabled} = JSON::PP::false;
+        $j->{network}{auto_mode_enabled} = JSON::PP::false;
         $j->{network}{require_health_degradation_for_emergency} = JSON::PP::true if !defined($j->{network}{require_health_degradation_for_emergency});
         $j->{network}{health_snapshot_max_age_sec} = 45 if !defined($j->{network}{health_snapshot_max_age_sec}) || $j->{network}{health_snapshot_max_age_sec} !~ /^\d+$/ || $j->{network}{health_snapshot_max_age_sec} < 10;
         $j->{network}{emergency_health_signals_threshold} = 1 if !defined($j->{network}{emergency_health_signals_threshold}) || $j->{network}{emergency_health_signals_threshold} !~ /^\d+$/ || $j->{network}{emergency_health_signals_threshold} < 1;
@@ -2254,7 +2270,7 @@ PY
     cp "${INSTALL_DIR}/host_overrides/nginx/snippets/pteroprotect_server.conf" "${NGINX_DIR}/snippets/pteroprotect_server.conf"
     if [[ "${MODSEC_RUNTIME_ENABLED}" != "1" ]]; then
         echo "[setup] removing modsecurity directives from nginx config (module not available)..."
-        perl -0pi -e 's/\s*modsecurity on;?\s*\n?//g; s/\s*modsecurity_rules_file [^;]+;?\s*\n?//g;' "${NGINX_DIR}/snippets/pteroprotect_server.conf"
+        strip_nginx_modsecurity_directives "${NGINX_DIR}/snippets/pteroprotect_server.conf"
     fi
     if [[ -d "${INSTALL_DIR}/host_overrides/nginx/modsec" ]]; then
         mkdir -p "${NGINX_DIR}/modsec/rules"
@@ -3002,7 +3018,19 @@ PY
 
         WINGS_CERT_PATH="$(awk -F': ' '/^[[:space:]]{4}cert:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
         WINGS_KEY_PATH="$(awk -F': ' '/^[[:space:]]{4}key:[[:space:]]/{print $2; exit}' /etc/pterodactyl/config.yml | tr -d "\"'[:space:]")"
-        if [[ -n "${WINGS_NODE_FQDN}" ]]; then
+        WINGS_APP_FQDN=""
+        if [[ -f "${PANEL_ENV_FILE}" ]]; then
+            WINGS_APP_FQDN="$(awk -F'=' '/^[[:space:]]*APP_URL[[:space:]]*=/{print $2; exit}' "${PANEL_ENV_FILE}" 2>/dev/null | tr -d "\"'[:space:]" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##; s/:.*$//')"
+        fi
+        if [[ -n "${WINGS_APP_FQDN}" ]]; then
+            _app_cert="/etc/letsencrypt/live/${WINGS_APP_FQDN}/fullchain.pem"
+            _app_key="/etc/letsencrypt/live/${WINGS_APP_FQDN}/privkey.pem"
+            if [[ -f "${_app_cert}" && -f "${_app_key}" ]]; then
+                WINGS_CERT_PATH="${_app_cert}"
+                WINGS_KEY_PATH="${_app_key}"
+            fi
+        fi
+        if [[ -n "${WINGS_NODE_FQDN}" && ( ! -f "${WINGS_CERT_PATH}" || ! -f "${WINGS_KEY_PATH}" ) ]]; then
             _node_cert="/etc/letsencrypt/live/${WINGS_NODE_FQDN}/fullchain.pem"
             _node_key="/etc/letsencrypt/live/${WINGS_NODE_FQDN}/privkey.pem"
             if [[ -f "${_node_cert}" && -f "${_node_key}" ]]; then
@@ -3360,6 +3388,9 @@ EOF
     fi
 
     if command -v nginx >/dev/null 2>&1; then
+        if [[ "${MODSEC_RUNTIME_ENABLED:-0}" != "1" ]]; then
+            strip_nginx_modsecurity_directives "${NGINX_DIR}/snippets/pteroprotect_server.conf"
+        fi
         if nginx -t; then
             if [[ "${WINGS_GUARD_PREPARED}" == "1" ]]; then
                 if ! command -v systemctl >/dev/null 2>&1; then
