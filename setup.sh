@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trap 'echo "[setup] error: command failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
+
 if [[ "${EUID}" -ne 0 ]]; then
     if command -v sudo >/dev/null 2>&1; then
         exec sudo -E bash "$0" "$@"
@@ -10,11 +12,68 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_DIR="${INSTALL_DIR:-/pteroprotect}"
-PANEL_DIR="${PANEL_DIR:-/var/www/pterodactyl}"
+DEFAULT_INSTALL_DIR="${INSTALL_DIR:-/pteroprotect}"
+DEFAULT_PANEL_DIR="${PANEL_DIR:-/var/www/pterodactyl}"
+DEFAULT_SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
+DEFAULT_NGINX_DIR="${NGINX_DIR:-/etc/nginx}"
+
+usage() {
+    cat <<'EOF'
+Usage: bash setup.sh [options]
+
+Options:
+  --install-dir PATH   Install workspace path (default: /pteroprotect)
+  --panel-dir PATH     Pterodactyl panel path (default: /var/www/pterodactyl)
+  --systemd-dir PATH   systemd unit path (default: /etc/systemd/system)
+  --nginx-dir PATH     nginx config root (default: /etc/nginx)
+  -h, --help           Show this help
+EOF
+}
+
+INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
+PANEL_DIR="${DEFAULT_PANEL_DIR}"
+SYSTEMD_DIR="${DEFAULT_SYSTEMD_DIR}"
+NGINX_DIR="${DEFAULT_NGINX_DIR}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --install-dir)
+            [[ $# -ge 2 ]] || { echo "[setup] --install-dir requires a value" >&2; exit 1; }
+            INSTALL_DIR="$2"
+            shift 2
+            ;;
+        --panel-dir)
+            [[ $# -ge 2 ]] || { echo "[setup] --panel-dir requires a value" >&2; exit 1; }
+            PANEL_DIR="$2"
+            shift 2
+            ;;
+        --systemd-dir)
+            [[ $# -ge 2 ]] || { echo "[setup] --systemd-dir requires a value" >&2; exit 1; }
+            SYSTEMD_DIR="$2"
+            shift 2
+            ;;
+        --nginx-dir)
+            [[ $# -ge 2 ]] || { echo "[setup] --nginx-dir requires a value" >&2; exit 1; }
+            NGINX_DIR="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "[setup] unknown argument: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+INSTALL_DIR="$(readlink -f "${INSTALL_DIR}")"
+PANEL_DIR="$(readlink -f "${PANEL_DIR}")"
+SYSTEMD_DIR="$(readlink -f "${SYSTEMD_DIR}")"
+NGINX_DIR="$(readlink -f "${NGINX_DIR}")"
 PANEL_ENV_FILE="${PANEL_DIR}/.env"
-SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
-NGINX_DIR="${NGINX_DIR:-/etc/nginx}"
 BACKUP_DIR="${PROJECT_DIR}/backups"
 cd "${PROJECT_DIR}"
 
@@ -1692,8 +1751,12 @@ fi
 if [[ -f "${INSTALL_DIR}/config.example.json" ]]; then
     chmod 644 "${INSTALL_DIR}/config.example.json"
 fi
-chmod 755 "${INSTALL_DIR}/scripts/install_host_protection.sh"
-chmod 755 "${INSTALL_DIR}/scripts/ddos_host_logger.sh"
+if [[ -f "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/install_host_protection.sh"
+fi
+if [[ -f "${INSTALL_DIR}/scripts/ddos_host_logger.sh" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/ddos_host_logger.sh"
+fi
 if [[ -f "${INSTALL_DIR}/scripts/pteroprotect-mode.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/pteroprotect-mode.sh"
 fi
@@ -1814,7 +1877,12 @@ if [[ -n "${PHP_FPM_POOL_CONF}" ]]; then
 fi
 
 # SQL surface hardening: when panel uses local DB host, never expose 3306 publicly.
-PANEL_DB_HOST_EFFECTIVE="$(awk -F= '/^DB_HOST=/{print $2}' "${PANEL_ENV_FILE}" 2>/dev/null | tail -n1 | tr -d '"' | tr -d "'" | tr -d '[:space:]')"
+PANEL_DB_HOST_EFFECTIVE=""
+if [[ -f "${PANEL_ENV_FILE}" ]]; then
+    PANEL_DB_HOST_EFFECTIVE="$(awk -F= '/^DB_HOST=/{print $2}' "${PANEL_ENV_FILE}" 2>/dev/null | tail -n1 | tr -d '"' | tr -d "'" | tr -d '[:space:]' || true)"
+else
+    warn "panel env file not found at ${PANEL_ENV_FILE}; skipping MariaDB local-host hardening check."
+fi
 if [[ -n "${PANEL_DB_HOST_EFFECTIVE}" ]]; then
     PANEL_DB_HOST_LC="$(printf '%s' "${PANEL_DB_HOST_EFFECTIVE}" | tr '[:upper:]' '[:lower:]')"
     if [[ "${PANEL_DB_HOST_LC}" == "127.0.0.1" || "${PANEL_DB_HOST_LC}" == "localhost" || "${PANEL_DB_HOST_LC}" == "::1" ]]; then

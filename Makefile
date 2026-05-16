@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++11 -Wall -Iinclude
+CXXFLAGS = -std=c++11 -Wall -Wno-unused-function -Wno-unused-but-set-variable -Wno-unused-variable -Iinclude
 LDFLAGS = -lmysqlclient -lcurl -lpthread -lcrypto
 CHALLENGE_LDFLAGS = -lmysqlclient -lpthread -lcrypto -lssl
 PREFIX ?= /pteroprotect
