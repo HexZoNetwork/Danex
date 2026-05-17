@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include "resource_monitor.h"
 #include "db_guard.h"
 #include "telegram.h"
@@ -22,6 +23,41 @@
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <unordered_set>
+
+#include <sys/wait.h>
+#include <arpa/inet.h>
+
+namespace {
+int safe_exec(const std::vector<std::string>& args) {
+    if (args.empty()) return -1;
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        std::vector<char*> argv;
+        for (const auto& arg : args) {
+            argv.push_back(const_cast<char*>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+bool is_valid_ip(const std::string& ip) {
+    struct sockaddr_in sa4;
+    struct sockaddr_in6 sa6;
+    return inet_pton(AF_INET, ip.c_str(), &sa4.sin_addr) == 1 ||
+           inet_pton(AF_INET6, ip.c_str(), &sa6.sin6_addr) == 1;
+}
+} // namespace
 
 using json = nlohmann::json;
 
@@ -1052,7 +1088,7 @@ std::string resolve_local_container_ref(const std::string& identifier, const std
 bool restart_container(const std::string& identifier, const std::string& uuid = "") {
     std::string ref = resolve_local_container_ref(identifier, uuid);
     if (!is_safe_docker_ref_token(ref)) return false;
-    int rc = system(("docker restart -t 5 " + shell_quote_single(ref) + " >/dev/null 2>&1").c_str());
+    int rc = safe_exec({"docker", "restart", "-t", "5", ref});
     return rc == 0;
 }
 

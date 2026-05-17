@@ -1,8 +1,19 @@
 [Unit]
+StartLimitBurst=5
+StartLimitIntervalSec=300
 Description=PteroProtect Panel Overrides Live Sync
 After=network.target
 
 [Service]
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/pteroprotect /var/lib/pterodactyl /var/www/pterodactyl /dev/shm/pteroprotect /var/log /run /tmp /dev/shm
 Type=simple
 User=root
 Group=root

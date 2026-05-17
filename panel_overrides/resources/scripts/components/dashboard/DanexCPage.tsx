@@ -6,7 +6,10 @@ import {
     faBolt,
     faChartLine,
     faCheck,
+    faClock,
     faExclamationTriangle,
+    faFire,
+    faSyncAlt,
     faShieldAlt,
     faSlidersH,
     faTimes,
@@ -49,6 +52,47 @@ const Surface = styled.div<{ $delay?: number }>`
         border-color: rgba(139, 92, 246, 0.72);
         box-shadow: 0 24px 64px rgba(0, 0, 0, 0.58), 0 0 30px rgba(139, 92, 246, 0.2);
     }
+`;
+
+const Hero = styled.div`
+    ${tw`relative overflow-hidden rounded-2xl border p-5 sm:p-6`};
+    background:
+        radial-gradient(circle at 12% 0%, rgba(139, 92, 246, 0.3), transparent 24rem),
+        radial-gradient(circle at 88% 12%, rgba(6, 182, 212, 0.14), transparent 22rem),
+        linear-gradient(135deg, #09090d 0%, #111117 58%, #07070b 100%);
+    border-color: rgba(139, 92, 246, 0.34);
+    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.62), 0 0 54px rgba(139, 92, 246, 0.16);
+
+    &::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+            repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 64px),
+            repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.016) 0 1px, transparent 1px 64px),
+            linear-gradient(110deg, transparent 0 44%, rgba(139, 92, 246, 0.12) 45%, transparent 47% 100%);
+        opacity: 0.78;
+    }
+`;
+
+const Pill = styled.button<{ $active?: boolean }>`
+    ${tw`rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition`};
+    color: ${({ $active }) => ($active ? '#ffffff' : '#a3a3b2')};
+    background: ${({ $active }) => ($active ? 'rgba(139, 92, 246, 0.34)' : 'rgba(7, 7, 11, 0.72)')};
+    border-color: ${({ $active }) => ($active ? 'rgba(167, 139, 250, 0.72)' : 'rgba(139, 92, 246, 0.22)')};
+    box-shadow: ${({ $active }) => ($active ? '0 0 22px rgba(139, 92, 246, 0.28)' : 'none')};
+
+    &:hover {
+        color: #ffffff;
+        border-color: rgba(167, 139, 250, 0.64);
+    }
+`;
+
+const MiniMetric = styled.div`
+    ${tw`rounded-xl border px-3 py-2`};
+    background: rgba(7, 7, 11, 0.72);
+    border-color: rgba(139, 92, 246, 0.2);
 `;
 
 const Label = styled.p`
@@ -146,25 +190,34 @@ export default () => {
     const [loading, setLoading] = useState(true);
     const [sortBy, setSortBy] = useState<'count' | 'denied_ratio'>('count');
     const [toast, setToast] = useState('');
+    const [windowMinutes, setWindowMinutes] = useState<15 | 60 | 360>(60);
+    const [refreshing, setRefreshing] = useState(false);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-    const loadOverview = async () => {
-        const data = await getDanexCOverview(60);
+    const loadOverview = useCallback(async (minutes: number) => {
+        const data = await getDanexCOverview(minutes);
         setOverview(data);
-    };
+    }, []);
 
-    const loadTimeline = async () => {
-        const data = await getDanexCTimeline(60);
+    const loadTimeline = useCallback(async (minutes: number) => {
+        const data = await getDanexCTimeline(minutes);
         setTimeline(Array.isArray(data.timeline) ? data.timeline : []);
-    };
+    }, []);
 
-    const loadFeed = async () => {
+    const loadFeed = useCallback(async () => {
         const data = await getDanexCFeed(40);
         setFeed(Array.isArray(data.live_feed) ? data.live_feed : []);
-    };
+    }, []);
 
     const refreshAll = useCallback(async () => {
-        await Promise.all([loadOverview(), loadTimeline(), loadFeed()]);
-    }, []);
+        setRefreshing(true);
+        try {
+            await Promise.all([loadOverview(windowMinutes), loadTimeline(windowMinutes), loadFeed()]);
+            setLastUpdated(new Date());
+        } finally {
+            setRefreshing(false);
+        }
+    }, [loadFeed, loadOverview, loadTimeline, windowMinutes]);
 
     const onRealtimeEvent = useCallback(
         (event: WafRealtimeEvent) => {
@@ -192,12 +245,12 @@ export default () => {
 
         const fast = window.setInterval(() => {
             if (isConnected) return;
-            void loadOverview();
+            void loadOverview(windowMinutes);
             void loadFeed();
         }, 5000);
         const slow = window.setInterval(() => {
             if (isConnected) return;
-            void loadTimeline();
+            void loadTimeline(windowMinutes);
         }, 10000);
 
         return () => {
@@ -205,7 +258,7 @@ export default () => {
             window.clearInterval(fast);
             window.clearInterval(slow);
         };
-    }, [isConnected, refreshAll]);
+    }, [isConnected, loadFeed, loadOverview, loadTimeline, refreshAll, windowMinutes]);
 
     useEffect(() => {
         if (!toast) return;
@@ -218,6 +271,25 @@ export default () => {
         rows.sort((a, b) => (sortBy === 'denied_ratio' ? b.denied_ratio - a.denied_ratio : b.count - a.count));
         return rows.slice(0, 15);
     }, [overview.most_targeted_paths, sortBy]);
+
+    const derived = useMemo(() => {
+        const total = Math.max(0, Number(overview.metrics.total_requests || 0));
+        const denied = Math.max(0, Number(overview.metrics.denied_requests || 0));
+        const allowed = Math.max(0, Number(overview.metrics.allowed_requests || 0));
+        const bypassed = Math.max(0, Number(overview.metrics.bypassed_requests || 0));
+        const sampled = Math.max(1, windowMinutes);
+        const denyRate = total > 0 ? Math.round((denied / total) * 1000) / 10 : 0;
+        const allowedRate = total > 0 ? Math.round((allowed / total) * 1000) / 10 : 0;
+        const bypassRate = total > 0 ? Math.round((bypassed / total) * 1000) / 10 : 0;
+        return {
+            denyRate,
+            allowedRate,
+            bypassRate,
+            rpm: Math.round((total / sampled) * 10) / 10,
+            protectedPaths: overview.most_targeted_paths?.length || 0,
+            denyPressure: denied > allowed ? 'Hostile edge pressure' : denied > 0 ? 'Controlled filtering' : 'Quiet perimeter',
+        };
+    }, [overview.metrics, overview.most_targeted_paths, windowMinutes]);
 
     const chartData = useMemo(() => {
         const source = timeline.length ? timeline : overview.timeline;
@@ -289,7 +361,7 @@ export default () => {
 
     return (
         <PageContentBlock title={'WAF Dashboard'} showFlashKey={'dashboard'}>
-            <div css={tw`mx-auto w-full max-w-6xl space-y-4`}>
+            <div css={tw`mx-auto w-full max-w-7xl space-y-4`}>
                 {toast && (
                     <div
                         css={tw`fixed right-4 top-20 z-50 rounded-lg border px-4 py-3 text-sm text-neutral-100 shadow-xl`}
@@ -304,15 +376,80 @@ export default () => {
                     </div>
                 )}
 
-                <div css={tw`flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between`}>
-                    <div>
-                        <Label>DANEX X EL7 SECURITY MONITOR</Label>
-                        <h1 css={tw`mt-1 text-2xl sm:text-3xl font-semibold text-neutral-50`}>WAF Dashboard</h1>
+                <Hero>
+                    <div css={tw`relative z-10 flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between`}>
+                        <div css={tw`max-w-3xl`}>
+                            <Label>DANEX X EL7 SECURITY MONITOR</Label>
+                            <h1 css={tw`mt-2 text-3xl sm:text-4xl font-black tracking-tight text-neutral-50`}>WAF Command Dashboard</h1>
+                            <p css={tw`mt-2 max-w-2xl text-sm leading-6 text-neutral-300`}>
+                                Live perimeter counts, threat pressure, targeted paths, and feed telemetry in one control surface.
+                            </p>
+                            <div css={tw`mt-4 flex flex-wrap gap-2`}>
+                                {[15, 60, 360].map((minutes) => (
+                                    <Pill key={minutes} type={'button'} $active={windowMinutes === minutes} onClick={() => setWindowMinutes(minutes as 15 | 60 | 360)}>
+                                        {minutes === 360 ? '6h' : `${minutes}m`}
+                                    </Pill>
+                                ))}
+                                <Pill type={'button'} onClick={() => void refreshAll()} disabled={refreshing}>
+                                    <FontAwesomeIcon icon={faSyncAlt} css={tw`mr-2`} spin={refreshing} /> refresh
+                                </Pill>
+                            </div>
+                        </div>
+                        <div css={tw`grid grid-cols-2 gap-2 sm:grid-cols-4 xl:min-w-[520px]`}>
+                            <MiniMetric>
+                                <p css={tw`text-[10px] uppercase tracking-wider text-neutral-500`}>Connection</p>
+                                <p css={tw`mt-1 text-sm font-semibold text-neutral-100`}>
+                                    <span css={tw`mr-2 inline-block h-2 w-2 rounded-full`} style={{ background: isConnected ? '#10b981' : '#f59e0b', boxShadow: `0 0 14px ${isConnected ? '#10b981' : '#f59e0b'}` }} />
+                                    {isConnected ? 'Live WS' : 'Polling'}
+                                </p>
+                            </MiniMetric>
+                            <MiniMetric>
+                                <p css={tw`text-[10px] uppercase tracking-wider text-neutral-500`}>Requests/min</p>
+                                <p css={tw`mt-1 text-lg font-bold text-purple-100`}>{derived.rpm.toLocaleString()}</p>
+                            </MiniMetric>
+                            <MiniMetric>
+                                <p css={tw`text-[10px] uppercase tracking-wider text-neutral-500`}>Denied rate</p>
+                                <p css={tw`mt-1 text-lg font-bold`} style={{ color: threatColor(overview.threat.level) }}>{derived.denyRate}%</p>
+                            </MiniMetric>
+                            <MiniMetric>
+                                <p css={tw`text-[10px] uppercase tracking-wider text-neutral-500`}>Updated</p>
+                                <p css={tw`mt-1 text-sm font-semibold text-neutral-100`}>{lastUpdated ? lastUpdated.toLocaleTimeString() : 'booting'}</p>
+                            </MiniMetric>
+                        </div>
                     </div>
-                    <div css={tw`inline-flex items-center self-start rounded-lg border px-3 py-2 text-xs`} style={{ background: '#0b0b10', borderColor: 'rgba(139, 92, 246, 0.28)' }}>
-                        <span css={tw`mr-2 h-2 w-2 rounded-full`} style={{ background: isConnected ? '#10b981' : '#f59e0b', boxShadow: `0 0 14px ${isConnected ? '#10b981' : '#f59e0b'}` }} />
-                        <span css={tw`uppercase tracking-wider text-neutral-300`}>{isConnected ? 'websocket live' : 'polling fallback'}</span>
-                    </div>
+                </Hero>
+
+                <div css={tw`grid gap-3 grid-cols-1 md:grid-cols-3`}>
+                    <Surface $delay={120}>
+                        <div css={tw`relative z-10 flex items-center justify-between gap-3`}>
+                            <div>
+                                <Label>Protection Posture</Label>
+                                <p css={tw`mt-2 text-xl font-bold text-neutral-100`}>{derived.denyPressure}</p>
+                                <p css={tw`mt-1 text-xs text-neutral-400`}>{overview.system_config.protection_mode} mode, {overview.system_config.active_rules} active rules</p>
+                            </div>
+                            <FontAwesomeIcon icon={faShieldAlt} css={tw`text-3xl`} style={{ color: threatColor(overview.threat.level) }} />
+                        </div>
+                    </Surface>
+                    <Surface $delay={180}>
+                        <div css={tw`relative z-10 flex items-center justify-between gap-3`}>
+                            <div>
+                                <Label>Routing Split</Label>
+                                <p css={tw`mt-2 text-xl font-bold text-neutral-100`}>{derived.allowedRate}% allowed</p>
+                                <p css={tw`mt-1 text-xs text-neutral-400`}>{derived.bypassRate}% bypassed by safe-path logic</p>
+                            </div>
+                            <FontAwesomeIcon icon={faBolt} css={tw`text-3xl text-purple-300`} />
+                        </div>
+                    </Surface>
+                    <Surface $delay={240}>
+                        <div css={tw`relative z-10 flex items-center justify-between gap-3`}>
+                            <div>
+                                <Label>Hot Paths</Label>
+                                <p css={tw`mt-2 text-xl font-bold text-neutral-100`}>{derived.protectedPaths.toLocaleString()} tracked</p>
+                                <p css={tw`mt-1 text-xs text-neutral-400`}>Sorted by volume or denied ratio</p>
+                            </div>
+                            <FontAwesomeIcon icon={faFire} css={tw`text-3xl text-yellow-300`} />
+                        </div>
+                    </Surface>
                 </div>
 
                 <div css={tw`grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4`}>
@@ -339,7 +476,7 @@ export default () => {
                         <div css={tw`relative z-10 h-full`}>
                             <div css={tw`flex items-center justify-between mb-3`}>
                                 <Label>Traffic Timeline</Label>
-                                <p css={tw`text-[11px] uppercase tracking-wider text-neutral-500`}>60m rolling</p>
+                                <p css={tw`text-[11px] uppercase tracking-wider text-neutral-500`}>{windowMinutes === 360 ? '6h' : `${windowMinutes}m`} rolling</p>
                             </div>
                             <div css={tw`h-[272px]`}>
                                 <Line data={chartData} options={chartOptions} />
@@ -362,7 +499,7 @@ export default () => {
                                     style={{ width: `${overview.threat.score}%`, background: threatColor(overview.threat.level), boxShadow: `0 0 20px ${threatColor(overview.threat.level)}` }}
                                 />
                             </BarTrack>
-                            <p css={tw`mt-2 text-xs text-neutral-400`}>Score: {overview.threat.score}/100</p>
+                            <p css={tw`mt-2 text-xs text-neutral-400`}>Score: {overview.threat.score}/100 · {derived.denyRate}% denied</p>
                             <div css={tw`mt-4 space-y-1`}>
                                 {(overview.threat.reason_codes || []).slice(0, 6).map((r) => (
                                     <div key={r} css={tw`rounded border px-2 py-1 text-[11px] text-purple-200 font-mono`} style={{ borderColor: 'rgba(139, 92, 246, 0.2)', background: '#111117' }}>
@@ -455,7 +592,10 @@ export default () => {
                     <div css={tw`relative z-10`}>
                         <div css={tw`flex items-center justify-between`}>
                             <Label>Live Request Feed</Label>
-                            <FontAwesomeIcon icon={faBolt} css={tw`text-purple-300`} />
+                            <div css={tw`flex items-center gap-2 text-[11px] uppercase tracking-wider text-neutral-500`}>
+                                <FontAwesomeIcon icon={faClock} />
+                                {lastUpdated ? lastUpdated.toLocaleTimeString() : 'waiting'}
+                            </div>
                         </div>
                         <div css={tw`mt-3 max-h-[230px] overflow-auto space-y-1`}>
                             {feed.slice(0, 40).map((item, idx) => (

@@ -1,0 +1,27 @@
+{
+  "database": {
+    "host": "127.0.0.1",
+    "name": "panel_db",
+    "user": "panel_user",
+    "password": "replace_me"
+  },
+  "telegram": {
+    "token": "",
+    "chat_id": "@your_channel"
+  },
+  "ptlc": {
+    "api_url": "https://example.com",
+    "api_key": "replace_me_ptlc_token"
+  },
+  "network": {
+    "waf_challenge_secret": "replace_me_waf_challenge_secret",
+    "unblock_portal_token": "replace_me_unblock_token",
+    "rce_control_key": "replace_me_rce_key",
+    "node_auth_key": "replace_me_node_auth_key"
+  },
+  "resilience": {
+    "replay": {
+      "hmac_secret": "replace_me_replay_hmac_secret"
+    }
+  }
+}

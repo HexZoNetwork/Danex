@@ -11,6 +11,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
+
+def is_valid_ip(ip):
+    try:
+        socket.inet_pton(socket.AF_INET, ip)
+        return True
+    except socket.error:
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)
+            return True
+        except socket.error:
+            return False
 import time
 from typing import Any, Dict, Iterable, List, Optional
 

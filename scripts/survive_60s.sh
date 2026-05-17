@@ -79,8 +79,24 @@ enable_brownout() {
     if (( ttl < 30 )); then ttl=30; fi
     if (( ttl > 3600 )); then ttl=3600; fi
 
+    local token
+    token="$(date +%s)-$$-${RANDOM}"
     touch "${BROWNOUT_FLAG}"
     write_state "${ttl}"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "${STATE_FILE}" "${token}" <<'PY' || true
+import json, sys
+path, token = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {"enabled": True}
+data["token"] = token
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, separators=(",", ":"))
+PY
+    fi
 
     if [[ -x "${SCRIPT_DIR}/pteroprotect-mode.sh" ]]; then
         bash "${SCRIPT_DIR}/pteroprotect-mode.sh" emergency "${ttl}" >/dev/null || true
@@ -96,16 +112,25 @@ enable_brownout() {
     systemctl restart fail2ban >/dev/null 2>&1 || true
 
     # Auto-off in background.
-    nohup bash -c "
-        sleep ${ttl}
-        if [[ -f '${BROWNOUT_FLAG}' ]]; then
-            rm -f '${BROWNOUT_FLAG}' '${STATE_FILE}'
-            if [[ -x '${SCRIPT_DIR}/pteroprotect-mode.sh' ]]; then
-                bash '${SCRIPT_DIR}/pteroprotect-mode.sh' aggressive >/dev/null 2>&1 || true
+    BROWNOUT_TTL="${ttl}" BROWNOUT_TOKEN="${token}" BROWNOUT_FLAG_PATH="${BROWNOUT_FLAG}" BROWNOUT_STATE_PATH="${STATE_FILE}" BROWNOUT_SCRIPT_DIR="${SCRIPT_DIR}" nohup bash -c '
+        sleep "${BROWNOUT_TTL}"
+        current_token=""
+        if command -v python3 >/dev/null 2>&1 && [[ -f "${BROWNOUT_STATE_PATH}" ]]; then
+            current_token="$(python3 - "${BROWNOUT_STATE_PATH}" <<'"'"'PY'"'"' 2>/dev/null || true
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    print(json.load(f).get("token", ""))
+PY
+)"
+        fi
+        if [[ -f "${BROWNOUT_FLAG_PATH}" && "${current_token}" == "${BROWNOUT_TOKEN}" ]]; then
+            rm -f "${BROWNOUT_FLAG_PATH}" "${BROWNOUT_STATE_PATH}"
+            if [[ -x "${BROWNOUT_SCRIPT_DIR}/pteroprotect-mode.sh" ]]; then
+                bash "${BROWNOUT_SCRIPT_DIR}/pteroprotect-mode.sh" aggressive >/dev/null 2>&1 || true
             fi
             nginx -t >/dev/null 2>&1 && (systemctl reload nginx >/dev/null 2>&1 || nginx -s reload >/dev/null 2>&1 || true)
         fi
-    " >/dev/null 2>&1 &
+    ' >/dev/null 2>&1 &
 
     echo "brownout_on=1 ttl=${ttl}"
     status

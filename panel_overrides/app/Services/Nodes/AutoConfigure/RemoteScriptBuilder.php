@@ -264,8 +264,53 @@ server {
     ssl_certificate ${cert};
     ssl_certificate_key ${key};
     include /etc/letsencrypt/options-ssl-nginx.conf;
+    access_log /var/log/nginx/pteroprotect.access.log combined;
+
+    location = /__pteroprotect/challenge/check_token {
+        internal;
+        proxy_pass http://127.0.0.1:18444/check-token;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-PteroProtect-Internal 1;
+        proxy_set_header User-Agent \$http_user_agent;
+        proxy_set_header Authorization \$http_authorization;
+        proxy_set_header Content-Length "";
+        proxy_pass_request_body off;
+        proxy_connect_timeout 300ms;
+        proxy_send_timeout 1s;
+        proxy_read_timeout 1s;
+    }
+
+    location @drop_cto {
+        return 444;
+    }
+
+    location @wings_upstream {
+        proxy_pass http://pteroprotect_wings_pool;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
 
     location / {
+        if (\$request_method = OPTIONS) { return 418; }
+        if (\$http_user_agent ~* "^GuzzleHttp/") { return 418; }
+        if (\$http_upgrade ~* "websocket") { return 418; }
+        if (\$request_uri ~* "(\?|&)token=") { return 418; }
+
+        auth_request /__pteroprotect/challenge/check_token;
+        error_page 401 403 = @drop_cto;
+        error_page 418 = @wings_upstream;
+
         proxy_pass http://pteroprotect_wings_pool;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;

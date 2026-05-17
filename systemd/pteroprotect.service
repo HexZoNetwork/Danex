@@ -6,11 +6,21 @@ StartLimitIntervalSec=300
 StartLimitBurst=3
 
 [Service]
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/pteroprotect /var/lib/pterodactyl /var/www/pterodactyl /dev/shm/pteroprotect /var/log /run /tmp /dev/shm
 Type=simple
 User=root
 Group=root
 WorkingDirectory=/pteroprotect
 Environment=DANN_GUARD_HOME=/pteroprotect
+ExecStartPre=/usr/bin/env python3 /pteroprotect/scripts/security_startup_policy.py /pteroprotect/config.json
 ExecStart=/pteroprotect/dann_guard
 Restart=always
 RestartSec=15

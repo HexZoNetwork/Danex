@@ -19,13 +19,14 @@
 
 Config config;
 bool running = true;
+static volatile sig_atomic_t shutdown_requested = 0;
 time_t last_report_time = 0;
 time_t last_offender_report = 0;
 int guard_lock_fd = -1;
 
 void signal_handler(int sig) {
-    logger.info("Received signal " + std::to_string(sig) + ", shutting down...");
-    running = false;
+    (void)sig;
+    shutdown_requested = 1;
 }
 
 void send_periodic_reports() {
@@ -131,9 +132,11 @@ int main() {
         res_monitor.start();
 
         // Main thread waits for shutdown signal
-        while (running) {
+        while (!shutdown_requested) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
+
+        logger.info("Received shutdown signal, stopping...");
 
         disk.stop();
         res_monitor.stop();

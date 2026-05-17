@@ -25,8 +25,10 @@ class AuthenticationListener implements SubscribesToEvents
         }
 
         if ($event instanceof Failed) {
-            foreach ($event->credentials as $key => $value) {
-                $activity = $activity->property($key, $value);
+            foreach (['email', 'username'] as $key) {
+                if (array_key_exists($key, $event->credentials)) {
+                    $activity = $activity->property($key, $event->credentials[$key]);
+                }
             }
         }
 

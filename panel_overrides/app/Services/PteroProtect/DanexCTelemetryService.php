@@ -14,7 +14,7 @@ class DanexCTelemetryService
 
     public function buildOverview(int $windowMinutes = 60): array
     {
-        $windowMinutes = max(5, min(240, $windowMinutes));
+        $windowMinutes = max(5, min(360, $windowMinutes));
         $accessRows = $this->parseAccessRows($windowMinutes);
         $timeline = $this->buildTimelineFromRows($accessRows, $windowMinutes);
         $paths = $this->buildTargetedPaths($accessRows);
@@ -42,7 +42,7 @@ class DanexCTelemetryService
 
     public function buildTimeline(int $windowMinutes = 60): array
     {
-        $windowMinutes = max(5, min(240, $windowMinutes));
+        $windowMinutes = max(5, min(360, $windowMinutes));
         return $this->buildTimelineFromRows($this->parseAccessRows($windowMinutes), $windowMinutes);
     }
 
@@ -185,7 +185,7 @@ class DanexCTelemetryService
 
     private function buildTimelineFromRows(array $rows, int $windowMinutes): array
     {
-        $windowMinutes = max(5, min(240, $windowMinutes));
+        $windowMinutes = max(5, min(360, $windowMinutes));
         $bucketMinutes = max(1, (int) floor($windowMinutes / 12));
         $bucketSeconds = $bucketMinutes * 60;
         $now = time();

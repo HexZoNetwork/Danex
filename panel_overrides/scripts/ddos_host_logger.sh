@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+validate_ip() {
+    local ip="$1"
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then return 0; fi
+    if [[ "$ip" =~ ^[0-9a-fA-F:]+$ ]]; then return 0; fi
+    return 1
+}
+
 GUARD_HOME="${DANN_GUARD_HOME:-/pteroprotect}"
 CONFIG_FILE="${GUARD_HOME}/config.json"
 RUNTIME_DIR="/dev/shm/pteroprotect"
@@ -590,7 +597,7 @@ resolve_recent_login_ips() {
                 print ip;
             }
         }
-    ' "${TRUSTED_LOGIN_LOG}" | sort -u
+    ' "${TRUSTED_LOGIN_LOG}" | sort -u || true
 }
 
 resolve_manual_essential_ips() {
@@ -725,9 +732,9 @@ apply_self_ddos_rate_limit_for_server() {
         is_valid_ip "${ip}" || continue
 
         if [[ "${ip}" == *:* ]]; then
-            ipset add "${SELF_DDOS_RATE_IPSET6}" "${ip}" timeout "${SELF_DDOS_RATE_LIMIT_TTL_SEC}" -exist >/dev/null 2>&1 || true
+            validate_ip "${ip}" && ipset add "${SELF_DDOS_RATE_IPSET6}" "${ip}" timeout "${SELF_DDOS_RATE_LIMIT_TTL_SEC}" -exist >/dev/null 2>&1 || true
         else
-            ipset add "${SELF_DDOS_RATE_IPSET4}" "${ip}" timeout "${SELF_DDOS_RATE_LIMIT_TTL_SEC}" -exist >/dev/null 2>&1 || true
+            validate_ip "${ip}" && ipset add "${SELF_DDOS_RATE_IPSET4}" "${ip}" timeout "${SELF_DDOS_RATE_LIMIT_TTL_SEC}" -exist >/dev/null 2>&1 || true
         fi
         printf '[self-ddos-limit] identifier=%s ip=%s rps=%s burst=%s ttl=%s requests=%s\n' \
             "${identifier}" "${ip}" "${SELF_DDOS_RATE_LIMIT_RPS}" "${SELF_DDOS_RATE_LIMIT_BURST}" "${SELF_DDOS_RATE_LIMIT_TTL_SEC}" "${request_count}" >> "${LOG_FILE}"
@@ -789,6 +796,7 @@ resolve_recent_websocket_ips() {
     tail -n "${limit_lines}" "${PANEL_ACCESS_LOG}" 2>/dev/null | awk -v ws_re="${ws_path_re}" '
         NF >= 9 {
             ip=$1; path=$7; status=$9;
+            gsub(/\/+/, "/", path);
             gsub(/,.*/, "", ip);
             gsub(/^\[/, "", ip);
             gsub(/\]$/, "", ip);
@@ -800,7 +808,7 @@ resolve_recent_websocket_ips() {
             for (ip in count) {
                 if (count[ip] >= 3) print ip
             }
-        }' | sed '/^$/d' | sort -u
+        }' | sed '/^$/d' | sort -u || true
 }
 
 is_recently_authenticated_ip() {
@@ -829,6 +837,22 @@ is_ip_trust_protected_ip() {
     tier="$(awk -F '\t' '{print $7}' <<< "${row}")"
     case "${tier}" in
         trusted|vtrusted) return 0 ;;
+    esac
+    return 1
+}
+
+is_high_confidence_block_reason() {
+    local reason="$1"
+    case "${reason}" in
+        bad-token:*|sqli-probe:*|probe-scan:*|proxy-swarm:*|nginx-limiter:*) return 0 ;;
+    esac
+    return 1
+}
+
+is_overload_block_reason() {
+    local reason="$1"
+    case "${reason}" in
+        *overload-fast:*|*overload-hard:*|http-access-hard:*|established-hard:*|syn-recv-hard:*|clear-threshold:*) return 0 ;;
     esac
     return 1
 }
@@ -920,19 +944,19 @@ ip_trust_apply_tier() {
 
     if [[ "${ip}" == *:* ]]; then
         case "${tier}" in
-            probation) ipset add "${BW_IPSET6_PROBATION}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
-            bad) ipset add "${BW_IPSET6_BAD}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
-            worst) ipset add "${BW_IPSET6_WORST}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
-            trusted) ipset add "${BW_IPSET6_TRUSTED}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
-            vtrusted) ipset add "${BW_IPSET6_VTRUSTED}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            probation) validate_ip "${ip}" && ipset add "${BW_IPSET6_PROBATION}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            bad) validate_ip "${ip}" && ipset add "${BW_IPSET6_BAD}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            worst) validate_ip "${ip}" && ipset add "${BW_IPSET6_WORST}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            trusted) validate_ip "${ip}" && ipset add "${BW_IPSET6_TRUSTED}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            vtrusted) validate_ip "${ip}" && ipset add "${BW_IPSET6_VTRUSTED}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
         esac
     else
         case "${tier}" in
-            probation) ipset add "${BW_IPSET4_PROBATION}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
-            bad) ipset add "${BW_IPSET4_BAD}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
-            worst) ipset add "${BW_IPSET4_WORST}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
-            trusted) ipset add "${BW_IPSET4_TRUSTED}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
-            vtrusted) ipset add "${BW_IPSET4_VTRUSTED}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            probation) validate_ip "${ip}" && ipset add "${BW_IPSET4_PROBATION}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            bad) validate_ip "${ip}" && ipset add "${BW_IPSET4_BAD}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            worst) validate_ip "${ip}" && ipset add "${BW_IPSET4_WORST}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            trusted) validate_ip "${ip}" && ipset add "${BW_IPSET4_TRUSTED}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
+            vtrusted) validate_ip "${ip}" && ipset add "${BW_IPSET4_VTRUSTED}" "${ip}" timeout "${IP_TRUST_TIER_TTL_SEC}" -exist >/dev/null 2>&1 || true ;;
         esac
     fi
 }
@@ -1076,21 +1100,25 @@ add_ipset_block() {
     ip="$(normalize_ip "${ip}")"
     [[ -z "${ip}" ]] && return 0
     is_valid_ip "${ip}" || return 0
-    if is_recently_authenticated_ip "${ip}"; then
+    if is_private_ip "${ip}" || is_host_ip "${ip}"; then
+        printf '[mitigate] skip-block ip=%s reason=local-protected candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
+        return 0
+    fi
+    if is_recently_authenticated_ip "${ip}" && ! is_high_confidence_block_reason "${reason}"; then
         printf '[mitigate] skip-block ip=%s reason=recent-auth candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
         ip_trust_update "${ip}" 1 0 "skip-block-recent-auth" "${reason}"
         return 0
     fi
-    if is_ip_trust_protected_ip "${ip}"; then
+    if is_ip_trust_protected_ip "${ip}" && ! is_high_confidence_block_reason "${reason}"; then
         printf '[mitigate] skip-block ip=%s reason=ip-trust-protected candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
         return 0
     fi
     if is_whitelisted_ip "${ip}"; then
         if [[ "${WHITELIST_OVERLOAD_BYPASS_ENABLED:-1}" == "1" ]] &&
-           [[ "${reason}" == *"overload-fast:"* || "${reason}" == *"overload-hard:"* || "${reason}" == "http-access-hard:"* || "${reason}" == "established-hard:"* || "${reason}" == "syn-recv-hard:"* || "${reason}" == clear-threshold:* ]] &&
-           ! is_private_ip "${ip}" &&
-           ! is_host_ip "${ip}"; then
+           is_overload_block_reason "${reason}"; then
             printf '[mitigate] whitelist-override ip=%s reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
+        elif is_high_confidence_block_reason "${reason}"; then
+            printf '[mitigate] whitelist-override ip=%s reason=high-confidence candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
         else
             printf '[mitigate] skip-block ip=%s reason=whitelisted candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
             return 0
@@ -1108,10 +1136,10 @@ add_ipset_block() {
 
     if [[ "${ip}" == *:* ]]; then
         command -v ipset >/dev/null 2>&1 || return 0
-        ipset add "${IPSET6}" "${ip}" timeout "${applied_timeout}" -exist >/dev/null 2>&1 || true
+        validate_ip "${ip}" && ipset add "${IPSET6}" "${ip}" timeout "${applied_timeout}" -exist >/dev/null 2>&1 || true
     else
         command -v ipset >/dev/null 2>&1 || return 0
-        ipset add "${IPSET4}" "${ip}" timeout "${applied_timeout}" -exist >/dev/null 2>&1 || true
+        validate_ip "${ip}" && ipset add "${IPSET4}" "${ip}" timeout "${applied_timeout}" -exist >/dev/null 2>&1 || true
     fi
 
     printf '[mitigate] blocked ip=%s ttl=%s reason=%s\n' "${ip}" "${applied_timeout}" "${reason}" >> "${LOG_FILE}"
@@ -1348,19 +1376,21 @@ extract_remote_ip_counts() {
 extract_server_identifier_counts() {
     local log_tail_lines="$1"
     local ignore_re="$2"
-    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${ignore_re}' 'NF >= 7 && \$7 !~ ignore_re { if (match(\$7, /^\\/api\\/client\\/servers\\/([^\\/\\?]+)/, parts)) print parts[1]; }' | sed '/^$/d' | sort | uniq -c | sort -nr"
+    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${ignore_re}' 'NF >= 7 { path=\$7; gsub(/\\/+/, \"/\", path); if (path !~ ignore_re && match(path, /^\\/api\\/client\\/servers\\/([^\\/\\?]+)/, parts)) print parts[1]; }' | sed '/^$/d' | sort | uniq -c | sort -nr"
 }
 
 extract_server_identifier_ip_stats() {
     local log_tail_lines="$1"
     local ignore_re="$2"
     safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${ignore_re}' '
-        NF >= 7 && \$7 !~ ignore_re {
-            ip=\$1;
+        NF >= 7 {
+            ip=\$1; path=\$7;
+            gsub(/\/+/, "/", path);
+            if (path ~ ignore_re) next;
             gsub(/,.*/, \"\", ip);
             gsub(/^\\[/, \"\", ip);
             gsub(/\\]$/, \"\", ip);
-            if (match(\$7, /^\\/api\\/client\\/servers\\/([^\\/\\?]+)/, parts)) {
+            if (match(path, /^\\/api\\/client\\/servers\\/([^\\/\\?]+)/, parts)) {
                 id=parts[1];
                 cnt[id]++;
                 key=id SUBSEP ip;
@@ -1380,7 +1410,7 @@ extract_server_identifier_ip_stats() {
 extract_probe_ip_counts() {
     local log_tail_lines="$1"
     local probe_re="$2"
-    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v probe_re='${probe_re}' 'NF >= 7 && \$7 ~ probe_re {print \$1}' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr"
+    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v probe_re='${probe_re}' 'NF >= 7 { path=\$7; gsub(/\\/+/, \"/\", path); if (path ~ probe_re) print \$1 }' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr"
 }
 
 extract_sqli_probe_ip_counts() {
@@ -1397,15 +1427,17 @@ extract_bad_token_ip_counts() {
     local log_tail_lines="$1"
     local path_re="$2"
     local status_re="$3"
-    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v path_re='${path_re}' -v status_re='${status_re}' 'NF >= 9 && \$7 ~ path_re && \$9 ~ status_re {print \$1}' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr"
+    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v path_re='${path_re}' -v status_re='${status_re}' 'NF >= 9 { path=\$7; gsub(/\\/+/, \"/\", path); if (path ~ path_re && \$9 ~ status_re) print \$1 }' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr"
 }
 
 extract_behavior_ip_stats() {
     local log_tail_lines="$1"
     local ignore_re="$2"
     safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${ignore_re}' '
-        NF >= 7 && \$7 !~ ignore_re {
+        NF >= 7 {
             ip=\$1; path=\$7;
+            gsub(/\/+/, "/", path);
+            if (path ~ ignore_re) next;
             gsub(/,.*/, \"\", ip);
             gsub(/^\\[/, \"\", ip);
             gsub(/\\]$/, \"\", ip);
@@ -1437,8 +1469,10 @@ extract_path_swarm_stats() {
     local log_tail_lines="$1"
     local ignore_re="$2"
     safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${ignore_re}' '
-        NF >= 7 && \$7 !~ ignore_re {
+        NF >= 7 {
             ip=\$1; path=\$7;
+            gsub(/\/+/, "/", path);
+            if (path ~ ignore_re) next;
             gsub(/,.*/, \"\", ip);
             gsub(/^\\[/, \"\", ip);
             gsub(/\\]$/, \"\", ip);
@@ -1467,7 +1501,7 @@ extract_path_swarm_stats() {
 extract_service_pulse_count() {
     local log_tail_lines="$1"
     local service_re="$2"
-    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v service_re='${service_re}' 'NF >= 7 && \$7 ~ service_re {count++} END {print count+0}'"
+    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v service_re='${service_re}' 'NF >= 7 { path=\$7; gsub(/\\/+/, \"/\", path); if (path ~ service_re) count++ } END {print count+0}'"
 }
 
 update_tenant_history() {
@@ -2568,7 +2602,7 @@ while true; do
     established_ip_counts="$(extract_remote_ip_counts established)"
     top_established="$(sed -n '1,10p' <<< "${established_ip_counts}")"
     top_syn="$(sed -n '1,10p' <<< "${syn_ip_counts}")"
-    access_ip_counts_raw="$(safe_cmd "tail -n ${LOG_TAIL_LINES} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${HTTP_IGNORE_PATH_REGEX}' 'NF >= 7 && \$7 !~ ignore_re {print \$1}' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr")"
+    access_ip_counts_raw="$(safe_cmd "tail -n ${LOG_TAIL_LINES} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${HTTP_IGNORE_PATH_REGEX}' 'NF >= 7 { path=\$7; gsub(/\\/+/, \"/\", path); if (path !~ ignore_re) print \$1 }' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr")"
     access_ip_counts="$(filter_whitelist_ip_counts "${access_ip_counts_raw}")"
     server_identifier_counts="$(extract_server_identifier_counts "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
     server_identifier_ip_stats="$(extract_server_identifier_ip_stats "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"

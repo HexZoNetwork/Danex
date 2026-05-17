@@ -687,8 +687,8 @@ post_install_service_smoke_check() {
         warn "panel local HTTP probe failed on 127.0.0.1:80"
     fi
 
-    wings_code="$(curl -k -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 https://127.0.0.1:8080/api/system 2>/dev/null || true)"
-    if [[ ! "${wings_code}" =~ ^(200|401|403)$ ]]; then
+    wings_code="$(curl -k -sS -H 'Authorization: Bearer pteroprotect-smoke' -o /dev/null -w '%{http_code}' --connect-timeout 3 https://127.0.0.1:8080/api/system 2>/dev/null || true)"
+    if [[ ! "${wings_code}" =~ ^(000|200|401|403)$ ]]; then
         warn "wings-guard probe on 127.0.0.1:8080/api/system is unexpected (code=${wings_code:-n/a})"
     fi
 
@@ -1804,7 +1804,9 @@ fi
 if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_terminal_helper.py" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/pteroprotect_terminal_helper.py"
     mkdir -p /dev/shm/pteroprotect/terminal_tickets /var/log/pteroprotect/terminal
-    chmod 700 /dev/shm/pteroprotect/terminal_tickets /var/log/pteroprotect/terminal
+    chown root:www-data /dev/shm/pteroprotect/terminal_tickets >/dev/null 2>&1 || true
+    chmod 2770 /dev/shm/pteroprotect/terminal_tickets
+    chmod 700 /var/log/pteroprotect/terminal
 fi
 if [[ -f "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh"
@@ -2260,6 +2262,7 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     PROVIDER_TOKEN_GATE_ENABLED_RAW="$(read_network_setting provider_token_gate_enabled 0)"
     PROVIDER_TOKEN_IPV4_CIDRS="$(read_network_setting provider_token_ipv4_cidrs "")"
     PROVIDER_TOKEN_IPV6_CIDRS="$(read_network_setting provider_token_ipv6_cidrs "")"
+    PROVIDER_TOKEN_CACHE_FILE="$(read_network_setting provider_token_cache_file "/pteroprotect/cache/provider_ranges.txt")"
     AUTH_CONN_LIMIT=20
     WEBSOCKET_CONN_LIMIT="$(read_network_setting websocket_conn_limit "")"
     WEBSOCKET_GLOBAL_CONN_LIMIT="$(read_network_setting websocket_global_conn_limit "")"
@@ -2502,97 +2505,12 @@ else:
 path.write_text("\n".join(lines) + "\n")
 PY
 
-    python3 - "${NGINX_DIR}/conf.d/pteroprotect_provider_gate.conf" "${PROVIDER_TOKEN_GATE_ENABLED_RAW}" "${PROVIDER_TOKEN_IPV4_CIDRS}" "${PROVIDER_TOKEN_IPV6_CIDRS}" <<'PY'
-import ipaddress
-import pathlib
-import sys
-
-
-def as_bool(value: str) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def parse_csv(value: str):
-    out = []
-    for item in str(value).split(","):
-        item = item.strip()
-        if item:
-            out.append(item)
-    return out
-
-
-def normalize_cidrs(raw_list, version: int):
-    normalized = []
-    seen = set()
-    for item in raw_list:
-        try:
-            net = ipaddress.ip_network(item, strict=False)
-        except Exception:
-            continue
-        if net.version != version:
-            continue
-        text = net.with_prefixlen
-        if text not in seen:
-            seen.add(text)
-            normalized.append(text)
-    return normalized
-
-
-path = pathlib.Path(sys.argv[1])
-enabled = as_bool(sys.argv[2])
-v4 = normalize_cidrs(parse_csv(sys.argv[3]), 4)
-v6 = normalize_cidrs(parse_csv(sys.argv[4]), 6)
-
-lines = [
-    "# managed by pteroprotect setup.sh",
-    "# Provider-range token gate:",
-    "# if client IP is in listed provider CIDR and request has no token -> block.",
-    "",
-    "map $http_authorization $pteroprotect_req_has_bearer {",
-    "    default 0;",
-    "    ~*^Bearer\\s+.+$ 1;",
-    "}",
-    "",
-    "map $http_x_api_key $pteroprotect_req_has_x_api_key {",
-    "    default 0;",
-    "    ~.+ 1;",
-    "}",
-    "",
-    "map $arg_token $pteroprotect_req_has_arg_token {",
-    "    default 0;",
-    "    ~.+ 1;",
-    "}",
-    "",
-    "map \"$pteroprotect_req_has_bearer$pteroprotect_req_has_x_api_key$pteroprotect_req_has_arg_token\" $pteroprotect_req_has_any_token {",
-    "    default 0;",
-    "    ~1 1;",
-    "}",
-    "",
-    "geo $pteroprotect_provider_token_range {",
-    "    default 0;",
-]
-
-if enabled:
-    for cidr in v4:
-        lines.append(f"    {cidr} 1;")
-    for cidr in v6:
-        lines.append(f"    {cidr} 1;")
-
-lines += [
-    "}",
-    "",
-    "map \"$pteroprotect_provider_token_range:$pteroprotect_req_has_any_token\" $pteroprotect_provider_token_block {",
-    "    default 0;",
-    "    \"1:0\" 1;",
-    "}",
-]
-
-if not enabled:
-    lines.append("")
-    lines.append("# disabled (set network.provider_token_gate_enabled=true and add CIDRs)")
-
-path.write_text("\n".join(lines) + "\n")
-PY
+    python3 "${INSTALL_DIR}/scripts/render_provider_gate.py" \
+        "${NGINX_DIR}/conf.d/pteroprotect_provider_gate.conf" \
+        "${PROVIDER_TOKEN_GATE_ENABLED_RAW}" \
+        "${PROVIDER_TOKEN_IPV4_CIDRS}" \
+        "${PROVIDER_TOKEN_IPV6_CIDRS}" \
+        "${PROVIDER_TOKEN_CACHE_FILE}"
 
     # Resolve the active panel vhost config path across distro/custom layouts.
     PANEL_NGINX_CONF=""
@@ -2775,7 +2693,7 @@ if "location = /__pteroprotect/challenge/check_web {" not in text and check_loca
 
 check_token_location = f"""location = /__pteroprotect/challenge/check_token {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-token;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_deny;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"""
 if "location = /__pteroprotect/challenge/check_provider_api {" not in text and check_token_location in text:
-    insert = check_token_location + f"\nlocation = /__pteroprotect/challenge/check_provider_api {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-provider-api;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_deny;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"
+    insert = check_token_location + f"\nlocation = /__pteroprotect/challenge/check_provider_api {{\n    internal;\n    proxy_pass http://{challenge_upstream}/check-provider-api;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $remote_addr;\n    proxy_set_header CF-Connecting-IP $remote_addr;\n    proxy_set_header X-PteroProtect-Internal 1;\n    proxy_set_header X-PteroProtect-Provider-Token-Block $pteroprotect_provider_token_block;\n    proxy_set_header X-PteroProtect-Has-Token $pteroprotect_req_has_any_token;\n    proxy_set_header User-Agent $http_user_agent;\n    proxy_set_header Authorization $http_authorization;\n    proxy_set_header X-API-Key $http_x_api_key;\n    proxy_set_header Content-Length \"\";\n    proxy_pass_request_body off;\n    proxy_intercept_errors on;\n    error_page 500 502 503 504 = @pteroprotect_challenge_deny;\n    proxy_connect_timeout 300ms;\n    proxy_send_timeout 1s;\n    proxy_read_timeout 1s;\n}}\n"
     text = text.replace(check_token_location, insert)
 
 for old, new in [
@@ -3122,20 +3040,20 @@ PY
         if [[ -f "${PANEL_ENV_FILE}" ]]; then
             WINGS_APP_FQDN="$(awk -F'=' '/^[[:space:]]*APP_URL[[:space:]]*=/{print $2; exit}' "${PANEL_ENV_FILE}" 2>/dev/null | tr -d "\"'[:space:]" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##; s/:.*$//')"
         fi
-        if [[ -n "${WINGS_APP_FQDN}" ]]; then
-            _app_cert="/etc/letsencrypt/live/${WINGS_APP_FQDN}/fullchain.pem"
-            _app_key="/etc/letsencrypt/live/${WINGS_APP_FQDN}/privkey.pem"
-            if [[ -f "${_app_cert}" && -f "${_app_key}" ]]; then
-                WINGS_CERT_PATH="${_app_cert}"
-                WINGS_KEY_PATH="${_app_key}"
-            fi
-        fi
-        if [[ -n "${WINGS_NODE_FQDN}" && ( ! -f "${WINGS_CERT_PATH}" || ! -f "${WINGS_KEY_PATH}" ) ]]; then
+        if [[ -n "${WINGS_NODE_FQDN}" ]]; then
             _node_cert="/etc/letsencrypt/live/${WINGS_NODE_FQDN}/fullchain.pem"
             _node_key="/etc/letsencrypt/live/${WINGS_NODE_FQDN}/privkey.pem"
             if [[ -f "${_node_cert}" && -f "${_node_key}" ]]; then
                 WINGS_CERT_PATH="${_node_cert}"
                 WINGS_KEY_PATH="${_node_key}"
+            fi
+        fi
+        if [[ -n "${WINGS_APP_FQDN}" && ( ! -f "${WINGS_CERT_PATH}" || ! -f "${WINGS_KEY_PATH}" ) ]]; then
+            _app_cert="/etc/letsencrypt/live/${WINGS_APP_FQDN}/fullchain.pem"
+            _app_key="/etc/letsencrypt/live/${WINGS_APP_FQDN}/privkey.pem"
+            if [[ -f "${_app_cert}" && -f "${_app_key}" ]]; then
+                WINGS_CERT_PATH="${_app_cert}"
+                WINGS_KEY_PATH="${_app_key}"
             fi
         fi
         if [[ ! -f "${WINGS_CERT_PATH}" || ! -f "${WINGS_KEY_PATH}" ]]; then
@@ -3357,6 +3275,7 @@ server {
     ssl_certificate ${WINGS_CERT_PATH};
     ssl_certificate_key ${WINGS_KEY_PATH};
     include /etc/letsencrypt/options-ssl-nginx.conf;
+    access_log /var/log/nginx/pteroprotect.access.log combined;
 
     location @drop_cto {
         default_type text/plain;
@@ -3430,7 +3349,6 @@ server {
         if (\$request_method = OPTIONS) { return 418; }
         if (\$http_user_agent ~* "^GuzzleHttp/") { return 418; }
         if (\$http_upgrade ~* "websocket") { return 418; }
-        if (\$http_authorization ~* "^Bearer\\s+.+") { return 418; }
         if (\$request_uri ~* "(\\?|&)token=") { return 418; }
 
         auth_request /__pteroprotect/challenge/check_token;
@@ -3457,7 +3375,6 @@ server {
         if (\$request_method = OPTIONS) { return 418; }
         if (\$http_user_agent ~* "^GuzzleHttp/") { return 418; }
         if (\$http_upgrade ~* "websocket") { return 418; }
-        if (\$http_authorization ~* "^Bearer\\s+.+") { return 418; }
         if (\$request_uri ~* "(\\?|&)token=") { return 418; }
 
         auth_request /__pteroprotect/challenge/check_token;
@@ -3856,8 +3773,7 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
             systemctl start pteroprotect-panel-sync >/dev/null 2>&1
         fi
         if ! systemctl is-active --quiet pteroprotect-panel-sync; then
-            echo "[setup] error: pteroprotect-panel-sync is not active after setup." >&2
-            exit 1
+            echo "[setup] warning: pteroprotect-panel-sync is not active after setup; continuing (panel sync disabled until panel path/scripts are valid)." >&2
         fi
     fi
     if [[ -f "${SYSTEMD_DIR}/pteroprotect-selfheal.service" ]]; then

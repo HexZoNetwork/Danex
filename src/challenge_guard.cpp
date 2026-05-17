@@ -2308,38 +2308,15 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
-        const bool has_panel_session_cookie = !read_cookie(cookie, "pterodactyl_session").empty();
-        if (has_panel_session_cookie) {
-            send_response(fd, 204, "No Content", "", {}, head_only);
-            close(fd);
-            return;
-        }
-        if (has_active_session_binding(ip, ua_fp)) {
-            send_response(fd, 204, "No Content", "", {}, head_only);
-            close(fd);
-            return;
-        }
-
         const bool token_ok = has_valid_auth_token_header(s, req, ip);
-        bool clearance_ok = false;
-        if (!token_ok) {
-            std::string tok = read_cookie(cookie, s.cookie_name);
-            std::string req_sid_fp = session_cookie_fingerprint(s, read_cookie(cookie, "pterodactyl_session"));
-            std::string verify_reason;
-            clearance_ok = (!tok.empty() && verify_token(s, tok, ip, ua_fp, req_sid_fp, &verify_reason));
-            if (!clearance_ok) {
-                log_event_json("session_mismatch", {
-                    {"ip", ip},
-                    {"reason", verify_reason.empty() ? "no_cookie_or_invalid" : verify_reason},
-                    {"node_id", s.node_id},
-                    {"path", "check-provider-api"}
-                });
-            }
-        }
-        if (token_ok || clearance_ok) {
+        if (token_ok) {
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
+            log_event_json("provider_api_token_required", {
+                {"ip", ip},
+                {"node_id", s.node_id},
+                {"path", "check-provider-api"}
+            });
             send_response(fd, 401, "Unauthorized", "", {}, head_only);
         }
         close(fd);
@@ -3157,11 +3134,12 @@ int main() {
         std::string rip = ipbuf[0] ? ipbuf : "127.0.0.1";
         constexpr int kMaxWorkers = 512;
         int cur = g_active_workers.load();
+        while (cur < kMaxWorkers && !g_active_workers.compare_exchange_weak(cur, cur + 1)) {
+        }
         if (cur >= kMaxWorkers) {
             close(fd);
             continue;
         }
-        g_active_workers.fetch_add(1);
         std::thread([fd, rip]() {
             handle_client(fd, rip);
             g_active_workers.fetch_sub(1);

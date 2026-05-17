@@ -1,12 +1,28 @@
 [Unit]
+StartLimitBurst=5
+StartLimitIntervalSec=300
 Description=PteroProtect Host DDoS RAM Logger
 After=network-online.target nginx.service pteroprotect.service pteroprotect-hostguard.service
 Wants=network-online.target
 
 [Service]
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/pteroprotect /var/lib/pterodactyl /var/www/pterodactyl /dev/shm/pteroprotect /var/log /run /tmp /dev/shm
+
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+ReadWritePaths=/pteroprotect /var/lib/pterodactyl /run /proc/sys/net /var/log /dev/shm /tmp
 Type=simple
 User=root
 Group=root
+SupplementaryGroups=adm www-data
 Environment=PTEROPROTECT_MONITOR_TCP_PORTS=22,80,443,8080,2022,3306,6379
 ExecStart=/pteroprotect/scripts/ddos_host_logger.sh
 Restart=always

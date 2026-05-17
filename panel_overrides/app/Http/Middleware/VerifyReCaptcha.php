@@ -40,7 +40,9 @@ class VerifyReCaptcha
             }
         }
 
-        return $next($request);
+        $this->dispatcher->dispatch(new FailedCaptcha($request->ip(), $request->userAgent()));
+
+        throw new HttpException(Response::HTTP_UNPROCESSABLE_ENTITY, 'reCAPTCHA verification failed.');
     }
 
     private function isResponseVerified(\stdClass $result, Request $request): bool

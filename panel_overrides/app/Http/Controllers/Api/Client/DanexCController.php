@@ -14,13 +14,13 @@ class DanexCController extends ClientApiController
 
     public function overview(Request $request): JsonResponse
     {
-        $window = max(5, min(240, (int) $request->query('window', 60)));
+        $window = max(5, min(360, (int) $request->query('window', 60)));
         return new JsonResponse($this->telemetry->buildOverview($window));
     }
 
     public function timeline(Request $request): JsonResponse
     {
-        $window = max(5, min(240, (int) $request->query('window', 60)));
+        $window = max(5, min(360, (int) $request->query('window', 60)));
         return new JsonResponse([
             'timeline' => $this->telemetry->buildTimeline($window),
             'meta' => [
@@ -44,7 +44,7 @@ class DanexCController extends ClientApiController
 
     public function threats(Request $request): JsonResponse
     {
-        $window = max(5, min(240, (int) $request->query('window', 60)));
+        $window = max(5, min(360, (int) $request->query('window', 60)));
         $overview = $this->telemetry->buildOverview($window);
 
         return new JsonResponse([
@@ -60,7 +60,7 @@ class DanexCController extends ClientApiController
 
     public function config(Request $request): JsonResponse
     {
-        $window = max(5, min(240, (int) $request->query('window', 60)));
+        $window = max(5, min(360, (int) $request->query('window', 60)));
         $overview = $this->telemetry->buildOverview($window);
 
         return new JsonResponse([

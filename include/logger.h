@@ -3,10 +3,12 @@
 
 #include <string>
 #include <fstream>
+#include <mutex>
 
 class Logger {
 private:
     std::ofstream log_file;
+    std::mutex mutex;
     std::string get_timestamp();
     
 public:

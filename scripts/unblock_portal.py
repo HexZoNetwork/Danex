@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
 import json
 import os
+import fcntl
+
+def is_valid_ip(ip):
+    try:
+        socket.inet_pton(socket.AF_INET, ip)
+        return True
+    except socket.error:
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)
+            return True
+        except socket.error:
+            return False
 import re
 import secrets
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +39,7 @@ REQ_RATE_BAN_SEC = 900
 API_ACTION_MAX = 300
 API_ACTION_WINDOW_SEC = 60
 API_MAX_IPS_PER_REQ = 25
+RATE_MAP_MAX_ENTRIES = 10000
 _REQ_RATE = {}
 _API_ACTION_RATE = {}
 _LOCAL_BAN_UNTIL = {}
@@ -92,6 +106,7 @@ def ban_ip(ip):
 def register_token_failure(ip):
     now = int(time.time())
     with _TOKEN_FAIL_LOCK:
+        prune_rate_maps_locked(now)
         rec = _TOKEN_FAIL.get(ip)
         if not rec or now - int(rec.get("first", 0)) > TOKEN_FAIL_WINDOW_SEC:
             rec = {"first": now, "count": 0}
@@ -118,6 +133,7 @@ def is_locally_banned(ip):
 def register_request_rate(ip):
     now = int(time.time())
     with _TOKEN_FAIL_LOCK:
+        prune_rate_maps_locked(now)
         rec = _REQ_RATE.get(ip)
         if not rec or now - int(rec.get("first", 0)) > REQ_RATE_WINDOW_SEC:
             rec = {"first": now, "count": 0}
@@ -137,6 +153,7 @@ def register_request_rate(ip):
 def register_api_action(ip):
     now = int(time.time())
     with _TOKEN_FAIL_LOCK:
+        prune_rate_maps_locked(now)
         rec = _API_ACTION_RATE.get(ip)
         if not rec or now - int(rec.get("first", 0)) > API_ACTION_WINDOW_SEC:
             rec = {"first": now, "count": 0}
@@ -153,7 +170,41 @@ def load_json(path: Path):
 
 
 def write_json(path: Path, obj):
-    path.write_text(json.dumps(obj, indent=2, sort_keys=True))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(obj, indent=2, sort_keys=True) + "\n"
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def prune_rate_maps_locked(now=None):
+    now = int(now or time.time())
+    for key, rec in list(_TOKEN_FAIL.items()):
+        if now - int(rec.get("first", 0)) > TOKEN_FAIL_WINDOW_SEC:
+            _TOKEN_FAIL.pop(key, None)
+    for key, rec in list(_REQ_RATE.items()):
+        if now - int(rec.get("first", 0)) > REQ_RATE_WINDOW_SEC:
+            _REQ_RATE.pop(key, None)
+    for key, rec in list(_API_ACTION_RATE.items()):
+        if now - int(rec.get("first", 0)) > API_ACTION_WINDOW_SEC:
+            _API_ACTION_RATE.pop(key, None)
+    for key, until in list(_LOCAL_BAN_UNTIL.items()):
+        if int(until) <= now:
+            _LOCAL_BAN_UNTIL.pop(key, None)
+    for table in (_TOKEN_FAIL, _REQ_RATE, _API_ACTION_RATE, _LOCAL_BAN_UNTIL):
+        overflow = len(table) - RATE_MAP_MAX_ENTRIES
+        if overflow > 0:
+            for key in list(table.keys())[:overflow]:
+                table.pop(key, None)
 
 
 def get_ipset_members(set_name):
@@ -268,24 +319,37 @@ def get_essential_allowlist():
     return []
 
 
+def config_lock_file():
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return open(CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".lock"), "a+")
+
+
 def add_essential_allowlist(ips):
-    cfg = load_json(CONFIG_PATH)
-    if not isinstance(cfg, dict):
-        cfg = {}
-    network = cfg.get("network")
-    if not isinstance(network, dict):
-        network = {}
-        cfg["network"] = network
-    cur = get_essential_allowlist()
-    seen = {x: 1 for x in cur}
-    changed = 0
-    for ip in ips:
-        if is_ip(ip) and ip not in seen:
-            cur.append(ip)
-            seen[ip] = 1
-            changed += 1
-    network["essential_allowlist"] = cur
-    write_json(CONFIG_PATH, cfg)
+    with config_lock_file() as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        cfg = load_json(CONFIG_PATH)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        network = cfg.get("network")
+        if not isinstance(network, dict):
+            network = {}
+            cfg["network"] = network
+        v = network.get("essential_allowlist", [])
+        if isinstance(v, list):
+            cur = [str(x).strip() for x in v if str(x).strip()]
+        elif isinstance(v, str):
+            cur = [x.strip() for x in v.split(",") if x.strip()]
+        else:
+            cur = []
+        seen = {x: 1 for x in cur}
+        changed = 0
+        for ip in ips:
+            if is_ip(ip) and ip not in seen:
+                cur.append(ip)
+                seen[ip] = 1
+                changed += 1
+        network["essential_allowlist"] = cur
+        write_json(CONFIG_PATH, cfg)
     for ip in ips:
         if is_ip(ip):
             apply_runtime_allow_rule(ip)

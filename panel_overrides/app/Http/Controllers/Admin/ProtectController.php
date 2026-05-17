@@ -883,24 +883,41 @@ class ProtectController extends Controller
         $sessionId = rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
         $ticket = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
         $ticketDir = $this->terminalTicketDir();
-        if (!File::isDirectory($ticketDir)) {
-            File::makeDirectory($ticketDir, 0700, true);
+        try {
+            if (!File::isDirectory($ticketDir) && !File::makeDirectory($ticketDir, 0770, true)) {
+                throw new \RuntimeException('failed to create terminal ticket directory');
+            }
+            @chmod($ticketDir, 0770);
+            if (!File::isWritable($ticketDir)) {
+                throw new \RuntimeException('terminal ticket directory is not writable');
+            }
+        } catch (Throwable) {
+            return response()->json([
+                'ok' => false,
+                'error' => 'terminal_ticket_store_unavailable',
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
-        @chmod($ticketDir, 0700);
 
         $user = $request->user();
         $payload = [
             'session_id' => $sessionId,
             'ticket_hash' => hash('sha256', $ticket),
             'user_id' => $user ? (int) $user->id : 0,
-            'ip' => (string) $request->ip(),
+            'ip' => (string) $request->server('REMOTE_ADDR', $request->ip()),
             'user_agent_hash' => substr(hash('sha256', (string) $request->userAgent()), 0, 16),
             'created_at' => time(),
             'expires_at' => time() + self::TERMINAL_TICKET_TTL_SEC,
         ];
 
-        File::put($ticketDir . '/' . $sessionId . '.json', json_encode($payload, JSON_UNESCAPED_SLASHES) . "\n");
-        @chmod($ticketDir . '/' . $sessionId . '.json', 0600);
+        $ticketPath = $ticketDir . '/' . $sessionId . '.json';
+        $encodedPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);
+        if ($encodedPayload === false || File::put($ticketPath, $encodedPayload . "\n") === false || !File::exists($ticketPath)) {
+            return response()->json([
+                'ok' => false,
+                'error' => 'terminal_ticket_write_failed',
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+        @chmod($ticketPath, 0600);
 
         return response()->json([
             'ok' => true,

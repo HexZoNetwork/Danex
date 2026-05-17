@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -15,6 +16,18 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
+
+
+def is_valid_ip(ip):
+    try:
+        socket.inet_pton(socket.AF_INET, ip)
+        return True
+    except socket.error:
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)
+            return True
+        except socket.error:
+            return False
 
 from resilience_runtime import (
     RUNTIME_DIR,

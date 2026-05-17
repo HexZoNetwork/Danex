@@ -14,6 +14,7 @@ import argparse
 import concurrent.futures
 import http.client
 import random
+import socket
 import ssl
 import string
 import threading
@@ -21,6 +22,18 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from urllib.parse import urlparse
+
+
+def is_valid_ip(ip):
+    try:
+        socket.inet_pton(socket.AF_INET, ip)
+        return True
+    except socket.error:
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)
+            return True
+        except socket.error:
+            return False
 
 
 SAFE_MAX_WORKERS = 400
@@ -263,4 +276,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

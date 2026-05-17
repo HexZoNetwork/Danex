@@ -4,11 +4,24 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import socket
 import threading
 import time
 import urllib.error
 import urllib.request
 from typing import Dict, List
+
+
+def is_valid_ip(ip):
+    try:
+        socket.inet_pton(socket.AF_INET, ip)
+        return True
+    except socket.error:
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)
+            return True
+        except socket.error:
+            return False
 
 
 def req(url: str, method: str = "GET", body: bytes | None = None, timeout: float = 3.0) -> int:

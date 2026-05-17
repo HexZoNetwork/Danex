@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Sync hanya file fitur Judi / DanexCoin (bukan full project).
 LIVE_DIR="/var/www/pterodactyl"
-OVERRIDE_DIR="/root/porn/panel_overrides"
+OVERRIDE_DIR="/pteroprotect/panel_overrides"
 
 copy_file() {
   local rel="$1"

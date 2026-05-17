@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include "disk_protect.h"
 #include "logger.h"
 #include "db_guard.h"
@@ -23,6 +24,41 @@
 #include <cmath>
 #include <map>
 #include <openssl/evp.h>
+
+#include <sys/wait.h>
+#include <arpa/inet.h>
+
+namespace {
+int safe_exec(const std::vector<std::string>& args) {
+    if (args.empty()) return -1;
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        std::vector<char*> argv;
+        for (const auto& arg : args) {
+            argv.push_back(const_cast<char*>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+bool is_valid_ip(const std::string& ip) {
+    struct sockaddr_in sa4;
+    struct sockaddr_in6 sa6;
+    return inet_pton(AF_INET, ip.c_str(), &sa4.sin_addr) == 1 ||
+           inet_pton(AF_INET6, ip.c_str(), &sa6.sin6_addr) == 1;
+}
+} // namespace
 
 const double MAKSIMAL_UKURAN_GB = 10.0;
 const double BATAS_LONJAKAN_GB = 3.0;
@@ -626,10 +662,10 @@ int severity_from_metrics(double disk_gb, double disk_limit_gb, double spike_dis
 std::string get_waktu_wib() {
     std::time_t now = std::time(nullptr);
     std::tm tm_wib = *std::localtime(&now);
-    tm_wib.tm_hour += 7;
+    
     std::mktime(&tm_wib);
     char waktu[80];
-    std::strftime(waktu, sizeof(waktu), "%d/%m/%Y %H:%M:%S WIB", &tm_wib);
+    std::strftime(waktu, sizeof(waktu), "%d/%m/%Y %H:%M:%S %Z", &tm_wib);
     return std::string(waktu);
 }
 
@@ -644,13 +680,13 @@ bool stop_container_by_uuid(const std::string& uuid) {
     if (id.empty()) return false;
 
     // Prevent attacker workload from auto-restarting while we are mitigating.
-    system(("docker update --restart=no " + id + " >/dev/null 2>&1").c_str());
+    safe_exec({"docker", "update", "--restart=no", id});
 
-    if (system(("docker stop -t 3 " + id + " >/dev/null 2>&1").c_str()) == 0) {
+    if (safe_exec({"docker", "stop", "-t", "3", id}) == 0) {
         return true;
     }
 
-    return system(("docker kill " + id + " >/dev/null 2>&1").c_str()) == 0;
+    return safe_exec({"docker", "kill", id}) == 0;
 }
 
 int get_container_tcp_connections(const std::string& uuid) {
@@ -824,7 +860,7 @@ std::string shell_escape_single(const std::string& s) {
 
 bool ensure_dir(const std::string& path) {
     std::string cmd = "mkdir -p " + shell_escape_single(path) + " >/dev/null 2>&1";
-    return system(cmd.c_str()) == 0;
+    return safe_exec({"sh", "-c", cmd}) == 0;
 }
 
 bool volume_has_only_quarantine_artifacts(const std::string& path) {
@@ -877,7 +913,7 @@ double emergency_delete_largest_files(const std::string& path, unsigned long lon
 bool remove_path_force(const std::string& path) {
     std::string cmd = "chattr -R -i " + shell_escape_single(path) + " >/dev/null 2>&1 || true; "
                     + std::string("rm -rf ") + shell_escape_single(path) + " >/dev/null 2>&1";
-    return system(cmd.c_str()) == 0;
+    return safe_exec({"sh", "-c", cmd}) == 0;
 }
 
 std::vector<FileInfo> reclaim_largest_entries(const std::string& root_path,
@@ -1329,9 +1365,9 @@ double DiskProtector::wipe_server_volume(const std::string& volume_path) {
         std::string wipe_cmd =
             "find " + shell_escape_single(volume_path) +
             " -xdev -mindepth 1 -depth -print0 2>/dev/null | xargs -0 -r rm -rf -- >/dev/null 2>&1";
-        (void)system(unlock_cmd.c_str());
-        (void)system(chmod_cmd.c_str());
-        rc = system(wipe_cmd.c_str());
+        safe_exec({"sh", "-c", unlock_cmd});
+        safe_exec({"sh", "-c", chmod_cmd});
+        rc = safe_exec({"sh", "-c", wipe_cmd});
         double pass_after_mb = get_folder_size_gb(volume_path) * 1024.0;
         if (pass_after_mb <= 1.0) {
             rc = 0;
@@ -1345,7 +1381,7 @@ double DiskProtector::wipe_server_volume(const std::string& volume_path) {
                 "rsync -a --delete --force --ignore-errors " + shell_escape_single(rsync_empty) + "/ " +
                 shell_escape_single(volume_path) + "/ >/dev/null 2>&1 || true; "
                 "rmdir " + shell_escape_single(rsync_empty) + " >/dev/null 2>&1 || true";
-            (void)system(("bash -lc " + shell_escape_single(mirror_cmd)).c_str());
+            safe_exec({"bash", "-c", mirror_cmd});
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(180));

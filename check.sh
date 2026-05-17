@@ -357,6 +357,23 @@ show_block_state() {
         echo "ipset command unavailable"
     fi
 
+    if have_cmd iptables; then
+        echo "-- firewall counters v4 --"
+        for chain in PTEROPROTECT-HOST-BLOCK PTEROPROTECT-HOST-ABUSE PTEROPROTECT-HOST-BW; do
+            if iptables -L "${chain}" -n -v >/dev/null 2>&1; then
+                iptables -L "${chain}" -n -v 2>/dev/null | awk 'NR>2 {pkts+=$1; bytes+=$2} END {printf "%s packets=%d bytes=%d\n", chain, pkts+0, bytes+0}' chain="${chain}"
+            fi
+        done
+    fi
+    if have_cmd ip6tables; then
+        echo "-- firewall counters v6 --"
+        for chain in PTEROPROTECT-HOST-V6-BLOCK PTEROPROTECT-HOST-V6-ABUSE PTEROPROTECT-HOST-V6-BW; do
+            if ip6tables -L "${chain}" -n -v >/dev/null 2>&1; then
+                ip6tables -L "${chain}" -n -v 2>/dev/null | awk 'NR>2 {pkts+=$1; bytes+=$2} END {printf "%s packets=%d bytes=%d\n", chain, pkts+0, bytes+0}' chain="${chain}"
+            fi
+        done
+    fi
+
     if [[ -f "${DDOS_LATEST}" ]]; then
         echo "-- latest mitigation --"
         grep -E '\[mitigate\]|\[self-ddos-limit\]|\[ip-trust\]|\[mode\]' "${DDOS_LATEST}" 2>/dev/null | tail -n 20 || echo "none"

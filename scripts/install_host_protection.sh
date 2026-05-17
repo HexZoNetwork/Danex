@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+validate_ip_cidr() {
+    local cidr="$1"
+    if python3 -c "import ipaddress; ipaddress.ip_network('$cidr', strict=False)" 2>/dev/null; then return 0; fi
+    echo "WARNING: Invalid CIDR: $cidr" >&2
+    return 1
+}
+
 CHAIN="PTEROPROTECT-HOST"
+BLOCK_CHAIN="PTEROPROTECT-HOST-BLOCK"
 ABUSE_CHAIN="PTEROPROTECT-HOST-ABUSE"
 BW_CHAIN="PTEROPROTECT-HOST-BW"
 RAW_CHAIN="PTEROPROTECT-HOST-RAW"
 SYNPROXY_CHAIN="PTEROPROTECT-HOST-SYNPROXY"
 CHAIN6="PTEROPROTECT-HOST-V6"
+BLOCK_CHAIN6="PTEROPROTECT-HOST-V6-BLOCK"
 ABUSE_CHAIN6="PTEROPROTECT-HOST-V6-ABUSE"
 BW_CHAIN6="PTEROPROTECT-HOST-V6-BW"
 RAW_CHAIN6="PTEROPROTECT-HOST-V6-RAW"
@@ -97,13 +106,13 @@ init_ipset_runtime() {
         return 0
     }
 
-    if ! ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1; then
+    if ! ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" counters -exist >/dev/null 2>&1 && ! ipset list "${IPSET4}" >/dev/null 2>&1; then
         # Try to bring up common kernel modules before giving up on ipset backend.
         modprobe ip_set >/dev/null 2>&1 || true
         modprobe ip_set_hash_ip >/dev/null 2>&1 || true
         modprobe xt_set >/dev/null 2>&1 || true
 
-        if ! ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1; then
+        if ! ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" counters -exist >/dev/null 2>&1 && ! ipset list "${IPSET4}" >/dev/null 2>&1; then
             echo "[host_protection] warning: ipset backend unavailable; continuing with non-ipset firewall mode." >&2
             IPSET_RUNTIME_OK=0
             return 0
@@ -116,7 +125,7 @@ init_ipset_runtime() {
     fi
 
     if [[ "${IPV6_ENABLED}" == "1" ]]; then
-        ipset create "${IPSET6}" hash:ip family inet6 timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1 || true
+        ipset create "${IPSET6}" hash:ip family inet6 timeout "${BLACKHOLE_TTL}" counters -exist >/dev/null 2>&1 || ipset list "${IPSET6}" >/dev/null 2>&1 || true
     fi
 }
 
@@ -682,6 +691,8 @@ cleanup_host_protection() {
     iptables -X "${WINGS_GUARD_CHAIN4}" >/dev/null 2>&1 || true
     iptables -F "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || true
     iptables -X "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || true
+    iptables -F "${BLOCK_CHAIN}" >/dev/null 2>&1 || true
+    iptables -X "${BLOCK_CHAIN}" >/dev/null 2>&1 || true
     iptables -F "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
     iptables -X "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
     iptables -F "${BW_CHAIN}" >/dev/null 2>&1 || true
@@ -716,6 +727,8 @@ cleanup_host_protection() {
         ip6tables -X "${WINGS_GUARD_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -F "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -X "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -F "${BLOCK_CHAIN6}" >/dev/null 2>&1 || true
+        ip6tables -X "${BLOCK_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -F "${BW_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -X "${BW_CHAIN6}" >/dev/null 2>&1 || true
         ip6tables -F "${CHAIN6}" >/dev/null 2>&1 || true
@@ -741,11 +754,13 @@ if [[ "${PTEROPROTECT_FIREWALL_DISABLE:-0}" == "1" ]]; then
 fi
 
 iptables -N "${CHAIN}" >/dev/null 2>&1 || true
+iptables -N "${BLOCK_CHAIN}" >/dev/null 2>&1 || true
 iptables -N "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
 iptables -N "${WINGS_GUARD_CHAIN4}" >/dev/null 2>&1 || true
 iptables -N "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || true
 iptables -N "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
 iptables -F "${CHAIN}" >/dev/null 2>&1 || true
+iptables -F "${BLOCK_CHAIN}" >/dev/null 2>&1 || true
 iptables -F "${ABUSE_CHAIN}" >/dev/null 2>&1 || true
 iptables -F "${WINGS_GUARD_CHAIN4}" >/dev/null 2>&1 || true
 iptables -F "${INFRA_GUARD_CHAIN4}" >/dev/null 2>&1 || true
@@ -931,11 +946,11 @@ if [[ "${IP_TRUST_BW_ENABLED}" == "1" ]] && have_cmd ipset; then
     iptables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN}" >/dev/null 2>&1 || \
         iptables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN}"
 
-    ipset create "${BW_IPSET4_PROBATION}" hash:ip family inet -exist >/dev/null 2>&1 || true
-    ipset create "${BW_IPSET4_BAD}" hash:ip family inet -exist >/dev/null 2>&1 || true
-    ipset create "${BW_IPSET4_WORST}" hash:ip family inet -exist >/dev/null 2>&1 || true
-    ipset create "${BW_IPSET4_TRUSTED}" hash:ip family inet -exist >/dev/null 2>&1 || true
-    ipset create "${BW_IPSET4_VTRUSTED}" hash:ip family inet -exist >/dev/null 2>&1 || true
+    ipset create "${BW_IPSET4_PROBATION}" hash:ip family inet counters -exist >/dev/null 2>&1 || true
+    ipset create "${BW_IPSET4_BAD}" hash:ip family inet counters -exist >/dev/null 2>&1 || true
+    ipset create "${BW_IPSET4_WORST}" hash:ip family inet counters -exist >/dev/null 2>&1 || true
+    ipset create "${BW_IPSET4_TRUSTED}" hash:ip family inet counters -exist >/dev/null 2>&1 || true
+    ipset create "${BW_IPSET4_VTRUSTED}" hash:ip family inet counters -exist >/dev/null 2>&1 || true
 
     iptables -A "${BW_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
     iptables -A "${BW_CHAIN}" -s 127.0.0.1/32 -j RETURN
@@ -1009,8 +1024,13 @@ if [[ "${SYNPROXY_ENABLED}" == "1" ]] && supports_synproxy_v4; then
 fi
 
 if have_cmd ipset; then
-    ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1 || true
+    ipset create "${IPSET4}" hash:ip family inet timeout "${BLACKHOLE_TTL}" counters -exist >/dev/null 2>&1 || true
 fi
+
+if have_cmd ipset; then
+    iptables -A "${BLOCK_CHAIN}" -m set --match-set "${IPSET4}" src -j DROP
+fi
+iptables -A "${BLOCK_CHAIN}" -j RETURN
 
 iptables -A "${CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 iptables -A "${CHAIN}" -s 127.0.0.1/32 -j RETURN
@@ -1024,9 +1044,7 @@ while read -r infra_host; do
     [[ -z "${infra_host}" ]] && continue
     add_resolved_v4_whitelist "${CHAIN}" "${infra_host}"
 done < <(discover_infra_hosts)
-if have_cmd ipset; then
-    iptables -A "${CHAIN}" -m set --match-set "${IPSET4}" src -j DROP
-fi
+iptables -A "${CHAIN}" -j "${BLOCK_CHAIN}"
 
 iptables -A "${CHAIN}" -m conntrack --ctstate INVALID -j DROP
 if [[ "${UDP_GUARD_ENABLED}" == "1" ]]; then
@@ -1141,10 +1159,12 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
     ensure_loopback_web_access_rules_v6
     ensure_local_wings_access_rules_v6 "${WINGS_API_PORT}"
     ip6tables -N "${CHAIN6}" >/dev/null 2>&1 || true
+    ip6tables -N "${BLOCK_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -N "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -N "${WINGS_GUARD_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -N "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -F "${CHAIN6}" >/dev/null 2>&1 || true
+    ip6tables -F "${BLOCK_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -F "${ABUSE_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -F "${WINGS_GUARD_CHAIN6}" >/dev/null 2>&1 || true
     ip6tables -F "${INFRA_GUARD_CHAIN6}" >/dev/null 2>&1 || true
@@ -1217,11 +1237,11 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
         ip6tables -C INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN6}" >/dev/null 2>&1 || \
             ip6tables -I INPUT -p tcp -m multiport --dports "${PUBLIC_TCP_PORTS}" -j "${BW_CHAIN6}"
 
-        ipset create "${BW_IPSET6_PROBATION}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
-        ipset create "${BW_IPSET6_BAD}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
-        ipset create "${BW_IPSET6_WORST}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
-        ipset create "${BW_IPSET6_TRUSTED}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
-        ipset create "${BW_IPSET6_VTRUSTED}" hash:ip family inet6 -exist >/dev/null 2>&1 || true
+        ipset create "${BW_IPSET6_PROBATION}" hash:ip family inet6 counters -exist >/dev/null 2>&1 || true
+        ipset create "${BW_IPSET6_BAD}" hash:ip family inet6 counters -exist >/dev/null 2>&1 || true
+        ipset create "${BW_IPSET6_WORST}" hash:ip family inet6 counters -exist >/dev/null 2>&1 || true
+        ipset create "${BW_IPSET6_TRUSTED}" hash:ip family inet6 counters -exist >/dev/null 2>&1 || true
+        ipset create "${BW_IPSET6_VTRUSTED}" hash:ip family inet6 counters -exist >/dev/null 2>&1 || true
 
         ip6tables -A "${BW_CHAIN6}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
         ip6tables -A "${BW_CHAIN6}" -s ::1/128 -j RETURN
@@ -1293,8 +1313,13 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
     fi
 
     if have_cmd ipset; then
-        ipset create "${IPSET6}" hash:ip family inet6 timeout "${BLACKHOLE_TTL}" -exist >/dev/null 2>&1 || true
+        ipset create "${IPSET6}" hash:ip family inet6 timeout "${BLACKHOLE_TTL}" counters -exist >/dev/null 2>&1 || true
     fi
+
+    if have_cmd ipset; then
+        ip6tables -A "${BLOCK_CHAIN6}" -m set --match-set "${IPSET6}" src -j DROP
+    fi
+    ip6tables -A "${BLOCK_CHAIN6}" -j RETURN
 
     ip6tables -A "${CHAIN6}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
     ip6tables -A "${CHAIN6}" -s ::1/128 -j RETURN
@@ -1307,9 +1332,7 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
         [[ -z "${infra_host}" ]] && continue
         add_resolved_v6_whitelist "${CHAIN6}" "${infra_host}"
     done < <(discover_infra_hosts)
-    if have_cmd ipset; then
-        ip6tables -A "${CHAIN6}" -m set --match-set "${IPSET6}" src -j DROP
-    fi
+    ip6tables -A "${CHAIN6}" -j "${BLOCK_CHAIN6}"
 
     ip6tables -A "${CHAIN6}" -m conntrack --ctstate INVALID -j DROP
     if [[ "${UDP_GUARD_ENABLED}" == "1" ]]; then

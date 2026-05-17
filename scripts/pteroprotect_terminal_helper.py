@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import errno
 import fcntl
+import grp
 import hashlib
 import hmac
 import json
@@ -18,6 +19,7 @@ import pathlib
 import pty
 import re
 import selectors
+import select
 import signal
 import socket
 import struct
@@ -30,8 +32,14 @@ import urllib.parse
 HOST = os.environ.get("PTEROPROTECT_TERMINAL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PTEROPROTECT_TERMINAL_PORT", "18445"))
 TICKET_DIR = pathlib.Path(os.environ.get("PTEROPROTECT_TERMINAL_TICKET_DIR", "/dev/shm/pteroprotect/terminal_tickets"))
+TICKET_GROUP = os.environ.get("PTEROPROTECT_TERMINAL_TICKET_GROUP", "www-data")
+REPLAY_DIR = pathlib.Path(os.environ.get("PTEROPROTECT_TERMINAL_REPLAY_DIR", "/dev/shm/pteroprotect/terminal_replay"))
 AUDIT_DIR = pathlib.Path(os.environ.get("PTEROPROTECT_TERMINAL_AUDIT_DIR", "/var/log/pteroprotect/terminal"))
 IDLE_TIMEOUT = int(os.environ.get("PTEROPROTECT_TERMINAL_IDLE_TIMEOUT", "900"))
+MAX_WS_FRAME = int(os.environ.get("PTEROPROTECT_TERMINAL_MAX_WS_FRAME", "65536"))
+WS_READ_TIMEOUT = int(os.environ.get("PTEROPROTECT_TERMINAL_WS_READ_TIMEOUT", "5"))
+BIND_IP = os.environ.get("PTEROPROTECT_TERMINAL_BIND_IP", "1") != "0"
+BIND_UA = os.environ.get("PTEROPROTECT_TERMINAL_BIND_UA", "1") != "0"
 SESSION_RE = re.compile(r"^/admin/protect/terminal/sessions/([A-Za-z0-9_-]{16,80})/ws$")
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -70,6 +78,80 @@ def cookie_value(headers: dict[str, str], name: str) -> str:
     return ""
 
 
+def normalize_ip(ip: str) -> str:
+    value = ip.strip()
+    try:
+        return socket.inet_ntop(socket.AF_INET, socket.inet_pton(socket.AF_INET, value))
+    except OSError:
+        pass
+    try:
+        return socket.inet_ntop(socket.AF_INET6, socket.inet_pton(socket.AF_INET6, value))
+    except OSError:
+        return value
+
+
+def client_ip_from_headers(headers: dict[str, str]) -> str:
+    for name in ("x-real-ip", "cf-connecting-ip", "x-forwarded-for"):
+        value = headers.get(name, "").split(",", 1)[0].strip()
+        if value:
+            return normalize_ip(value)
+    return ""
+
+
+def user_agent_hash(headers: dict[str, str]) -> str:
+    return hashlib.sha256(headers.get("user-agent", "").encode("utf-8")).hexdigest()[:16]
+
+
+def ticket_binding_matches(info: dict[str, object], headers: dict[str, str]) -> bool:
+    if BIND_IP:
+        expected_ip = normalize_ip(str(info.get("ip", "")))
+        actual_ip = client_ip_from_headers(headers)
+        if not expected_ip or not actual_ip or expected_ip != actual_ip:
+            return False
+    if BIND_UA:
+        expected_ua = str(info.get("user_agent_hash", ""))
+        if not expected_ua or not hmac_compare(expected_ua, user_agent_hash(headers)):
+            return False
+    return True
+
+
+def purge_replay_cache(now: int) -> None:
+    with contextlib_suppress():
+        for marker in REPLAY_DIR.glob("*.json"):
+            try:
+                data = json.loads(marker.read_text(encoding="utf-8"))
+                if int(data.get("expires_at", 0)) < now:
+                    marker.unlink()
+            except Exception:
+                marker.unlink()
+
+
+def claim_replay(ticket_hash_value: str, expires_at: int) -> bool:
+    if not re.fullmatch(r"[a-fA-F0-9]{64}", ticket_hash_value):
+        return False
+    REPLAY_DIR.mkdir(parents=True, exist_ok=True)
+    with contextlib_suppress():
+        os.chmod(REPLAY_DIR, 0o700)
+    purge_replay_cache(int(time.time()))
+    marker = REPLAY_DIR / f"{ticket_hash_value.lower()}.json"
+    try:
+        fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({"claimed_at": int(time.time()), "expires_at": int(expires_at)}, fh, separators=(",", ":"))
+        fh.write("\n")
+    return True
+
+
+def chmod_dir(path: pathlib.Path, mode: int, group: str = "") -> None:
+    if group:
+        with contextlib_suppress():
+            os.chown(path, 0, grp.getgrnam(group).gr_gid)
+    with contextlib_suppress():
+        os.chmod(path, mode)
+
+
 def verify_ticket(session_id: str, headers: dict[str, str]) -> dict[str, object] | None:
     path = TICKET_DIR / f"{session_id}.json"
     try:
@@ -84,7 +166,12 @@ def verify_ticket(session_id: str, headers: dict[str, str]) -> dict[str, object]
         with contextlib_suppress():
             path.unlink()
         return None
-    if not hmac_compare(str(info.get("ticket_hash", "")), ticket_hash(ticket)):
+    expected_hash = str(info.get("ticket_hash", ""))
+    if not hmac_compare(expected_hash, ticket_hash(ticket)):
+        return None
+    if not ticket_binding_matches(info, headers):
+        return None
+    if not claim_replay(expected_hash, int(info.get("expires_at", 0))):
         return None
     with contextlib_suppress():
         path.unlink()
@@ -111,9 +198,33 @@ def send_http(conn: socket.socket, code: int, text: str) -> None:
     )
 
 
+def header_has_token(value: str, token: str) -> bool:
+    return token.lower() in {part.strip().lower() for part in value.split(",")}
+
+
+def valid_ws_key(key: str) -> bool:
+    try:
+        return len(base64.b64decode(key, validate=True)) == 16
+    except Exception:
+        return False
+
+
+def validate_ws_request(request_line: str, headers: dict[str, str]) -> bool:
+    parts = request_line.split()
+    if len(parts) < 3 or parts[0].upper() != "GET":
+        return False
+    if headers.get("upgrade", "").lower() != "websocket":
+        return False
+    if not header_has_token(headers.get("connection", ""), "upgrade"):
+        return False
+    if headers.get("sec-websocket-version", "") != "13":
+        return False
+    return valid_ws_key(headers.get("sec-websocket-key", ""))
+
+
 def accept_ws(conn: socket.socket, headers: dict[str, str]) -> bool:
     key = headers.get("sec-websocket-key", "")
-    if not key:
+    if not valid_ws_key(key):
         return False
     accept = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
     conn.sendall(
@@ -126,6 +237,22 @@ def accept_ws(conn: socket.socket, headers: dict[str, str]) -> bool:
         ).encode()
     )
     return True
+
+
+def read_exact(conn: socket.socket, size: int) -> bytes | None:
+    data = b""
+    while len(data) < size:
+        try:
+            chunk = conn.recv(size - len(data))
+        except BlockingIOError:
+            readable, _, _ = select.select([conn], [], [], WS_READ_TIMEOUT)
+            if not readable:
+                return None
+            continue
+        if not chunk:
+            return None
+        data += chunk
+    return data
 
 
 def ws_send(conn: socket.socket, payload: bytes, opcode: int = 2) -> None:
@@ -142,25 +269,40 @@ def ws_send(conn: socket.socket, payload: bytes, opcode: int = 2) -> None:
 
 
 def ws_recv(conn: socket.socket) -> tuple[int, bytes] | None:
-    first = conn.recv(2)
-    if len(first) < 2:
+    first = read_exact(conn, 2)
+    if first is None:
+        return None
+    if first[0] & 0x70:
         return None
     opcode = first[0] & 0x0F
+    if opcode not in {1, 2, 8, 9, 10}:
+        return None
     masked = bool(first[1] & 0x80)
+    if not masked:
+        return None
     size = first[1] & 0x7F
     if size == 126:
-        size = struct.unpack("!H", conn.recv(2))[0]
+        raw_size = read_exact(conn, 2)
+        if raw_size is None:
+            return None
+        size = struct.unpack("!H", raw_size)[0]
     elif size == 127:
-        size = struct.unpack("!Q", conn.recv(8))[0]
-    mask = conn.recv(4) if masked else b""
+        raw_size = read_exact(conn, 8)
+        if raw_size is None:
+            return None
+        size = struct.unpack("!Q", raw_size)[0]
+    if size > MAX_WS_FRAME or (opcode in {8, 9, 10} and size > 125):
+        return None
+    mask = read_exact(conn, 4)
+    if mask is None:
+        return None
     payload = b""
     while len(payload) < size:
-        chunk = conn.recv(size - len(payload))
+        chunk = read_exact(conn, min(8192, size - len(payload)))
         if not chunk:
             return None
         payload += chunk
-    if masked:
-        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
     return opcode, payload
 
 
@@ -246,6 +388,8 @@ def handle(conn: socket.socket) -> None:
         match = SESSION_RE.match(path)
         if not match:
             return send_http(conn, 404, "not_found")
+        if not validate_ws_request(request_line, headers):
+            return send_http(conn, 426, "upgrade_required")
         session_id = match.group(1)
         info = verify_ticket(session_id, headers)
         if info is None:
@@ -260,7 +404,10 @@ def handle(conn: socket.socket) -> None:
 
 def main() -> int:
     TICKET_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(TICKET_DIR, 0o700)
+    REPLAY_DIR.mkdir(parents=True, exist_ok=True)
+    chmod_dir(TICKET_DIR, 0o2770, TICKET_GROUP)
+    chmod_dir(REPLAY_DIR, 0o700)
+    purge_replay_cache(int(time.time()))
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((HOST, PORT))

@@ -1,3 +1,4 @@
+import socket
 #!/usr/bin/env python3
 import base64
 import hashlib
@@ -5,6 +6,17 @@ import hmac
 import ipaddress
 import json
 import os
+
+def is_valid_ip(ip):
+    try:
+        socket.inet_pton(socket.AF_INET, ip)
+        return True
+    except socket.error:
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)
+            return True
+        except socket.error:
+            return False
 import random
 import secrets
 import threading
@@ -114,6 +126,16 @@ def client_ip(handler):
 
     resolved_peer = _first_ip(peer)
     return resolved_peer or "127.0.0.1"
+
+
+def header_truthy(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def provider_api_allowed(handler) -> bool:
+    if not header_truthy(handler.headers.get("X-PteroProtect-Provider-Token-Block", "")):
+        return True
+    return header_truthy(handler.headers.get("X-PteroProtect-Has-Token", ""))
 
 
 def ua_fingerprint(handler):
@@ -279,6 +301,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             return self._json(200, {"ok": True, "enabled": is_enabled()})
 
+        if path == "/check-provider-api":
+            self.send_response(HTTPStatus.NO_CONTENT if provider_api_allowed(self) else HTTPStatus.UNAUTHORIZED)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+
         if path == "/check":
             if not is_enabled():
                 self.send_response(HTTPStatus.NO_CONTENT)
@@ -365,6 +393,12 @@ loadC().catch(e=>elE.textContent=String(e.message||e));
 
         if path in ("/health", "/page", "/new"):
             self.send_response(HTTPStatus.OK)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+
+        if path == "/check-provider-api":
+            self.send_response(HTTPStatus.NO_CONTENT if provider_api_allowed(self) else HTTPStatus.UNAUTHORIZED)
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
