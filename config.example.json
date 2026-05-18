@@ -180,6 +180,19 @@
   },
   "abuse_guard": {
     "max_auto_bans": 200,
+    "docker_kill_enabled": true,
+    "docker_cpu_reserved_cores": 1,
+    "docker_cpu_min_threshold_pct": 80,
+    "docker_cpu_strikes_required": 2,
+    "docker_scan_interval_sec": 2,
+    "docker_suspend_on_dangerous_process": false,
+    "dangerous_process_markers": [
+      "dd if=/dev/zero",
+      "stress-ng",
+      "stress --cpu",
+      "yes >",
+      "yes>>"
+    ],
     "window_sec": 120,
     "request_threshold": 40,
     "ban_ttl_sec": 600,

@@ -1919,6 +1919,14 @@ if [[ -n "${PANEL_DB_HOST_EFFECTIVE}" ]]; then
 local_infile=0
 skip_name_resolve=1
 EOF
+        mkdir -p /etc/systemd/system/mariadb.service.d
+        cat > /etc/systemd/system/mariadb.service.d/pteroprotect-resilience.conf <<'EOF'
+[Service]
+Restart=always
+RestartSec=3
+OOMScoreAdjust=-900
+EOF
+        systemctl daemon-reload >/dev/null 2>&1 || true
         systemctl restart mariadb >/dev/null 2>&1 || true
         if command -v ufw >/dev/null 2>&1; then
             ufw --force delete allow 3306 >/dev/null 2>&1 || true

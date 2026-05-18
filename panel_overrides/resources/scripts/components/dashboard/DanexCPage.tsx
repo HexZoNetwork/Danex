@@ -155,6 +155,20 @@ const emptyState: DanexCOverviewResponse = {
     meta: { window_minutes: 60, generated_at: '' },
 };
 
+const normalizeOverview = (data: Partial<DanexCOverviewResponse> | null | undefined): DanexCOverviewResponse => ({
+    metrics: { ...emptyState.metrics, ...(data?.metrics || {}) },
+    most_targeted_paths: Array.isArray(data?.most_targeted_paths) ? data.most_targeted_paths : [],
+    system_config: { ...emptyState.system_config, ...(data?.system_config || {}) },
+    timeline: Array.isArray(data?.timeline) ? data.timeline : [],
+    threat: {
+        ...emptyState.threat,
+        ...(data?.threat || {}),
+        reason_codes: Array.isArray(data?.threat?.reason_codes) ? data.threat.reason_codes : [],
+    },
+    live_feed: Array.isArray(data?.live_feed) ? data.live_feed : [],
+    meta: { ...emptyState.meta, ...(data?.meta || {}) },
+});
+
 const threatColor = (level: string): string => {
     if (level === 'high') return '#ef4444';
     if (level === 'medium') return '#f59e0b';
@@ -196,7 +210,7 @@ export default () => {
 
     const loadOverview = useCallback(async (minutes: number) => {
         const data = await getDanexCOverview(minutes);
-        setOverview(data);
+        setOverview(normalizeOverview(data));
     }, []);
 
     const loadTimeline = useCallback(async (minutes: number) => {
@@ -268,7 +282,7 @@ export default () => {
 
     const sortedPaths = useMemo(() => {
         const rows = [...(overview.most_targeted_paths || [])];
-        rows.sort((a, b) => (sortBy === 'denied_ratio' ? b.denied_ratio - a.denied_ratio : b.count - a.count));
+        rows.sort((a, b) => (sortBy === 'denied_ratio' ? Number(b.denied_ratio || 0) - Number(a.denied_ratio || 0) : Number(b.count || 0) - Number(a.count || 0)));
         return rows.slice(0, 15);
     }, [overview.most_targeted_paths, sortBy]);
 
@@ -292,13 +306,13 @@ export default () => {
     }, [overview.metrics, overview.most_targeted_paths, windowMinutes]);
 
     const chartData = useMemo(() => {
-        const source = timeline.length ? timeline : overview.timeline;
+        const source = (timeline.length ? timeline : overview.timeline).filter((p) => p && p.timestamp);
         return {
             labels: source.map((p) => new Date(p.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
             datasets: [
                 {
                     label: 'Allowed',
-                    data: source.map((p) => p.allowed),
+                    data: source.map((p) => Number(p.allowed || 0)),
                     borderColor: '#8b5cf6',
                     backgroundColor: 'rgba(139, 92, 246, 0.1)',
                     pointBackgroundColor: '#a78bfa',
@@ -308,7 +322,7 @@ export default () => {
                 },
                 {
                     label: 'Denied',
-                    data: source.map((p) => p.denied),
+                    data: source.map((p) => Number(p.denied || 0)),
                     borderColor: '#ef4444',
                     backgroundColor: 'rgba(239, 68, 68, 0.08)',
                     pointBackgroundColor: '#ef4444',
@@ -353,10 +367,10 @@ export default () => {
     );
 
     const stats = [
-        ['Total Requests', overview.metrics.total_requests, '#a78bfa', faChartLine, 'Live sampled traffic'],
-        ['Denied Requests', overview.metrics.denied_requests, '#ef4444', faTimes, `${overview.metrics.denied_percentage}% of total`],
-        ['Allowed Requests', overview.metrics.allowed_requests, '#10b981', faCheck, `${overview.metrics.allowed_percentage}% of total`],
-        ['Bypassed Requests', overview.metrics.bypassed_requests, '#f59e0b', faExclamationTriangle, `${overview.metrics.bypassed_percentage}% of total`],
+        ['Total Requests', overview.metrics.total_requests || 0, '#a78bfa', faChartLine, 'Live sampled traffic'],
+        ['Denied Requests', overview.metrics.denied_requests || 0, '#ef4444', faTimes, `${overview.metrics.denied_percentage || 0}% of total`],
+        ['Allowed Requests', overview.metrics.allowed_requests || 0, '#10b981', faCheck, `${overview.metrics.allowed_percentage || 0}% of total`],
+        ['Bypassed Requests', overview.metrics.bypassed_requests || 0, '#f59e0b', faExclamationTriangle, `${overview.metrics.bypassed_percentage || 0}% of total`],
     ] as const;
 
     return (
@@ -534,9 +548,9 @@ export default () => {
                                     <tbody>
                                         {sortedPaths.map((row: DanexCTargetPath, index) => (
                                             <tr key={row.path} css={tw`border-t transition-colors duration-150`} style={{ borderColor: 'rgba(139, 92, 246, 0.14)', animation: `danex-fade-up 280ms var(--el7-ease) ${index * 35}ms both` }}>
-                                                <td css={tw`py-2 pr-3 font-mono text-[12px] text-neutral-200 break-all`}>{row.path}</td>
-                                                <td css={tw`py-2 px-3 text-purple-200`}>{row.count.toLocaleString()}</td>
-                                                <td css={tw`py-2 px-3 text-red-300`}>{row.denied.toLocaleString()}</td>
+                                                <td css={tw`py-2 pr-3 font-mono text-[12px] text-neutral-200 break-all`}>{row.path || '/'}</td>
+                                                <td css={tw`py-2 px-3 text-purple-200`}>{Number(row.count || 0).toLocaleString()}</td>
+                                                <td css={tw`py-2 px-3 text-red-300`}>{Number(row.denied || 0).toLocaleString()}</td>
                                                 <td css={tw`py-2 pl-3 min-w-[140px]`}>
                                                     <BarTrack>
                                                         <div

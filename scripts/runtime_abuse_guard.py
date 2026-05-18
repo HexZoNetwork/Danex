@@ -1,8 +1,17 @@
-import socket
 #!/usr/bin/env python3
 import collections
 import json
 import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+from typing import Dict, List, Optional, Set, Tuple
+
+CONFIG_PATH = os.environ.get("DANN_CONFIG_PATH", "/pteroprotect/config.json")
+STATE_DIR_DEFAULT = "/pteroprotect/runtime"
+
 
 def is_valid_ip(ip):
     try:
@@ -14,14 +23,6 @@ def is_valid_ip(ip):
             return True
         except socket.error:
             return False
-import signal
-import subprocess
-import sys
-import time
-from typing import Dict, List, Optional, Tuple
-
-CONFIG_PATH = os.environ.get("DANN_CONFIG_PATH", "/pteroprotect/config.json")
-STATE_DIR_DEFAULT = "/pteroprotect/runtime"
 
 
 def log(msg: str) -> None:
@@ -44,6 +45,10 @@ def load_config() -> dict:
     except Exception as exc:
         log(f"config load failed ({CONFIG_PATH}): {exc}")
         return {}
+
+
+def shell_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "'\\''") + "'"
 
 
 def as_int(v, default: int) -> int:
@@ -156,6 +161,145 @@ def pause_container_temporarily(container_id: str, ttl_sec: int) -> None:
     subprocess.Popen(["/bin/bash", "-lc", cmd])
 
 
+def docker_kill_container(container_id: str, reason: str) -> bool:
+    rc, _, err = run(["docker", "kill", container_id], timeout=8)
+    if rc == 0:
+        log(f"container docker-killed {container_id} reason={reason}")
+        return True
+    log(f"container docker-kill failed {container_id} reason={reason}: {err.strip()}")
+    return False
+
+
+def list_docker_container_ids() -> List[str]:
+    rc, out, err = run(["docker", "ps", "--filter", "label=Service=Pterodactyl", "--format", "{{.ID}}"], timeout=8)
+    if rc != 0:
+        log(f"docker ps failed: {err.strip()}")
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def container_process_text(container_id: str) -> str:
+    rc, out, err = run(["docker", "top", container_id, "aux"], timeout=8)
+    if rc != 0:
+        log(f"docker top failed {container_id}: {err.strip()}")
+        return ""
+    return out.lower()
+
+
+def container_name(container_id: str) -> str:
+    rc, out, err = run(["docker", "inspect", "--format", "{{.Name}}", container_id], timeout=8)
+    if rc != 0:
+        log(f"docker inspect name failed {container_id}: {err.strip()}")
+        return ""
+    return out.strip().strip("/")
+
+
+def is_uuid(value: str) -> bool:
+    parts = value.split("-")
+    if len(parts) != 5:
+        return False
+    sizes = [8, 4, 4, 4, 12]
+    return all(len(part) == size and all(c in "0123456789abcdefABCDEF" for c in part) for part, size in zip(parts, sizes))
+
+
+def dangerous_dd_reason(process_text: str, dd_if_threshold: int) -> str:
+    lines = [line for line in process_text.splitlines() if " dd " in f" {line} " or "\tdd " in line or line.strip().startswith("dd ")]
+    zero_hits = sum(1 for line in lines if "dd if=/dev/zero" in line or "dd if=\\/dev\\/zero" in line)
+    if zero_hits > 0:
+        return f"dd_zero_processes={zero_hits}"
+    return ""
+
+
+def has_other_dangerous_marker(process_text: str, markers: List[str]) -> str:
+    for marker in markers:
+        if marker in {"dd if=/dev/zero", "dd if="}:
+            continue
+        if marker and marker in process_text:
+            return marker
+    return ""
+
+
+def mysql_scalar(db_cfg: dict, sql: str) -> str:
+    host = str(db_cfg.get("host", "127.0.0.1"))
+    user = str(db_cfg.get("user", ""))
+    password = str(db_cfg.get("password", ""))
+    name = str(db_cfg.get("name", ""))
+    if not user or not name:
+        return ""
+    env = os.environ.copy()
+    env["MYSQL_PWD"] = password
+    cmd = ["mysql", "-N", "-B", "-h", host, "-u", user, name, "-e", sql]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=8, env=env)
+        if p.returncode != 0:
+            log(f"mysql query failed: {p.stderr.strip()}")
+            return ""
+        return p.stdout.strip().splitlines()[0].strip() if p.stdout.strip() else ""
+    except Exception as exc:
+        log(f"mysql query exception: {exc}")
+        return ""
+
+
+def suspend_server_for_container(container_id: str, db_cfg: dict, reason: str) -> bool:
+    uuid = container_name(container_id)
+    if not is_uuid(uuid):
+        log(f"cannot suspend container {container_id}: container name is not server uuid ({uuid})")
+        return False
+
+    server_id = mysql_scalar(db_cfg, f"SELECT id FROM servers WHERE uuid={shell_quote(uuid)} LIMIT 1")
+    if not server_id.isdigit():
+        log(f"cannot suspend container {container_id}: server uuid not found ({uuid})")
+        return False
+
+    artisan = "/var/www/pterodactyl/artisan"
+    if os.path.exists(artisan):
+        cmd = [
+            "php",
+            artisan,
+            "p:server:guard-suspension",
+            server_id,
+            "--action=suspend",
+            f"--reason={reason}",
+            "--no-interaction",
+        ]
+        rc, _, err = run(cmd, timeout=20)
+        if rc == 0:
+            log(f"server suspended via artisan server_id={server_id} uuid={uuid} reason={reason}")
+            return True
+        log(f"artisan suspend failed server_id={server_id} uuid={uuid}: {err.strip()}")
+
+    updated = mysql_scalar(
+        db_cfg,
+        "UPDATE servers SET status='suspended', updated_at=NOW() "
+        f"WHERE id={server_id} AND (status IS NULL OR status != 'suspended'); SELECT ROW_COUNT();",
+    )
+    ok = updated.isdigit()
+    if ok:
+        log(f"server suspended via db fallback server_id={server_id} uuid={uuid} reason={reason}")
+    return ok
+
+
+def parse_docker_cpu(value: str) -> float:
+    try:
+        return float(str(value).strip().rstrip("%"))
+    except Exception:
+        return 0.0
+
+
+def docker_cpu_percent(container_id: str) -> float:
+    rc, out, err = run(["docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}", container_id], timeout=8)
+    if rc != 0:
+        log(f"docker stats failed {container_id}: {err.strip()}")
+        return 0.0
+    return parse_docker_cpu(out.strip().splitlines()[0] if out.strip() else "0")
+
+
+def host_cpu_kill_threshold(reserved_cores: int, min_threshold_pct: int) -> int:
+    cores = max(1, os.cpu_count() or 1)
+    usable = max(1, cores - max(1, reserved_cores))
+    return max(min_threshold_pct, usable * 100)
+
+
 def terminate_pid(pid: int, grace_ms: int, do_sigkill: bool) -> bool:
     try:
         os.kill(pid, signal.SIGTERM)
@@ -209,6 +353,7 @@ def write_metrics(state_dir: str, metrics: Dict[str, int]) -> None:
 def main() -> int:
     cfg = load_config()
     runtime = cfg.get("runtime", {}) if isinstance(cfg, dict) else {}
+    db_cfg = cfg.get("database", {}) if isinstance(cfg, dict) and isinstance(cfg.get("database"), dict) else {}
     abuse = cfg.get("abuse", {}) if isinstance(cfg, dict) else {}
     abuse_guard = cfg.get("abuse_guard", {}) if isinstance(cfg, dict) else {}
 
@@ -221,6 +366,26 @@ def main() -> int:
     do_sigkill = bool(abuse.get("then_sigkill", True))
     escalation_ttl = as_int(abuse.get("escalation_ttl_sec", 45), 45)
     max_auto_bans = as_int(abuse_guard.get("max_auto_bans", 200), 200)
+    docker_kill_enabled = bool(abuse_guard.get("docker_kill_enabled", True))
+    docker_cpu_reserved_cores = as_int(abuse_guard.get("docker_cpu_reserved_cores", 1), 1)
+    docker_cpu_min_threshold_pct = as_int(abuse_guard.get("docker_cpu_min_threshold_pct", 80), 80)
+    docker_cpu_strikes_required = max(1, as_int(abuse_guard.get("docker_cpu_strikes_required", 2), 2))
+    docker_scan_interval_sec = max(1, as_int(abuse_guard.get("docker_scan_interval_sec", 2), 2))
+    docker_suspend_on_dangerous_process = bool(abuse_guard.get("docker_suspend_on_dangerous_process", True))
+    dangerous_dd_if_threshold = max(1, as_int(abuse_guard.get("dangerous_dd_if_threshold", 3), 3))
+    docker_cpu_kill_pct = as_int(
+        abuse_guard.get("docker_cpu_kill_pct", host_cpu_kill_threshold(docker_cpu_reserved_cores, docker_cpu_min_threshold_pct)),
+        host_cpu_kill_threshold(docker_cpu_reserved_cores, docker_cpu_min_threshold_pct),
+    )
+    dangerous_proc_markers_raw = abuse_guard.get(
+        "dangerous_process_markers",
+        ["dd if=/dev/zero", "dd if=", "stress-ng", "stress --cpu", "yes >", "yes>>"],
+    )
+    dangerous_proc_markers = (
+        [str(x).strip().lower() for x in dangerous_proc_markers_raw if str(x).strip()]
+        if isinstance(dangerous_proc_markers_raw, list)
+        else ["dd if=/dev/zero", "dd if=", "stress-ng", "stress --cpu"]
+    )
 
     allow_pids_raw = abuse_guard.get("allow_pids", [])
     deny_pids_raw = abuse_guard.get("deny_pids", [])
@@ -251,11 +416,18 @@ def main() -> int:
         "escalation_dropped_cap": 0,
         "allowlist_skipped": 0,
         "denylist_seen": 0,
+        "container_killed": 0,
+        "container_cpu_strike": 0,
+        "container_dangerous_process": 0,
+        "server_suspended": 0,
     }
+    container_cpu_strikes: Dict[str, collections.deque] = {}
+    docker_killed: Set[str] = set()
+    last_docker_scan = 0.0
 
     log(
         f"started threshold={req_threshold}/{window_ms}ms targets={targets} ports={gateway_ports} "
-        f"max_auto_bans={max_auto_bans}"
+        f"max_auto_bans={max_auto_bans} docker_kill={docker_kill_enabled} docker_cpu_kill_pct={docker_cpu_kill_pct}"
     )
 
     sleep_s = max(0.2, window_ms / 1000.0)
@@ -319,8 +491,16 @@ def main() -> int:
                 event["escalated"] = True
                 event["container_id"] = cid
                 if cid and len(escalations) < max_auto_bans:
-                    pause_container_temporarily(cid, escalation_ttl)
-                    event["escalation_action"] = "container_pause"
+                    if docker_kill_enabled and cid not in docker_killed:
+                        killed = docker_kill_container(cid, "self_ddos_socket_strikes")
+                        event["escalation_action"] = "container_docker_kill"
+                        event["container_killed"] = killed
+                        docker_killed.add(cid)
+                        if killed:
+                            metrics["container_killed"] += 1
+                    else:
+                        pause_container_temporarily(cid, escalation_ttl)
+                        event["escalation_action"] = "container_pause"
                     escalations.append(ts)
                     metrics["escalated"] += 1
                 elif cid:
@@ -334,6 +514,70 @@ def main() -> int:
 
             write_self_ddos_event(state_dir, event)
             write_metrics(state_dir, metrics)
+
+        if docker_kill_enabled and (ts - last_docker_scan) >= docker_scan_interval_sec:
+            last_docker_scan = ts
+            for cid in list_docker_container_ids():
+                if cid in docker_killed:
+                    continue
+                process_text = container_process_text(cid)
+                dd_reason = dangerous_dd_reason(process_text, dangerous_dd_if_threshold)
+                marker_reason = has_other_dangerous_marker(process_text, dangerous_proc_markers)
+                dangerous_reason = dd_reason or (f"marker={marker_reason}" if marker_reason else "")
+                if dangerous_reason:
+                    if docker_kill_container(cid, "dangerous_process_marker"):
+                        docker_killed.add(cid)
+                        metrics["container_killed"] += 1
+                        metrics["container_dangerous_process"] += 1
+                        suspended = False
+                        if docker_suspend_on_dangerous_process:
+                            suspended = suspend_server_for_container(
+                                cid,
+                                db_cfg,
+                                f"runtime investigate dangerous process: {dangerous_reason}",
+                            )
+                            if suspended:
+                                metrics["server_suspended"] += 1
+                        write_self_ddos_event(
+                            state_dir,
+                            {
+                                "ts": int(ts),
+                                "container_id": cid,
+                                "reason": "dangerous_process_marker",
+                                "detail": dangerous_reason,
+                                "action": "container_docker_kill",
+                                "killed": True,
+                                "server_suspended": suspended,
+                            },
+                        )
+                    continue
+
+                cpu_pct = docker_cpu_percent(cid)
+                q = container_cpu_strikes.setdefault(cid, collections.deque())
+                if cpu_pct >= docker_cpu_kill_pct:
+                    q.append(ts)
+                    metrics["container_cpu_strike"] += 1
+                    log(f"container cpu strike cid={cid} cpu={cpu_pct:.1f}% threshold={docker_cpu_kill_pct}% strikes={len(q)}/{docker_cpu_strikes_required}")
+                else:
+                    q.clear()
+                while q and (ts - q[0]) > strike_window:
+                    q.popleft()
+                if len(q) >= docker_cpu_strikes_required:
+                    if docker_kill_container(cid, f"cpu_over_budget_{cpu_pct:.1f}_pct"):
+                        docker_killed.add(cid)
+                        metrics["container_killed"] += 1
+                        write_self_ddos_event(
+                            state_dir,
+                            {
+                                "ts": int(ts),
+                                "container_id": cid,
+                                "reason": "cpu_over_budget",
+                                "cpu_pct": cpu_pct,
+                                "threshold_pct": docker_cpu_kill_pct,
+                                "action": "container_docker_kill",
+                                "killed": True,
+                            },
+                        )
 
         write_metrics(state_dir, metrics)
         time.sleep(sleep_s)
