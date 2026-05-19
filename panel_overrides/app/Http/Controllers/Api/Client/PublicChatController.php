@@ -5,6 +5,7 @@ namespace Pterodactyl\Http\Controllers\Api\Client;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
@@ -21,6 +22,8 @@ class PublicChatController extends ClientApiController
     private const MAX_MESSAGE_LENGTH = 2000;
     private const PRESENCE_ONLINE_WINDOW_SECONDS = 75;
     private const NOTIFICATION_MAX_LIMIT = 120;
+    private const UPLOAD_MAX_KILOBYTES = 5120;
+    private const UPLOAD_USER_HOURLY_BYTES = 52428800;
     private const REACTION_ALLOWLIST = ['👍', '❤️', '🔥', '😂', '😮', '😢'];
     private static ?bool $hasParticipantRoleColumn = null;
     private static ?bool $hasReactionTable = null;
@@ -36,7 +39,7 @@ class PublicChatController extends ClientApiController
         $global = $this->globalConversation();
 
         $conversations = ChatConversation::query()
-            ->with('participants:id,username,name_first,name_last,email,avatar_url,birthday,created_at')
+            ->with('participants:id,username,name_first,name_last,avatar_url')
             ->where('id', $global->id)
             ->orWhere(function ($query) use ($user) {
                 $query->where('id', '!=', self::GLOBAL_CONVERSATION_ID)
@@ -103,8 +106,6 @@ class PublicChatController extends ClientApiController
                     'username' => (string) $member->username,
                     'display_name' => trim((string) ($member->name_first . ' ' . $member->name_last)) ?: (string) $member->username,
                     'avatar_url' => $this->avatarUrlForUser($member),
-                    'birthday' => $this->birthdayForUser($member),
-                    'created_at' => optional($member->created_at)?->toIso8601String(),
                     'role' => (string) ($member->pivot->role ?? 'member'),
                     'muted_until' => $muteMap[(int) $conversation->id . ':' . (int) $member->id] ?? null,
                     'last_seen_at' => $presenceMap[(int) $member->id] ?? null,
@@ -146,7 +147,7 @@ class PublicChatController extends ClientApiController
         $query = trim((string) $validated['query']);
 
         $users = User::query()
-            ->select(['id', 'username', 'name_first', 'name_last', 'avatar_url', 'birthday', 'created_at', 'email'])
+            ->select(['id', 'username', 'name_first', 'name_last', 'avatar_url'])
             ->where('id', '!=', (int) $viewer->id)
             ->where(function ($q) use ($query) {
                 $q->where('username', 'like', '%' . $query . '%')
@@ -163,8 +164,6 @@ class PublicChatController extends ClientApiController
                 'username' => (string) $user->username,
                 'display_name' => trim((string) ($user->name_first . ' ' . $user->name_last)) ?: (string) $user->username,
                 'avatar_url' => $this->avatarUrlForUser($user),
-                'birthday' => $this->birthdayForUser($user),
-                'created_at' => optional($user->created_at)?->toIso8601String(),
             ])->values(),
         ]);
     }
@@ -285,8 +284,8 @@ class PublicChatController extends ClientApiController
         $query = PublicChatMessage::query()
             ->where('conversation_id', $conversation->id)
             ->with(
-                'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
-                'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+                'user:id,username,name_first,name_last,avatar_url',
+                'replyTo.user:id,username,name_first,name_last,avatar_url'
             )
             ->orderByDesc('id');
 
@@ -320,6 +319,7 @@ class PublicChatController extends ClientApiController
             'media_type' => 'nullable|in:text,image,audio,link',
             'media_name' => 'nullable|string|max:255',
             'media_mime' => 'nullable|string|max:120',
+            'upload_token' => 'nullable|string|size:64|regex:/^[A-Fa-f0-9]+$/',
             'reply_to_id' => 'nullable|integer|min:1|exists:public_chat_messages,id',
         ]);
 
@@ -330,8 +330,15 @@ class PublicChatController extends ClientApiController
 
         $body = $this->sanitizeBody((string) ($validated['message'] ?? ''));
         $mediaUrl = $this->sanitizeMediaUrl((string) ($validated['media_url'] ?? ''));
+        $mediaType = $this->inferMediaType($validated['media_type'] ?? null, $mediaUrl, (string) ($validated['media_mime'] ?? ''));
         if ($body === '' && $mediaUrl === '') {
             return new JsonResponse(['error' => 'Message or media is required.'], 422);
+        }
+        if ($mediaUrl !== '' && in_array($mediaType, ['image', 'audio'], true)) {
+            $upload = $this->validatedPendingUpload((int) $user->id, (int) $conversation->id, (string) ($validated['upload_token'] ?? ''), $mediaUrl);
+            if ($upload === null) {
+                return new JsonResponse(['error' => 'Media upload is expired or does not belong to this conversation.'], 422);
+            }
         }
 
         $replyToId = (int) ($validated['reply_to_id'] ?? 0) ?: null;
@@ -349,14 +356,17 @@ class PublicChatController extends ClientApiController
             'mention_usernames' => $this->extractMentions($body),
             'body' => $body !== '' ? $body : null,
             'media_url' => $mediaUrl !== '' ? $mediaUrl : null,
-            'media_type' => $this->inferMediaType($validated['media_type'] ?? null, $mediaUrl, (string) ($validated['media_mime'] ?? '')),
+            'media_type' => $mediaType,
             'media_name' => $this->sanitizeFilename((string) ($validated['media_name'] ?? '')),
             'media_mime' => $this->sanitizeMime((string) ($validated['media_mime'] ?? '')),
         ]);
+        if ($mediaUrl !== '' && in_array($mediaType, ['image', 'audio'], true)) {
+            Cache::forget($this->pendingUploadCacheKey((int) $user->id, (string) ($validated['upload_token'] ?? '')));
+        }
 
         $message->load(
-            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
-            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+            'user:id,username,name_first,name_last,avatar_url',
+            'replyTo.user:id,username,name_first,name_last,avatar_url'
         );
         $this->notifyConversationMessage((int) $conversation->id, (int) $user->id, $body !== '' ? $body : null);
 
@@ -377,6 +387,7 @@ class PublicChatController extends ClientApiController
             'media_url' => 'nullable|url|max:2000',
             'media_name' => 'nullable|string|max:255',
             'media_mime' => 'nullable|string|max:120',
+            'upload_token' => 'nullable|string|size:64|regex:/^[A-Fa-f0-9]+$/',
         ]);
 
         $conversation = $this->conversationForUser($user, (int) $validated['conversation_id']);
@@ -385,6 +396,9 @@ class PublicChatController extends ClientApiController
         }
         $options = array_values(array_map(fn ($v) => trim((string) $v), $validated['options']));
         $mediaUrl = $this->sanitizeMediaUrl((string) ($validated['media_url'] ?? ''));
+        if ($mediaUrl !== '' && $this->validatedPendingUpload((int) $user->id, (int) $conversation->id, (string) ($validated['upload_token'] ?? ''), $mediaUrl) === null) {
+            return new JsonResponse(['error' => 'Poll image upload is expired or does not belong to this conversation.'], 422);
+        }
 
         $message = PublicChatMessage::query()->create([
             'conversation_id' => (int) $conversation->id,
@@ -396,8 +410,11 @@ class PublicChatController extends ClientApiController
             'poll_question' => trim((string) $validated['question']),
             'poll_options' => $options,
         ]);
+        if ($mediaUrl !== '') {
+            Cache::forget($this->pendingUploadCacheKey((int) $user->id, (string) ($validated['upload_token'] ?? '')));
+        }
 
-        $message->load('user:id,username,name_first,name_last,email,avatar_url,birthday,created_at');
+        $message->load('user:id,username,name_first,name_last,avatar_url');
         $this->notifyConversationMessage((int) $conversation->id, (int) $user->id, '[Poll] ' . trim((string) $validated['question']));
 
         return new JsonResponse([
@@ -433,8 +450,8 @@ class PublicChatController extends ClientApiController
         ], ['message_id', 'user_id'], ['option_index', 'created_at']);
 
         $model->load(
-            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
-            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+            'user:id,username,name_first,name_last,avatar_url',
+            'replyTo.user:id,username,name_first,name_last,avatar_url'
         );
         $stats = $this->readStats([$model->id]);
         $poll = $this->pollStats([$model->id], (int) $user->id);
@@ -680,8 +697,8 @@ class PublicChatController extends ClientApiController
         }
 
         $model->load(
-            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
-            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+            'user:id,username,name_first,name_last,avatar_url',
+            'replyTo.user:id,username,name_first,name_last,avatar_url'
         );
         $stats = $this->readStats([$model->id]);
         $poll = $this->pollStats([$model->id], (int) $user->id);
@@ -696,7 +713,7 @@ class PublicChatController extends ClientApiController
     {
         $user = $request->user();
         $model = PublicChatMessage::query()
-            ->with('user:id,username,email')
+            ->with('user:id,username')
             ->whereKey($message)
             ->firstOrFail();
         $this->conversationForUser($user, (int) $model->conversation_id);
@@ -720,8 +737,8 @@ class PublicChatController extends ClientApiController
         $model->save();
 
         $model->load(
-            'user:id,username,name_first,name_last,email,avatar_url,birthday,created_at',
-            'replyTo.user:id,username,name_first,name_last,email,avatar_url,birthday,created_at'
+            'user:id,username,name_first,name_last,avatar_url',
+            'replyTo.user:id,username,name_first,name_last,avatar_url'
         );
         $stats = $this->readStats([$model->id]);
         $poll = $this->pollStats([$model->id], (int) $user->id);
@@ -735,7 +752,7 @@ class PublicChatController extends ClientApiController
     {
         $user = $request->user();
         $model = PublicChatMessage::query()
-            ->with('user:id,username,email')
+            ->with('user:id,username')
             ->whereKey($message)
             ->firstOrFail();
         $this->conversationForUser($user, (int) $model->conversation_id);
@@ -764,8 +781,7 @@ class PublicChatController extends ClientApiController
             return false;
         }
 
-        return strtolower((string) $author->username) === strtolower((string) $user->username)
-            || strtolower((string) $author->email) === strtolower((string) $user->email);
+        return strtolower((string) $author->username) === strtolower((string) $user->username);
     }
 
     public function markRead(Request $request): JsonResponse
@@ -805,23 +821,50 @@ class PublicChatController extends ClientApiController
     public function upload(Request $request): JsonResponse
     {
         $request->validate([
+            'conversation_id' => 'required|integer|min:1',
             'file' => [
                 'required',
                 'file',
-                'max:10240',
+                'max:' . self::UPLOAD_MAX_KILOBYTES,
                 'mimetypes:image/jpeg,image/png,image/gif,image/webp,audio/mpeg,audio/ogg,audio/wav,audio/webm,audio/mp4,audio/x-m4a',
             ],
         ]);
 
+        $user = $request->user();
+        $conversation = $this->conversationForUser($user, (int) $request->input('conversation_id'));
         /** @var UploadedFile $file */
         $file = $request->file('file');
-        $storedPath = $file->storePublicly('chat-media', 'public');
-        $url = Storage::disk('public')->url($storedPath);
+        $size = max(0, (int) $file->getSize());
+        $quotaKey = 'chat-upload-bytes:' . (int) $user->id;
+        Cache::add($quotaKey, 0, now()->addHour());
+        $used = (int) Cache::increment($quotaKey, $size);
+        if ($used > self::UPLOAD_USER_HOURLY_BYTES) {
+            Cache::decrement($quotaKey, $size);
+            return new JsonResponse(['error' => 'Upload quota exceeded. Please retry later.'], 429);
+        }
+
         $mime = (string) $file->getMimeType();
+        $realPath = $file->getRealPath();
+        if (Str::startsWith($mime, 'image/') && (!is_string($realPath) || @getimagesize($realPath) === false)) {
+            Cache::decrement($quotaKey, $size);
+            return new JsonResponse(['error' => 'Invalid image upload.'], 422);
+        }
+
+        $storedPath = $file->storePublicly('chat-media/' . (int) $conversation->id . '/' . (int) $user->id, 'public');
+        $url = Storage::disk('public')->url($storedPath);
+        $uploadToken = bin2hex(random_bytes(32));
+        Cache::put($this->pendingUploadCacheKey((int) $user->id, $uploadToken), [
+            'conversation_id' => (int) $conversation->id,
+            'url' => $url,
+            'path' => $storedPath,
+            'mime' => $mime,
+            'size' => $size,
+        ], now()->addMinutes(30));
 
         return new JsonResponse([
             'data' => [
                 'url' => $url,
+                'upload_token' => $uploadToken,
                 'media_type' => Str::startsWith($mime, 'audio/') ? 'audio' : 'image',
                 'media_name' => $this->sanitizeFilename($file->getClientOriginalName()),
                 'media_mime' => $this->sanitizeMime($mime),
@@ -1583,7 +1626,6 @@ class PublicChatController extends ClientApiController
                 'u.username',
                 'u.name_first',
                 'u.name_last',
-                'u.email',
                 'u.avatar_url',
                 'p.mic_muted',
                 'p.speaking_level',
@@ -1602,10 +1644,9 @@ class PublicChatController extends ClientApiController
                     'id' => (int) $row->id,
                     'username' => (string) $row->username,
                     'display_name' => $display !== '' ? $display : (string) $row->username,
-                    'avatar_url' => $this->avatarFromRaw((string) ($row->avatar_url ?? ''), (string) ($row->email ?? '')),
+                    'avatar_url' => $this->avatarFromRaw((string) ($row->avatar_url ?? '')),
                     'mic_muted' => (bool) $row->mic_muted,
                     'speaking_level' => max(0, min(100, (int) $row->speaking_level)),
-                    'joined_at' => $row->joined_at ? (string) $row->joined_at : null,
                 ];
             })->values(),
         ];
@@ -1957,8 +1998,6 @@ class PublicChatController extends ClientApiController
             'username' => $username,
             'display_name' => $displayName !== '' ? $displayName : $username,
             'avatar_url' => $this->avatarUrlForUser($message->user),
-            'birthday' => $this->birthdayForUser($message->user),
-            'joined_at' => optional($message->user?->created_at)?->toDateString(),
             'mentions' => array_values(array_unique(array_map('strval', (array) ($message->mention_usernames ?? [])))),
             'body' => $message->body,
             'media_url' => $message->media_url,
@@ -1977,8 +2016,6 @@ class PublicChatController extends ClientApiController
                 'display_name' => trim((string) (($message->replyTo->user?->name_first ?? '') . ' ' . ($message->replyTo->user?->name_last ?? '')))
                     ?: (string) ($message->replyTo->user?->username ?? 'unknown'),
                 'avatar_url' => $this->avatarUrlForUser($message->replyTo->user),
-                'birthday' => $this->birthdayForUser($message->replyTo->user),
-                'joined_at' => optional($message->replyTo->user?->created_at)?->toDateString(),
                 'body' => (string) ($message->replyTo->body ?? ''),
             ] : null,
             'poll' => $pollPayload,
@@ -2064,23 +2101,49 @@ class PublicChatController extends ClientApiController
         return 'link';
     }
 
+    private function pendingUploadCacheKey(int $userId, string $token): string
+    {
+        return 'chat-upload-pending:' . $userId . ':' . hash('sha256', $token);
+    }
+
+    /** @return array<string,mixed>|null */
+    private function validatedPendingUpload(int $userId, int $conversationId, string $token, string $mediaUrl): ?array
+    {
+        if ($token === '' || preg_match('/^[A-Fa-f0-9]{64}$/', $token) !== 1) {
+            return null;
+        }
+
+        $upload = Cache::get($this->pendingUploadCacheKey($userId, $token));
+        if (!is_array($upload)) {
+            return null;
+        }
+
+        $storedConversation = (int) ($upload['conversation_id'] ?? 0);
+        $storedUrl = (string) ($upload['url'] ?? '');
+        if ($storedConversation !== $conversationId || $storedUrl === '' || !hash_equals($storedUrl, $mediaUrl)) {
+            return null;
+        }
+
+        return $upload;
+    }
+
     private function avatarUrlForUser(?User $user): ?string
     {
         if (!$user) {
             return null;
         }
 
-        return $this->avatarFromRaw((string) ($user->avatar_url ?? ''), (string) $user->email);
+        return $this->avatarFromRaw((string) ($user->avatar_url ?? ''));
     }
 
-    private function avatarFromRaw(string $custom, string $email): string
+    private function avatarFromRaw(string $custom): ?string
     {
         $custom = trim($custom);
         if ($custom !== '' && preg_match('#^https?://#i', $custom) === 1) {
             return mb_substr($custom, 0, 2048);
         }
 
-        return 'https://gravatar.com/avatar/' . md5(Str::lower($email));
+        return null;
     }
 
     private function birthdayForUser(?User $user): ?string

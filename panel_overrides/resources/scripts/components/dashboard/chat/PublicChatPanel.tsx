@@ -579,6 +579,7 @@ export default () => {
     const [mediaType, setMediaType] = useState<'image' | 'audio' | 'link' | ''>('');
     const [mediaName, setMediaName] = useState('');
     const [mediaMime, setMediaMime] = useState('');
+    const [mediaUploadToken, setMediaUploadToken] = useState('');
 
     const [editingId, setEditingId] = useState<number | null>(null);
     const [editingValue, setEditingValue] = useState('');
@@ -604,6 +605,7 @@ export default () => {
     const [pollMediaUrl, setPollMediaUrl] = useState('');
     const [pollMediaName, setPollMediaName] = useState('');
     const [pollMediaMime, setPollMediaMime] = useState('');
+    const [pollMediaUploadToken, setPollMediaUploadToken] = useState('');
 
     const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
     const [mobilePane, setMobilePane] = useState<'chats' | 'room'>('chats');
@@ -643,9 +645,12 @@ export default () => {
 
     const listRef = useRef<HTMLDivElement>(null);
     const messageRefs = useRef<Record<number, HTMLDivElement | null>>({});
+    const pollImageInputRef = useRef<HTMLInputElement>(null);
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const quickSendInputRef = useRef<HTMLInputElement>(null);
     const compressedSendInputRef = useRef<HTMLInputElement>(null);
+    const messagePollInFlightRef = useRef(false);
+    const callPollInFlightRef = useRef(false);
     const callSinceIdRef = useRef(0);
     const callSignalProcessedRef = useRef<Set<number>>(new Set());
     const callPeersRef = useRef<Record<number, RTCPeerConnection>>({});
@@ -853,6 +858,7 @@ export default () => {
     useEffect(() => {
         let cancelled = false;
         const beat = async () => {
+            if (document.hidden) return;
             try {
                 await sendPresenceHeartbeat();
             } catch {
@@ -941,7 +947,11 @@ export default () => {
 
     useEffect(() => {
         const timer = setInterval(() => {
-            pollIncoming();
+            if (document.hidden || messagePollInFlightRef.current) return;
+            messagePollInFlightRef.current = true;
+            pollIncoming().finally(() => {
+                messagePollInFlightRef.current = false;
+            });
         }, 3000);
 
         return () => clearInterval(timer);
@@ -951,9 +961,15 @@ export default () => {
         if (!activeConversationId) return;
 
         const timer = window.setInterval(() => {
-            refreshCallState().catch(() => {
-                // silent poll failure
-            });
+            if (document.hidden || callPollInFlightRef.current) return;
+            callPollInFlightRef.current = true;
+            refreshCallState()
+                .catch(() => {
+                    // silent poll failure
+                })
+                .finally(() => {
+                    callPollInFlightRef.current = false;
+                });
         }, CALL_POLL_MS);
 
         return () => window.clearInterval(timer);
@@ -1006,13 +1022,14 @@ export default () => {
         mediaType === 'audio' ? 'audio' : mediaType === 'image' ? 'image' : 'link';
 
     const uploadPreparedFile = async (file: File, compressed = false) => {
+        if (!activeConversationId) throw new Error('No active conversation selected.');
         const prepared = compressed && isImageFile(file) ? await compressImageFile(file) : file;
 
-        return uploadPublicMedia(prepared);
+        return uploadPublicMedia(prepared, activeConversationId);
     };
 
     const sendUploadedAsMessage = async (
-        uploaded: { url: string; mediaType: string; mediaName: string | null; mediaMime: string | null },
+        uploaded: { url: string; uploadToken: string; mediaType: string; mediaName: string | null; mediaMime: string | null },
         fallbackName: string
     ) => {
         if (!activeConversationId) return;
@@ -1024,6 +1041,7 @@ export default () => {
             mediaType: normalizeUploadedType(uploaded.mediaType),
             mediaName: uploaded.mediaName || fallbackName,
             mediaMime: uploaded.mediaMime || undefined,
+            uploadToken: uploaded.uploadToken,
             replyToId: replyingTo?.id,
         });
         setMessages((current) => [...current, created]);
@@ -1052,6 +1070,7 @@ export default () => {
                 setPollMediaUrl(uploaded.url);
                 setPollMediaName(uploaded.mediaName || file.name);
                 setPollMediaMime(uploaded.mediaMime || file.type || '');
+                setPollMediaUploadToken(uploaded.uploadToken);
                 return;
             }
 
@@ -1064,6 +1083,7 @@ export default () => {
             setMediaType(normalizeUploadedType(uploaded.mediaType));
             setMediaName(uploaded.mediaName || file.name);
             setMediaMime(uploaded.mediaMime || file.type || '');
+            setMediaUploadToken(uploaded.uploadToken);
         } catch (error) {
             clearAndAddHttpError({ key: 'dashboard', error });
         } finally {
@@ -1078,6 +1098,7 @@ export default () => {
         setMediaType('');
         setMediaName('');
         setMediaMime('');
+        setMediaUploadToken('');
         setReplyingTo(null);
     };
 
@@ -1099,6 +1120,7 @@ export default () => {
                 mediaType: mediaType || undefined,
                 mediaName: mediaName || undefined,
                 mediaMime: mediaMime || undefined,
+                uploadToken: mediaUploadToken || undefined,
                 replyToId: replyingTo?.id,
             });
 
@@ -1129,6 +1151,7 @@ export default () => {
                 mediaUrl: pollMediaUrl || undefined,
                 mediaName: pollMediaName || undefined,
                 mediaMime: pollMediaMime || undefined,
+                uploadToken: pollMediaUploadToken || undefined,
             });
             setMessages((current) => [...current, created]);
             setPollQuestion('');
@@ -1136,6 +1159,7 @@ export default () => {
             setPollMediaUrl('');
             setPollMediaName('');
             setPollMediaMime('');
+            setPollMediaUploadToken('');
             setPollOpen(false);
             requestAnimationFrame(scrollToBottom);
             await loadConvoList(true);
@@ -1259,7 +1283,7 @@ export default () => {
 
     const convLabel = (conversation: ChatConversation) => {
         if (conversation.type === 'global') return 'GLOBAL';
-        if (conversation.type === 'private') return 'DM';
+        if (conversation.type === 'private') return 'Direct';
 
         return 'GROUP';
     };
@@ -2197,11 +2221,11 @@ export default () => {
                                     <div css={tw`flex items-center gap-1 ml-2`}>
                                         {user.username.toLowerCase() !== selfUsername.toLowerCase() && (
                                             <Small type={'button'} onClick={() => openPrivateChat(user.username)}>
-                                                DM
+                                                Message
                                             </Small>
                                         )}
                                         <Small type={'button'} onClick={() => toggleMember(user.username)}>
-                                            {groupMembers.includes(user.username) ? 'Unpick' : 'Group'}
+                                            {groupMembers.includes(user.username) ? 'Remove' : 'Add to group'}
                                         </Small>
                                     </div>
                                 </div>
@@ -2356,7 +2380,7 @@ export default () => {
                         )}
                         {activeConversation && (
                             <Tiny type={'button'} onClick={toggleConversationNotificationMute}>
-                                {activeConversation.notificationMutedUntil ? 'Unmute Notif' : 'Mute Notif'}
+                                {activeConversation.notificationMutedUntil ? 'Unmute notifications' : 'Mute notifications'}
                             </Tiny>
                         )}
                         <Tiny type={'button'} css={tw`lg:hidden`} onClick={() => setMobilePane('chats')}>
@@ -2485,17 +2509,17 @@ export default () => {
                                             {member.username !== selfUsername && (
                                                 <>
                                                     <Small type={'button'} onClick={() => manageGroup('kick', { memberId: member.id })}>
-                                                        kick
+                                                        Kick
                                                     </Small>
                                                     <Small type={'button'} onClick={() => manageGroup('ban', { memberId: member.id })}>
-                                                        ban
+                                                        Ban
                                                     </Small>
                                                     {myGroupRole === 'owner' && member.role !== 'owner' && (
                                                         <Small
                                                             type={'button'}
                                                             onClick={() => manageGroup(member.role === 'admin' ? 'demote' : 'promote', { memberId: member.id })}
                                                         >
-                                                            {member.role === 'admin' ? 'demote' : 'admin'}
+                                                            {member.role === 'admin' ? 'Demote' : 'Make admin'}
                                                         </Small>
                                                     )}
                                                 </>
@@ -2759,7 +2783,7 @@ export default () => {
                 <Composer onSubmit={handleSend}>
                     {dragging && (
                         <div css={tw`rounded-md border p-2 text-xs text-neutral-200`} style={panelHeaderStyle}>
-                            Drop file to choose Quick/Compressed upload...
+                            Drop file to choose send mode...
                         </div>
                     )}
                     {replyingTo && (
@@ -2804,15 +2828,18 @@ export default () => {
                                 />
                             ))}
                             <div css={tw`flex items-center gap-2 flex-wrap`}>
-                                <label css={tw`text-xs text-neutral-300 cursor-pointer`}>
+                                <Small type={'button'} onClick={() => pollImageInputRef.current?.click()} disabled={uploading || sending}>
                                     {uploading ? 'Uploading...' : 'Add poll image'}
-                                    <input
-                                        type={'file'}
-                                        accept={'image/*'}
-                                        css={tw`hidden`}
-                                        onChange={(e) => uploadPollImage(e.currentTarget.files?.[0], false)}
-                                    />
-                                </label>
+                                </Small>
+                                <input
+                                    ref={pollImageInputRef}
+                                    type={'file'}
+                                    accept={'image/*'}
+                                    css={tw`hidden`}
+                                    aria-hidden={'true'}
+                                    tabIndex={-1}
+                                    onChange={(e) => uploadPollImage(e.currentTarget.files?.[0], false)}
+                                />
                                 <Small
                                     type={'button'}
                                     onClick={() => {
@@ -2823,7 +2850,7 @@ export default () => {
                                         picker.click();
                                     }}
                                 >
-                                    Compressed upload
+                                    Compress image
                                 </Small>
                                 {pollMediaUrl && (
                                     <button type={'button'} onClick={() => setPreviewImageUrl(pollMediaUrl)} css={tw`text-xs text-neutral-200 underline`}>
@@ -2864,21 +2891,23 @@ export default () => {
 
                     <div css={tw`flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2`}>
                         <div css={tw`flex items-center gap-2 flex-wrap`}>
-                            <label css={tw`text-xs text-neutral-300 cursor-pointer`}>
+                            <Tiny type={'button'} onClick={() => uploadInputRef.current?.click()} disabled={uploading || sending}>
                                 {uploading ? 'Uploading...' : 'Attach media'}
-                                <input
-                                    ref={uploadInputRef}
-                                    type={'file'}
-                                    accept={'image/*,audio/*'}
-                                    css={tw`hidden`}
-                                    onChange={(e) => onUpload(e.currentTarget.files?.[0], { compressed: false })}
-                                />
-                            </label>
+                            </Tiny>
+                            <input
+                                ref={uploadInputRef}
+                                type={'file'}
+                                accept={'image/*,audio/*'}
+                                css={tw`hidden`}
+                                aria-hidden={'true'}
+                                tabIndex={-1}
+                                onChange={(e) => onUpload(e.currentTarget.files?.[0], { compressed: false })}
+                            />
                             <Tiny type={'button'} onClick={() => quickSendInputRef.current?.click()} disabled={uploading || sending}>
-                                Quick Send
+                                Send file now
                             </Tiny>
                             <Tiny type={'button'} onClick={() => compressedSendInputRef.current?.click()} disabled={uploading || sending}>
-                                Compressed
+                                Compress & send
                             </Tiny>
                             <input
                                 ref={quickSendInputRef}
@@ -2908,10 +2937,17 @@ export default () => {
             {pendingUploadFile && (
                 <div
                     css={tw`fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4`}
+                    role={'dialog'}
+                    aria-modal={'true'}
+                    aria-labelledby={'chat-upload-dialog-title'}
+                    tabIndex={-1}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Escape') setPendingUploadFile(null);
+                    }}
                     onClick={() => setPendingUploadFile(null)}
                 >
                     <div css={tw`w-full max-w-sm rounded-lg border border-neutral-600 bg-neutral-900 p-4 space-y-3`} onClick={(e) => e.stopPropagation()}>
-                        <h4 css={tw`text-sm font-semibold text-neutral-100`}>Upload file</h4>
+                        <h4 id={'chat-upload-dialog-title'} css={tw`text-sm font-semibold text-neutral-100`}>Upload file</h4>
                         <p css={tw`text-xs text-neutral-400 break-all`}>{pendingUploadFile.name}</p>
                         {isImageFile(pendingUploadFile) && (
                             <div css={tw`flex gap-2`}>
@@ -2927,7 +2963,7 @@ export default () => {
                                     css={uploadMode === 'compressed' ? tw`border-neutral-400 text-neutral-100` : undefined}
                                     onClick={() => setUploadMode('compressed')}
                                 >
-                                    Compressed
+                                    Compress
                                 </Tiny>
                             </div>
                         )}
@@ -2977,18 +3013,25 @@ export default () => {
             {incomingCallPrompt && (
                 <div
                     css={tw`fixed inset-0 z-50 flex items-center justify-center p-4`}
+                    role={'dialog'}
+                    aria-modal={'true'}
+                    aria-labelledby={'incoming-call-dialog-title'}
+                    tabIndex={-1}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Escape') respondIncomingCall('ignore');
+                    }}
                     style={{ background: 'rgba(0, 0, 0, 0.68)', backdropFilter: 'blur(10px)' }}
                     onClick={() => respondIncomingCall('ignore')}
                 >
                     <div css={tw`w-full max-w-sm rounded-lg border p-4`} style={panelStyle} onClick={(e) => e.stopPropagation()}>
-                        <p css={tw`text-sm font-semibold text-neutral-100`}>Incoming Direct Call</p>
+                        <p id={'incoming-call-dialog-title'} css={tw`text-sm font-semibold text-neutral-100`}>Incoming Direct Call</p>
                         <p css={tw`text-xs text-neutral-300 mt-1 truncate`}>{incomingCallPrompt.fromName}</p>
                         <div css={tw`mt-4 grid grid-cols-2 gap-2`}>
                             <Button type={'button'} size={'xsmall'} onClick={() => respondIncomingCall('accept')}>
                                 Accept
                             </Button>
                             <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => respondIncomingCall('denied')}>
-                                Denied
+                                Decline
                             </Button>
                             <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => respondIncomingCall('busy')}>
                                 I'm Busy
@@ -3052,7 +3095,7 @@ export default () => {
                         </div>
                         <div css={tw`mt-3 flex items-center justify-between gap-2`}>
                             <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={toggleLocalMic}>
-                                {localMicMuted ? 'Open Mic' : 'Silent'}
+                                {localMicMuted ? 'Unmute mic' : 'Mute mic'}
                             </Button>
                             <div css={tw`flex items-center gap-2`}>
                                 <Button type={'button'} size={'xsmall'} color={'secondary'} onClick={() => leaveCurrentCall(false)}>
@@ -3100,6 +3143,13 @@ export default () => {
             {profilePopup && (
                 <div
                     css={tw`fixed inset-0 z-50 flex items-center justify-center p-4`}
+                    role={'dialog'}
+                    aria-modal={'true'}
+                    aria-labelledby={'chat-profile-dialog-title'}
+                    tabIndex={-1}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Escape') setProfilePopup(null);
+                    }}
                     style={{ background: 'rgba(0, 0, 0, 0.75)', backdropFilter: 'blur(10px)' }}
                     onClick={() => setProfilePopup(null)}
                 >
@@ -3120,7 +3170,7 @@ export default () => {
                                     {popupPresence?.online && <OnlineDot css={tw`border-neutral-700`} />}
                                 </div>
                             </div>
-                            <p css={tw`text-center text-neutral-100 font-semibold mt-3 text-xl`}>{profilePopup.displayName}</p>
+                            <p id={'chat-profile-dialog-title'} css={tw`text-center text-neutral-100 font-semibold mt-3 text-xl`}>{profilePopup.displayName}</p>
                             <p css={tw`text-center text-neutral-300 text-sm`}>{popupPresence?.text || 'last seen unknown'}</p>
                             <div css={tw`grid grid-cols-4 gap-2 mt-4`}>
                                 <button type={'button'} css={tw`rounded border py-2 text-xs`} style={chipButtonStyle} onClick={handlePopupMessage}>
@@ -3168,6 +3218,13 @@ export default () => {
             {previewImageUrl && (
                 <div
                     css={tw`fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4`}
+                    role={'dialog'}
+                    aria-modal={'true'}
+                    aria-label={'Image preview'}
+                    tabIndex={-1}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Escape') setPreviewImageUrl(null);
+                    }}
                     onClick={() => setPreviewImageUrl(null)}
                 >
                     <img

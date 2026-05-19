@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import tw from 'twin.macro';
 import styled from 'styled-components/macro';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -207,6 +207,11 @@ export default () => {
     const [windowMinutes, setWindowMinutes] = useState<15 | 60 | 360>(60);
     const [refreshing, setRefreshing] = useState(false);
     const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+    const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+    const refreshInFlightRef = useRef(false);
+    const refreshTimerRef = useRef<number | null>(null);
+    const lastRealtimeRefreshRef = useRef(0);
+    const errorBackoffRef = useRef(0);
 
     const loadOverview = useCallback(async (minutes: number) => {
         const data = await getDanexCOverview(minutes);
@@ -224,25 +229,53 @@ export default () => {
     }, []);
 
     const refreshAll = useCallback(async () => {
+        if (refreshInFlightRef.current) return;
+        refreshInFlightRef.current = true;
         setRefreshing(true);
         try {
             await Promise.all([loadOverview(windowMinutes), loadTimeline(windowMinutes), loadFeed()]);
             setLastUpdated(new Date());
+            errorBackoffRef.current = 0;
+        } catch (e) {
+            errorBackoffRef.current = Math.min(60000, Math.max(5000, errorBackoffRef.current * 2 || 5000));
+            throw e;
         } finally {
+            refreshInFlightRef.current = false;
             setRefreshing(false);
         }
     }, [loadFeed, loadOverview, loadTimeline, windowMinutes]);
+
+    const scheduleRefresh = useCallback(() => {
+        if (refreshTimerRef.current !== null) return;
+        const delay = Math.max(1200, errorBackoffRef.current);
+        refreshTimerRef.current = window.setTimeout(() => {
+            refreshTimerRef.current = null;
+            void refreshAll().catch(() => undefined);
+        }, delay);
+    }, [refreshAll]);
 
     const onRealtimeEvent = useCallback(
         (event: WafRealtimeEvent) => {
             if (event.type === 'request.new' || event.type === 'threat.change') {
                 setToast(event.type === 'request.new' ? 'New request sampled' : 'Threat level updated');
-                void refreshAll();
+                const now = Date.now();
+                if (now - lastRealtimeRefreshRef.current >= 5000) {
+                    lastRealtimeRefreshRef.current = now;
+                    scheduleRefresh();
+                }
             }
         },
-        [refreshAll]
+        [scheduleRefresh]
     );
     const { isConnected } = useWafRealtime({ enabled: true, onEvent: onRealtimeEvent });
+
+    useEffect(() => {
+        const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+        const update = () => setPrefersReducedMotion(media.matches);
+        update();
+        media.addEventListener?.('change', update);
+        return () => media.removeEventListener?.('change', update);
+    }, []);
 
     useEffect(() => {
         let mounted = true;
@@ -259,20 +292,23 @@ export default () => {
 
         const fast = window.setInterval(() => {
             if (isConnected) return;
-            void loadOverview(windowMinutes);
-            void loadFeed();
+            scheduleRefresh();
         }, 5000);
         const slow = window.setInterval(() => {
             if (isConnected) return;
-            void loadTimeline(windowMinutes);
+            scheduleRefresh();
         }, 10000);
 
         return () => {
             mounted = false;
             window.clearInterval(fast);
             window.clearInterval(slow);
+            if (refreshTimerRef.current !== null) {
+                window.clearTimeout(refreshTimerRef.current);
+                refreshTimerRef.current = null;
+            }
         };
-    }, [isConnected, loadFeed, loadOverview, loadTimeline, refreshAll, windowMinutes]);
+    }, [isConnected, refreshAll, scheduleRefresh, windowMinutes]);
 
     useEffect(() => {
         if (!toast) return;
@@ -338,7 +374,7 @@ export default () => {
         () => ({
             responsive: true,
             maintainAspectRatio: false,
-            animation: { duration: 1500, easing: 'easeOutQuart' as const },
+            animation: { duration: prefersReducedMotion ? 0 : 1500, easing: 'easeOutQuart' as const },
             interaction: { intersect: false, mode: 'index' as const },
             plugins: {
                 legend: {
@@ -363,7 +399,7 @@ export default () => {
                 },
             },
         }),
-        []
+        [prefersReducedMotion]
     );
 
     const stats = [

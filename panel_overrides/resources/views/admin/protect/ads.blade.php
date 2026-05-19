@@ -1,11 +1,11 @@
 @extends('layouts.admin')
 
 @section('title')
-    Protect Ads
+    Ads Management
 @endsection
 
 @section('content-header')
-    <h1>Protect Ads<small>Kelola ads banner + popup (image/gif/video + link).</small></h1>
+    <h1>Ads Management<small>Kelola sponsored banner dan popup dengan frekuensi aman.</small></h1>
     <ol class="breadcrumb">
         <li><a href="{{ route('admin.index') }}">Admin</a></li>
         <li><a href="{{ route('admin.protect') }}">Protect</a></li>
@@ -26,7 +26,7 @@
                 </div>
                 <div class="box-body">
                     <p>Status: <strong>{{ !empty($adsServiceEnabled) ? 'Enabled' : 'Disabled' }}</strong></p>
-                    <p class="text-muted" style="margin-top:8px;">Jika service aktif, banner akan selalu tampil dan popup muncul random otomatis.</p>
+                    <p class="text-muted" style="margin-top:8px;">Jika service aktif, banner tampil di desktop rail dan popup memakai cooldown per hari agar tidak mengganggu flow panel.</p>
                     <form method="POST" action="{{ route('admin.protect.ads.service') }}" style="display:inline-block;">
                         @csrf
                         <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
@@ -40,7 +40,7 @@
 
             <div class="box box-primary">
                 <div class="box-header with-border">
-                    <h3 class="box-title">Tambah Ads</h3>
+                    <h3 class="box-title">Create Ad</h3>
                 </div>
                 <div class="box-body">
                     <form method="POST" action="{{ route('admin.protect.ads.store') }}">
@@ -62,7 +62,7 @@
                             <label>Weight (1-100)</label>
                             <input type="number" min="1" max="100" class="form-control" name="weight" value="1" />
                         </div>
-                        <button type="submit" class="btn btn-primary">Tambah Ads</button>
+                        <button type="submit" class="btn btn-primary">Create Ad</button>
                     </form>
                 </div>
             </div>
@@ -71,7 +71,7 @@
         <div class="col-md-7">
             <div class="box box-default">
                 <div class="box-header with-border">
-                    <h3 class="box-title">Daftar Ads (Edit Langsung)</h3>
+                    <h3 class="box-title">Ads Inventory</h3>
                 </div>
                 <div class="box-body table-responsive no-padding">
                     <table class="table table-striped pp-table">
@@ -102,7 +102,7 @@
                                         <input type="number" min="1" max="100" class="form-control" name="weight" value="{{ (int) ($item['weight'] ?? 1) }}" />
                                 </td>
                                 <td>
-                                        <button class="btn btn-xs btn-primary" type="submit">Simpan Edit</button>
+                                        <button class="btn btn-xs btn-primary" type="submit">Save changes</button>
                                     </form>
                                     <form method="POST" action="{{ route('admin.protect.ads.delete', ['ad' => (int) ($item['id'] ?? 0)]) }}" style="display:inline-block;margin-top:6px;" onsubmit="return confirm('Delete ads ini?');">
                                         @csrf

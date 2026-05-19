@@ -1,11 +1,11 @@
 @extends('layouts.admin')
 
 @section('title')
-    Protect Timeline
+    Security Events
 @endsection
 
 @section('content-header')
-    <h1>Protect Timeline<small>Riwayat pelanggaran dan aktivitas keamanan panel.</small></h1>
+    <h1>Security Events<small>Riwayat pelanggaran, quarantine, dan aktivitas keamanan panel.</small></h1>
     <ol class="breadcrumb">
         <li><a href="{{ route('admin.servers') }}">Admin</a></li>
         <li><a href="{{ route('admin.protect') }}">Protect</a></li>
@@ -51,7 +51,7 @@
 <div class="row">
     <div class="col-md-12">
         <div class="box box-danger">
-            <div class="box-header with-border"><h3 class="box-title">Violation Timeline</h3></div>
+            <div class="box-header with-border"><h3 class="box-title">Security Event Timeline</h3></div>
             <div class="box-body">
                 @if(!$hasViolationsTable)
                     <p class="text-warning">Table <code>user_violations</code> belum ada. Jalankan migration terbaru dulu.</p>
@@ -80,7 +80,8 @@
                                         <td>{{ (string) ($v->server_name ?? '-') }} <span class="text-muted">#{{ (int) ($v->server_id ?? 0) }}</span></td>
                                         <td><span class="label label-danger">{{ (string) ($v->violation_type ?? '-') }}</span></td>
                                         <td><span class="label label-warning">{{ (string) ($v->action_taken ?? '-') }}</span></td>
-                                        <td><strong>{{ (int) ($v->severity ?? 0) }}</strong></td>
+                                        @php $sev = (int) ($v->severity ?? 0); @endphp
+                                        <td><strong>{{ $sev }}</strong> <span class="label label-{{ $sev >= 8 ? 'danger' : ($sev >= 5 ? 'warning' : 'default') }}">{{ $sev >= 8 ? 'critical' : ($sev >= 5 ? 'high' : 'normal') }}</span></td>
                                         <td style="max-width:220px;word-break:break-word;">{{ (string) ($v->file_name ?? '-') }}</td>
                                         <td style="max-width:420px;word-break:break-word;">{{ (string) ($v->details ?? '-') }}</td>
                                     </tr>
@@ -101,7 +102,7 @@
 <div class="row">
     <div class="col-md-12">
         <div class="box box-warning">
-            <div class="box-header with-border"><h3 class="box-title">Illegal Files (Recent)</h3></div>
+            <div class="box-header with-border"><h3 class="box-title">Quarantined / Illegal Files</h3></div>
             <div class="box-body">
                 @if(!$hasIllegalFilesTable)
                     <p class="text-warning">Table <code>illegal_files</code> belum ada. Jalankan migration terbaru dulu.</p>

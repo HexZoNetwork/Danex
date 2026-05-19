@@ -108,10 +108,10 @@ export default () => {
             {!isAccount && (
                 <SubNavigation>
                     <div>
-                        <NavLink to={'/dashboard'} exact>Dashboard</NavLink>
+                        <NavLink to={'/dashboard'} exact>Danex Security</NavLink>
                         <NavLink to={'/servers'} exact>Servers</NavLink>
-                        <NavLink to={'/chat'} exact>Public Chat</NavLink>
-                        <NavLink to={'/judi'} exact>Judi</NavLink>
+                        <NavLink to={'/chat'} exact>Chat</NavLink>
+                        <NavLink to={'/danexcoin'} exact>DanexCoin</NavLink>
                         {canCreatePanel && <NavLink to={'/create-panel'} exact>Create Panel</NavLink>}
                     </div>
                 </SubNavigation>
@@ -144,7 +144,8 @@ export default () => {
                         <Route path={'/users'} exact><UsersPage /></Route>
                         <Route path={'/settings'} exact><SettingsHubPage /></Route>
                         <Route path={'/chat'} exact><PublicChatPage /></Route>
-                        <Route path={'/judi'} exact><DanexCoinPage /></Route>
+                        <Route path={'/danexcoin'} exact><DanexCoinPage /></Route>
+                        <Route path={'/judi'} exact><Redirect to={'/danexcoin'} /></Route>
                         <Route path={'/danexc'} exact><Redirect to={'/dashboard'} /></Route>
                         <Route path={'/create-panel'} exact><CreatePanelPage /></Route>
                         <Route path={'/notifications'} exact><NotificationsPage /></Route>

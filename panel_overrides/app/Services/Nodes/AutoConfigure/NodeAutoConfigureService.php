@@ -51,7 +51,7 @@ class NodeAutoConfigureService
                 'encrypted_private_key' => Crypt::encryptString((string) $keys['private']),
                 'wings_port' => (int) ($input['wings_port'] ?? 8080),
                 'fallback_port_range' => (string) ($input['fallback_port_range'] ?? config('pteroprotect_autoconfigure.allowed_wings_port_range', '8081-8099')),
-                'host_key_policy' => (string) ($input['host_key_policy'] ?? config('pteroprotect_autoconfigure.host_key_policy', 'strict_tofu')),
+                'host_key_policy' => (string) ($input['host_key_policy'] ?? 'strict_pinned'),
                 'max_ssh_timeout_sec' => (int) config('pteroprotect_autoconfigure.ssh_timeout_sec', 30),
                 'correlation_id' => (string) Str::uuid(),
                 'requested_payload' => [

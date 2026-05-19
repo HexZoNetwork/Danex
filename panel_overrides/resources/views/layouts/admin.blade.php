@@ -4,7 +4,7 @@
         <meta charset="utf-8">
         <meta http-equiv="X-UA-Compatible" content="IE=edge">
         <title>{{ config('app.name', 'Pterodactyl') }} - @yield('title')</title>
-        <meta content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" name="viewport">
+        <meta content="width=device-width, initial-scale=1" name="viewport">
         <meta name="_token" content="{{ csrf_token() }}">
 
         <link rel="apple-touch-icon" sizes="180x180" href="/favicons/apple-touch-icon.png">
@@ -740,6 +740,27 @@
             }
             .content {
                 animation: el7-admin-content-in 240ms ease both;
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .wrapper::after,
+                .box::before,
+                .info-box::before,
+                .small-box::before {
+                    animation: none !important;
+                }
+                .table > tbody > tr,
+                .table > tfoot > tr,
+                .table-hover > tbody > tr:hover > td,
+                .table-hover > tbody > tr:hover > th,
+                .table > tbody > tr:hover > td,
+                .table > tbody > tr:hover > th,
+                .modal.fade .modal-dialog,
+                .modal.in .modal-dialog {
+                    transform: none !important;
+                }
+                html:focus-within {
+                    scroll-behavior: auto !important;
+                }
             }
             @media (max-width: 767px) {
                 .main-sidebar {

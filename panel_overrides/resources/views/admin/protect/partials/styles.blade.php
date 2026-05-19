@@ -56,6 +56,16 @@
         border-color: rgba(139, 92, 246, 0.46);
         transform: translateY(-1px);
     }
+    @media (prefers-reduced-motion: reduce) {
+        .pp-theme *::before,
+        .pp-theme *::after {
+            animation: none !important;
+        }
+        .pp-theme .pp-tabs > li > a:hover,
+        .pp-theme .pp-tabs > li > a:focus {
+            transform: none !important;
+        }
+    }
     .pp-theme .pp-tabs > li.active > a,
     .pp-theme .pp-tabs > li.active > a:hover,
     .pp-theme .pp-tabs > li.active > a:focus {

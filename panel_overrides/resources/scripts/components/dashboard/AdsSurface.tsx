@@ -8,12 +8,12 @@ const BannerBody = tw.div`p-2`;
 const PopupBackdrop = tw.div`fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4`;
 const PopupCard = tw.div`w-full max-w-3xl rounded-md border border-neutral-700 bg-neutral-900 overflow-hidden`;
 
-const renderMedia = (ad: AdsItem, compact = false) => {
+const renderMedia = (ad: AdsItem, compact = false, autoplay = true) => {
     if (ad.mediaKind === 'video') {
         return (
                 <video
                     src={ad.mediaUrl}
-                    autoPlay
+                    autoPlay={autoplay}
                     loop
                     muted
                     playsInline
@@ -22,7 +22,7 @@ const renderMedia = (ad: AdsItem, compact = false) => {
             );
         }
 
-    return <img src={ad.mediaUrl} alt={ad.text || 'ads'} css={compact ? tw`w-full h-32 object-contain bg-black` : tw`w-full max-h-[72vh] object-contain bg-black`} />;
+    return <img src={ad.mediaUrl} alt={ad.text || 'Sponsored media'} css={compact ? tw`w-full h-32 object-contain bg-black` : tw`w-full max-h-[72vh] object-contain bg-black`} />;
 };
 
 const clickableWrap = (ad: AdsItem, child: React.ReactNode, key: string) => {
@@ -45,6 +45,10 @@ export default () => {
     const popupCandidateRef = useRef<AdsItem | null>(null);
     const popupOpenRef = useRef(false);
     const serviceEnabledRef = useRef(true);
+    const popupCardRef = useRef<HTMLDivElement | null>(null);
+    const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+    const returnFocusRef = useRef<HTMLElement | null>(null);
+    const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
     useEffect(() => {
         popupOpenRef.current = popupOpen;
@@ -53,6 +57,46 @@ export default () => {
     useEffect(() => {
         serviceEnabledRef.current = serviceEnabled;
     }, [serviceEnabled]);
+
+    useEffect(() => {
+        const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+        if (!media) return;
+        const update = () => setPrefersReducedMotion(media.matches);
+        update();
+        media.addEventListener?.('change', update);
+        return () => media.removeEventListener?.('change', update);
+    }, []);
+
+    useEffect(() => {
+        if (!popupOpen) return;
+        returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        closeButtonRef.current?.focus();
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setPopupOpen(false);
+                return;
+            }
+            if (event.key !== 'Tab' || !popupCardRef.current) return;
+            const focusable = Array.from(popupCardRef.current.querySelectorAll<HTMLElement>('a[href],button:not([disabled])'));
+            if (focusable.length === 0) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+
+        document.addEventListener('keydown', onKeyDown);
+        return () => {
+            document.removeEventListener('keydown', onKeyDown);
+            returnFocusRef.current?.focus();
+        };
+    }, [popupOpen]);
 
     useEffect(() => {
         let cancelled = false;
@@ -102,7 +146,7 @@ export default () => {
                 if (serviceEnabledRef.current && popupCandidate && !popupOpenRef.current) {
                     const now = Date.now();
                     const lastShown = Number(window.localStorage.getItem('ads.popup.last_shown') || '0');
-                    const cooldownMs = 180_000;
+                    const cooldownMs = 86_400_000;
                     if (now - lastShown >= cooldownMs && Math.random() <= 0.45) {
                         setPopup(popupCandidate);
                         setPopupOpen(true);
@@ -143,7 +187,7 @@ export default () => {
                             clickableWrap(
                                 ad,
                                 <BannerCard>
-                                    {renderMedia(ad, true)}
+                                    {renderMedia(ad, true, !prefersReducedMotion)}
                                     {ad.text && (
                                         <BannerBody>
                                             <p css={tw`text-xs text-neutral-200 line-clamp-2`}>{ad.text}</p>
@@ -159,14 +203,14 @@ export default () => {
 
             {popupOpen && popup && (
                 <PopupBackdrop onClick={() => setPopupOpen(false)}>
-                    <PopupCard onClick={(e) => e.stopPropagation()}>
+                    <PopupCard ref={popupCardRef} role={'dialog'} aria-modal={'true'} aria-label={'Sponsored content'} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
                         <div css={tw`px-3 py-2 border-b border-neutral-700 flex items-center justify-between`}>
                             <p css={tw`text-xs text-neutral-200 uppercase tracking-wide`}>Sponsored</p>
-                            <button type={'button'} css={tw`text-xs text-neutral-300 hover:text-neutral-100`} onClick={() => setPopupOpen(false)}>
+                            <button ref={closeButtonRef} type={'button'} css={tw`text-xs text-neutral-300 hover:text-neutral-100`} onClick={() => setPopupOpen(false)}>
                                 Close
                             </button>
                         </div>
-                        {clickableWrap(popup, renderMedia(popup, false), `ads-popup-media-${popup.id}`)}
+                        {clickableWrap(popup, renderMedia(popup, false, !prefersReducedMotion), `ads-popup-media-${popup.id}`)}
                         {(popup.text || popup.linkUrl) && (
                             <div css={tw`px-4 py-3 space-y-2`}>
                                 {popup.text && <p css={tw`text-sm text-neutral-100`}>{popup.text}</p>}

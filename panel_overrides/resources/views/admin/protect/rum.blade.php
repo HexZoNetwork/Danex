@@ -114,7 +114,7 @@
                             </td>
                             <td>
                                 <span class="pp-pill good">good {{ (int) ($row->good_count ?? 0) }}</span>
-                                <span class="pp-pill ni">need {{ (int) ($row->ni_count ?? 0) }}</span>
+                                <span class="pp-pill ni">needs improvement {{ (int) ($row->ni_count ?? 0) }}</span>
                                 <span class="pp-pill poor">poor {{ (int) ($row->poor_count ?? 0) }}</span>
                             </td>
                         </tr>
@@ -207,11 +207,16 @@
 
         sendPing();
         window.setInterval(sendPing, 8000);
+        var note = document.createElement('p');
+        note.className = 'text-muted';
+        note.style.marginTop = '8px';
+        note.textContent = 'Auto-refresh enabled every 60 seconds while this tab is visible.';
+        document.querySelector('.pp-theme') && document.querySelector('.pp-theme').insertBefore(note, document.querySelector('.pp-theme').firstChild);
         window.setInterval(function () {
             if (document.visibilityState === 'visible') {
                 window.location.reload();
             }
-        }, 15000);
+        }, 60000);
     })();
 </script>
 @endif

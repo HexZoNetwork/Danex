@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -1930,13 +1931,31 @@ static bool is_provider_range_ip(const Settings& s, const std::string& ip) {
             (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '.' || c == ':';
         if (!ok) return false;
     }
-    std::string cmd = "/usr/bin/python3 /pteroprotect/scripts/provider_ip_lookup.py " + g_cfg_path + " " + ip + " 2>/dev/null";
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) return false;
+    int fds[2];
+    if (pipe(fds) != 0) return false;
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return false;
+    }
+    if (pid == 0) {
+        dup2(fds[1], STDOUT_FILENO);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) dup2(devnull, STDERR_FILENO);
+        close(fds[0]);
+        close(fds[1]);
+        execl("/usr/bin/python3", "python3", "/pteroprotect/scripts/provider_ip_lookup.py", g_cfg_path.c_str(), ip.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    close(fds[1]);
     char buf[64] = {0};
     std::string output;
-    if (fgets(buf, sizeof(buf), pipe) != nullptr) output = trim(buf);
-    pclose(pipe);
+    ssize_t n = read(fds[0], buf, sizeof(buf) - 1);
+    if (n > 0) output = trim(std::string(buf, static_cast<size_t>(n)));
+    close(fds[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
     return output == "provider";
 }
 

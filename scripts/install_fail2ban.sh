@@ -11,7 +11,7 @@ if [[ ! -d "${INSTALL_DIR}/host_overrides/fail2ban" ]]; then
     exit 0
 fi
 
-mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d
+install -d -o root -g root -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/tmpfiles.d
 mkdir -p /dev/shm/pteroprotect
 touch /dev/shm/pteroprotect/waf.log
 touch /dev/shm/pteroprotect/ddos_host.log

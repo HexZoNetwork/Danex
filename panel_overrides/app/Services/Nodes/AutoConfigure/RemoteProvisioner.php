@@ -19,20 +19,23 @@ class RemoteProvisioner
         ];
     }
 
-    public function bootstrapWithPassword(string $host, int $port, string $username, string $password, string $publicKey, int $timeout): array
+    public function bootstrapWithPassword(string $host, int $port, string $username, string $password, string $publicKey, int $timeout, string $expectedFingerprint): array
     {
         $ssh = new SSH2($host, $port, $timeout);
+        $fingerprint = $ssh->getServerPublicHostKey();
+        $fingerprintBase64 = is_string($fingerprint) ? base64_encode($fingerprint) : '';
+        $this->verifyPinnedFingerprint($fingerprintBase64, $expectedFingerprint);
+
         if (!$ssh->login($username, $password)) {
             throw new RuntimeException('ssh_password_login_failed');
         }
 
-        $fingerprint = $ssh->getServerPublicHostKey();
         $safeKey = str_replace("'", "'\\''", trim($publicKey));
         $ssh->exec("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys");
         $ssh->exec("grep -qF '$safeKey' ~/.ssh/authorized_keys || echo '$safeKey' >> ~/.ssh/authorized_keys");
 
         return [
-            'host_fingerprint' => is_string($fingerprint) ? base64_encode($fingerprint) : null,
+            'host_fingerprint' => $fingerprintBase64 !== '' ? $fingerprintBase64 : null,
         ];
     }
 
@@ -48,9 +51,11 @@ class RemoteProvisioner
         }
     }
 
-    public function runWithPrivateKey(string $host, int $port, string $username, string $privateKeyPem, string $script, int $timeout): array
+    public function runWithPrivateKey(string $host, int $port, string $username, string $privateKeyPem, string $script, int $timeout, string $expectedFingerprint): array
     {
         $ssh = new SSH2($host, $port, $timeout);
+        $fingerprint = $ssh->getServerPublicHostKey();
+        $this->verifyPinnedFingerprint(is_string($fingerprint) ? base64_encode($fingerprint) : '', $expectedFingerprint);
         $key = PublicKeyLoader::loadPrivateKey($privateKeyPem);
         if (!$ssh->login($username, $key)) {
             throw new RuntimeException('ssh_key_login_failed');
@@ -66,9 +71,11 @@ class RemoteProvisioner
         ];
     }
 
-    public function revokeEphemeralKey(string $host, int $port, string $username, string $privateKeyPem, string $publicKey, int $timeout): void
+    public function revokeEphemeralKey(string $host, int $port, string $username, string $privateKeyPem, string $publicKey, int $timeout, string $expectedFingerprint): void
     {
         $ssh = new SSH2($host, $port, $timeout);
+        $fingerprint = $ssh->getServerPublicHostKey();
+        $this->verifyPinnedFingerprint(is_string($fingerprint) ? base64_encode($fingerprint) : '', $expectedFingerprint);
         $key = PublicKeyLoader::loadPrivateKey($privateKeyPem);
         if (!$ssh->login($username, $key)) {
             return;

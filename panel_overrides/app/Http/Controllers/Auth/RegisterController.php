@@ -360,10 +360,7 @@ class RegisterController extends AbstractLoginController
         $missing = [];
         foreach ($channels as $channel) {
             $membership = $this->getTelegramChannelMembership($token, $channel, $telegramId);
-            // Fail closed only when Telegram check is reachable and definitive.
-            // If API check is unavailable (e.g. bot lacks access to channel member list),
-            // don't hard-block registration.
-            if ((bool) ($membership['ok'] ?? false) && !(bool) ($membership['is_member'] ?? false)) {
+            if (!(bool) ($membership['ok'] ?? false) || !(bool) ($membership['is_member'] ?? false)) {
                 $missing[] = $channel;
             }
         }

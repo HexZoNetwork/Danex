@@ -126,6 +126,9 @@ APT_DEPS=(
     conntrack
     pkg-config
     procps
+    curl
+    ca-certificates
+    xz-utils
     libcurl4-openssl-dev
     libssl-dev
     nlohmann-json3-dev
@@ -197,7 +200,7 @@ ensure_node22_runtime() {
 
         if [[ -n "${node_arch}" ]]; then
             local node_version=""
-            node_version="$(curl -fsSL https://nodejs.org/dist/index.json 2>/dev/null | python3 - "${node_arch}" <<'PY' || true
+            node_version="$(curl -fsSL https://nodejs.org/dist/index.json 2>/dev/null | python3 -c '
 import json
 import sys
 
@@ -214,17 +217,20 @@ for row in data:
     if v.startswith("v22.") and f"linux-{arch}" in files:
         print(v)
         break
-PY
-)"
+' "${node_arch}" || true)"
             if [[ -n "${node_version}" ]]; then
                 local tmp_dir=""
                 tmp_dir="$(mktemp -d /tmp/.node22.XXXXXX)"
-                local tarball_url="https://nodejs.org/dist/${node_version}/node-${node_version}-linux-${node_arch}.tar.xz"
-                local tarball_path="${tmp_dir}/node.tar.xz"
+                local tarball_name="node-${node_version}-linux-${node_arch}.tar.xz"
+                local tarball_url="https://nodejs.org/dist/${node_version}/${tarball_name}"
+                local tarball_path="${tmp_dir}/${tarball_name}"
+                local shasums_path="${tmp_dir}/SHASUMS256.txt"
                 local extract_root="/usr/local/lib/nodejs"
                 local extract_dir="${extract_root}/node-${node_version}-linux-${node_arch}"
 
-                if curl -fsSL "${tarball_url}" -o "${tarball_path}" 2>/dev/null; then
+                if curl -fsSL "${tarball_url}" -o "${tarball_path}" 2>/dev/null \
+                    && curl -fsSL "https://nodejs.org/dist/${node_version}/SHASUMS256.txt" -o "${shasums_path}" 2>/dev/null \
+                    && (cd "${tmp_dir}" && grep -F "  ${tarball_name}" SHASUMS256.txt | sha256sum -c - >/dev/null 2>&1); then
                     mkdir -p "${extract_root}"
                     if tar -xJf "${tarball_path}" -C "${extract_root}" >/dev/null 2>&1; then
                         ln -sfn "${extract_dir}/bin/node" /usr/local/bin/node
@@ -1325,14 +1331,7 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
             # Environment variables are intentionally ignored here to prevent drift.
         }
 
-        sub random_alnum {
-            my ($len) = @_;
-            $len = 32 if !defined($len) || $len !~ /^\d+$/ || $len < 1;
-            my @chars = ("A".."Z", "a".."z", "0".."9");
-            return join("", map { $chars[int(rand(@chars))] } 1..$len);
-        }
-
-        sub needs_secret_rotation {
+        sub is_weak_or_placeholder_secret {
             my ($value) = @_;
             return 1 if !defined($value);
             my $v = "$value";
@@ -1343,33 +1342,42 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
             return 1 if $lv eq "change_me_strong_token";
             return 1 if $lv eq "change_me_waf_challenge_secret";
             return 1 if $lv eq "change_me_rce_control_key";
+            return 1 if $lv eq "replace_me";
             return 1 if $lv =~ /^change[_-]?me/;
             return 0;
         }
 
+        sub warn_secret {
+            my ($name) = @_;
+            print STDERR "[setup] warning: $name is empty/placeholder; preserving config.json value and not rotating it.\n";
+        }
+
         my $ports = $j->{network}{public_tcp_ports};
-        $ports = "80,443,8080,18443" if !defined($ports) || $ports eq "";
+        $ports = "80,443,8080,18443,18447" if !defined($ports) || $ports eq "";
         my %seen = map { $_ => 1 } grep { $_ =~ /^\d+$/ } split(/,/, $ports);
         $seen{80} = 1;
         $seen{443} = 1;
         $seen{18443} = 1;
+        $seen{18447} = 1;
         my @ordered = sort { $a <=> $b } keys %seen;
         $j->{network}{public_tcp_ports} = join(",", @ordered);
 
         $j->{network}{unblock_portal_bind} = "0.0.0.0" if !defined($j->{network}{unblock_portal_bind}) || $j->{network}{unblock_portal_bind} eq "";
         $j->{network}{unblock_portal_port} = 18443 if !defined($j->{network}{unblock_portal_port}) || $j->{network}{unblock_portal_port} !~ /^\d+$/;
+        $j->{network}{emergency_control_enabled} = JSON::PP::true if !defined($j->{network}{emergency_control_enabled});
+        $j->{network}{emergency_control_bind} = "0.0.0.0" if !defined($j->{network}{emergency_control_bind}) || $j->{network}{emergency_control_bind} eq "";
+        $j->{network}{emergency_control_port} = 18447 if !defined($j->{network}{emergency_control_port}) || $j->{network}{emergency_control_port} !~ /^\d+$/;
+        $j->{network}{emergency_control_session_ttl_sec} = 900 if !defined($j->{network}{emergency_control_session_ttl_sec}) || $j->{network}{emergency_control_session_ttl_sec} !~ /^\d+$/;
         $j->{network}{waf_pow_bits} = 18 if !defined($j->{network}{waf_pow_bits}) || $j->{network}{waf_pow_bits} !~ /^\d+$/;
         $j->{network}{waf_pow_bits} = 8 if $j->{network}{waf_pow_bits} < 8;
         $j->{network}{waf_pow_bits} = 24 if $j->{network}{waf_pow_bits} > 24;
-        if (needs_secret_rotation($j->{network}{unblock_portal_token})) {
-            $j->{network}{unblock_portal_token} = random_alnum(48);
-        }
-        if (needs_secret_rotation($j->{network}{waf_challenge_secret})) {
-            $j->{network}{waf_challenge_secret} = random_alnum(48);
-        }
-        if (needs_secret_rotation($j->{network}{rce_control_key})) {
-            $j->{network}{rce_control_key} = random_alnum(40);
-        }
+        # Never rotate operator-provided secrets here. Break-glass tokens must
+        # remain exactly as configured in config.json so emergency URLs do not
+        # unexpectedly stop working after setup/reinstall.
+        warn_secret("network.unblock_portal_token") if is_weak_or_placeholder_secret($j->{network}{unblock_portal_token});
+        warn_secret("network.emergency_control_token") if is_weak_or_placeholder_secret($j->{network}{emergency_control_token});
+        warn_secret("network.waf_challenge_secret") if is_weak_or_placeholder_secret($j->{network}{waf_challenge_secret});
+        warn_secret("network.rce_control_key") if is_weak_or_placeholder_secret($j->{network}{rce_control_key});
         if (!defined($j->{network}{server_inbound_limit_gib}) || $j->{network}{server_inbound_limit_gib} !~ /^\d+$/ || $j->{network}{server_inbound_limit_gib} < 1) {
             $j->{network}{server_inbound_limit_gib} = 20;
         }
@@ -1759,6 +1767,12 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
     # Keep root owner but grant group write to www-data.
     chown root:www-data "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
     chmod 660 "${INSTALL_DIR}/config.json"
+    if command -v setfacl >/dev/null 2>&1; then
+        while IFS= read -r _pp_user; do
+            id "${_pp_user}" >/dev/null 2>&1 || continue
+            setfacl -m "u:${_pp_user}:rw" "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
+        done < <(panel_runtime_users)
+    fi
 fi
 if [[ -f "${PROJECT_DIR}/config.json" ]]; then
     chown root:root "${PROJECT_DIR}/config.json" >/dev/null 2>&1 || true
@@ -1766,6 +1780,10 @@ if [[ -f "${PROJECT_DIR}/config.json" ]]; then
 fi
 if [[ -f "${INSTALL_DIR}/config.example.json" ]]; then
     chmod 644 "${INSTALL_DIR}/config.example.json"
+fi
+if [[ -f "/var/log/nginx/pteroprotect.access.log" ]]; then
+    chgrp adm "/var/log/nginx/pteroprotect.access.log" >/dev/null 2>&1 || true
+    chmod 640 "/var/log/nginx/pteroprotect.access.log" >/dev/null 2>&1 || true
 fi
 if [[ -f "${INSTALL_DIR}/scripts/install_host_protection.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/install_host_protection.sh"
@@ -1797,6 +1815,9 @@ if [[ -f "${INSTALL_DIR}/scripts/edge_origin_cloak.sh" ]]; then
 fi
 if [[ -f "${INSTALL_DIR}/scripts/unblock_portal.py" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/unblock_portal.py"
+fi
+if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_emergency_panel.py" ]]; then
+    chmod 755 "${INSTALL_DIR}/scripts/pteroprotect_emergency_panel.py"
 fi
 if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_challenge_api.py" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/pteroprotect_challenge_api.py"
@@ -1914,6 +1935,7 @@ if [[ -n "${PANEL_DB_HOST_EFFECTIVE}" ]]; then
                 printf '\n[mysqld]\nbind-address            = 127.0.0.1\n' >> "${MYSQL_SERVER_CNF}"
             fi
         fi
+        install -d -o root -g root -m 0755 /etc/mysql/mariadb.conf.d
         cat > /etc/mysql/mariadb.conf.d/99-pteroprotect-hardening.cnf <<'EOF'
 [mysqld]
 local_infile=0
@@ -1954,6 +1976,10 @@ fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-unblock-portal.service" ]]; then
     echo "[setup] installing unblock portal service..."
     install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-unblock-portal.service" "${SYSTEMD_DIR}/pteroprotect-unblock-portal.service"
+fi
+if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-emergency-panel.service" ]]; then
+    echo "[setup] installing emergency control panel service..."
+    install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-emergency-panel.service" "${SYSTEMD_DIR}/pteroprotect-emergency-panel.service"
 fi
 if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-challenge.service" ]]; then
     echo "[setup] installing challenge api service..."
@@ -3756,6 +3782,15 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
             exit 1
         fi
     fi
+    if [[ -f "${SYSTEMD_DIR}/pteroprotect-emergency-panel.service" ]]; then
+        systemctl enable pteroprotect-emergency-panel >/dev/null 2>&1
+        if ! systemctl restart pteroprotect-emergency-panel >/dev/null 2>&1; then
+            systemctl start pteroprotect-emergency-panel >/dev/null 2>&1
+        fi
+        if ! systemctl is-active --quiet pteroprotect-emergency-panel; then
+            echo "[setup] warning: pteroprotect-emergency-panel is not active after setup; emergency panel unavailable until fixed." >&2
+        fi
+    fi
     if [[ -f "${SYSTEMD_DIR}/pteroprotect-challenge.service" ]]; then
         systemctl enable pteroprotect-challenge >/dev/null 2>&1
         if ! systemctl restart pteroprotect-challenge >/dev/null 2>&1; then
@@ -3846,16 +3881,107 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "${SYSTEMD_DIR}/pteroprotect.se
     fi
 fi
 
+echo "[setup] installing restricted panel admin helper..."
+cat >/usr/local/bin/pteroprotect-adminctl <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+arg="${2:-}"
+
+require_unit() {
+    local unit="${1:-}"
+    unit="${unit%.service}"
+    case "${unit}" in
+        nginx|fail2ban|docker|pteroq|pteroprotect|pteroprotect-hostguard|pteroprotect-ddoslog|pteroprotect-unblock-portal|pteroprotect-panel-sync|pteroprotect-selfheal|pteroprotect-abuse-guard|pteroprotect-log-watch|pteroprotect-resilience|pteroprotect-resilience-collector|pteroprotect-challenge|pteroprotect-emergency-panel|wings)
+            ;;
+        *)
+            echo "unit not allowed: ${unit}" >&2
+            exit 64
+            ;;
+    esac
+}
+
+case "${action}" in
+    service-restart|service-start|service-stop|service-reload|service-status|service-is-active)
+        require_unit "${arg}"
+        case "${action}" in
+            service-restart) exec systemctl restart "${arg}" ;;
+            service-start) exec systemctl start "${arg}" ;;
+            service-stop) exec systemctl stop "${arg}" ;;
+            service-reload) exec systemctl reload "${arg}" ;;
+            service-status) exec systemctl status "${arg}" --no-pager ;;
+            service-is-active) exec systemctl is-active "${arg}" ;;
+        esac
+        ;;
+    nginx-test)
+        exec nginx -t
+        ;;
+    nginx-reload)
+        exec systemctl reload nginx
+        ;;
+    journal-tail)
+        require_unit "${arg}"
+        exec journalctl -u "${arg}" -n 200 --no-pager
+        ;;
+    mode)
+        mode="${arg}"
+        ttl="${3:-600}"
+        case "${mode}" in normal|aggressive|emergency|lockdown|clear-lockdown) ;; *) echo "mode not allowed: ${mode}" >&2; exit 64 ;; esac
+        [[ "${ttl}" =~ ^[0-9]+$ ]] || { echo "ttl must be seconds" >&2; exit 64; }
+        exec /usr/local/bin/pteroprotect-mode "${mode}" "${ttl}"
+        ;;
+    firewall)
+        fw_action="${arg}"
+        value="${3:-}"
+        ttl="${4:-3600}"
+        case "${fw_action}" in allow|ban|unban) ;; *) echo "firewall action not allowed: ${fw_action}" >&2; exit 64 ;; esac
+        if [[ "${fw_action}" == "ban" ]]; then
+            exec /pteroprotect/scripts/pteroprotect_firewall_manager.sh ban "${value}" "${ttl}"
+        fi
+        exec /pteroprotect/scripts/pteroprotect_firewall_manager.sh "${fw_action}" "${value}"
+        ;;
+    docker)
+        docker_action="${arg}"
+        target="${3:-}"
+        case "${docker_action}" in
+            ps) exec docker ps --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}' ;;
+            stats) exec docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}' ;;
+            restart|start|stop)
+                [[ "${target}" =~ ^[A-Za-z0-9_.:-]+$ ]] || { echo "container target invalid" >&2; exit 64; }
+                exec docker "${docker_action}" "${target}"
+                ;;
+            *) echo "docker action not allowed: ${docker_action}" >&2; exit 64 ;;
+        esac
+        ;;
+    reboot)
+        exec systemctl reboot
+        ;;
+    *)
+        echo "usage: pteroprotect-adminctl {service-*|mode|firewall|docker|nginx-test|nginx-reload|journal-tail|reboot} [args]" >&2
+        exit 64
+        ;;
+esac
+EOF
+chown root:root /usr/local/bin/pteroprotect-adminctl
+chmod 0750 /usr/local/bin/pteroprotect-adminctl
+
 if command -v sudo >/dev/null 2>&1; then
-    echo "[setup] configuring sudoers for panel protect controls..."
+    echo "[setup] configuring restricted sudoers for panel protect controls..."
     {
+        echo 'Cmnd_Alias PTEROPROTECT_ADMINCTL = /usr/local/bin/pteroprotect-adminctl *'
         while IFS= read -r _pp_user; do
             id "${_pp_user}" >/dev/null 2>&1 || continue
             printf 'Defaults:%s !requiretty\n' "${_pp_user}"
-            printf '%s ALL=(ALL) NOPASSWD: ALL\n' "${_pp_user}"
+            printf '%s ALL=(root) NOPASSWD: PTEROPROTECT_ADMINCTL\n' "${_pp_user}"
         done < <(panel_runtime_users)
     } >/etc/sudoers.d/pteroprotect-panel
     chmod 0440 /etc/sudoers.d/pteroprotect-panel
+    if ! visudo -cf /etc/sudoers.d/pteroprotect-panel >/dev/null; then
+        rm -f /etc/sudoers.d/pteroprotect-panel
+        echo "[setup] error: generated sudoers file failed validation." >&2
+        exit 1
+    fi
 fi
 
 # Fail-safe cleanup: never leave production web locked after setup run.

@@ -1,0 +1,53 @@
+{
+  "name": "danexprotocol",
+  "version": "0.1.0",
+  "description": "DanexProtocol expert skill system for anti-DDoS, WAF, backend, UI, cybersecurity, and code review workflows.",
+  "author": {
+    "name": "el7 Team",
+    "email": "security@example.com",
+    "url": "https://example.com"
+  },
+  "homepage": "https://example.com/danexprotocol",
+  "repository": "https://example.com/danexprotocol",
+  "license": "Proprietary",
+  "keywords": [
+    "waf",
+    "anti-ddos",
+    "cybersecurity",
+    "danex",
+    "secure-development"
+  ],
+  "skills": "./skills/",
+  "hooks": "[TODO: ./hooks.json]",
+  "mcpServers": "[TODO: ./.mcp.json]",
+  "apps": "[TODO: ./.app.json]",
+  "interface": {
+    "displayName": "DanexProtocol",
+    "shortDescription": "Security engineering skill system for Danex WAF and anti-DDoS work.",
+    "longDescription": "DanexProtocol provides strict workflows for threat modeling, WAF and anti-DDoS design, backend architecture, security-focused UI, and code review with critic gates, ambiguity handling, quality gates, and reference discipline.",
+    "developerName": "el7 Team",
+    "category": "Security",
+    "capabilities": [
+      "Security Review",
+      "Architecture",
+      "Code Generation",
+      "Design Review"
+    ],
+    "websiteURL": "https://example.com/danexprotocol",
+    "privacyPolicyURL": "https://example.com/privacy",
+    "termsOfServiceURL": "https://example.com/terms",
+    "defaultPrompt": [
+      "Design L7 rate limiting for Danex API protection.",
+      "Review this WAF rule for bypass and false positives.",
+      "Threat model this Danex edge component."
+    ],
+    "brandColor": "#0B1220",
+    "composerIcon": "[TODO: ./assets/icon.png]",
+    "logo": "[TODO: ./assets/logo.png]",
+    "screenshots": [
+      "[TODO: ./assets/screenshot1.png]",
+      "[TODO: ./assets/screenshot2.png]",
+      "[TODO: ./assets/screenshot3.png]"
+    ]
+  }
+}

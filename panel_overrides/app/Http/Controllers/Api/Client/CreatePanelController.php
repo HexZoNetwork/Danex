@@ -39,7 +39,11 @@ class CreatePanelController extends ClientApiController
         $hasOwnedServer = Server::query()->where('owner_id', (int) $user->id)->exists();
         $isLocked = (bool) ($user?->madeinweb_panel_created_at !== null && $hasOwnedServer);
 
+        $allowedEggIds = $this->allowedCreatePanelEggIds();
+        $ramOptions = $this->createPanelRamOptions();
+
         $eggs = Egg::query()
+            ->when($allowedEggIds !== [], fn ($query) => $query->whereIn('id', $allowedEggIds))
             ->orderBy('name')
             ->get(['id', 'name', 'nest_id', 'description'])
             ->map(fn (Egg $egg) => [
@@ -54,7 +58,7 @@ class CreatePanelController extends ClientApiController
             'created' => $isLocked,
             'auto_suspend_enabled' => $this->isCreatePanelAutoSuspendEnabled(),
             'eggs' => $eggs,
-            'ram_options' => [1024, 2048, 4096, 8192, 16384, 32768],
+            'ram_options' => $ramOptions,
             'fixed' => [
                 'cpu' => 100,
                 'threads' => '1',
@@ -72,11 +76,23 @@ class CreatePanelController extends ClientApiController
             return new JsonResponse(['error' => 'Kolom panel khusus belum tersedia. Jalankan migration terlebih dahulu.'], 409);
         }
 
+        $ramOptions = $this->createPanelRamOptions();
+        $maxRam = max($ramOptions ?: [0]);
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:191'],
             'egg_id' => ['required', 'integer', 'exists:eggs,id'],
-            'ram' => ['required', 'integer', 'min:512', 'max:262144'],
+            'ram' => ['required', 'integer', 'min:512', 'max:' . $maxRam],
         ]);
+
+        $allowedEggIds = $this->allowedCreatePanelEggIds();
+        if ($allowedEggIds !== [] && !in_array((int) $validated['egg_id'], $allowedEggIds, true)) {
+            return new JsonResponse(['error' => 'Egg tidak diizinkan untuk Create Panel.'], 422);
+        }
+
+        if (!in_array((int) $validated['ram'], $ramOptions, true)) {
+            return new JsonResponse(['error' => 'Pilihan RAM tidak diizinkan.'], 422);
+        }
 
         /** @var Egg $egg */
         $egg = Egg::query()->findOrFail((int) $validated['egg_id']);
@@ -234,14 +250,53 @@ class CreatePanelController extends ClientApiController
     {
         $network = $this->networkConfig();
 
-        return (bool) ($network['create_panel_web_enabled'] ?? true);
+        return (bool) ($network['create_panel_web_enabled'] ?? false);
     }
 
     private function isCreatePanelAutoSuspendEnabled(): bool
     {
         $network = $this->networkConfig();
 
-        return (bool) ($network['create_panel_auto_suspend_enabled'] ?? false);
+        return (bool) ($network['create_panel_auto_suspend_enabled'] ?? true);
+    }
+
+    /**
+     * @return array<int,int>
+     */
+    private function allowedCreatePanelEggIds(): array
+    {
+        $raw = $this->networkConfig()['create_panel_allowed_egg_ids'] ?? [];
+        if (is_string($raw)) {
+            $raw = explode(',', $raw);
+        }
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(array_map(static fn ($id) => (int) $id, $raw), static fn ($id) => $id > 0)));
+    }
+
+    /**
+     * @return array<int,int>
+     */
+    private function createPanelRamOptions(): array
+    {
+        $network = $this->networkConfig();
+        $raw = $network['create_panel_ram_options_mb'] ?? [1024, 2048, 4096, 8192, 16384, 32768];
+        if (is_string($raw)) {
+            $raw = explode(',', $raw);
+        }
+        if (!is_array($raw)) {
+            $raw = [];
+        }
+
+        $max = (int) ($network['create_panel_max_ram_mb'] ?? 32768);
+        $max = max(512, min(32768, $max));
+        $options = array_map(static fn ($value) => (int) $value, $raw);
+        $options = array_filter($options, static fn ($value) => $value >= 512 && $value <= $max);
+        sort($options);
+
+        return array_values(array_unique($options));
     }
 
     /**

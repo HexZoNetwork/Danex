@@ -1,11 +1,11 @@
 @extends('layouts.admin')
 
 @section('title')
-    Protection Control
+    Danex Protect Overview
 @endsection
 
 @section('content-header')
-    <h1>Protection Control<small>Quick controls for PteroProtect runtime and services.</small></h1>
+    <h1>Danex Protect Overview<small>Status first, then controlled mitigation actions.</small></h1>
     <ol class="breadcrumb">
         <li><a href="{{ route('admin.servers') }}">Admin</a></li>
         <li class="active">Protect</li>
@@ -33,14 +33,15 @@
 <div class="row">
     <div class="col-md-6">
         <div class="box box-primary">
-            <div class="box-header with-border"><h3 class="box-title">Mode</h3></div>
+            <div class="box-header with-border"><h3 class="box-title">Protection Mode</h3></div>
             <div class="box-body">
-                <form method="POST" action="{{ route('admin.protect.mode') }}">
+                <p class="text-muted">Emergency and lockdown modes can block legitimate users. Apply them only during active incidents.</p>
+                <form method="POST" action="{{ route('admin.protect.mode') }}" data-confirm-action="Apply protection mode change. High-impact modes can block traffic. Type APPLY to continue." data-confirm-token="APPLY">
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
-                        <label>Mode</label>
-                        <select name="mode" class="form-control">
+                        <label for="protect-mode">Mode</label>
+                        <select id="protect-mode" name="mode" class="form-control">
                             <option value="normal">normal</option>
                             <option value="aggressive">aggressive</option>
                             <option value="emergency">emergency</option>
@@ -49,8 +50,8 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>TTL (seconds)</label>
-                        <input type="number" min="60" max="86400" name="ttl" value="600" class="form-control" />
+                        <label for="protect-mode-ttl">TTL (seconds)</label>
+                        <input id="protect-mode-ttl" type="number" min="60" max="86400" name="ttl" value="600" class="form-control" />
                     </div>
                     <button type="submit" class="btn btn-primary">Apply Mode</button>
                 </form>
@@ -60,14 +61,15 @@
 
     <div class="col-md-6">
         <div class="box box-default">
-            <div class="box-header with-border"><h3 class="box-title">Config Toggle</h3></div>
+            <div class="box-header with-border"><h3 class="box-title">Protection State</h3></div>
             <div class="box-body">
+                <p class="text-muted">Disabling protection reduces WAF/runtime coverage. Prefer mode changes unless you are troubleshooting.</p>
                 <form method="POST" action="{{ route('admin.protect.config') }}">
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
-                        <label>Protection State</label>
-                        <select name="enabled" class="form-control">
+                        <label for="protect-enabled">Protection State</label>
+                        <select id="protect-enabled" name="enabled" class="form-control">
                             <option value="1">Enable</option>
                             <option value="0">Disable</option>
                         </select>
@@ -83,14 +85,14 @@
 <div class="row">
     <div class="col-md-6">
         <div class="box box-warning">
-            <div class="box-header with-border"><h3 class="box-title">Create Panel Web Toggle</h3></div>
+            <div class="box-header with-border"><h3 class="box-title">Create Panel Access</h3></div>
             <div class="box-body">
                 <form method="POST" action="{{ route('admin.protect.create_panel_web') }}">
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
-                        <label>Create Panel on Web</label>
-                        <select name="create_panel_web_enabled" class="form-control">
+                        <label for="create-panel-web-enabled">Create Panel on Web</label>
+                        <select id="create-panel-web-enabled" name="create_panel_web_enabled" class="form-control">
                             <option value="1" @if(($createPanelWebEnabled ?? true) === true) selected @endif>ON</option>
                             <option value="0" @if(($createPanelWebEnabled ?? true) === false) selected @endif>OFF</option>
                         </select>
@@ -102,8 +104,8 @@
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
-                        <label>Create Panel Auto Suspend</label>
-                        <select name="create_panel_auto_suspend_enabled" class="form-control">
+                        <label for="create-panel-auto-suspend-enabled">Create Panel Auto Suspend</label>
+                        <select id="create-panel-auto-suspend-enabled" name="create_panel_auto_suspend_enabled" class="form-control">
                             <option value="1" @if(($createPanelAutoSuspendEnabled ?? false) === true) selected @endif>ON</option>
                             <option value="0" @if(($createPanelAutoSuspendEnabled ?? false) === false) selected @endif>OFF</option>
                         </select>
@@ -118,7 +120,7 @@
 <div class="row">
     <div class="col-md-12">
         <div class="box box-default">
-            <div class="box-header with-border"><h3 class="box-title">Rce Control</h3></div>
+            <div class="box-header with-border"><h3 class="box-title">RCE Key Management</h3></div>
             <div class="box-body">
                 <p>Status key: <strong>{{ $rceKeyConfigured ? 'configured' : 'not configured' }}</strong></p>
                 <p class="text-muted">Key fingerprint (sha256-12): <code>{{ $rceKeyFingerprint ?? '-' }}</code></p>
@@ -127,8 +129,8 @@
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
-                        <label>New RCE Key</label>
-                        <input type="password" name="new_key" class="form-control" placeholder="min 8 chars" required />
+                        <label for="protect-rce-key">New RCE Key</label>
+                        <input id="protect-rce-key" type="password" name="new_key" class="form-control" placeholder="min 32 chars" required />
                     </div>
                     <button type="submit" class="btn btn-primary" style="margin-left:10px;">Update Key</button>
                 </form>
@@ -140,12 +142,12 @@
 <div class="row">
     <div class="col-md-12">
         <div class="box box-default">
-            <div class="box-header with-border"><h3 class="box-title">RCE Console Access</h3></div>
+            <div class="box-header with-border"><h3 class="box-title">Break-glass Access</h3></div>
             <div class="box-body">
                 <p class="text-muted">RCE dipisah ke tab sendiri. Unlock satu kali pakai RCE key, lalu jalankan command tanpa isi key berulang.</p>
                 <p class="text-muted">RCE status: <strong>{{ $rceUnlocked ? 'unlocked' : 'locked' }}</strong></p>
                 <p class="text-muted">Allowlist command aktif: <code>{{ implode(', ', $rceAllowedCommands ?? []) }}</code></p>
-                <a href="{{ route('admin.protect.rce') }}" class="btn btn-primary">Open RCE Console</a>
+                <a href="{{ route('admin.protect.rce') }}" class="btn btn-danger">Open Break-glass Diagnostics</a>
             </div>
         </div>
     </div>
@@ -160,8 +162,8 @@
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
-                        <label>Host/FQDN/IP (satu per baris atau pisah koma)</label>
-                        <textarea class="form-control" name="allowed_wings_hosts" rows="6" placeholder="node-1.example.com&#10;node-2.example.com">{{ old('allowed_wings_hosts', $allowedWingsHostsText ?? '') }}</textarea>
+                        <label for="allowed-wings-hosts">Host/FQDN/IP (satu per baris atau pisah koma)</label>
+                        <textarea id="allowed-wings-hosts" class="form-control" name="allowed_wings_hosts" rows="6" placeholder="node-1.example.com&#10;node-2.example.com">{{ old('allowed_wings_hosts', $allowedWingsHostsText ?? '') }}</textarea>
                     </div>
                     <button type="submit" class="btn btn-primary">Save Allowed Wings Hosts</button>
                 </form>
@@ -193,27 +195,27 @@
                     </tbody>
                 </table>
 
-                <form method="POST" action="{{ route('admin.protect.service') }}" class="form-inline" style="margin-top:10px;">
+                <form method="POST" action="{{ route('admin.protect.service') }}" class="form-inline" style="margin-top:10px;" data-confirm-action="Run service control action. Restart/stop can interrupt protection services. Type SERVICE to continue." data-confirm-token="SERVICE">
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
-                        <label>Service</label>
-                        <select class="form-control" name="service">
+                        <label for="protect-service">Service</label>
+                        <select id="protect-service" class="form-control" name="service">
                             @foreach($serviceStates as $name => $state)
                                 <option value="{{ $name }}">{{ $name }}</option>
                             @endforeach
                         </select>
                     </div>
                     <div class="form-group" style="margin-left:10px;">
-                        <label>Action</label>
-                        <select class="form-control" name="action">
+                        <label for="protect-service-action">Action</label>
+                        <select id="protect-service-action" class="form-control" name="action">
                             <option value="restart">restart</option>
                             <option value="reload">reload</option>
                             <option value="start">start</option>
                             <option value="stop">stop</option>
                         </select>
                     </div>
-                    <button type="submit" class="btn btn-primary" style="margin-left:10px;">Run</button>
+                    <button type="submit" class="btn btn-warning" style="margin-left:10px;">Run Service Action</button>
                 </form>
             </div>
         </div>
@@ -221,20 +223,34 @@
 
     <div class="col-md-4">
         <div class="box box-default">
-            <div class="box-header with-border"><h3 class="box-title">Reboot</h3></div>
+            <div class="box-header with-border"><h3 class="box-title">Danger Zone</h3></div>
             <div class="box-body">
+                <p class="text-danger">Reboot interrupts panel, Wings, and protection services.</p>
                 <form method="POST" action="{{ route('admin.protect.reboot') }}">
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="form-group">
-                        <label>Type REBOOT to confirm</label>
-                        <input type="text" class="form-control" name="confirm" placeholder="REBOOT" />
+                        <label for="protect-reboot-confirm">Type REBOOT to confirm</label>
+                        <input id="protect-reboot-confirm" type="text" class="form-control" name="confirm" placeholder="REBOOT" />
                     </div>
-                    <button type="submit" class="btn btn-primary">Reboot Server</button>
+                    <button type="submit" class="btn btn-danger">Reboot Host</button>
                 </form>
             </div>
         </div>
     </div>
 </div>
 </div>
+<script>
+document.addEventListener('submit', function (event) {
+    var form = event.target;
+    if (!form || !form.getAttribute) return;
+    var message = form.getAttribute('data-confirm-action');
+    var token = form.getAttribute('data-confirm-token');
+    if (!message || !token) return;
+    var answer = window.prompt(message);
+    if (answer !== token) {
+        event.preventDefault();
+    }
+});
+</script>
 @endsection

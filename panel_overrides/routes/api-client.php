@@ -55,7 +55,7 @@ Route::prefix('/chat')->group(function () {
     Route::patch('/messages/{message}', [Client\PublicChatController::class, 'update'])->middleware('throttle:40,1');
     Route::delete('/messages/{message}', [Client\PublicChatController::class, 'destroy'])->middleware('throttle:40,1');
     Route::post('/read', [Client\PublicChatController::class, 'markRead']);
-    Route::post('/upload', [Client\PublicChatController::class, 'upload'])->middleware('throttle:20,1');
+    Route::post('/upload', [Client\PublicChatController::class, 'upload'])->middleware('throttle:6,1');
 });
 
 Route::prefix('/danexcoin')->group(function () {

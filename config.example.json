@@ -40,6 +40,7 @@
     "waf_challenge_type": 1,
     "waf_challenge_secret": "replace_me",
     "unblock_portal_token": "replace_me",
+    "unblock_portal_bind": "0.0.0.0",
     "node_id": "node-local",
     "trusted_hosts": [
       "127.0.0.1"
@@ -84,6 +85,11 @@
     ],
 
     "control_plane_url": "http://127.0.0.1:18446",
+    "emergency_control_bind": "0.0.0.0",
+    "emergency_control_port": 18447,
+    "emergency_control_token": "replace_me",
+    "emergency_control_session_ttl_sec": 900,
+    "emergency_control_query_bootstrap_enabled": true,
     "node_auth_key": "replace_me",
     "redis_url": "redis://127.0.0.1:6379/0",
     "waf_challenge_upstream": "127.0.0.1:18444",
@@ -138,7 +144,12 @@
       "nginx_reload",
       "ss_listen",
       "tail_logs"
-    ]
+    ],
+    "create_panel_web_enabled": false,
+    "create_panel_auto_suspend_enabled": true,
+    "create_panel_allowed_egg_ids": [],
+    "create_panel_max_ram_mb": 32768,
+    "create_panel_ram_options_mb": [1024, 2048, 4096, 8192, 16384, 32768]
   },
   "monitor": {
     "checkhost_enabled": true,

@@ -44,21 +44,21 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
         $privateKey = Crypt::decryptString((string) $run->encrypted_private_key);
 
         try {
+            $expectedFingerprint = (string) ($run->requested_payload['expected_host_fingerprint'] ?? '');
             $bootstrap = $provisioner->bootstrapWithPassword(
                 (string) $run->target_host,
                 (int) $run->target_port,
                 (string) $run->target_username,
                 $password,
                 $publicKey,
-                (int) $run->max_ssh_timeout_sec
+                (int) $run->max_ssh_timeout_sec,
+                $expectedFingerprint
             );
             $run->host_fingerprint = (string) ($bootstrap['host_fingerprint'] ?? '');
             $run->save();
 
             $hostKeyPolicy = (string) $run->host_key_policy;
-            $expectedFingerprint = (string) ($run->requested_payload['expected_host_fingerprint'] ?? '');
             if ($hostKeyPolicy === 'strict_pinned') {
-                $provisioner->verifyPinnedFingerprint((string) $run->host_fingerprint, $expectedFingerprint);
                 $logger->log($run, 'info', 'bootstrap', 'Pinned host fingerprint validated.', [], 'bootstrap_fingerprint_ok');
             }
 
@@ -78,7 +78,8 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
                 (string) $run->target_username,
                 $privateKey,
                 $script,
-                (int) $run->max_ssh_timeout_sec
+                (int) $run->max_ssh_timeout_sec,
+                $expectedFingerprint
             );
 
             $logger->log($run, 'info', 'remote_install', 'Remote installer executed.', [
@@ -114,7 +115,8 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
                 (string) $run->target_username,
                 $privateKey,
                 $publicKey,
-                (int) $run->max_ssh_timeout_sec
+                (int) $run->max_ssh_timeout_sec,
+                $expectedFingerprint
             );
 
             $run->status = NodeAutoConfigRun::STATUS_SUCCESS;

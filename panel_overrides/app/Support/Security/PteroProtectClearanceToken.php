@@ -301,33 +301,7 @@ class PteroProtectClearanceToken
             return false;
         }
 
-        $ttl = max(1, min(86400, $exp - time()));
-        $cacheKey = 'pteroprotect:clearance:ips:' . hash('sha256', $sid . '|' . $uaClaim);
-        $ips = Cache::get($cacheKey, []);
-        if (!is_array($ips)) {
-            $ips = [];
-        }
-
-        $ips[] = $tokenIp;
-        $ips = array_values(array_unique(array_filter(array_map(static function ($ip): string {
-            $ip = strtolower(trim((string) $ip));
-            return filter_var($ip, FILTER_VALIDATE_IP) !== false ? $ip : '';
-        }, $ips))));
-
-        if (in_array($requestIp, $ips, true)) {
-            Cache::put($cacheKey, $ips, $ttl);
-            return true;
-        }
-
-        if (count($ips) >= 5) {
-            Cache::put($cacheKey, $ips, $ttl);
-            return false;
-        }
-
-        $ips[] = $requestIp;
-        Cache::put($cacheKey, $ips, $ttl);
-
-        return true;
+        return hash_equals($tokenIp, $requestIp);
     }
 
     private static function rememberSessionIp(string $sid, string $uaClaim, string $requestIp, int $exp): void
@@ -355,28 +329,7 @@ class PteroProtectClearanceToken
 
     public static function clientIpForBinding(Request $request): string
     {
-        // Prefer explicit edge headers first for real client IP.
-        $cfConnectingIp = strtolower(trim((string) $request->headers->get('CF-Connecting-IP', '')));
-        if ($cfConnectingIp !== '' && filter_var($cfConnectingIp, FILTER_VALIDATE_IP) !== false) {
-            return $cfConnectingIp;
-        }
-
-        $xRealIp = strtolower(trim((string) $request->headers->get('X-Real-IP', '')));
-        if ($xRealIp !== '' && filter_var($xRealIp, FILTER_VALIDATE_IP) !== false) {
-            return $xRealIp;
-        }
-
-        $xForwardedFor = trim((string) $request->headers->get('X-Forwarded-For', ''));
-        if ($xForwardedFor !== '') {
-            foreach (explode(',', $xForwardedFor) as $part) {
-                $candidate = strtolower(trim($part));
-                if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
-                    return $candidate;
-                }
-            }
-        }
-
-        // Fallback to framework-resolved client IP.
+        // TrustProxies validates whether forwarded headers came from configured proxies.
         $requestIp = strtolower(trim((string) $request->ip()));
         if ($requestIp !== '' && filter_var($requestIp, FILTER_VALIDATE_IP) !== false) {
             return $requestIp;

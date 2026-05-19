@@ -70,21 +70,21 @@ export default () => {
 
     if (!allowed) {
         return (
-            <PageContentBlock title={'Create Panel'} showFlashKey={'dashboard'}>
+            <PageContentBlock title={'Create Server Panel'} showFlashKey={'dashboard'}>
                 <div css={tw`rounded-lg border p-4 text-neutral-300`} style={panelStyle}>
-                    Fitur ini hanya tersedia untuk akun dengan lastname <strong>madeinweb</strong>.
+                    Your account is not eligible for one-time server panel creation yet.
                 </div>
             </PageContentBlock>
         );
     }
 
     return (
-        <PageContentBlock title={'Create Panel'} showFlashKey={'dashboard'}>
+        <PageContentBlock title={'Create Server Panel'} showFlashKey={'dashboard'}>
             <div css={tw`mx-auto max-w-3xl space-y-4`}>
                 <div css={tw`rounded-xl border p-4`} style={panelStyle}>
-                    <h2 css={tw`text-lg font-semibold text-neutral-100`}>Panel Generator</h2>
+                    <h2 css={tw`text-lg font-semibold text-neutral-100`}>Create Server Panel</h2>
                     <p css={tw`text-sm text-neutral-400 mt-1`}>
-                        Khusus akun madeinweb. Hanya bisa dipakai sekali.
+                        Your account is eligible for one free server panel. This action can only be used once.
                     </p>
                 </div>
 
@@ -146,6 +146,8 @@ export default () => {
 
                             <div css={tw`rounded-lg border px-3 py-2 text-sm text-neutral-300`} style={insetPanelStyle}>
                                 CPU fixed: <strong>{cpuFixed}%</strong> | Threads pin: <strong>{threadsFixed}</strong>
+                                <br />
+                                Review the server name, egg, and RAM before creating. The server will appear on the Servers page.
                             </div>
 
                             <Button
@@ -163,7 +165,7 @@ export default () => {
                                             ram: Number(ram),
                                         });
                                         setCreated(true);
-                                        setSuccess('Server berhasil dibuat. Kamu bisa lihat di Dashboard.');
+                                        setSuccess('Server created. Open Servers to manage it.');
                                         updateUserData({ madeinwebPanelCreatedAt: new Date().toISOString() });
                                     } catch (e) {
                                         setError(httpErrorToHuman(e));
@@ -172,7 +174,7 @@ export default () => {
                                     }
                                 }}
                             >
-                                Create Panel
+                                Create Server Panel
                             </Button>
                         </>
                     )}

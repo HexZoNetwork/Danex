@@ -922,7 +922,7 @@ class ProtectController extends Controller
         return response()->json([
             'ok' => true,
             'session_id' => $sessionId,
-            'ws_url' => route('admin.protect.terminal.sessions.ws', ['id' => $sessionId], false),
+            'ws_url' => route('admin.protect.terminal.sessions.ws', ['id' => $sessionId], false) . '?ticket=' . rawurlencode($ticket),
             'expires_at' => $payload['expires_at'],
         ])->withCookie(cookie(
             'pp_term_' . $sessionId,
@@ -1253,8 +1253,8 @@ class ProtectController extends Controller
         }
 
         $newKey = $this->normalizeSecret((string) $request->input('new_key', ''));
-        if (strlen($newKey) < 8) {
-            $this->alert->danger('RCE key minimal 8 karakter.')->flash();
+        if (strlen($newKey) < 32) {
+            $this->alert->danger('RCE key minimal 32 karakter / 128-bit entropy.')->flash();
             return redirect()->route('admin.protect.rce');
         }
 
@@ -1624,6 +1624,18 @@ class ProtectController extends Controller
             return false;
         }
 
+        $basename = strtolower(basename($path));
+        if ($basename === '.env' || str_ends_with($basename, '.key') || str_ends_with($basename, '.pem')) {
+            return false;
+        }
+
+        $lowerPath = strtolower($path);
+        foreach (['/config.json', '/config.runtime.json', '/.env', '/id_rsa', '/id_ed25519'] as $blocked) {
+            if (str_contains($lowerPath, $blocked)) {
+                return false;
+            }
+        }
+
         $resolvedPath = realpath($path);
         if ($resolvedPath === false) {
             return false;
@@ -1730,8 +1742,16 @@ class ProtectController extends Controller
             $trimmedOutput = substr($trimmedOutput, -12000);
         }
         $request->session()->put('pteroprotect_console_last_command', $command);
-        $request->session()->put('pteroprotect_console_last_output', $trimmedOutput);
+        $request->session()->put('pteroprotect_console_last_output', $this->redactSensitiveOutput($trimmedOutput));
         $request->session()->put('pteroprotect_console_last_exit', $exit);
+    }
+
+    private function redactSensitiveOutput(string $output): string
+    {
+        $output = preg_replace('/(?i)(api[_-]?key|app[_-]?key|token|secret|password|passwd|authorization)(\s*[=:]\s*)[^\s"\']+/', '$1$2[REDACTED]', $output) ?? '[redaction_failed]';
+        $output = preg_replace('/(?i)(bearer\s+)[a-z0-9._~+\/-]+=*/', '$1[REDACTED]', $output) ?? '[redaction_failed]';
+
+        return preg_replace('/(?i)(-----BEGIN [A-Z ]+PRIVATE KEY-----).*?(-----END [A-Z ]+PRIVATE KEY-----)/s', '$1[REDACTED]$2', $output) ?? '[redaction_failed]';
     }
 
     private function tokenize(string $raw): array
@@ -1903,12 +1923,12 @@ class ProtectController extends Controller
 
     private function createPanelWebEnabled(): bool
     {
-        return (bool) ($this->networkConfig()['create_panel_web_enabled'] ?? true);
+        return (bool) ($this->networkConfig()['create_panel_web_enabled'] ?? false);
     }
 
     private function createPanelAutoSuspendEnabled(): bool
     {
-        return (bool) ($this->networkConfig()['create_panel_auto_suspend_enabled'] ?? false);
+        return (bool) ($this->networkConfig()['create_panel_auto_suspend_enabled'] ?? true);
     }
 
     private function challengeType(): int
@@ -2481,7 +2501,7 @@ class ProtectController extends Controller
         }
 
         $adminctl = '/usr/local/bin/pteroprotect-adminctl';
-        if (is_executable($adminctl)) {
+        if (File::exists($adminctl)) {
             $mapped = $this->mapToAdminCtl($command, $adminctl);
             if ($mapped !== null) {
                 return $mapped;
@@ -2505,19 +2525,19 @@ class ProtectController extends Controller
         if ($bin === 'systemctl' && count($command) >= 2) {
             $action = (string) ($command[1] ?? '');
             if ($action === 'reboot') {
-                return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, 'reboot'];
+                return ['/usr/bin/sudo', '-n', $adminctl, 'reboot'];
             }
             $service = (string) ($command[2] ?? '');
-            if (in_array($action, ['start', 'stop', 'restart', 'status'], true) && $service !== '') {
-                return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, "service-{$action}", $service];
+            if (in_array($action, ['start', 'stop', 'restart', 'reload', 'status', 'is-active'], true) && $service !== '') {
+                return ['/usr/bin/sudo', '-n', $adminctl, "service-{$action}", $service];
             }
             if ($action === 'reload' && (($command[2] ?? '') === 'nginx')) {
-                return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, 'nginx-reload'];
+                return ['/usr/bin/sudo', '-n', $adminctl, 'nginx-reload'];
             }
         }
 
         if ($bin === 'nginx' && (($command[1] ?? '') === '-t')) {
-            return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, 'nginx-test'];
+            return ['/usr/bin/sudo', '-n', $adminctl, 'nginx-test'];
         }
 
         if ($bin === 'journalctl') {
@@ -2529,7 +2549,7 @@ class ProtectController extends Controller
                 }
             }
             if ($unit !== '') {
-                return ['/usr/bin/sudo', '-n', '-u', 'pteroprotect-ops', $adminctl, 'journal-tail', $unit];
+                return ['/usr/bin/sudo', '-n', $adminctl, 'journal-tail', $unit];
             }
         }
 

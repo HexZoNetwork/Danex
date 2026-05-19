@@ -30,13 +30,12 @@
                     <div class="form-group"><label>Fallback Port Range</label><input class="form-control" name="fallback_port_range" value="{{ $defaults['fallback_port_range'] }}"></div>
                     <div class="form-group"><label>Host Key Policy</label>
                         <select class="form-control" name="host_key_policy">
-                            <option value="strict_tofu" {{ $defaults['host_key_policy'] === 'strict_tofu' ? 'selected' : '' }}>strict_tofu</option>
-                            <option value="strict_pinned" {{ $defaults['host_key_policy'] === 'strict_pinned' ? 'selected' : '' }}>strict_pinned</option>
+                            <option value="strict_pinned" selected>strict_pinned</option>
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Pinned Host Fingerprint (base64, required for strict_pinned)</label>
-                        <input class="form-control" name="host_fingerprint" value="{{ old('host_fingerprint', '') }}" placeholder="AAAAB3NzaC1yc2EAAAADAQABAAABAQ...">
+                        <label>Pinned Host Fingerprint (base64, required before password login)</label>
+                        <input class="form-control" name="host_fingerprint" value="{{ old('host_fingerprint', '') }}" required placeholder="AAAAB3NzaC1yc2EAAAADAQABAAABAQ...">
                     </div>
                     <div class="form-group"><label>Mode</label>
                         <select class="form-control" name="reconfigure_mode">

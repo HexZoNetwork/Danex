@@ -22,6 +22,7 @@ ReadWritePaths=/pteroprotect /var/lib/pterodactyl /run /proc/sys/net /var/log /d
 Type=simple
 User=root
 Group=root
+SupplementaryGroups=adm
 WorkingDirectory=/pteroprotect
 Environment=DANN_CONFIG_PATH=/pteroprotect/config.json
 Environment=PTEROPROTECT_PANEL_RUNTIME_DIR=/pteroprotect/runtime

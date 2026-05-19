@@ -293,13 +293,13 @@
                                                         <td>{{ (int) $file['mtime'] > 0 ? gmdate('Y-m-d H:i:s', (int) $file['mtime']) : '-' }}</td>
                                                         <td class="qf-actions">
                                                             <a class="btn btn-xs btn-primary" href="{{ route('admin.protect.quarantine.download', ['path' => $file['encoded_path']]) }}">Download</a>
-                                                            <a class="btn btn-xs btn-default" href="{{ route('admin.protect.quarantine.edit', ['path' => $file['encoded_path']]) }}">Edit</a>
+                                                             <a class="btn btn-xs btn-default" href="{{ route('admin.protect.quarantine.edit', ['path' => $file['encoded_path']]) }}">View/Edit</a>
                                                             <button type="button" class="btn btn-xs btn-warning js-rename-btn" data-path="{{ $file['encoded_path'] }}" data-name="{{ $file['name'] }}">Rename</button>
-                                                            <form method="POST" action="{{ route('admin.protect.quarantine.delete') }}" style="display:inline-block;" onsubmit="return confirm('Remove file ini?');">
+                                                            <form method="POST" action="{{ route('admin.protect.quarantine.delete') }}" style="display:inline-block;" data-confirm-action="Remove quarantined file {{ $file['name'] }}. Type REMOVE to continue." data-confirm-token="REMOVE">
                                                                 @csrf
                                                                 <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                                                                 <input type="hidden" name="path" value="{{ $file['encoded_path'] }}" />
-                                                                <button type="submit" class="btn btn-xs btn-danger">Remove</button>
+                                                                 <button type="submit" class="btn btn-xs btn-danger">Delete quarantined file</button>
                                                             </form>
                                                         </td>
                                                     </tr>
@@ -332,13 +332,23 @@ document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.js-rename-btn').forEach(function (btn) {
         btn.addEventListener('click', function () {
             const currentName = this.getAttribute('data-name') || '';
-            const nextName = window.prompt('Rename file:', currentName);
+            const nextName = window.prompt('Rename quarantined file. Current file: ' + currentName + '\nEnter the new file name:');
             if (!nextName) return;
             renamePath.value = this.getAttribute('data-path') || '';
             renameName.value = nextName.trim();
             if (renameName.value === '') return;
             renameForm.submit();
         });
+    });
+    document.addEventListener('submit', function (event) {
+        const form = event.target;
+        if (!form || !form.getAttribute) return;
+        const message = form.getAttribute('data-confirm-action');
+        const token = form.getAttribute('data-confirm-token');
+        if (!message || !token) return;
+        if (window.prompt(message) !== token) {
+            event.preventDefault();
+        }
     });
 });
 </script>

@@ -61,7 +61,7 @@ export default () => {
                 </span>
             </SearchShell>
             <Tooltip placement={'bottom'} content={'Search'}>
-                <IconButton type={'button'} onClick={() => setVisible(true)}>
+                <IconButton type={'button'} onClick={() => setVisible(true)} aria-label={'Search servers'}>
                     <FontAwesomeIcon icon={faSearch} />
                 </IconButton>
             </Tooltip>

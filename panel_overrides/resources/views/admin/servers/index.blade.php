@@ -21,9 +21,10 @@
                 <div class="box-tools search01">
                     <form action="{{ route('admin.servers') }}" method="GET">
                         <div class="input-group input-group-sm">
-                            <input type="text" name="filter[*]" class="form-control pull-right" value="{{ request()->input()['filter']['*'] ?? '' }}" placeholder="Search Servers">
+                            <label class="sr-only" for="admin-server-search">Search Servers</label>
+                            <input id="admin-server-search" type="text" name="filter[*]" class="form-control pull-right" value="{{ request()->input()['filter']['*'] ?? '' }}" placeholder="Search Servers">
                             <div class="input-group-btn">
-                                <button type="submit" class="btn btn-default"><i class="fa fa-search"></i></button>
+                                <button type="submit" class="btn btn-default" aria-label="Search servers"><i class="fa fa-search" aria-hidden="true"></i></button>
                                 <a href="{{ route('admin.servers.new') }}" class="btn btn-sm btn-primary" style="margin-left:6px;">Create New</a>
                             </div>
                         </div>
@@ -61,7 +62,7 @@
                                     @endif
                                 </td>
                                 <td class="text-center">
-                                    <a class="btn btn-xs btn-default" href="/server/{{ $server->uuidShort }}"><i class="fa fa-wrench"></i></a>
+                                    <a class="btn btn-xs btn-default" href="/server/{{ $server->uuidShort }}" aria-label="Open server panel for {{ $server->name }}"><i class="fa fa-wrench" aria-hidden="true"></i></a>
                                 </td>
                             </tr>
                         @endforeach

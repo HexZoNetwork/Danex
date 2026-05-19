@@ -1,0 +1,31 @@
+[Unit]
+StartLimitBurst=5
+StartLimitIntervalSec=300
+Description=PteroProtect Emergency Control Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=DANN_GUARD_HOME=/pteroprotect
+WorkingDirectory=/pteroprotect
+ExecStart=/usr/bin/python3 /pteroprotect/scripts/pteroprotect_emergency_panel.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=yes
+ProtectSystem=strict
+PrivateDevices=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/pteroprotect /var/log/pteroprotect /var/lib/pteroprotect /dev/shm/pteroprotect /run
+StandardOutput=append:/pteroprotect/emergency_panel.log
+StandardError=append:/pteroprotect/emergency_panel.log
+
+[Install]
+WantedBy=multi-user.target

@@ -152,14 +152,14 @@ def chmod_dir(path: pathlib.Path, mode: int, group: str = "") -> None:
         os.chmod(path, mode)
 
 
-def verify_ticket(session_id: str, headers: dict[str, str]) -> dict[str, object] | None:
+def verify_ticket(session_id: str, headers: dict[str, str], query_ticket: str = "") -> dict[str, object] | None:
     path = TICKET_DIR / f"{session_id}.json"
     try:
         raw = path.read_text(encoding="utf-8")
         info = json.loads(raw)
     except Exception:
         return None
-    ticket = cookie_value(headers, f"pp_term_{session_id}")
+    ticket = query_ticket or cookie_value(headers, f"pp_term_{session_id}")
     if not ticket:
         return None
     if int(info.get("expires_at", 0)) < int(time.time()):
@@ -384,14 +384,16 @@ def handle(conn: socket.socket) -> None:
         parts = request_line.split()
         if len(parts) < 2:
             return send_http(conn, 400, "bad_request")
-        path = urllib.parse.urlparse(parts[1]).path
+        parsed_url = urllib.parse.urlparse(parts[1])
+        path = parsed_url.path
+        query = urllib.parse.parse_qs(parsed_url.query, keep_blank_values=True)
         match = SESSION_RE.match(path)
         if not match:
             return send_http(conn, 404, "not_found")
         if not validate_ws_request(request_line, headers):
             return send_http(conn, 426, "upgrade_required")
         session_id = match.group(1)
-        info = verify_ticket(session_id, headers)
+        info = verify_ticket(session_id, headers, str((query.get("ticket") or [""])[0]))
         if info is None:
             return send_http(conn, 403, "ticket_invalid")
         if not accept_ws(conn, headers):

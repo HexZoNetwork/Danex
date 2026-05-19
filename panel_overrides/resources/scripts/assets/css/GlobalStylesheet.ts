@@ -355,8 +355,35 @@ export default createGlobalStyle`
         ${tw`m-0`};
     }
 
-    textarea, select, input, button, button:focus, button:focus-visible {
+    textarea, select, input, button {
         ${tw`outline-none`};
+    }
+
+    textarea:focus-visible,
+    select:focus-visible,
+    input:focus-visible,
+    button:focus-visible,
+    a:focus-visible,
+    [role='button']:focus-visible {
+        outline: 2px solid var(--el7-accent-light) !important;
+        outline-offset: 2px !important;
+        box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.28) !important;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        body::before,
+        body::after,
+        .danex-monitor-surface {
+            animation: none !important;
+        }
+
+        html:focus-within {
+            scroll-behavior: auto !important;
+        }
+
+        button:hover {
+            transform: none !important;
+        }
     }
 
     input[type=number]::-webkit-outer-spin-button,

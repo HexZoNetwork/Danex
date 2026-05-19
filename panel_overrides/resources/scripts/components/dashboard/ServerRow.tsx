@@ -139,7 +139,10 @@ const ResourceMetric = ({
     limit: string;
     usage: number;
     alarm: boolean;
-}) => (
+}) => {
+    const boundedUsage = Math.max(0, Math.min(100, usage));
+
+    return (
     <ResourceCell $alarm={alarm}>
         <div css={tw`flex items-center justify-between gap-2`}>
             <div css={tw`flex items-center min-w-0`}>
@@ -148,10 +151,20 @@ const ResourceMetric = ({
             </div>
             <span css={tw`text-xs font-mono text-neutral-100 truncate`}>{value}</span>
         </div>
-        <Meter $value={usage} $alarm={alarm} />
-        <p css={tw`mt-1 text-[10px] text-neutral-500 text-right`}>of {limit}</p>
+        <Meter
+            $value={boundedUsage}
+            $alarm={alarm}
+            role={'meter'}
+            aria-label={`${label} usage`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(boundedUsage)}
+            aria-valuetext={`${value} of ${limit}`}
+        />
+        <p css={tw`mt-1 text-[10px] text-neutral-500 text-right`}>of {limit} ({Math.round(boundedUsage)}%)</p>
     </ResourceCell>
-);
+    );
+};
 
 const ServerRow = ({ server, className, eager = false, compact = false }: { server: Server; className?: string; eager?: boolean; compact?: boolean }) => {
     const interval = useRef<Timer | null>(null);

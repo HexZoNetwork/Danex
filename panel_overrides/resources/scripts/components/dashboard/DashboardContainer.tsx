@@ -71,9 +71,11 @@ export default () => {
                             type={'button'}
                             css={tw`h-9 rounded-md border px-3 text-xs uppercase tracking-wider transition`}
                             style={{ background: showOnlyAdmin ? '#8b5cf6' : '#07070b', color: showOnlyAdmin ? '#ffffff' : '#d6d3e8', borderColor: showOnlyAdmin ? 'rgba(167, 139, 250, 0.72)' : 'rgba(139, 92, 246, 0.24)', boxShadow: showOnlyAdmin ? '0 0 18px rgba(139, 92, 246, 0.35)' : 'none' }}
+                            aria-pressed={showOnlyAdmin}
+                            aria-label={showOnlyAdmin ? "Show only your servers" : "Show all admin servers"}
                             onClick={() => setShowOnlyAdmin((s) => !s)}
                         >
-                            {showOnlyAdmin ? "Showing others' servers" : 'Showing your servers'}
+                            {showOnlyAdmin ? 'Showing all admin servers' : 'Showing your servers'}
                         </button>
                     )}
                 </div>
@@ -82,6 +84,7 @@ export default () => {
                         <button
                             type={'button'}
                             aria-label={'Comfort box view'}
+                            aria-pressed={!denseMode}
                             css={tw`w-9 h-8 rounded flex items-center justify-center transition`}
                             style={!denseMode ? { background: '#8b5cf6', color: '#ffffff', boxShadow: '0 0 18px rgba(139, 92, 246, 0.42)' } : { color: '#a6a6b8' }}
                             onClick={() => setDenseMode(false)}
@@ -91,6 +94,7 @@ export default () => {
                         <button
                             type={'button'}
                             aria-label={'Dense row view'}
+                            aria-pressed={denseMode}
                             css={tw`w-9 h-8 rounded flex items-center justify-center transition`}
                             style={denseMode ? { background: '#8b5cf6', color: '#ffffff', boxShadow: '0 0 18px rgba(139, 92, 246, 0.42)' } : { color: '#a6a6b8' }}
                             onClick={() => setDenseMode(true)}

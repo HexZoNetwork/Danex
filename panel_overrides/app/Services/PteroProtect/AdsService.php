@@ -111,6 +111,7 @@ class AdsService
             }
 
             $data['items'] = array_values($items);
+            $data['_updated_item'] = $item;
 
             return $data;
         })['item'] ?? [];
@@ -315,6 +316,10 @@ class AdsService
             return false;
         }
 
+        if ($scheme !== 'https' && !in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
+            return false;
+        }
+
         return true;
     }
 
@@ -333,6 +338,11 @@ class AdsService
     private function read(): array
     {
         $this->ensureStoreExists();
+
+        $size = @filesize($this->storePath);
+        if ($size !== false && $size > 1048576) {
+            return ['items' => [], 'service_enabled' => false];
+        }
 
         $raw = @file_get_contents($this->storePath);
         $data = json_decode((string) $raw, true);

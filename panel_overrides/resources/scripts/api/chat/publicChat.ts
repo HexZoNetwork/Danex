@@ -371,6 +371,7 @@ export const postPublicMessage = async (payload: {
     mediaType?: ChatMediaType;
     mediaMime?: string;
     mediaName?: string;
+    uploadToken?: string;
     replyToId?: number;
 }): Promise<PublicChatMessage> => {
     const { data } = await http.post('/api/client/chat/messages', {
@@ -380,6 +381,7 @@ export const postPublicMessage = async (payload: {
         media_type: payload.mediaType || undefined,
         media_mime: payload.mediaMime || undefined,
         media_name: payload.mediaName || undefined,
+        upload_token: payload.uploadToken || undefined,
         reply_to_id: payload.replyToId || undefined,
     });
 
@@ -463,6 +465,7 @@ export const createPollMessage = async (payload: {
     mediaUrl?: string;
     mediaName?: string;
     mediaMime?: string;
+    uploadToken?: string;
 }): Promise<PublicChatMessage> => {
     const { data } = await http.post('/api/client/chat/polls', {
         conversation_id: payload.conversationId,
@@ -471,6 +474,7 @@ export const createPollMessage = async (payload: {
         media_url: payload.mediaUrl || undefined,
         media_name: payload.mediaName || undefined,
         media_mime: payload.mediaMime || undefined,
+        upload_token: payload.uploadToken || undefined,
     });
 
     return rawDataToMessage(data?.data || {});
@@ -508,10 +512,12 @@ export const markPublicMessagesRead = async (conversationId: number, messageIds?
 };
 
 export const uploadPublicMedia = async (
-    file: File
-): Promise<{ url: string; mediaType: ChatMediaType; mediaMime: string | null; mediaName: string | null }> => {
+    file: File,
+    conversationId: number
+): Promise<{ url: string; uploadToken: string; mediaType: ChatMediaType; mediaMime: string | null; mediaName: string | null }> => {
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('conversation_id', String(conversationId));
 
     const { data } = await http.post('/api/client/chat/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -519,6 +525,7 @@ export const uploadPublicMedia = async (
 
     return {
         url: String(data?.data?.url || ''),
+        uploadToken: String(data?.data?.upload_token || ''),
         mediaType: (data?.data?.media_type || 'link') as ChatMediaType,
         mediaMime: data?.data?.media_mime ?? null,
         mediaName: data?.data?.media_name ?? null,

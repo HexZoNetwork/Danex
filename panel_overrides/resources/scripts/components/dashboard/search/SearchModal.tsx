@@ -39,11 +39,13 @@ const ServerResult = styled(Link)`
     }
 `;
 
-const SearchWatcher = () => {
+const SearchWatcher = ({ onTermChange }: { onTermChange: (term: string) => void }) => {
     const { values, submitForm } = useFormikContext<Values>();
 
     useEffect(() => {
-        if (values.term.length >= 3) {
+        const cleanTerm = values.term.trim();
+        onTermChange(cleanTerm);
+        if (cleanTerm.length >= 3) {
             submitForm();
         }
     }, [values.term]);
@@ -53,24 +55,39 @@ const SearchWatcher = () => {
 
 export default ({ ...props }: Props) => {
     const ref = useRef<HTMLInputElement>(null);
+    const searchSeq = useRef(0);
     const isAdmin = useStoreState((state) => state.user.data!.rootAdmin);
     const [servers, setServers] = useState<Server[]>([]);
+    const [termLength, setTermLength] = useState(0);
+    const [hasSearched, setHasSearched] = useState(false);
     const { clearAndAddHttpError, clearFlashes } = useStoreActions(
         (actions: Actions<ApplicationStore>) => actions.flashes
     );
 
     const search = debounce(({ term }: Values, { setSubmitting }: FormikHelpers<Values>) => {
         clearFlashes('search');
+        const cleanTerm = term.trim();
+            const seq = (searchSeq.current += 1);
+        setHasSearched(true);
 
         // if (ref.current) ref.current.focus();
-        getServers({ query: term, type: isAdmin ? 'admin-all' : undefined })
-            .then((servers) => setServers(servers.items.filter((_, index) => index < 5)))
+        getServers({ query: cleanTerm, type: isAdmin ? 'admin-all' : undefined })
+            .then((servers) => {
+                if (seq === searchSeq.current) {
+                    setServers(servers.items.filter((_, index) => index < 5));
+                }
+            })
             .catch((error) => {
+                if (seq !== searchSeq.current) return;
                 console.error(error);
                 clearAndAddHttpError({ key: 'search', error });
             })
-            .then(() => setSubmitting(false))
-            .then(() => ref.current?.focus());
+            .then(() => {
+                if (seq === searchSeq.current) {
+                    setSubmitting(false);
+                    ref.current?.focus();
+                }
+            });
     }, 500);
 
     useEffect(() => {
@@ -98,12 +115,23 @@ export default ({ ...props }: Props) => {
                             label={'Search term'}
                             description={'Enter a server name, uuid, or allocation to begin searching.'}
                         >
-                            <SearchWatcher />
+                            <SearchWatcher
+                                onTermChange={(term) => {
+                                    setTermLength(term.length);
+                                    if (term.length < 3) {
+                                        searchSeq.current += 1;
+                                        setServers([]);
+                                        setHasSearched(false);
+                                    }
+                                }}
+                            />
                             <InputSpinner visible={isSubmitting}>
                                 <Field as={InputWithRef} name={'term'} />
                             </InputSpinner>
                         </FormikFieldWrapper>
                     </Form>
+                    {termLength > 0 && termLength < 3 && <p css={tw`mt-4 text-sm text-neutral-400`}>Type at least 3 characters to search.</p>}
+                    {hasSearched && !isSubmitting && servers.length === 0 && <p css={tw`mt-4 text-sm text-neutral-400`}>No servers found.</p>}
                     {servers.length > 0 && (
                         <div css={tw`mt-6`}>
                             {servers.map((server) => (
