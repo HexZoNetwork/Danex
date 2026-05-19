@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import concurrent.futures
 import hashlib
 import fcntl
 import errno
@@ -312,7 +313,26 @@ async function reboot(){if(prompt('Type REBOOT to reboot VPS')!=='REBOOT')return
 async function loadScript(src){return new Promise((res,rej)=>{let s=document.createElement('script');s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s)})}
 async function startTerminal(){if(prompt('Start full emergency root terminal. Type ROOT to continue.')!=='ROOT')return;if(!window.Terminal){let l=document.createElement('link');l.rel='stylesheet';l.href='https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css';document.head.appendChild(l);await loadScript('https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js')}let ov=document.createElement('div');ov.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.92);padding:16px;display:flex;flex-direction:column;gap:8px';ov.innerHTML='<div class=row><strong>Emergency Root Terminal</strong><button id=termClose class=alt>Close</button><span id=termStatus class=muted>connecting</span></div><div id=term style="flex:1;border:1px solid rgba(239,68,68,.45);background:#07070b;border-radius:8px;padding:6px"></div>';document.body.appendChild(ov);let term=new window.Terminal({cursorBlink:true,convertEol:true,fontSize:13,theme:{background:'#07070b',foreground:'#f7f7fb'}});term.open(document.getElementById('term'));term.focus();let proto=location.protocol==='https:'?'wss://':'ws://';let ws=new WebSocket(proto+location.host+'/api/terminal/ws');ws.binaryType='arraybuffer';document.getElementById('termClose').onclick=()=>{try{ws.close()}catch(e){}ov.remove()};ws.onopen=()=>{document.getElementById('termStatus').textContent='connected';term.write('\r\n[PteroProtect Emergency] root terminal connected\r\n');ws.send(JSON.stringify({type:'resize',cols:term.cols||120,rows:term.rows||32}))};ws.onmessage=e=>{if(e.data instanceof ArrayBuffer)term.write(new Uint8Array(e.data));else term.write(String(e.data))};ws.onclose=()=>{document.getElementById('termStatus').textContent='disconnected';term.write('\r\n[disconnected]\r\n')};ws.onerror=()=>{document.getElementById('termStatus').textContent='websocket error'};term.onData(d=>{if(ws.readyState===WebSocket.OPEN)ws.send(d)});window.addEventListener('resize',()=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'resize',cols:term.cols||120,rows:term.rows||32}))},{passive:true})}
 function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
-</script></body></html>""".replace("__SERVICES__", json.dumps(SERVICES))
+</script></body></html>""".replace("__SERVICES__", json.dumps(SERVICES)).replace("<select id=svc></select>", "<select id=svc>__SERVICE_OPTIONS__</select>").replace("<tbody id=services></tbody>", "<tbody id=services>__SERVICE_ROWS__</tbody>").replace("<pre id=audit></pre>", "<pre id=audit>__AUDIT__</pre>")
+
+
+def render_html(csrf):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        statuses = list(pool.map(compact_status, SERVICES))
+    options = "".join(f"<option>{html.escape(s)}</option>" for s in SERVICES)
+    rows = []
+    for item in statuses:
+        state = str(item.get("state", "unknown"))
+        cls = "ok" if state == "active" else ("bad" if state == "failed" else "warntext")
+        service = str(item.get("service", ""))
+        rows.append(f"<tr><td>{html.escape(service)}</td><td class=\"{cls}\">{html.escape(state)}</td><td><button class=alt onclick=\"quickService('{html.escape(service)}','restart')\">restart</button></td></tr>")
+    audit_rows = recent_audit()
+    audit_text = json.dumps(audit_rows, indent=2) if audit_rows else "No audit entries yet."
+    return (HTML
+        .replace("__CSRF__", csrf)
+        .replace("__SERVICE_OPTIONS__", options)
+        .replace("__SERVICE_ROWS__", "".join(rows))
+        .replace("__AUDIT__", html.escape(audit_text)))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -478,18 +498,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._silent_drop()
                     return
                 session_cookie, csrf = make_cookie(self.server.admin_token, self.server.session_ttl)
-                self._html(HTML.replace("__CSRF__", csrf), session_cookie)
+                self._html(render_html(csrf), session_cookie)
                 return
             auth = self._require()
             if not auth:
                 return
             csrf = auth.get("session", {}).get("csrf", "")
-            self._html(HTML.replace("__CSRF__", csrf))
+            self._html(render_html(csrf))
             return
         if urlparse(self.path).path == "/api/status":
             if not self._require():
                 return
-            self._json({"services": [compact_status(s) for s in SERVICES], "audit": recent_audit()})
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                services = list(pool.map(compact_status, SERVICES))
+            self._json({"services": services, "audit": recent_audit()})
             return
         self._json({"error": "not_found"}, 404)
 
