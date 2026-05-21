@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <mysql/mysql.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -23,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
+#include <condition_variable>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -30,6 +32,7 @@
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <queue>
 #include <random>
 #include <sstream>
 #include <string>
@@ -46,6 +49,8 @@ struct Settings {
     int port = 18444;
     int ttl = 1800;
     int pow_bits = 14;
+    int challenge_wait_min_ms = 1500;
+    int challenge_wait_max_ms = 4500;
     int challenge_type = 1;
     bool challenge_theme_custom_enabled = false;
     std::string challenge_theme_gradient_start = "#07070b";
@@ -119,6 +124,26 @@ static std::mutex g_completed_mu;
 static std::map<std::string, std::time_t> g_completed_challenges;
 static std::mutex g_source_bucket_mu;
 static std::map<std::string, std::pair<std::time_t, int>> g_source_buckets;
+static std::mutex g_provider_ip_cache_mu;
+static std::map<std::string, bool> g_provider_ip_cache;
+static std::string g_provider_ip_cache_path;
+static std::time_t g_provider_ip_cache_loaded_at = 0;
+struct AcceptedClient { int fd; std::string ip; };
+static std::mutex g_client_queue_mu;
+static std::condition_variable g_client_queue_cv;
+static std::queue<AcceptedClient> g_client_queue;
+static constexpr std::size_t kMaxNonceRecords = 20000;
+static constexpr std::size_t kMaxSessionRecords = 50000;
+static constexpr std::size_t kMaxCompletedRecords = 20000;
+static constexpr std::size_t kMaxSourceBucketRecords = 100000;
+static constexpr std::size_t kMaxQueuedClients = 2048;
+static constexpr int kWorkerThreads = 128;
+static constexpr int kClientReadTimeoutSec = 2;
+static constexpr int kClientWriteTimeoutSec = 2;
+static constexpr std::size_t kMaxHeaderBytes = 32768;
+static constexpr std::size_t kMaxRequestBytes = 131072;
+static constexpr std::size_t kMaxProviderIpCacheRecords = 100000;
+static constexpr std::streamoff kMaxProviderIpCacheBytes = 8 * 1024 * 1024;
 static std::string random_nonce();
 static std::string to_lower(std::string s);
 static bool base64_decode(const std::string& in, std::string& out);
@@ -127,6 +152,7 @@ static bool secure_equals(const std::string& a, const std::string& b);
 static bool daemon_bearer_token_format_ok(const std::string& token);
 static std::string ip_prefix_of(const std::string& ip, int v4_prefix_bits, int v6_prefix_bits);
 static bool ip_in_same_prefix(const std::string& a, const std::string& b, int v4_prefix_bits, int v6_prefix_bits);
+static void handle_client(int fd, std::string remote_ip);
 
 static inline std::string trim(const std::string& in) {
     std::size_t b = 0;
@@ -182,6 +208,40 @@ static void append_provider_cidrs_from_file(const std::string& path, std::vector
         if (cleaned.empty()) continue;
         append_csv_parts(cleaned, out);
     }
+}
+
+static bool provider_ip_cache_hit(const Settings& s, const std::string& ip) {
+    if (s.provider_token_ip_cache_file.empty()) return false;
+    const std::time_t now = std::time(nullptr);
+    std::lock_guard<std::mutex> lock(g_provider_ip_cache_mu);
+    if (g_provider_ip_cache_path != s.provider_token_ip_cache_file || now - g_provider_ip_cache_loaded_at > 5) {
+        g_provider_ip_cache.clear();
+        g_provider_ip_cache_path = s.provider_token_ip_cache_file;
+        g_provider_ip_cache_loaded_at = now;
+        std::ifstream f(s.provider_token_ip_cache_file);
+        if (f.is_open()) {
+            try {
+                f.seekg(0, std::ios::end);
+                const std::streamoff size = f.tellg();
+                if (size < 0 || size > kMaxProviderIpCacheBytes) return false;
+                f.seekg(0, std::ios::beg);
+                json cache;
+                f >> cache;
+                if (cache.is_object()) {
+                    for (auto it = cache.begin(); it != cache.end(); ++it) {
+                        if (g_provider_ip_cache.size() >= kMaxProviderIpCacheRecords) break;
+                        if (!it.value().is_object()) continue;
+                        const std::time_t exp = static_cast<std::time_t>(it.value().value("exp", 0));
+                        const bool is_provider = it.value().value("is_provider", false);
+                        if (is_provider && exp >= now) g_provider_ip_cache[it.key()] = true;
+                    }
+                }
+            } catch (...) {
+                g_provider_ip_cache.clear();
+            }
+        }
+    }
+    return g_provider_ip_cache.find(ip) != g_provider_ip_cache.end();
 }
 
 static bool begins_with(const std::string& value, const std::string& prefix) {
@@ -687,13 +747,13 @@ static bool hash_has_leading_zero_bits(const std::string& hex_hash, int bits) {
 }
 
 static bool verify_pow_solution(const NonceRec& rec, const std::string& nonce, long long counter, const std::string& client_hash) {
+    (void)client_hash;
     if (counter < 0 || counter > 200000000LL) return false;
     if (rec.pow_bits < 8 || rec.pow_bits > 24) return false;
     if (rec.pow_salt.empty()) return false;
     std::string payload = nonce + "|" + rec.pow_salt + "|" + std::to_string(counter);
     std::string calc_hash = sha256_hex(payload);
     if (!hash_has_leading_zero_bits(calc_hash, rec.pow_bits)) return false;
-    if (!client_hash.empty() && to_lower(trim(client_hash)) != calc_hash) return false;
     return true;
 }
 
@@ -925,6 +985,8 @@ static Settings load_settings() {
             s.port = std::max(1, std::min(65535, json_get_int(net, "waf_challenge_port", 18444)));
             s.ttl = std::max(60, std::min(86400, json_get_int(net, "waf_challenge_ttl_sec", 1800)));
             s.pow_bits = std::max(8, std::min(24, json_get_int(net, "waf_pow_bits", 14)));
+            s.challenge_wait_min_ms = std::max(300, std::min(30000, json_get_int(net, "waf_challenge_wait_min_ms", 1500)));
+            s.challenge_wait_max_ms = std::max(s.challenge_wait_min_ms, std::min(60000, json_get_int(net, "waf_challenge_wait_max_ms", 4500)));
             s.challenge_type = std::max(1, std::min(66, json_get_int(net, "waf_challenge_type", 1)));
             s.challenge_theme_custom_enabled = parse_bool(net.value("waf_challenge_theme_custom_enabled", json(false)), false);
             s.challenge_theme_gradient_start = sanitize_hex_color(
@@ -1393,6 +1455,13 @@ static void cleanup_nonce_map() {
         if (it->second.exp <= now) it = g_nonce_map.erase(it);
         else ++it;
     }
+    while (g_nonce_map.size() > kMaxNonceRecords) {
+        auto oldest = g_nonce_map.begin();
+        for (auto it = g_nonce_map.begin(); it != g_nonce_map.end(); ++it) {
+            if (it->second.issued_at < oldest->second.issued_at) oldest = it;
+        }
+        g_nonce_map.erase(oldest);
+    }
 }
 
 static void cleanup_session_map() {
@@ -1401,6 +1470,13 @@ static void cleanup_session_map() {
     for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end();) {
         if (it->second.exp <= now) it = g_ip_session_map.erase(it);
         else ++it;
+    }
+    while (g_ip_session_map.size() > kMaxSessionRecords) {
+        auto oldest = g_ip_session_map.begin();
+        for (auto it = g_ip_session_map.begin(); it != g_ip_session_map.end(); ++it) {
+            if (it->second.exp < oldest->second.exp) oldest = it;
+        }
+        g_ip_session_map.erase(oldest);
     }
 }
 
@@ -1911,6 +1987,13 @@ static bool source_bucket_allow(const Settings& s, const std::string& ip, const 
         if (it->second.first + 30 < now) it = g_source_buckets.erase(it);
         else ++it;
     }
+    while (g_source_buckets.size() > kMaxSourceBucketRecords) {
+        auto oldest = g_source_buckets.begin();
+        for (auto it = g_source_buckets.begin(); it != g_source_buckets.end(); ++it) {
+            if (it->second.first < oldest->second.first) oldest = it;
+        }
+        g_source_buckets.erase(oldest);
+    }
     auto& rec = g_source_buckets[key];
     if (rec.first != now) {
         rec.first = now;
@@ -1925,38 +2008,14 @@ static bool is_provider_range_ip(const Settings& s, const std::string& ip) {
     for (const auto& cidr : s.provider_token_cidrs) {
         if (host_or_cidr_matches_ip(cidr, ip)) return true;
     }
+    if (provider_ip_cache_hit(s, ip)) return true;
     if (is_loopback_ip(ip)) return false;
     for (char c : ip) {
         const bool ok = std::isdigit(static_cast<unsigned char>(c)) ||
             (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '.' || c == ':';
         if (!ok) return false;
     }
-    int fds[2];
-    if (pipe(fds) != 0) return false;
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(fds[0]);
-        close(fds[1]);
-        return false;
-    }
-    if (pid == 0) {
-        dup2(fds[1], STDOUT_FILENO);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) dup2(devnull, STDERR_FILENO);
-        close(fds[0]);
-        close(fds[1]);
-        execl("/usr/bin/python3", "python3", "/pteroprotect/scripts/provider_ip_lookup.py", g_cfg_path.c_str(), ip.c_str(), static_cast<char*>(nullptr));
-        _exit(127);
-    }
-    close(fds[1]);
-    char buf[64] = {0};
-    std::string output;
-    ssize_t n = read(fds[0], buf, sizeof(buf) - 1);
-    if (n > 0) output = trim(std::string(buf, static_cast<size_t>(n)));
-    close(fds[0]);
-    int status = 0;
-    waitpid(pid, &status, 0);
-    return output == "provider";
+    return false;
 }
 
 static std::string session_scope_key(const std::string& ip, const std::string& ua_fp) {
@@ -2150,13 +2209,14 @@ static bool read_request(int fd, HttpRequest& req) {
     bool header_done = false;
     std::size_t header_end = std::string::npos;
 
-    while (raw.size() < 1024 * 1024) {
+    while (raw.size() < kMaxRequestBytes) {
         ssize_t n = recv(fd, buf, sizeof(buf), 0);
         if (n <= 0) break;
         raw.append(buf, buf + n);
         if (!header_done) {
             header_end = raw.find("\r\n\r\n");
             if (header_end != std::string::npos) {
+                if (header_end > kMaxHeaderBytes) return false;
                 header_done = true;
                 std::string header_blob = raw.substr(0, header_end);
                 std::istringstream hs(header_blob);
@@ -2179,8 +2239,10 @@ static bool read_request(int fd, HttpRequest& req) {
                 if (it != req.headers.end()) {
                     try { content_len = std::max(0, std::min(65536, std::stoi(it->second))); } catch (...) { content_len = 0; }
                 }
+                if (header_end + 4 + static_cast<std::size_t>(content_len) > kMaxRequestBytes) return false;
                 if (raw.size() >= header_end + 4 + static_cast<std::size_t>(content_len)) break;
             }
+            if (raw.size() > kMaxHeaderBytes && header_end == std::string::npos) return false;
         } else {
             if (raw.size() >= header_end + 4 + static_cast<std::size_t>(content_len)) break;
         }
@@ -2396,33 +2458,33 @@ static void handle_client(int fd, std::string remote_ip) {
         const int min_pow_bits = s.strict_mode ? (hinted_mobile ? 10 : std::max(11, s.pow_bits - 2)) : 8;
         adaptive_pow_bits = std::max(min_pow_bits, std::min(24, adaptive_pow_bits));
 
-        int wait_min_ms = 8 * 1000;
-        int wait_max_ms = 20 * 1000;
+        int wait_min_ms = s.challenge_wait_min_ms;
+        int wait_max_ms = s.challenge_wait_max_ms;
         if (hinted_hc > 0) {
             if (hinted_hc <= 2) {
-                wait_min_ms = 4 * 1000;
-                wait_max_ms = 10 * 1000;
+                wait_min_ms = std::max(1000, wait_min_ms - 500);
+                wait_max_ms = std::max(wait_min_ms + 500, wait_max_ms - 1000);
             } else if (hinted_hc <= 4) {
-                wait_min_ms = 6 * 1000;
-                wait_max_ms = 14 * 1000;
+                wait_min_ms = std::max(1200, wait_min_ms - 300);
+                wait_max_ms = std::max(wait_min_ms + 500, wait_max_ms - 700);
             } else if (hinted_hc >= 12) {
-                wait_min_ms = 10 * 1000;
-                wait_max_ms = 22 * 1000;
+                wait_min_ms += 500;
+                wait_max_ms += 1000;
             }
         }
         if (hinted_mobile) {
-            wait_min_ms = std::max(3 * 1000, wait_min_ms - 1500);
-            wait_max_ms = std::max(wait_min_ms + 1000, wait_max_ms - 2500);
+            wait_min_ms = std::max(800, wait_min_ms - 500);
+            wait_max_ms = std::max(wait_min_ms + 500, wait_max_ms - 1000);
         }
-        int adaptive_pow_mem_mb = 48;
+        int adaptive_pow_mem_mb = 16;
         if (hinted_dm > 0.0) {
-            adaptive_pow_mem_mb = static_cast<int>(std::round(hinted_dm * 1024.0 * 0.10));
+            adaptive_pow_mem_mb = static_cast<int>(std::round(hinted_dm * 1024.0 * 0.04));
         }
-        if (hinted_mobile) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 32);
-        else adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 96);
-        if (hinted_hc > 0 && hinted_hc <= 2) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 24);
-        if (suspicious_low_power_hint) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, 32);
-        if (s.strict_mode) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, hinted_mobile ? 16 : 32);
+        if (hinted_mobile) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 16);
+        else adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 48);
+        if (hinted_hc > 0 && hinted_hc <= 2) adaptive_pow_mem_mb = std::min(adaptive_pow_mem_mb, 16);
+        if (suspicious_low_power_hint) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, 16);
+        if (s.strict_mode) adaptive_pow_mem_mb = std::max(adaptive_pow_mem_mb, hinted_mobile ? 8 : 16);
         adaptive_pow_mem_mb = std::max(8, adaptive_pow_mem_mb);
         int adaptive_pow_cpu_level = 4;
         if (hinted_hc > 0) {
@@ -2703,6 +2765,11 @@ static void handle_client(int fd, std::string remote_ip) {
         std::map<std::string, std::string> q = parse_query(req.query);
         std::string rd = q.count("rd") ? q["rd"] : "/";
         if (rd.empty() || rd[0] != '/') rd = "/";
+        if (!s.enabled) {
+            send_response(fd, 302, "Found", "", {{"Location", rd}}, head_only);
+            close(fd);
+            return;
+        }
         const int challenge_type = resolve_challenge_type(s, q);
         const std::string challenge_profile = challenge_type_name(challenge_type);
         const std::string challenge_theme_vars = challenge_theme_css_vars(s, challenge_type);
@@ -2797,7 +2864,8 @@ static void handle_client(int fd, std::string remote_ip) {
             "async function captureVoiceInput(){if(!SpeechRec||voiceListening||!elMic)return;voiceListening=true;configureVoiceUI();try{const rec=new SpeechRec();rec.lang='id-ID';rec.interimResults=false;rec.maxAlternatives=1;await new Promise((resolve,reject)=>{let done=false;rec.onresult=(ev)=>{try{const tx=String((((ev||{}).results||[])[0]||[])[0]?.transcript||'').trim();if(elA&&tx)elA.value=tx;done=true;resolve();}catch(_e){reject(new Error('voice_parse_failed'));}};rec.onerror=()=>{if(!done)reject(new Error('voice_failed'));};rec.onend=()=>{if(!done)resolve();};rec.start();setTimeout(()=>{try{rec.stop();}catch(_e){}},6500);});if(elS){elS.textContent='Voice input captured.';}}catch(_e){if(elE){elE.textContent='Voice input gagal, ketik manual.';}}voiceListening=false;configureVoiceUI();}"
             "function setupPhase1Concept(){if(!elW){phase1ConceptPassed=true;return;}if(CHALLENGE_TYPE===1||phase1VoiceEnabled){elW.innerHTML='';elW.style.display='none';phase1ConceptPassed=true;return;}elW.style.display='block';phase1ConceptType=((CHALLENGE_TYPE-2)%64+64)%64;const fam=Math.floor(phase1ConceptType/8),v=phase1ConceptType%8;phase1ConceptPassed=false;const done=()=>{if(phase1ConceptPassed)return;phase1ConceptPassed=true;if(elS)elS.textContent='Concept check passed.';if(elW){elW.setAttribute('data-locked','1');elW.querySelectorAll('button,input,select,textarea').forEach(n=>{try{n.disabled=true;}catch(_e){}});elW.querySelectorAll('[draggable=\"true\"],[data-e],[data-n],[data-b],[data-m],[data-s]').forEach(n=>{n.style.pointerEvents='none';});}};if(elW)elW.removeAttribute('data-locked');if(fam===0){const target=((17*phase1ConceptType+11)%97)+2;const tol=1+(v%3);elW.innerHTML='<div style=\"margin-bottom:6px\">Slider presisi: set ke '+String(target)+' (±'+String(tol)+').</div><input id=\"w_slider\" type=\"range\" min=\"0\" max=\"100\" value=\"0\" style=\"width:100%\"><div id=\"w_sv\">0</div>';const sl=document.getElementById('w_slider');const sv=document.getElementById('w_sv');if(sl&&sv){sl.oninput=()=>{const x=Number(sl.value||0);sv.textContent=String(x);if(Math.abs(x-target)<=tol)done();};}return;}if(fam===1){const count=3+(v>=4?1:0);elW.innerHTML='<div style=\"margin-bottom:6px\">Drag urutkan tile 1..'+String(count)+'.</div><div id=\"w_slots\" style=\"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px\">'+Array.from({length:count},(_,i)=>'<div data-s=\"'+String(i+1)+'\" style=\"flex:1;border:1px dashed #8b5cf6;min-height:34px;padding:6px;min-width:64px\"></div>').join('')+'</div><div id=\"w_tiles\" style=\"display:flex;gap:6px;flex-wrap:wrap\">'+Array.from({length:count},(_,i)=>'<div draggable=\"true\" data-v=\"'+String(i+1)+'\" style=\"padding:6px 10px;border:1px solid #8b5cf6;cursor:grab\">'+String(i+1)+'</div>').join('')+'</div>';const tiles=Array.from(elW.querySelectorAll('[draggable=\"true\"]'));for(let i=tiles.length-1;i>0;i--){const j=(phase1ConceptType+i*5)%tiles.length;const p=tiles[i].parentNode;if(p&&tiles[j])p.insertBefore(tiles[j],tiles[i]);}let drag=null;elW.querySelectorAll('[draggable=\"true\"]').forEach(t=>t.addEventListener('dragstart',()=>{drag=t;}));elW.querySelectorAll('[data-s]').forEach(s=>{s.addEventListener('dragover',e=>e.preventDefault());s.addEventListener('drop',e=>{e.preventDefault();if(!drag)return;s.innerHTML='';s.appendChild(drag);const ok=Array.from(elW.querySelectorAll('[data-s]')).every(x=>{const c=x.querySelector('[data-v]');return c&&String(c.getAttribute('data-v'))===String(x.getAttribute('data-s'));});if(ok)done();});});return;}if(fam===2){const len=3+(v%3);let seq=[];for(let i=0;i<len;i++)seq.push(((phase1ConceptType*3+i*2)%7)+1);let pos=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Tap sequence: '+seq.join('-')+'</div><div style=\"display:flex;gap:6px;flex-wrap:wrap\">'+[1,2,3,4,5,6,7].map(n=>'<button type=\"button\" class=\"secondary\" data-n=\"'+n+'\" style=\"min-width:44px\">'+n+'</button>').join('')+'</div>';elW.querySelectorAll('[data-n]').forEach(b=>{b.addEventListener('click',()=>{const n=Number(b.getAttribute('data-n'));if(n===seq[pos]){pos++;if(pos>=seq.length)done();}else{pos=0;}});});return;}if(fam===3){const packs=[['🍎','🍏','🍋','🍇'],['⚽','🏀','🏐','🎾'],['🚗','🚕','🚌','🚓'],['⭐','🌙','☀️','☁️']];const arr=packs[v%packs.length];const target=arr[(phase1ConceptType+v)%arr.length];const need=2+(v%3);let hit=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Klik '+String(need)+'x simbol '+target+'.</div><div style=\"display:flex;gap:6px;font-size:24px;flex-wrap:wrap\">'+Array.from({length:9},(_,i)=>{const e=(i%4===0)?target:arr[(i+phase1ConceptType)%arr.length];return '<span data-e=\"'+e+'\" style=\"cursor:pointer;padding:2px 6px;border:1px solid rgba(139,92,246,.32)\">'+e+'</span>';}).join('')+'</div>';elW.querySelectorAll('[data-e]').forEach(x=>{x.addEventListener('click',()=>{if(x.getAttribute('data-e')===target){x.style.opacity='0.35';x.style.pointerEvents='none';hit++;if(hit>=need)done();}});});return;}if(fam===4){const hold=900+v*300;let t0=0,ok=false;elW.innerHTML='<div style=\"margin-bottom:6px\">Hold tepat '+String((hold/1000).toFixed(1))+' detik.</div><button id=\"w_hold\" type=\"button\" class=\"secondary\" style=\"min-width:160px\">Hold</button><div id=\"w_hs\" style=\"margin-top:6px\">0%</div>';const hb=document.getElementById('w_hold');const hs=document.getElementById('w_hs');const start=()=>{t0=Date.now();ok=false;};const stop=()=>{if(!t0)return;const dt=Date.now()-t0;t0=0;if(dt>=hold&&dt<hold+700){ok=true;done();}if(hs)hs.textContent=ok?'OK':'Ulangi';};const tick=()=>{if(!t0||!hs||ok)return;const p=Math.max(0,Math.min(100,Math.floor(((Date.now()-t0)/hold)*100)));hs.textContent=String(p)+'%';if(p>=100)hs.textContent='Lepas sekarang';};if(hb){hb.addEventListener('mousedown',start);hb.addEventListener('touchstart',start,{passive:true});hb.addEventListener('mouseup',stop);hb.addEventListener('mouseleave',stop);hb.addEventListener('touchend',stop);setInterval(tick,80);}return;}if(fam===5){const bits=4+(v>=4?1:0);const max=(1<<bits)-1;const target=((phase1ConceptType*37)+v*11)%Math.max(2,max);let val=0;const bstr=(n)=>n.toString(2).padStart(bits,'0');const bvals=Array.from({length:bits},(_,i)=>(1<<(bits-1-i)));elW.innerHTML='<div style=\"margin-bottom:6px\">Atur bit ke '+bstr(target)+'</div><div id=\"w_bits\" style=\"display:flex;gap:6px;flex-wrap:wrap\">'+bvals.map(b=>'<button type=\"button\" class=\"secondary\" data-b=\"'+b+'\" style=\"min-width:42px\">0</button>').join('')+'</div><div id=\"w_bv\" style=\"margin-top:6px\">'+bstr(0)+'</div>';const bv=document.getElementById('w_bv');elW.querySelectorAll('[data-b]').forEach(b=>{b.addEventListener('click',()=>{const bit=Number(b.getAttribute('data-b')||0);val=(val^bit);b.textContent=((val&bit)!==0)?'1':'0';if(bv)bv.textContent=bstr(val);if(val===target)done();});});return;}if(fam===6){const gx=((phase1ConceptType+v)%4)+1,gy=((phase1ConceptType*2+v)%4)+1;let x=0,y=0,steps=0;const blocks=[[1,1],[3,1],[1,3],[3,3],[2,1],[2,3],[1,2],[3,2]].slice(0,2+(v%3));const isBlock=(ix,iy)=>blocks.some(b=>b[0]===ix&&b[1]===iy);elW.innerHTML='<div style=\"margin-bottom:6px\">Grid route: capai G('+gx+','+gy+') hindari kotak merah.</div><div id=\"w_grid\" style=\"display:grid;grid-template-columns:repeat(5,28px);gap:4px;margin-bottom:8px\"></div><div style=\"display:flex;gap:6px;flex-wrap:wrap\"><button type=\"button\" class=\"secondary\" data-m=\"U\">Up</button><button type=\"button\" class=\"secondary\" data-m=\"L\">Left</button><button type=\"button\" class=\"secondary\" data-m=\"D\">Down</button><button type=\"button\" class=\"secondary\" data-m=\"R\">Right</button></div>';const g=document.getElementById('w_grid');const paint=()=>{if(!g)return;g.innerHTML='';for(let iy=0;iy<5;iy++){for(let ix=0;ix<5;ix++){const c=document.createElement('div');c.style.width='28px';c.style.height='28px';c.style.border='1px solid rgba(139,92,246,.32)';c.style.display='flex';c.style.alignItems='center';c.style.justifyContent='center';if(isBlock(ix,iy)){c.style.background='#5a1f29';c.textContent='■';}if(ix===gx&&iy===gy)c.style.outline='2px solid #35b56a';if(ix===x&&iy===y){c.style.background='#6d28d9';c.textContent='●';}g.appendChild(c);}}};const mv=(m)=>{let nx=x,ny=y;if(m==='U'&&y>0)ny--;if(m==='D'&&y<4)ny++;if(m==='L'&&x>0)nx--;if(m==='R'&&x<4)nx++;if(isBlock(nx,ny))return;x=nx;y=ny;steps++;paint();if(x===gx&&y===gy&&steps>=4)done();};paint();elW.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>mv(String(b.getAttribute('data-m')||''))));return;}const set=v%2===0?['A','B','C','D']:['K','L','M','N'];const pair=3+(v%2);let vals=[];for(let i=0;i<pair;i++){vals.push(set[i]);vals.push(set[i]);}for(let i=vals.length-1;i>0;i--){const j=(phase1ConceptType+i*7)%vals.length;const t=vals[i];vals[i]=vals[j];vals[j]=t;}let open=[],locked=0;elW.innerHTML='<div style=\"margin-bottom:6px\">Memory pair: buka '+String(pair)+' pasang.</div><div id=\"w_mem\" style=\"display:grid;grid-template-columns:repeat(4,52px);gap:6px\">'+vals.map((_,i)=>'<button type=\"button\" class=\"secondary\" data-i=\"'+i+'\" style=\"height:42px\">?</button>').join('')+'</div>';const btns=Array.from(elW.querySelectorAll('[data-i]'));const show=(idx,on)=>{const b=btns[idx];if(!b)return;b.textContent=on?vals[idx]:'?';};btns.forEach(b=>b.addEventListener('click',()=>{const i=Number(b.getAttribute('data-i'));if(open.includes(i)||b.disabled)return;show(i,true);open.push(i);if(open.length<2)return;const a=open[0],c=open[1];if(vals[a]===vals[c]){btns[a].disabled=true;btns[c].disabled=true;locked++;open=[];if(locked>=pair)done();}else{setTimeout(()=>{show(a,false);show(c,false);open=[];},420);}}));}"
             "setupPhase1Concept=(()=>{const h32=s=>{let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;};const rng=s=>{let a=(s>>>0)||1;return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;};};const ri=(r,min,max)=>min+Math.floor(r()*(max-min+1));const sh=(arr,r)=>{for(let i=arr.length-1;i>0;i--){const j=Math.floor(r()*(i+1));const t=arr[i];arr[i]=arr[j];arr[j]=t;}return arr;};return function(){if(!elW){phase1ConceptPassed=true;return;}if(CHALLENGE_TYPE===1||phase1VoiceEnabled){elW.innerHTML='';elW.style.display='none';phase1ConceptPassed=true;return;}elW.style.display='block';if(elW)elW.removeAttribute('data-locked');phase1ConceptPassed=false;phase1ConceptType=((CHALLENGE_TYPE-2)%64+64)%64;const fam=phase1ConceptType%8;const lvl=Math.floor(phase1ConceptType/8);const seed=h32(String(nonce||'')+'|'+String(CHALLENGE_TYPE)+'|'+String((Date.now()/977)|0));const r=rng(seed^Math.imul(lvl+1,2654435761));const done=()=>{if(phase1ConceptPassed)return;phase1ConceptPassed=true;if(elS)elS.textContent='Concept check passed.';elW.setAttribute('data-locked','1');elW.querySelectorAll('button,input,select,textarea').forEach(n=>{try{n.disabled=true;}catch(_e){}});elW.querySelectorAll('[data-lock]').forEach(n=>{n.style.pointerEvents='none';});};if(fam===0){const target=ri(r,14,96),tol=ri(r,1,3);elW.innerHTML='<div style=\"margin-bottom:7px\">Set slider ke <b>'+String(target)+'</b> (toleransi ±'+String(tol)+').</div><input id=\"w_slider\" type=\"range\" min=\"0\" max=\"100\" value=\"0\" style=\"width:100%\"><div id=\"w_sv\" style=\"margin-top:6px\">0</div>';const sl=document.getElementById('w_slider'),sv=document.getElementById('w_sv');if(sl&&sv){sl.oninput=()=>{const x=Number(sl.value||0);sv.textContent=String(x);if(Math.abs(x-target)<=tol)done();};}return;}if(fam===1){const count=lvl>=4?5:4;const seq=Array.from({length:count},(_,i)=>i+1);const btns=sh(seq.slice(),r);let pos=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Klik angka berurutan 1 sampai '+String(count)+'.</div><div id=\"w_tap\" style=\"display:flex;gap:8px;flex-wrap:wrap\">'+btns.map(n=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-n=\"'+String(n)+'\" style=\"min-width:56px\">'+String(n)+'</button>').join('')+'</div><div id=\"w_prog\" style=\"margin-top:6px\">Progress: 0/'+String(count)+'</div>';const pg=document.getElementById('w_prog');elW.querySelectorAll('[data-n]').forEach(b=>b.addEventListener('click',()=>{const n=Number(b.getAttribute('data-n')||0);if(n===seq[pos]){pos++;b.disabled=true;if(pg)pg.textContent='Progress: '+String(pos)+'/'+String(count);if(pos>=count)done();}else{pos=0;elW.querySelectorAll('[data-n]').forEach(x=>{x.disabled=false;});if(pg)pg.textContent='Salah urutan, ulang dari 1.';}}));return;}if(fam===2){const pal=['Merah','Biru','Hijau','Kuning','Ungu','Oranye'];const len=ri(r,3,5);const seq=[];for(let i=0;i<len;i++)seq.push(pal[ri(r,0,pal.length-1)]);let i=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Ulangi sequence warna ini:</div><div style=\"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px\">'+seq.map(c=>'<span style=\"padding:4px 8px;border:1px solid rgba(139,92,246,.32);border-radius:8px\">'+c+'</span>').join('')+'</div><div style=\"display:flex;gap:8px;flex-wrap:wrap\">'+pal.map(c=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-c=\"'+c+'\">'+c+'</button>').join('')+'</div><div id=\"w_seq_state\" style=\"margin-top:6px\">Step 1/'+String(len)+'</div>';const st=document.getElementById('w_seq_state');elW.querySelectorAll('[data-c]').forEach(b=>b.addEventListener('click',()=>{const c=String(b.getAttribute('data-c')||'');if(c===seq[i]){i++;if(st)st.textContent='Step '+String(Math.min(i+1,len))+'/'+String(len);if(i>=len)done();}else{i=0;if(st)st.textContent='Salah, ulang dari awal.';}}));return;}if(fam===3){const packs=[['🍎','🍋','🍇','🍉'],['⚽','🏀','🎾','🏐'],['🚗','🚕','🚌','🚓'],['⭐','🌙','☀️','☁️']];const bag=packs[ri(r,0,packs.length-1)],target=bag[ri(r,0,bag.length-1)],need=ri(r,3,5);let hit=0;const cells=[];for(let k=0;k<12;k++)cells.push((r()<0.34)?target:bag[ri(r,0,bag.length-1)]);elW.innerHTML='<div style=\"margin-bottom:7px\">Klik simbol '+target+' sebanyak '+String(need)+' kali.</div><div style=\"display:grid;grid-template-columns:repeat(6,minmax(38px,1fr));gap:6px\">'+cells.map(e=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-e=\"'+e+'\" style=\"font-size:20px;padding:6px\">'+e+'</button>').join('')+'</div><div id=\"w_hit\" style=\"margin-top:6px\">0/'+String(need)+'</div>';const hs=document.getElementById('w_hit');elW.querySelectorAll('[data-e]').forEach(x=>x.addEventListener('click',()=>{if(x.disabled)return;if(String(x.getAttribute('data-e'))===target){hit++;x.disabled=true;x.style.opacity='0.55';if(hs)hs.textContent=String(hit)+'/'+String(need);if(hit>=need)done();}else{x.style.opacity='0.35';setTimeout(()=>{x.style.opacity='1';},120);}}));return;}if(fam===4){const holdMs=ri(r,900,2200);let t0=0,raf=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Tahan tombol selama '+String((holdMs/1000).toFixed(1))+' detik lalu lepas.</div><button id=\"w_hold\" type=\"button\" class=\"secondary\" data-lock=\"1\" style=\"min-width:180px\">Hold</button><div id=\"w_hold_state\" style=\"margin-top:6px\">0%</div>';const hb=document.getElementById('w_hold'),hs=document.getElementById('w_hold_state');const tick=()=>{if(!t0||!hs)return;const p=Math.max(0,Math.min(100,Math.floor(((Date.now()-t0)/holdMs)*100)));hs.textContent=String(p)+'%';raf=requestAnimationFrame(tick);};const begin=()=>{if(t0)return;t0=Date.now();tick();};const end=()=>{if(!t0)return;const dt=Date.now()-t0;t0=0;if(raf){cancelAnimationFrame(raf);raf=0;}if(dt>=holdMs&&dt<holdMs+850){if(hs)hs.textContent='OK';done();}else if(hs){hs.textContent='Belum pas, ulangi.';}};if(hb){hb.addEventListener('mousedown',begin);hb.addEventListener('touchstart',begin,{passive:true});hb.addEventListener('mouseup',end);hb.addEventListener('mouseleave',end);hb.addEventListener('touchend',end);}return;}if(fam===5){const bits=lvl>=4?5:4;const max=(1<<bits)-1;const target=ri(r,1,max);let val=0;const bstr=n=>n.toString(2).padStart(bits,'0');const bvals=Array.from({length:bits},(_,i)=>(1<<(bits-1-i)));elW.innerHTML='<div style=\"margin-bottom:7px\">Atur bit menjadi '+bstr(target)+'.</div><div style=\"display:flex;gap:7px;flex-wrap:wrap\">'+bvals.map(b=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-b=\"'+String(b)+'\" style=\"min-width:46px\">0</button>').join('')+'</div><div id=\"w_bv\" style=\"margin-top:6px\">'+bstr(0)+'</div>';const bv=document.getElementById('w_bv');elW.querySelectorAll('[data-b]').forEach(b=>b.addEventListener('click',()=>{const bit=Number(b.getAttribute('data-b')||0);val=(val^bit);b.textContent=((val&bit)!==0)?'1':'0';if(bv)bv.textContent=bstr(val);if(val===target)done();}));return;}if(fam===6){const size=5;const gx=ri(r,2,4),gy=ri(r,2,4);let x=0,y=0,steps=0;const blocks=[];for(let iy=0;iy<size;iy++){for(let ix=0;ix<size;ix++){if((ix===0&&iy===0)||(ix===gx&&iy===gy))continue;if(r()<0.2)blocks.push([ix,iy]);}}const blockSet=new Set(blocks.map(b=>String(b[0])+','+String(b[1])));const isBlock=(ix,iy)=>blockSet.has(String(ix)+','+String(iy));const canReach=()=>{const q=[[0,0]],seen=new Set(['0,0']);while(q.length){const p=q.shift();if(!p)break;const cx=p[0],cy=p[1];if(cx===gx&&cy===gy)return true;[[1,0],[-1,0],[0,1],[0,-1]].forEach(d=>{const nx=cx+d[0],ny=cy+d[1],k=String(nx)+','+String(ny);if(nx<0||ny<0||nx>=size||ny>=size||isBlock(nx,ny)||seen.has(k))return;seen.add(k);q.push([nx,ny]);});}return false;};if(!canReach()){blockSet.clear();}elW.innerHTML='<div style=\"margin-bottom:7px\">Arahkan titik ungu ke G('+String(gx)+','+String(gy)+').</div><div id=\"w_grid\" style=\"display:grid;grid-template-columns:repeat(5,30px);gap:4px;margin-bottom:8px\"></div><div style=\"display:flex;gap:6px;flex-wrap:wrap\"><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"U\">Up</button><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"L\">Left</button><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"D\">Down</button><button type=\"button\" class=\"secondary\" data-lock=\"1\" data-m=\"R\">Right</button></div>';const g=document.getElementById('w_grid');const paint=()=>{if(!g)return;g.innerHTML='';for(let iy=0;iy<size;iy++){for(let ix=0;ix<size;ix++){const c=document.createElement('div');c.style.width='30px';c.style.height='30px';c.style.border='1px solid rgba(139,92,246,.32)';c.style.display='flex';c.style.alignItems='center';c.style.justifyContent='center';if(isBlock(ix,iy)){c.style.background='#5a1f29';c.textContent='■';}if(ix===gx&&iy===gy){c.style.outline='2px solid #35b56a';if(!isBlock(ix,iy))c.textContent='G';}if(ix===x&&iy===y){c.style.background='#6d28d9';c.textContent='●';}g.appendChild(c);}}};const mv=m=>{let nx=x,ny=y;if(m==='U'&&y>0)ny--;if(m==='D'&&y<size-1)ny++;if(m==='L'&&x>0)nx--;if(m==='R'&&x<size-1)nx++;if(isBlock(nx,ny))return;x=nx;y=ny;steps++;paint();if(x===gx&&y===gy&&steps>=3)done();};paint();elW.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>mv(String(b.getAttribute('data-m')||''))));return;}const symbols=['A','B','C','D','E','F','G','H'];const pair=lvl>=4?4:3;const chosen=sh(symbols.slice(),r).slice(0,pair);let vals=[];chosen.forEach(s=>{vals.push(s);vals.push(s);});sh(vals,r);let open=[];let lock=0;elW.innerHTML='<div style=\"margin-bottom:7px\">Memory pair: temukan '+String(pair)+' pasang.</div><div id=\"w_mem\" style=\"display:grid;grid-template-columns:repeat(auto-fit,minmax(58px,1fr));gap:7px\">'+vals.map((_,i)=>'<button type=\"button\" class=\"secondary\" data-lock=\"1\" data-i=\"'+String(i)+'\" style=\"height:44px\">?</button>').join('')+'</div>';const btns=Array.from(elW.querySelectorAll('[data-i]'));const show=(idx,on)=>{const b=btns[idx];if(!b)return;b.textContent=on?vals[idx]:'?';};btns.forEach(b=>b.addEventListener('click',()=>{const i=Number(b.getAttribute('data-i')||-1);if(i<0||open.includes(i)||b.disabled)return;show(i,true);open.push(i);if(open.length<2)return;const a=open[0],c=open[1];if(vals[a]===vals[c]){btns[a].disabled=true;btns[c].disabled=true;lock++;open=[];if(lock>=pair)done();}else{setTimeout(()=>{show(a,false);show(c,false);open=[];},420);}}));};})();"
-            "async function sha256Hex(text){const enc=new TextEncoder();const buf=await crypto.subtle.digest('SHA-256',enc.encode(text));const arr=new Uint8Array(buf);let out='';for(const b of arr){out+=b.toString(16).padStart(2,'0');}return out;}"
+            "async function sha256Hex(text){const enc=new TextEncoder();const data=enc.encode(text);if(window.crypto&&crypto.subtle&&crypto.subtle.digest){const buf=await crypto.subtle.digest('SHA-256',data);const arr=new Uint8Array(buf);let out='';for(const b of arr){out+=b.toString(16).padStart(2,'0');}return out;}return sha256HexFallback(data);}"
+            "function sha256HexFallback(data){const K=[1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298];let H=[1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225];const l=data.length,b=[];for(let i=0;i<l;i++)b.push(data[i]);b.push(128);while((b.length%64)!==56)b.push(0);const bitLen=l*8;for(let i=7;i>=0;i--)b.push((bitLen/(2**(i*8)))&255);const rotr=(x,n)=>(x>>>n)|(x<<(32-n));for(let i=0;i<b.length;i+=64){const w=new Array(64);for(let t=0;t<16;t++){w[t]=((b[i+4*t]<<24)|(b[i+4*t+1]<<16)|(b[i+4*t+2]<<8)|b[i+4*t+3])>>>0;}for(let t=16;t<64;t++){const s0=(rotr(w[t-15],7)^rotr(w[t-15],18)^(w[t-15]>>>3))>>>0;const s1=(rotr(w[t-2],17)^rotr(w[t-2],19)^(w[t-2]>>>10))>>>0;w[t]=(w[t-16]+s0+w[t-7]+s1)>>>0;}let a=H[0],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7],bb=H[1];for(let t=0;t<64;t++){const S1=(rotr(e,6)^rotr(e,11)^rotr(e,25))>>>0;const ch=((e&f)^((~e)&g))>>>0;const temp1=(h+S1+ch+K[t]+w[t])>>>0;const S0=(rotr(a,2)^rotr(a,13)^rotr(a,22))>>>0;const maj=((a&bb)^(a&c)^(bb&c))>>>0;const temp2=(S0+maj)>>>0;h=g;g=f;f=e;e=(d+temp1)>>>0;d=c;c=bb;bb=a;a=(temp1+temp2)>>>0;}H[0]=(H[0]+a)>>>0;H[1]=(H[1]+bb)>>>0;H[2]=(H[2]+c)>>>0;H[3]=(H[3]+d)>>>0;H[4]=(H[4]+e)>>>0;H[5]=(H[5]+f)>>>0;H[6]=(H[6]+g)>>>0;H[7]=(H[7]+h)>>>0;}return H.map(x=>x.toString(16).padStart(8,'0')).join('');}"
             "function hasLeadingZeroBits(hex,bits){if(bits<=0)return true;const n=Math.floor(bits/4),r=bits%4;for(let i=0;i<n;i++){if(hex[i]!=='0')return false;}if(r===0)return true;const v=parseInt(hex[n]||'f',16);if(Number.isNaN(v))return false;return v<(1<<(4-r));}"
             "async function solvePow(nonce,salt,bits,memMb,cpuLvl){if(!nonce||!salt)throw new Error('pow_invalid');const start=Date.now();const n=navigator||{};const hc=Math.max(1,Math.min(64,Number(n.hardwareConcurrency||2)));const mobile=((Number(n.maxTouchPoints||0)>0)||/android|iphone|ipad|ipod|mobile/i.test(String(n.userAgent||'')));const cpuLevel=Math.max(1,Math.min(8,Number(cpuLvl||4)));const baseBatch=(hc<=2?48:(hc<=4?84:(hc<=6?132:220)));const batch=mobile?Math.max(28,Math.floor(baseBatch*0.72)):baseBatch;const sleepBase=(hc<=2?8:(hc<=4?5:(hc<=6?2:1)));const sleepMs=Math.max(0,sleepBase-Math.floor(cpuLevel/2))+(mobile?1:0);let targetMb=Math.max(8,Math.min(mobile?64:192,Number(memMb||48)));let memBytes=Math.max(8*1024*1024,Math.floor(targetMb*1024*1024));let mem=null;while(memBytes>=8*1024*1024){try{mem=new Uint8Array(memBytes);break;}catch(_e){memBytes=Math.floor(memBytes/2);}}if(!mem)throw new Error('pow_mem_alloc_failed');const stride=4096;for(let i=0;i<mem.length;i+=stride){mem[i]=(i^bits)&255;}const touchPerIter=(hc<=2?2:(hc<=4?3:4))+cpuLevel;const cpuMixRounds=(cpuLevel*6)+(hc>=8?4:0);let mix=bits&255;let c=0;while(c<200000000){let idx=((c*1103515245)^(mix*2654435761))>>>0;if(mem.length>0){for(let t=0;t<touchPerIter;t++){idx=(idx+4099+((mix+13*t)&255))%mem.length;const v=mem[idx];mix=(mix+v+c+t)&255;mem[idx]=mix^((idx>>>5)&255);}for(let r=0;r<cpuMixRounds;r++){mix=(mix*33+r+c)&255;idx=(idx+mix+17+r)%mem.length;mem[idx]=(mem[idx]^mix^r)&255;}}const h=await sha256Hex(nonce+'|'+salt+'|'+String(c));if(hasLeadingZeroBits(h,bits)){return{counter:c,hash:h,ms:Date.now()-start,mem_mb:Math.floor(mem.length/1048576),cpu_level:cpuLevel};}c++;if((c%batch)===0){await new Promise(r=>setTimeout(r,sleepMs));}}throw new Error('pow_timeout');}"
             "function trackPointer(x,y){if(px!==null&&py!==null){const dx=x-px,dy=y-py;pd+=Math.hypot(dx,dy);pm++;if((pvx!==0||pvy!==0)&&((dx*pvx+dy*pvy)<-4))pdc++;pvx=dx;pvy=dy;}px=x;py=y;}"
@@ -3040,6 +3108,13 @@ static void handle_client(int fd, std::string remote_ip) {
                 if (it->second <= now) it = g_completed_challenges.erase(it);
                 else ++it;
             }
+            while (g_completed_challenges.size() > kMaxCompletedRecords) {
+                auto oldest = g_completed_challenges.begin();
+                for (auto jt = g_completed_challenges.begin(); jt != g_completed_challenges.end(); ++jt) {
+                    if (jt->second < oldest->second) oldest = jt;
+                }
+                g_completed_challenges.erase(oldest);
+            }
             auto it = g_completed_challenges.find(completion_id);
             if (it != g_completed_challenges.end()) {
                 send_response(fd, 200, "OK", "{\"ok\":true,\"duplicate\":true}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
@@ -3094,6 +3169,23 @@ static void handle_client(int fd, std::string remote_ip) {
 
 static void signal_handler(int) { g_running = false; }
 
+static void challenge_worker_loop() {
+    while (true) {
+        AcceptedClient client{-1, ""};
+        {
+            std::unique_lock<std::mutex> lock(g_client_queue_mu);
+            g_client_queue_cv.wait_for(lock, std::chrono::milliseconds(100), [] {
+                return !g_running || !g_client_queue.empty();
+            });
+            if (!g_running && g_client_queue.empty()) return;
+            if (g_client_queue.empty()) continue;
+            client = g_client_queue.front();
+            g_client_queue.pop();
+        }
+        if (client.fd >= 0) handle_client(client.fd, client.ip);
+    }
+}
+
 int main() {
     const char* cfg_env = std::getenv("PTEROPROTECT_CONFIG_PATH");
     if (cfg_env && *cfg_env) g_cfg_path = cfg_env;
@@ -3126,7 +3218,7 @@ int main() {
         return 1;
     }
 
-    if (listen(server_fd, 128) != 0) {
+    if (listen(server_fd, SOMAXCONN) != 0) {
         std::cerr << "challenge_guard: listen failed\n";
         close(server_fd);
         return 1;
@@ -3134,6 +3226,12 @@ int main() {
     int fl = fcntl(server_fd, F_GETFL, 0);
     if (fl >= 0) {
         fcntl(server_fd, F_SETFL, fl | O_NONBLOCK);
+    }
+
+    std::vector<std::thread> workers;
+    workers.reserve(kWorkerThreads);
+    for (int i = 0; i < kWorkerThreads; ++i) {
+        workers.emplace_back(challenge_worker_loop);
     }
 
     while (g_running) {
@@ -3148,23 +3246,37 @@ int main() {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             continue;
         }
+        timeval rcv_tv{};
+        rcv_tv.tv_sec = kClientReadTimeoutSec;
+        timeval snd_tv{};
+        snd_tv.tv_sec = kClientWriteTimeoutSec;
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv_tv, sizeof(rcv_tv));
+        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd_tv, sizeof(snd_tv));
+        int nodelay = 1;
+        (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
         char ipbuf[INET_ADDRSTRLEN] = {0};
         inet_ntop(AF_INET, &cli.sin_addr, ipbuf, sizeof(ipbuf));
         std::string rip = ipbuf[0] ? ipbuf : "127.0.0.1";
-        constexpr int kMaxWorkers = 512;
-        int cur = g_active_workers.load();
-        while (cur < kMaxWorkers && !g_active_workers.compare_exchange_weak(cur, cur + 1)) {
+
+        bool queued = false;
+        {
+            std::lock_guard<std::mutex> lock(g_client_queue_mu);
+            if (g_client_queue.size() < kMaxQueuedClients) {
+                g_client_queue.push(AcceptedClient{fd, rip});
+                queued = true;
+            }
         }
-        if (cur >= kMaxWorkers) {
+        if (queued) {
+            g_client_queue_cv.notify_one();
+        } else {
             close(fd);
-            continue;
         }
-        std::thread([fd, rip]() {
-            handle_client(fd, rip);
-            g_active_workers.fetch_sub(1);
-        }).detach();
     }
 
     close(server_fd);
+    g_client_queue_cv.notify_all();
+    for (auto& worker : workers) {
+        if (worker.joinable()) worker.join();
+    }
     return 0;
 }

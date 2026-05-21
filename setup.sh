@@ -1421,6 +1421,17 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{monitor}{emergency_health_signals_threshold} = 1 if !defined($j->{monitor}{emergency_health_signals_threshold}) || $j->{monitor}{emergency_health_signals_threshold} !~ /^\d+$/ || $j->{monitor}{emergency_health_signals_threshold} < 1;
         $j->{monitor}{require_health_degradation_for_emergency} = JSON::PP::true if !defined($j->{monitor}{require_health_degradation_for_emergency});
         $j->{monitor}{check_api_url} = "https://mywebcheck.netlify.app/.netlify/functions/check" if !defined($j->{monitor}{check_api_url}) || "$j->{monitor}{check_api_url}" eq "" || "$j->{monitor}{check_api_url}" =~ /check-host\.net/i;
+        $j->{network}{bad_token_block_enabled} = JSON::PP::false if !defined($j->{network}{bad_token_block_enabled});
+        $j->{network}{bad_token_path_regex} = "^/api/application/" if !defined($j->{network}{bad_token_path_regex}) || "$j->{network}{bad_token_path_regex}" eq "";
+        $j->{abuse_guard} = {} if !defined($j->{abuse_guard}) || ref($j->{abuse_guard}) ne 'HASH';
+        $j->{abuse_guard}{docker_memory_clamp_enabled} = JSON::PP::true if !defined($j->{abuse_guard}{docker_memory_clamp_enabled});
+        $j->{abuse_guard}{docker_memory_max_mb} = 0 if !defined($j->{abuse_guard}{docker_memory_max_mb}) || $j->{abuse_guard}{docker_memory_max_mb} !~ /^\d+$/;
+        $j->{abuse_guard}{host_proc_dd_scan_enabled} = JSON::PP::true if !defined($j->{abuse_guard}{host_proc_dd_scan_enabled});
+        $j->{abuse_guard}{oom_risk_log_enabled} = JSON::PP::true if !defined($j->{abuse_guard}{oom_risk_log_enabled});
+        $j->{abuse_guard}{oom_risk_mem_available_mb} = 1024 if !defined($j->{abuse_guard}{oom_risk_mem_available_mb}) || $j->{abuse_guard}{oom_risk_mem_available_mb} !~ /^\d+$/ || $j->{abuse_guard}{oom_risk_mem_available_mb} < 128;
+        $j->{abuse_guard}{docker_suspend_on_dangerous_process} = JSON::PP::true if !defined($j->{abuse_guard}{docker_suspend_on_dangerous_process});
+        $j->{abuse_guard}{dangerous_suspend_after} = 5 if !defined($j->{abuse_guard}{dangerous_suspend_after}) || $j->{abuse_guard}{dangerous_suspend_after} !~ /^\d+$/ || $j->{abuse_guard}{dangerous_suspend_after} < 1;
+        $j->{abuse_guard}{dangerous_strike_window_sec} = 86400 if !defined($j->{abuse_guard}{dangerous_strike_window_sec}) || $j->{abuse_guard}{dangerous_strike_window_sec} !~ /^\d+$/ || $j->{abuse_guard}{dangerous_strike_window_sec} < 60;
         $j->{resilience} = {} if !defined($j->{resilience}) || ref($j->{resilience}) ne 'HASH';
         $j->{resilience}{mode} = "normal" if !defined($j->{resilience}{mode}) || "$j->{resilience}{mode}" eq "" || "$j->{resilience}{mode}" eq "adaptive";
         $j->{resilience}{detection} = {} if !defined($j->{resilience}{detection}) || ref($j->{resilience}{detection}) ne 'HASH';
@@ -1763,16 +1774,23 @@ if [[ -f "${INSTALL_DIR}/challenge_guard" ]]; then
     chmod 755 "${INSTALL_DIR}/challenge_guard"
 fi
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
-    # Panel ProtectController writes this file as www-data.
-    # Keep root owner but grant group write to www-data.
+    # Panel ProtectController writes this file from the PHP-FPM user.
+    # Operational mode: panel/admin tooling must be able to save this file after setup.
     chown root:www-data "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
-    chmod 660 "${INSTALL_DIR}/config.json"
+    chmod 666 "${INSTALL_DIR}/config.json"
+    chmod 777 "${INSTALL_DIR}" >/dev/null 2>&1 || true
     if command -v setfacl >/dev/null 2>&1; then
         while IFS= read -r _pp_user; do
             id "${_pp_user}" >/dev/null 2>&1 || continue
+            setfacl -m "u:${_pp_user}:rwx" "${INSTALL_DIR}" >/dev/null 2>&1 || true
+            setfacl -d -m "u:${_pp_user}:rwx" "${INSTALL_DIR}" >/dev/null 2>&1 || true
             setfacl -m "u:${_pp_user}:rw" "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
         done < <(panel_runtime_users)
+        setfacl -m m::rw,o::rw "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
+        setfacl -m m::rwx,o::rwx "${INSTALL_DIR}" >/dev/null 2>&1 || true
     fi
+    chmod 666 "${INSTALL_DIR}/config.json"
+    chmod 777 "${INSTALL_DIR}" >/dev/null 2>&1 || true
 fi
 if [[ -f "${PROJECT_DIR}/config.json" ]]; then
     chown root:root "${PROJECT_DIR}/config.json" >/dev/null 2>&1 || true
@@ -2013,6 +2031,54 @@ if [[ -f "${INSTALL_DIR}/systemd/pteroprotect-resilience-collector.service" ]]; 
     echo "[setup] installing resilience collector service..."
     install_rendered_systemd_unit "${INSTALL_DIR}/systemd/pteroprotect-resilience-collector.service" "${SYSTEMD_DIR}/pteroprotect-resilience-collector.service"
 fi
+
+echo "[setup] applying host OOM and Docker containment protections..."
+for svc in nginx php8.3-fpm pteroq wings pteroprotect-abuse-guard; do
+    mkdir -p "${SYSTEMD_DIR}/${svc}.service.d"
+done
+cat > "${SYSTEMD_DIR}/nginx.service.d/oom-protect.conf" <<'EOF'
+[Service]
+OOMScoreAdjust=-700
+EOF
+cat > "${SYSTEMD_DIR}/php8.3-fpm.service.d/oom-protect.conf" <<'EOF'
+[Service]
+OOMScoreAdjust=-650
+EOF
+cat > "${SYSTEMD_DIR}/pteroq.service.d/oom-protect.conf" <<'EOF'
+[Service]
+OOMScoreAdjust=-650
+EOF
+cat > "${SYSTEMD_DIR}/wings.service.d/oom-protect.conf" <<'EOF'
+[Service]
+OOMScoreAdjust=-800
+EOF
+cat > "${SYSTEMD_DIR}/pteroprotect-abuse-guard.service.d/oom-protect.conf" <<'EOF'
+[Service]
+OOMScoreAdjust=-650
+EOF
+if [[ -f /etc/pterodactyl/config.yml ]]; then
+    python3 - <<'PY'
+from pathlib import Path
+path = Path('/etc/pterodactyl/config.yml')
+text = path.read_text()
+if 'check_permissions_on_boot: true' in text:
+    text = text.replace('check_permissions_on_boot: true', 'check_permissions_on_boot: false')
+elif 'check_permissions_on_boot:' not in text and '  websocket_log_count:' in text:
+    text = text.replace('  websocket_log_count:', '  check_permissions_on_boot: false\n  websocket_log_count:', 1)
+path.write_text(text)
+PY
+fi
+systemctl stop ptero-fix-volume-perms.service ptero-fix-volume-perms.timer >/dev/null 2>&1 || true
+systemctl disable ptero-fix-volume-perms.timer >/dev/null 2>&1 || true
+systemctl reset-failed ptero-fix-volume-perms.service >/dev/null 2>&1 || true
+if command -v docker >/dev/null 2>&1; then
+    HOST_MEM_MB="$(awk '/MemTotal:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 8192)"
+    CLAMP_MB=$(( (HOST_MEM_MB - 3072) / 4 ))
+    if [[ "${CLAMP_MB}" -lt 768 ]]; then CLAMP_MB=768; fi
+    if [[ "${CLAMP_MB}" -gt 2048 ]]; then CLAMP_MB=2048; fi
+    docker ps -q --filter label=Service=Pterodactyl | xargs -r -n1 docker update --memory "${CLAMP_MB}m" --memory-swap "${CLAMP_MB}m" >/dev/null 2>&1 || true
+fi
+systemctl daemon-reload >/dev/null 2>&1 || true
 
 PANEL_OVERRIDE_SOURCE=""
 if [[ -d "${PROJECT_DIR}/panel_overrides" ]]; then
@@ -2569,11 +2635,12 @@ path = pathlib.Path(sys.argv[1])
 auth_conn_limit = sys.argv[2]
 auth_burst = sys.argv[3]
 text = path.read_text()
-for block in ("location = /auth/login",):
+for block in ("location = /auth/login", "location ^~ /auth/"):
     pattern = re.compile(
         rf'({re.escape(block)} \{{\n)'
-        r'(?:    auth_request /__pteroprotect/challenge/check;\n)?'
+        r'(?:    auth_request /__pteroprotect/challenge/(?:check|check_web);\n)?'
         r'(?:    error_page 401 = @pteroprotect_challenge_redirect;\n)?'
+        r'(?:    error_page 403 = @pteroprotect_provider_web_block;\n)?'
         r'(?:    limit_conn pteroprotect_conn \d+;\n)?'
         r'(?:    limit_conn pteroprotect_auth_global_conn \d+;\n)?'
         r'(?:    limit_req zone=pteroprotect_auth_global_req burst=\d+ nodelay;\n)?'
@@ -2583,8 +2650,9 @@ for block in ("location = /auth/login",):
     )
     replacement = (
         f"{block} {{\n"
-        "    auth_request /__pteroprotect/challenge/check;\n"
+        "    auth_request /__pteroprotect/challenge/check_web;\n"
         "    error_page 401 = @pteroprotect_challenge_redirect;\n"
+        "    error_page 403 = @pteroprotect_provider_web_block;\n"
         f"    limit_conn pteroprotect_conn {auth_conn_limit};\n"
         "    limit_conn pteroprotect_auth_global_conn 100;\n"
         "    limit_req zone=pteroprotect_auth_global_req burst=30 nodelay;\n"
@@ -2596,8 +2664,9 @@ for block in ("location = /auth/login",):
 
 sanctum_pattern = re.compile(
     r'location = /sanctum/csrf-cookie \{\n'
-    r'(?:    auth_request /__pteroprotect/challenge/check;\n)?'
+    r'(?:    auth_request /__pteroprotect/challenge/(?:check|check_web);\n)?'
     r'(?:    error_page 401 = @pteroprotect_challenge_redirect;\n)?'
+    r'(?:    error_page 403 = @pteroprotect_provider_web_block;\n)?'
     r'(?:    limit_conn pteroprotect_conn \d+;\n)?'
     r'(?:    limit_conn pteroprotect_auth_global_conn \d+;\n)?'
     r'(?:    limit_req zone=pteroprotect_auth_global_req burst=\d+ nodelay;\n)?'
@@ -2607,8 +2676,9 @@ sanctum_pattern = re.compile(
 )
 sanctum_replacement = (
     "location = /sanctum/csrf-cookie {\n"
-    "    auth_request /__pteroprotect/challenge/check;\n"
+    "    auth_request /__pteroprotect/challenge/check_web;\n"
     "    error_page 401 = @pteroprotect_challenge_redirect;\n"
+    "    error_page 403 = @pteroprotect_provider_web_block;\n"
     f"    limit_conn pteroprotect_conn {auth_conn_limit};\n"
     "    limit_conn pteroprotect_auth_global_conn 100;\n"
     "    limit_req zone=pteroprotect_auth_global_req burst=30 nodelay;\n"
@@ -2792,6 +2862,24 @@ if m:
         "    }\n"
     )
     text = text[:m.start()] + new_block + text[m.end():]
+
+admin_bypass = (
+    "    location ^~ /admin/protect {\n"
+    "        limit_conn pteroprotect_conn 30;\n"
+    "        limit_req zone=pteroprotect_req burst=30 nodelay;\n"
+    "        try_files $uri $uri/ /index.php?$query_string;\n"
+    "    }\n\n"
+)
+text = re.sub(
+    r'    location \^~ /admin/protect \{\n(?:        .*\n)*?    \}\n\n?',
+    '',
+    text,
+    count=1,
+)
+root_loc = text.find("    location / {\n")
+if root_loc != -1:
+    text = text[:root_loc] + admin_bypass + text[root_loc:]
+
     path.write_text(text)
 PY
     fi

@@ -2,6 +2,7 @@
 import json
 import os
 import fcntl
+import ipaddress
 
 def is_valid_ip(ip):
     try:
@@ -28,7 +29,8 @@ from urllib.parse import parse_qs, urlparse
 GUARD_HOME = os.environ.get("DANN_GUARD_HOME", "/pteroprotect")
 CONFIG_PATH = Path(GUARD_HOME) / "config.json"
 RUNTIME_LOG = Path("/dev/shm/pteroprotect/ddos_host.log")
-TOKEN_FAIL_MAX = 5
+BLACKLIST_FILE = Path("/dev/shm/pteroprotect/unblock_blacklist.json")
+TOKEN_FAIL_MAX = 3
 TOKEN_FAIL_WINDOW_SEC = 300
 TOKEN_FAIL_BAN_SEC = 3600
 _TOKEN_FAIL = {}
@@ -57,6 +59,10 @@ def read_config():
         "port": int(network.get("unblock_portal_port", 18443)),
         "token": str(network.get("unblock_portal_token", "")),
     }
+
+
+def today_key():
+    return time.strftime("%Y-%m-%d", time.gmtime())
 
 
 def run_cmd(cmd):
@@ -103,19 +109,38 @@ def ban_ip(ip):
         pass
 
 
-def register_token_failure(ip):
+def register_token_failure(ip, presented_token=""):
+    if not presented_token:
+        return 0
     now = int(time.time())
     with _TOKEN_FAIL_LOCK:
         prune_rate_maps_locked(now)
-        rec = _TOKEN_FAIL.get(ip)
+        data = load_blacklist_locked()
+        fails = data.setdefault("fails", {})
+        rec = fails.get(ip)
         if not rec or now - int(rec.get("first", 0)) > TOKEN_FAIL_WINDOW_SEC:
             rec = {"first": now, "count": 0}
         rec["count"] = int(rec.get("count", 0)) + 1
-        _TOKEN_FAIL[ip] = rec
+        fails[ip] = rec
         count = rec["count"]
-    if count >= TOKEN_FAIL_MAX:
-        ban_ip(ip)
+        if count >= TOKEN_FAIL_MAX:
+            data.setdefault("blacklist", {})[ip] = {"ts": now, "reason": "wrong_unblock_token_3x"}
+        save_blacklist_locked(data)
     return count
+
+
+def clear_token_failure(ip):
+    with _TOKEN_FAIL_LOCK:
+        data = load_blacklist_locked()
+        changed = False
+        if ip in data.get("fails", {}):
+            data["fails"].pop(ip, None)
+            changed = True
+        if ip in data.get("blacklist", {}):
+            data["blacklist"].pop(ip, None)
+            changed = True
+        if changed:
+            save_blacklist_locked(data)
 
 
 def is_locally_banned(ip):
@@ -123,6 +148,9 @@ def is_locally_banned(ip):
         return False
     now = int(time.time())
     with _TOKEN_FAIL_LOCK:
+        data = load_blacklist_locked()
+        if ip in data.get("blacklist", {}):
+            return True
         until = int(_LOCAL_BAN_UNTIL.get(ip, 0))
         if until <= now:
             _LOCAL_BAN_UNTIL.pop(ip, None)
@@ -184,6 +212,21 @@ def write_json(path: Path, obj):
             os.unlink(tmp)
         except FileNotFoundError:
             pass
+
+
+def load_blacklist_locked():
+    data = load_json(BLACKLIST_FILE)
+    if not isinstance(data, dict) or data.get("date") != today_key():
+        data = {"date": today_key(), "fails": {}, "blacklist": {}}
+        write_json(BLACKLIST_FILE, data)
+    data.setdefault("fails", {})
+    data.setdefault("blacklist", {})
+    return data
+
+
+def save_blacklist_locked(data):
+    data["date"] = today_key()
+    write_json(BLACKLIST_FILE, data)
 
 
 def prune_rate_maps_locked(now=None):
@@ -270,41 +313,91 @@ def collect_blocked_ips():
             if ip in seen:
                 continue
             seen.add(ip)
-            rows.append({"ip": ip, "source": src, "reason": reason_map.get(ip, "-"), "allowlisted": ip in allow})
+            rows.append({"ip": ip, "source": src, "reason": reason_map.get(ip, "-"), "allowlisted": allowlist_contains(allow, ip)})
     for ip in get_fail2ban_banned_ips():
         if ip in seen:
             continue
         seen.add(ip)
-        rows.append({"ip": ip, "source": "fail2ban", "reason": reason_map.get(ip, "-"), "allowlisted": ip in allow})
+        rows.append({"ip": ip, "source": "fail2ban", "reason": reason_map.get(ip, "-"), "allowlisted": allowlist_contains(allow, ip)})
     rows.sort(key=lambda r: r["ip"])
     return rows
 
 
 def is_ip(s):
-    if not s:
-        return False
-    if re.fullmatch(r"[0-9]{1,3}(?:\.[0-9]{1,3}){3}", s):
-        parts = s.split(".")
-        return all(0 <= int(x) <= 255 for x in parts)
-    if ":" in s and re.fullmatch(r"[0-9A-Fa-f:]+", s):
+    try:
+        ipaddress.ip_address(str(s).strip())
         return True
+    except Exception:
+        return False
+
+
+def is_ip_or_cidr(s):
+    try:
+        text = str(s or "").strip()
+        if "/" in text:
+            ipaddress.ip_network(text, strict=False)
+        else:
+            ipaddress.ip_address(text)
+        return True
+    except Exception:
+        return False
+
+
+def normalize_ip_or_cidr(s):
+    text = str(s or "").strip()
+    if not text:
+        return ""
+    try:
+        if "/" in text:
+            return str(ipaddress.ip_network(text, strict=False))
+        return str(ipaddress.ip_address(text))
+    except Exception:
+        return ""
+
+
+def is_ipv6_spec(value):
+    try:
+        if "/" in value:
+            return ipaddress.ip_network(value, strict=False).version == 6
+        return ipaddress.ip_address(value).version == 6
+    except Exception:
+        return ":" in value
+
+
+def allowlist_contains(allowlist, ip):
+    try:
+        addr = ipaddress.ip_address(str(ip).strip())
+    except Exception:
+        return str(ip).strip() in allowlist
+    for item in allowlist:
+        try:
+            text = str(item).strip()
+            if "/" in text:
+                if addr in ipaddress.ip_network(text, strict=False):
+                    return True
+            elif addr == ipaddress.ip_address(text):
+                return True
+        except Exception:
+            continue
     return False
 
 
 def unblock_ip(ip):
-    if not is_ip(ip):
+    ip = normalize_ip_or_cidr(ip)
+    if not is_ip_or_cidr(ip):
         return {"ok": False, "error": "invalid_ip"}
     removed_v4 = subprocess.call(["ipset", "del", "pteroprotect_block_v4", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
     removed_v6 = subprocess.call(["ipset", "del", "pteroprotect_block_v6", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
     removed_f2b = False
-    status = run_cmd(["fail2ban-client", "status"])
-    m = re.search(r"Jail list:\s*(.+)$", status, re.MULTILINE)
-    if m:
-        jails = [x.strip() for x in m.group(1).split(",") if x.strip()]
-        for jail in jails:
-            rc = subprocess.call(["fail2ban-client", "set", jail, "unbanip", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if rc == 0:
-                removed_f2b = True
+    if is_ip(ip):
+        status = run_cmd(["fail2ban-client", "status"])
+        m = re.search(r"Jail list:\s*(.+)$", status, re.MULTILINE)
+        if m:
+            jails = [x.strip() for x in m.group(1).split(",") if x.strip()]
+            for jail in jails:
+                rc = subprocess.call(["fail2ban-client", "set", jail, "unbanip", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if rc == 0:
+                    removed_f2b = True
     return {"ok": True, "removed_v4": removed_v4, "removed_v6": removed_v6, "removed_f2b": removed_f2b}
 
 
@@ -344,50 +437,62 @@ def add_essential_allowlist(ips):
         seen = {x: 1 for x in cur}
         changed = 0
         for ip in ips:
-            if is_ip(ip) and ip not in seen:
-                cur.append(ip)
-                seen[ip] = 1
+            spec = normalize_ip_or_cidr(ip)
+            if is_ip_or_cidr(spec) and spec not in seen:
+                cur.append(spec)
+                seen[spec] = 1
                 changed += 1
         network["essential_allowlist"] = cur
         write_json(CONFIG_PATH, cfg)
     for ip in ips:
-        if is_ip(ip):
-            apply_runtime_allow_rule(ip)
+        spec = normalize_ip_or_cidr(ip)
+        if is_ip_or_cidr(spec):
+            apply_runtime_allow_rule(spec)
     return changed
 
 
 def apply_runtime_allow_rule(ip):
-    if ":" in ip:
+    spec = normalize_ip_or_cidr(ip)
+    if not spec:
+        return
+    if is_ipv6_spec(spec):
         chains = ["PTEROPROTECT-DYNBLOCK-V6", "PTEROPROTECT-HOST-V6", "PTEROPROTECT-HOST-V6-BW"]
+        src = spec if "/" in spec else f"{spec}/128"
         for ch in chains:
             if run_rc(["ip6tables", "-S", ch]) != 0:
                 continue
-            if run_rc(["ip6tables", "-C", ch, "-s", f"{ip}/128", "-j", "RETURN"]) != 0:
-                run_rc(["ip6tables", "-I", ch, "1", "-s", f"{ip}/128", "-j", "RETURN"])
+            if run_rc(["ip6tables", "-C", ch, "-s", src, "-j", "RETURN"]) != 0:
+                run_rc(["ip6tables", "-I", ch, "1", "-s", src, "-j", "RETURN"])
     else:
         chains = ["PTEROPROTECT-DYNBLOCK", "PTEROPROTECT-HOST", "PTEROPROTECT-HOST-BW"]
+        src = spec if "/" in spec else f"{spec}/32"
         for ch in chains:
             if run_rc(["iptables", "-S", ch]) != 0:
                 continue
-            if run_rc(["iptables", "-C", ch, "-s", f"{ip}/32", "-j", "RETURN"]) != 0:
-                run_rc(["iptables", "-I", ch, "1", "-s", f"{ip}/32", "-j", "RETURN"])
+            if run_rc(["iptables", "-C", ch, "-s", src, "-j", "RETURN"]) != 0:
+                run_rc(["iptables", "-I", ch, "1", "-s", src, "-j", "RETURN"])
 
 
 def remove_runtime_allow_rule(ip):
-    if ":" in ip:
+    spec = normalize_ip_or_cidr(ip)
+    if not spec:
+        return
+    if is_ipv6_spec(spec):
         chains = ["PTEROPROTECT-DYNBLOCK-V6", "PTEROPROTECT-HOST-V6", "PTEROPROTECT-HOST-V6-BW"]
+        src = spec if "/" in spec else f"{spec}/128"
         for ch in chains:
             if run_rc(["ip6tables", "-S", ch]) != 0:
                 continue
-            while run_rc(["ip6tables", "-C", ch, "-s", f"{ip}/128", "-j", "RETURN"]) == 0:
-                run_rc(["ip6tables", "-D", ch, "-s", f"{ip}/128", "-j", "RETURN"])
+            while run_rc(["ip6tables", "-C", ch, "-s", src, "-j", "RETURN"]) == 0:
+                run_rc(["ip6tables", "-D", ch, "-s", src, "-j", "RETURN"])
     else:
         chains = ["PTEROPROTECT-DYNBLOCK", "PTEROPROTECT-HOST", "PTEROPROTECT-HOST-BW"]
+        src = spec if "/" in spec else f"{spec}/32"
         for ch in chains:
             if run_rc(["iptables", "-S", ch]) != 0:
                 continue
-            while run_rc(["iptables", "-C", ch, "-s", f"{ip}/32", "-j", "RETURN"]) == 0:
-                run_rc(["iptables", "-D", ch, "-s", f"{ip}/32", "-j", "RETURN"])
+            while run_rc(["iptables", "-C", ch, "-s", src, "-j", "RETURN"]) == 0:
+                run_rc(["iptables", "-D", ch, "-s", src, "-j", "RETURN"])
 
 
 HTML_PAGE = """<!doctype html>
@@ -548,6 +653,7 @@ class Handler(BaseHTTPRequestHandler):
         ip = client_ip(self)
         q_token = self._query_token()
         if q_token and secrets.compare_digest(q_token, token):
+            clear_token_failure(ip)
             return True
         if is_locally_banned(ip):
             return False
@@ -555,7 +661,7 @@ class Handler(BaseHTTPRequestHandler):
             ban_ip(ip)
             return False
         if is_ip(ip):
-            register_token_failure(ip)
+            register_token_failure(ip, q_token)
         return False
 
     def do_GET(self):
@@ -639,14 +745,16 @@ def remove_essential_allowlist(ips):
     cur_set = set(cur)
     removed = 0
     for ip in ips:
-        if ip in cur_set:
-            cur_set.remove(ip)
+        spec = normalize_ip_or_cidr(ip)
+        if spec in cur_set:
+            cur_set.remove(spec)
             removed += 1
     network["essential_allowlist"] = sorted(cur_set)
     write_json(CONFIG_PATH, cfg)
     for ip in ips:
-        if is_ip(ip):
-            remove_runtime_allow_rule(ip)
+        spec = normalize_ip_or_cidr(ip)
+        if is_ip_or_cidr(spec):
+            remove_runtime_allow_rule(spec)
     return removed
 
 def main():

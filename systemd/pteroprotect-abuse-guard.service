@@ -23,6 +23,7 @@ Environment=DANN_CONFIG_PATH=/pteroprotect/config.json
 ExecStart=/usr/bin/env python3 /pteroprotect/scripts/runtime_abuse_guard.py
 Restart=always
 RestartSec=2
+OOMScoreAdjust=-650
 
 [Install]
 WantedBy=multi-user.target

@@ -554,6 +554,137 @@
         align-items: center;
         gap: 6px;
     }
+    .pp-theme .pp-toggle-field {
+        margin-bottom: 16px;
+    }
+    .pp-theme .pp-text-toggle {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        min-height: 72px;
+        padding: 12px;
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(6, 182, 212, 0.06) 48%, rgba(9, 9, 13, 0.94));
+        border: 1px solid rgba(139, 92, 246, 0.28);
+        border-radius: 14px;
+        cursor: pointer;
+        user-select: none;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 12px 30px rgba(0, 0, 0, 0.22);
+        transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, background 160ms ease;
+    }
+    .pp-theme .pp-text-toggle:hover,
+    .pp-theme .pp-text-toggle:focus-within {
+        border-color: rgba(139, 92, 246, 0.62);
+        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.18), 0 18px 40px rgba(0, 0, 0, 0.3), 0 0 22px rgba(139, 92, 246, 0.16);
+        transform: translateY(-1px);
+    }
+    .pp-theme .pp-text-toggle-input {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        margin: -1px !important;
+        padding: 0 !important;
+        border: 0 !important;
+        clip: rect(0 0 0 0) !important;
+        clip-path: inset(50%) !important;
+        overflow: hidden !important;
+        white-space: nowrap !important;
+    }
+    .pp-theme .pp-text-toggle-frame {
+        position: relative;
+        flex: 0 0 118px;
+        height: 42px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        align-items: center;
+        padding: 3px;
+        background: #07070b;
+        border: 1px solid rgba(239, 68, 68, 0.38);
+        border-radius: 999px;
+        box-shadow: inset 0 1px 10px rgba(0, 0, 0, 0.55), 0 0 18px rgba(239, 68, 68, 0.12);
+        overflow: hidden;
+    }
+    .pp-theme .pp-text-toggle-core {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: calc(50% - 3px);
+        height: calc(100% - 6px);
+        background: linear-gradient(135deg, #ef4444, #7f1d1d);
+        border-radius: 999px;
+        box-shadow: 0 0 18px rgba(239, 68, 68, 0.35);
+        transform: translateX(100%);
+        transition: transform 180ms ease, background 180ms ease, box-shadow 180ms ease;
+    }
+    .pp-theme .pp-text-toggle-option {
+        position: relative;
+        z-index: 1;
+        text-align: center;
+        color: #d8d8e8;
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.12em;
+        text-shadow: 0 1px 10px rgba(0, 0, 0, 0.75);
+    }
+    .pp-theme .pp-text-toggle-input:checked + .pp-text-toggle-frame {
+        border-color: rgba(16, 185, 129, 0.58);
+        box-shadow: inset 0 1px 10px rgba(0, 0, 0, 0.5), 0 0 20px rgba(16, 185, 129, 0.18);
+    }
+    .pp-theme .pp-text-toggle-input:checked + .pp-text-toggle-frame .pp-text-toggle-core {
+        background: linear-gradient(135deg, #10b981, #06b6d4);
+        box-shadow: 0 0 22px rgba(16, 185, 129, 0.38), 0 0 18px rgba(6, 182, 212, 0.2);
+        transform: translateX(0);
+    }
+    .pp-theme .pp-toggle-copy {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .pp-theme .pp-toggle-title {
+        color: #f7f7fb;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }
+    .pp-theme .pp-toggle-state {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+    }
+    .pp-theme .pp-toggle-state-on {
+        display: none;
+        color: #bbf7d0;
+    }
+    .pp-theme .pp-toggle-state-off {
+        display: inline;
+        color: #fecaca;
+    }
+    .pp-theme .pp-text-toggle-input:checked ~ .pp-toggle-copy .pp-toggle-state-on {
+        display: inline;
+    }
+    .pp-theme .pp-text-toggle-input:checked ~ .pp-toggle-copy .pp-toggle-state-off {
+        display: none;
+    }
+    .pp-theme .pp-text-toggle-input:focus-visible + .pp-text-toggle-frame {
+        outline: 2px solid #a78bfa;
+        outline-offset: 3px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .pp-theme .pp-text-toggle,
+        .pp-theme .pp-text-toggle-core {
+            transition: none !important;
+            transform: none !important;
+        }
+        .pp-theme .pp-text-toggle-input:checked + .pp-text-toggle-frame .pp-text-toggle-core {
+            left: 3px;
+            transform: none !important;
+        }
+        .pp-theme .pp-text-toggle-input:not(:checked) + .pp-text-toggle-frame .pp-text-toggle-core {
+            left: calc(50% + 0px);
+            transform: none !important;
+        }
+    }
     @media (max-width: 767px) {
         .pp-theme .content {
             padding: 10px !important;
@@ -575,6 +706,14 @@
         }
         .pp-theme .form-inline .form-group {
             margin-bottom: 8px;
+        }
+        .pp-theme .pp-text-toggle {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+        .pp-theme .pp-text-toggle-frame {
+            flex-basis: auto;
+            width: 118px;
         }
         .pp-theme .qf-summary,
         .pp-theme .pp-rum-grid {

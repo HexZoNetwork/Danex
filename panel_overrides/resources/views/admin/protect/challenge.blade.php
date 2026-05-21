@@ -31,18 +31,38 @@
                     @php($cs = $challengeSettings ?? [])
                     <div class="row">
                         <div class="col-md-6">
-                            <div class="checkbox">
-                                <label>
-                                    <input type="checkbox" name="waf_challenge_enabled" value="1" @if((bool)($cs['enabled'] ?? true)) checked @endif>
-                                    Challenge Enabled
+                            <div class="pp-toggle-field">
+                                <input type="hidden" name="waf_challenge_enabled" value="0">
+                                <label class="pp-text-toggle" for="waf_challenge_enabled">
+                                    <input id="waf_challenge_enabled" class="pp-text-toggle-input" type="checkbox" role="switch" name="waf_challenge_enabled" value="1" @if((bool)($cs['enabled'] ?? true)) checked @endif>
+                                    <span class="pp-text-toggle-frame" aria-hidden="true">
+                                        <span class="pp-text-toggle-option pp-text-toggle-on">ON</span>
+                                        <span class="pp-text-toggle-option pp-text-toggle-off">OFF</span>
+                                        <span class="pp-text-toggle-core"></span>
+                                    </span>
+                                    <span class="pp-toggle-copy">
+                                        <span class="pp-toggle-title">Challenge Enabled</span>
+                                        <span class="pp-toggle-state pp-toggle-state-on">ON — bot challenge aktif</span>
+                                        <span class="pp-toggle-state pp-toggle-state-off">OFF — challenge tidak aktif</span>
+                                    </span>
                                 </label>
                             </div>
                         </div>
                         <div class="col-md-6">
-                            <div class="checkbox">
-                                <label>
-                                    <input type="checkbox" name="waf_challenge_strict_mode" value="1" @if((bool)($cs['strict_mode'] ?? true)) checked @endif>
-                                    Strict Mode
+                            <div class="pp-toggle-field">
+                                <input type="hidden" name="waf_challenge_strict_mode" value="0">
+                                <label class="pp-text-toggle" for="waf_challenge_strict_mode">
+                                    <input id="waf_challenge_strict_mode" class="pp-text-toggle-input" type="checkbox" role="switch" name="waf_challenge_strict_mode" value="1" @if((bool)($cs['strict_mode'] ?? true)) checked @endif>
+                                    <span class="pp-text-toggle-frame" aria-hidden="true">
+                                        <span class="pp-text-toggle-option pp-text-toggle-on">ON</span>
+                                        <span class="pp-text-toggle-option pp-text-toggle-off">OFF</span>
+                                        <span class="pp-text-toggle-core"></span>
+                                    </span>
+                                    <span class="pp-toggle-copy">
+                                        <span class="pp-toggle-title">Strict Mode</span>
+                                        <span class="pp-toggle-state pp-toggle-state-on">ON — validasi lebih agresif</span>
+                                        <span class="pp-toggle-state pp-toggle-state-off">OFF — mode normal</span>
+                                    </span>
                                 </label>
                             </div>
                         </div>
@@ -72,10 +92,20 @@
                         </div>
                     </div>
                     <hr>
-                    <div class="checkbox">
-                        <label>
-                            <input type="checkbox" name="waf_challenge_theme_custom_enabled" value="1" @if((bool)($cs['theme_custom_enabled'] ?? false)) checked @endif>
-                            Enable Custom Challenge Colors (default tetap graphite DANEX kalau off)
+                    <div class="pp-toggle-field">
+                        <input type="hidden" name="waf_challenge_theme_custom_enabled" value="0">
+                        <label class="pp-text-toggle" for="waf_challenge_theme_custom_enabled">
+                            <input id="waf_challenge_theme_custom_enabled" class="pp-text-toggle-input" type="checkbox" role="switch" name="waf_challenge_theme_custom_enabled" value="1" @if((bool)($cs['theme_custom_enabled'] ?? false)) checked @endif>
+                            <span class="pp-text-toggle-frame" aria-hidden="true">
+                                <span class="pp-text-toggle-option pp-text-toggle-on">ON</span>
+                                <span class="pp-text-toggle-option pp-text-toggle-off">OFF</span>
+                                <span class="pp-text-toggle-core"></span>
+                            </span>
+                            <span class="pp-toggle-copy">
+                                <span class="pp-toggle-title">Custom Challenge Colors</span>
+                                <span class="pp-toggle-state pp-toggle-state-on">ON — pakai warna custom di bawah</span>
+                                <span class="pp-toggle-state pp-toggle-state-off">OFF — tetap graphite DANEX</span>
+                            </span>
                         </label>
                     </div>
                     <div class="row">

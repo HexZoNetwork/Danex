@@ -28,12 +28,12 @@ from urllib.parse import parse_qs, urlparse
 GUARD_HOME = os.environ.get("DANN_GUARD_HOME", "/pteroprotect")
 CONFIG_PATH = Path(GUARD_HOME) / "config.json"
 AUDIT_LOG = Path("/var/log/pteroprotect/emergency_audit.jsonl")
+BLACKLIST_FILE = Path("/dev/shm/pteroprotect/emergency_blacklist.json")
 ADMINCTL = "/usr/local/bin/pteroprotect-adminctl"
 SESSION_TTL_DEFAULT = 900
 MAX_BODY = 16384
 FAIL_MAX = 3
 FAIL_WINDOW = 300
-FAIL_BAN = 0
 ACTION_MAX = 60
 ACTION_WINDOW = 60
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -41,7 +41,6 @@ WS_MAX_FRAME = 65536
 PTY_IDLE_TIMEOUT = 900
 _LOCK = threading.Lock()
 _FAILS = {}
-_BANS = {}
 _ACTIONS = {}
 
 SERVICES = [
@@ -66,11 +65,47 @@ def now():
     return int(time.time())
 
 
+def today_key():
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
 def load_json(path: Path):
     try:
         return json.loads(path.read_text())
     except Exception:
         return {}
+
+
+def write_json_atomic(path: Path, obj):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, separators=(",", ":"), sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def load_blacklist_locked():
+    data = load_json(BLACKLIST_FILE)
+    if not isinstance(data, dict) or data.get("date") != today_key():
+        data = {"date": today_key(), "fails": {}, "blacklist": {}}
+        write_json_atomic(BLACKLIST_FILE, data)
+    data.setdefault("fails", {})
+    data.setdefault("blacklist", {})
+    return data
+
+
+def save_blacklist_locked(data):
+    data["date"] = today_key()
+    write_json_atomic(BLACKLIST_FILE, data)
 
 
 def read_config():
@@ -184,25 +219,39 @@ def parse_session(raw, token):
 
 def is_banned(ip):
     with _LOCK:
-        until = int(_BANS.get(ip, 0))
-        if until <= now():
-            _BANS.pop(ip, None)
-            return False
-        return True
+        data = load_blacklist_locked()
+        return ip in data.get("blacklist", {})
 
 
-def fail_auth(ip):
+def fail_auth(ip, presented_token=""):
+    if not presented_token:
+        return
     t = now()
     with _LOCK:
-        rec = _FAILS.get(ip, {"first": t, "count": 0})
+        data = load_blacklist_locked()
+        fails = data.setdefault("fails", {})
+        rec = fails.get(ip, {"first": t, "count": 0})
         if t - int(rec.get("first", 0)) > FAIL_WINDOW:
             rec = {"first": t, "count": 0}
         rec["count"] += 1
-        _FAILS[ip] = rec
+        fails[ip] = rec
         if rec["count"] >= FAIL_MAX:
-            _BANS[ip] = 2**31 if FAIL_BAN <= 0 else t + FAIL_BAN
-            if valid_ip_or_cidr(ip):
-                adminctl("firewall", "ban", ip, "0", timeout=8)
+            data.setdefault("blacklist", {})[ip] = {"ts": t, "reason": "wrong_emergency_token_3x"}
+        save_blacklist_locked(data)
+
+
+def clear_auth_fail(ip):
+    with _LOCK:
+        data = load_blacklist_locked()
+        changed = False
+        if ip in data.get("fails", {}):
+            data["fails"].pop(ip, None)
+            changed = True
+        if ip in data.get("blacklist", {}):
+            data["blacklist"].pop(ip, None)
+            changed = True
+        if changed:
+            save_blacklist_locked(data)
 
 
 def action_allowed(ip):
@@ -466,8 +515,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _require(self):
         ip = client_ip(self)
-        if is_banned(ip):
-            return None
         session = self._cookie_session()
         csrf = self.headers.get("X-CSRF-Token", "")
         if session and (self.command == "GET" or hmac.compare_digest(csrf, session["csrf"])):
@@ -478,9 +525,13 @@ class Handler(BaseHTTPRequestHandler):
 
         token = self.headers.get("X-Admin-Token", "")
         if not self.server.admin_token or token == "" or not hmac.compare_digest(token, self.server.admin_token):
-            fail_auth(ip)
+            if is_banned(ip):
+                self._silent_drop()
+                return None
+            fail_auth(ip, token)
             self._silent_drop()
             return None
+        clear_auth_fail(ip)
         if not action_allowed(ip):
             self._json({"error": "rate_limited"}, 429)
             return None
@@ -494,9 +545,14 @@ class Handler(BaseHTTPRequestHandler):
             query_token = self._query_token()
             if query_token:
                 if not self.server.query_bootstrap or not hmac.compare_digest(query_token, self.server.admin_token):
-                    fail_auth(client_ip(self))
+                    ip = client_ip(self)
+                    if is_banned(ip):
+                        self._silent_drop()
+                        return
+                    fail_auth(ip, query_token)
                     self._silent_drop()
                     return
+                clear_auth_fail(client_ip(self))
                 session_cookie, csrf = make_cookie(self.server.admin_token, self.server.session_ttl)
                 self._html(render_html(csrf), session_cookie)
                 return

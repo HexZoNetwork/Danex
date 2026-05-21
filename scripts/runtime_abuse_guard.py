@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import collections
+import fcntl
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -56,6 +58,28 @@ def as_int(v, default: int) -> int:
         return int(v)
     except Exception:
         return default
+
+
+def host_mem_mb() -> int:
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return max(1, int(line.split()[1]) // 1024)
+    except Exception:
+        pass
+    return 8192
+
+
+def mem_available_mb() -> int:
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return max(0, int(line.split()[1]) // 1024)
+    except Exception:
+        pass
+    return 0
 
 
 def now_ms() -> int:
@@ -151,6 +175,59 @@ def resolve_container_id(pid: int) -> Optional[str]:
     return None
 
 
+def proc_cmdline(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+
+def proc_comm(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="ignore") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def list_host_dd_zero_by_container() -> Dict[str, List[str]]:
+    hits: Dict[str, List[str]] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        comm = proc_comm(pid).lower()
+        cmd = proc_cmdline(pid)
+        low = cmd.lower()
+        if comm != "dd" and not low.startswith("dd ") and " dd " not in f" {low} ":
+            continue
+        if "if=/dev/zero" not in low and "if=\\/dev\\/zero" not in low:
+            continue
+        cid = resolve_container_id(pid)
+        if not cid:
+            continue
+        hits.setdefault(cid, []).append(f"pid={pid} uid={pid_uid(pid)} cmd={cmd[:400]}")
+    return hits
+
+
+def top_memory_processes(limit: int = 8) -> List[str]:
+    rows = []
+    page_kb = os.sysconf("SC_PAGE_SIZE") // 1024
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open(f"/proc/{pid}/statm", "r", encoding="utf-8", errors="ignore") as f:
+                parts = f.read().split()
+            rss_kb = int(parts[1]) * page_kb if len(parts) > 1 else 0
+            rows.append((rss_kb, pid, proc_comm(pid), proc_cmdline(pid)[:160]))
+        except Exception:
+            continue
+    return [f"rss_mb={rss_kb // 1024} pid={pid} comm={comm} cmd={cmd}" for rss_kb, pid, comm, cmd in sorted(rows, reverse=True)[:limit]]
+
+
 def pause_container_temporarily(container_id: str, ttl_sec: int) -> None:
     rc, _, err = run(["docker", "pause", container_id], timeout=5)
     if rc != 0:
@@ -159,6 +236,17 @@ def pause_container_temporarily(container_id: str, ttl_sec: int) -> None:
     log(f"container paused {container_id} for {ttl_sec}s")
     cmd = f"sleep {max(1, ttl_sec)}; docker unpause {container_id} >/dev/null 2>&1 || true"
     subprocess.Popen(["/bin/bash", "-lc", cmd])
+
+
+def pause_container(container_id: str) -> bool:
+    rc, _, err = run(["docker", "pause", container_id], timeout=5)
+    if rc == 0:
+        log(f"container paused {container_id}")
+        return True
+    if "is already paused" in err.lower():
+        return True
+    log(f"container pause failed {container_id}: {err.strip()}")
+    return False
 
 
 def docker_kill_container(container_id: str, reason: str) -> bool:
@@ -170,12 +258,72 @@ def docker_kill_container(container_id: str, reason: str) -> bool:
     return False
 
 
+def docker_stop_container(container_id: str, reason: str) -> bool:
+    rc, _, err = run(["docker", "stop", "--time", "8", container_id], timeout=15)
+    if rc == 0:
+        log(f"container docker-stopped {container_id} reason={reason}")
+        return True
+    if "is already stopped" in err.lower() or "not running" in err.lower():
+        return True
+    log(f"container docker-stop failed {container_id} reason={reason}: {err.strip()}")
+    return False
+
+
+def is_pterodactyl_container(container_id: str) -> bool:
+    rc, out, err = run(["docker", "inspect", "--format", "{{json .Config.Labels}} {{.Name}}", container_id], timeout=8)
+    if rc != 0:
+        log(f"docker inspect labels failed {container_id}: {err.strip()}")
+        return False
+    try:
+        labels_raw, name = out.strip().split(" ", 1)
+        labels = json.loads(labels_raw) if labels_raw and labels_raw != "<no value>" else {}
+        return labels.get("Service") == "Pterodactyl" and labels.get("ContainerType") == "server_process" and is_uuid(name.strip().strip("/"))
+    except Exception:
+        return False
+
+
+def docker_update_memory(container_id: str, memory_mb: int) -> bool:
+    memory_mb = max(256, int(memory_mb))
+    rc, _, err = run(
+        ["docker", "update", "--memory", f"{memory_mb}m", "--memory-swap", f"{memory_mb}m", container_id],
+        timeout=8,
+    )
+    if rc == 0:
+        log(f"container memory clamped {container_id} memory={memory_mb}m swap={memory_mb}m")
+        return True
+    log(f"container memory clamp failed {container_id}: {err.strip()}")
+    return False
+
+
 def list_docker_container_ids() -> List[str]:
     rc, out, err = run(["docker", "ps", "--filter", "label=Service=Pterodactyl", "--format", "{{.ID}}"], timeout=8)
     if rc != 0:
         log(f"docker ps failed: {err.strip()}")
         return []
     return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def container_memory_limit_bytes(container_id: str) -> int:
+    rc, out, err = run(["docker", "inspect", "--format", "{{.HostConfig.Memory}}", container_id], timeout=8)
+    if rc != 0:
+        log(f"docker inspect memory failed {container_id}: {err.strip()}")
+        return -1
+    try:
+        return int(out.strip())
+    except Exception:
+        return -1
+
+
+def enforce_container_memory_limit(container_id: str, max_mb: int) -> bool:
+    if max_mb <= 0:
+        return False
+    current = container_memory_limit_bytes(container_id)
+    if current < 0:
+        return False
+    max_bytes = int(max_mb) * 1024 * 1024
+    if current == 0 or current > max_bytes:
+        return docker_update_memory(container_id, max_mb)
+    return False
 
 
 def container_process_text(container_id: str) -> str:
@@ -186,12 +334,56 @@ def container_process_text(container_id: str) -> str:
     return out.lower()
 
 
+def container_process_text_raw(container_id: str) -> str:
+    rc, out, err = run(["docker", "top", container_id, "aux"], timeout=8)
+    if rc != 0:
+        log(f"docker top failed {container_id}: {err.strip()}")
+        return ""
+    return out
+
+
 def container_name(container_id: str) -> str:
     rc, out, err = run(["docker", "inspect", "--format", "{{.Name}}", container_id], timeout=8)
     if rc != 0:
         log(f"docker inspect name failed {container_id}: {err.strip()}")
         return ""
     return out.strip().strip("/")
+
+
+def container_inspect_json(container_id: str) -> dict:
+    rc, out, err = run(["docker", "inspect", container_id], timeout=8)
+    if rc != 0:
+        log(f"docker inspect failed {container_id}: {err.strip()}")
+        return {}
+    try:
+        data = json.loads(out)
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            item = data[0]
+            image_ref = item.get("Config", {}).get("Image", "")
+            image_digests = []
+            if image_ref:
+                rc2, out2, _ = run(["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image_ref], timeout=8)
+                if rc2 == 0 and out2.strip():
+                    try:
+                        parsed = json.loads(out2.strip())
+                        if isinstance(parsed, list):
+                            image_digests = parsed
+                    except Exception:
+                        image_digests = []
+            return {
+                "id": item.get("Id", ""),
+                "name": str(item.get("Name", "")).strip("/"),
+                "image": item.get("Image", ""),
+                "image_ref": image_ref,
+                "image_digests": image_digests,
+                "created": item.get("Created", ""),
+                "state": item.get("State", {}),
+                "labels": item.get("Config", {}).get("Labels", {}),
+                "mounts": item.get("Mounts", []),
+            }
+    except Exception as exc:
+        log(f"docker inspect parse failed {container_id}: {exc}")
+    return {}
 
 
 def is_uuid(value: str) -> bool:
@@ -205,9 +397,131 @@ def is_uuid(value: str) -> bool:
 def dangerous_dd_reason(process_text: str, dd_if_threshold: int) -> str:
     lines = [line for line in process_text.splitlines() if " dd " in f" {line} " or "\tdd " in line or line.strip().startswith("dd ")]
     zero_hits = sum(1 for line in lines if "dd if=/dev/zero" in line or "dd if=\\/dev\\/zero" in line)
-    if zero_hits > 0:
+    if zero_hits >= max(1, dd_if_threshold):
         return f"dd_zero_processes={zero_hits}"
     return ""
+
+
+def dangerous_dd_seen(process_text: str) -> str:
+    lines = [line for line in process_text.splitlines() if " dd " in f" {line} " or "\tdd " in line or line.strip().startswith("dd ")]
+    zero_hits = sum(1 for line in lines if "dd if=/dev/zero" in line or "dd if=\\/dev\\/zero" in line)
+    return f"dd_zero_processes={zero_hits}" if zero_hits > 0 else ""
+
+
+def redact_process_text(text: str, limit_lines: int = 80) -> str:
+    lines = []
+    for line in text.splitlines()[:limit_lines]:
+        line = re.sub(r"(?i)(token|password|passwd|secret|key)=\S+", r"\1=<redacted>", line)
+        line = re.sub(r"(?i)(--(?:token|password|passwd|secret|key))\s+\S+", r"\1 <redacted>", line)
+        line = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer <redacted>", line)
+        lines.append(line[:500])
+    return "\n".join(lines)
+
+
+def write_container_incident(state_dir: str, container_id: str, reason: str, process_text: str) -> None:
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        path = os.path.join(state_dir, f"container_incident_{container_id}_{int(time.time())}.json")
+        payload = {
+            "ts": int(time.time()),
+            "container_id": container_id,
+            "name": container_name(container_id),
+            "reason": reason,
+            "inspect": container_inspect_json(container_id),
+            "processes": redact_process_text(process_text),
+        }
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+    except Exception as exc:
+        log(f"failed writing container incident: {exc}")
+
+
+def write_quarantine_marker(state_dir: str, container_id: str, reason: str) -> None:
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        name = container_name(container_id)
+        key = name if is_uuid(name) else container_id
+        path = os.path.join(state_dir, f"quarantine_{key}.json")
+        payload = {
+            "ts": int(time.time()),
+            "container_id": container_id,
+            "server_uuid": name if is_uuid(name) else "",
+            "reason": reason,
+        }
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+    except Exception as exc:
+        log(f"failed writing quarantine marker: {exc}")
+
+
+def dangerous_strike_key(container_id: str) -> str:
+    name = container_name(container_id)
+    return name if is_uuid(name) else container_id
+
+
+def load_dangerous_strikes(state_dir: str) -> dict:
+    path = os.path.join(state_dir, "dangerous_container_strikes.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_dangerous_strikes(state_dir: str, data: dict) -> None:
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        path = os.path.join(state_dir, "dangerous_container_strikes.json")
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=True, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        try:
+            dir_fd = os.open(state_dir, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            pass
+    except Exception as exc:
+        log(f"failed writing dangerous strikes: {exc}")
+
+
+def register_dangerous_container_strike(state_dir: str, container_id: str, reason: str, window_sec: int = 86400) -> int:
+    key = dangerous_strike_key(container_id)
+    now = int(time.time())
+    os.makedirs(state_dir, exist_ok=True)
+    lock_path = os.path.join(state_dir, "dangerous_container_strikes.lock")
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        data = load_dangerous_strikes(state_dir)
+        items = data.setdefault("containers", {})
+        if not isinstance(items, dict):
+            items = {}
+            data["containers"] = items
+        rec = items.get(key, {}) if isinstance(items.get(key, {}), dict) else {}
+        last_ts = int(rec.get("last_ts", 0) or 0)
+        if last_ts and now - last_ts > max(60, window_sec):
+            rec = {}
+        rec["count"] = int(rec.get("count", 0)) + 1
+        rec["first_ts"] = int(rec.get("first_ts", now) or now)
+        rec["last_ts"] = now
+        rec["last_reason"] = reason
+        rec["container_id"] = container_id
+        rec["server_uuid"] = key if is_uuid(key) else ""
+        items[key] = rec
+        data["updated_ts"] = now
+        data["window_sec"] = max(60, int(window_sec))
+        save_dangerous_strikes(state_dir, data)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        return int(rec["count"])
 
 
 def has_other_dangerous_marker(process_text: str, markers: List[str]) -> str:
@@ -350,6 +664,80 @@ def write_metrics(state_dir: str, metrics: Dict[str, int]) -> None:
         log(f"failed writing abuse metrics: {exc}")
 
 
+def contain_dangerous_container(
+    state_dir: str,
+    db_cfg: dict,
+    metrics: Dict[str, int],
+    docker_killed: Set[str],
+    cid: str,
+    reason: str,
+    process_text_raw: str,
+    suspend_enabled: bool,
+    stop_enabled: bool,
+    suspend_after: int,
+    strike_window_sec: int,
+) -> None:
+    if cid in docker_killed:
+        return
+    if not is_pterodactyl_container(cid):
+        log(f"skip non-pterodactyl dangerous container cid={cid} reason={reason}")
+        return
+    write_container_incident(state_dir, cid, reason, process_text_raw)
+    write_quarantine_marker(state_dir, cid, reason)
+    strike_count = register_dangerous_container_strike(state_dir, cid, reason, strike_window_sec)
+    paused = False
+    stopped = False
+    if stop_enabled:
+        stopped = docker_stop_container(cid, "dangerous_process_marker")
+    else:
+        paused = pause_container(cid)
+    suspended = False
+    if suspend_enabled and strike_count >= suspend_after:
+        suspended = suspend_server_for_container(
+            cid,
+            db_cfg,
+            f"runtime repeated dangerous process strikes={strike_count}: {reason}",
+        )
+        if suspended:
+            metrics["server_suspended"] += 1
+    if not stop_enabled:
+        write_self_ddos_event(
+            state_dir,
+            {
+                "ts": int(time.time()),
+                "container_id": cid,
+                "reason": "dangerous_process_marker",
+                "detail": reason,
+                "action": "container_pause_quarantine",
+                "paused": paused,
+                "stopped": False,
+                "server_suspended": suspended,
+                "strike_count": strike_count,
+                "suspend_after": suspend_after,
+            },
+        )
+        return
+    if stopped:
+        docker_killed.add(cid)
+        metrics["container_killed"] += 1
+        metrics["container_dangerous_process"] += 1
+        write_self_ddos_event(
+            state_dir,
+            {
+                "ts": int(time.time()),
+                "container_id": cid,
+                "reason": "dangerous_process_marker",
+                "detail": reason,
+                "action": "container_pause_quarantine_stop" + ("_suspend" if suspended else ""),
+                "paused": paused,
+                "stopped": True,
+                "server_suspended": suspended,
+                "strike_count": strike_count,
+                "suspend_after": suspend_after,
+            },
+        )
+
+
 def main() -> int:
     cfg = load_config()
     runtime = cfg.get("runtime", {}) if isinstance(cfg, dict) else {}
@@ -372,6 +760,15 @@ def main() -> int:
     docker_cpu_strikes_required = max(1, as_int(abuse_guard.get("docker_cpu_strikes_required", 2), 2))
     docker_scan_interval_sec = max(1, as_int(abuse_guard.get("docker_scan_interval_sec", 2), 2))
     docker_suspend_on_dangerous_process = bool(abuse_guard.get("docker_suspend_on_dangerous_process", True))
+    dangerous_suspend_after = max(1, as_int(abuse_guard.get("dangerous_suspend_after", 5), 5))
+    dangerous_strike_window_sec = max(60, as_int(abuse_guard.get("dangerous_strike_window_sec", 86400), 86400))
+    docker_memory_clamp_enabled = bool(abuse_guard.get("docker_memory_clamp_enabled", True))
+    docker_memory_max_mb = max(256, as_int(abuse_guard.get("docker_memory_max_mb", 0), 0))
+    if as_int(abuse_guard.get("docker_memory_max_mb", 0), 0) <= 0:
+        docker_memory_max_mb = max(768, min(2048, (host_mem_mb() - 3072) // 4))
+    host_proc_dd_scan_enabled = bool(abuse_guard.get("host_proc_dd_scan_enabled", True))
+    oom_risk_log_enabled = bool(abuse_guard.get("oom_risk_log_enabled", True))
+    oom_risk_mem_available_mb = max(128, as_int(abuse_guard.get("oom_risk_mem_available_mb", 1024), 1024))
     dangerous_dd_if_threshold = max(1, as_int(abuse_guard.get("dangerous_dd_if_threshold", 3), 3))
     docker_cpu_kill_pct = as_int(
         abuse_guard.get("docker_cpu_kill_pct", host_cpu_kill_threshold(docker_cpu_reserved_cores, docker_cpu_min_threshold_pct)),
@@ -419,20 +816,34 @@ def main() -> int:
         "container_killed": 0,
         "container_cpu_strike": 0,
         "container_dangerous_process": 0,
+        "host_proc_dangerous_process": 0,
+        "oom_risk": 0,
         "server_suspended": 0,
     }
     container_cpu_strikes: Dict[str, collections.deque] = {}
     docker_killed: Set[str] = set()
+    docker_memory_clamped: Set[str] = set()
     last_docker_scan = 0.0
+    last_oom_risk_log = 0.0
 
     log(
         f"started threshold={req_threshold}/{window_ms}ms targets={targets} ports={gateway_ports} "
-        f"max_auto_bans={max_auto_bans} docker_kill={docker_kill_enabled} docker_cpu_kill_pct={docker_cpu_kill_pct}"
+        f"max_auto_bans={max_auto_bans} docker_kill={docker_kill_enabled} docker_cpu_kill_pct={docker_cpu_kill_pct} "
+        f"docker_memory_clamp={docker_memory_clamp_enabled} docker_memory_max_mb={docker_memory_max_mb} "
+        f"host_proc_dd_scan={host_proc_dd_scan_enabled} dangerous_suspend_after={dangerous_suspend_after} "
+        f"dangerous_strike_window_sec={dangerous_strike_window_sec} "
+        f"oom_risk_mem_available_mb={oom_risk_mem_available_mb}"
     )
 
     sleep_s = max(0.2, window_ms / 1000.0)
     while True:
         ts = time.time()
+        if oom_risk_log_enabled and (ts - last_oom_risk_log) >= 30:
+            avail = mem_available_mb()
+            if 0 < avail < oom_risk_mem_available_mb:
+                metrics["oom_risk"] += 1
+                log(f"oom-risk mem_available_mb={avail} threshold_mb={oom_risk_mem_available_mb} top={top_memory_processes()}")
+                last_oom_risk_log = ts
         pids = list_runtime_pids(targets)
         alive = set(pids)
 
@@ -492,11 +903,12 @@ def main() -> int:
                 event["container_id"] = cid
                 if cid and len(escalations) < max_auto_bans:
                     if docker_kill_enabled and cid not in docker_killed:
-                        killed = docker_kill_container(cid, "self_ddos_socket_strikes")
-                        event["escalation_action"] = "container_docker_kill"
-                        event["container_killed"] = killed
+                        write_quarantine_marker(state_dir, cid, "self_ddos_socket_strikes")
+                        stopped = docker_stop_container(cid, "self_ddos_socket_strikes")
+                        event["escalation_action"] = "container_docker_stop"
+                        event["container_stopped"] = stopped
                         docker_killed.add(cid)
-                        if killed:
+                        if stopped:
                             metrics["container_killed"] += 1
                     else:
                         pause_container_temporarily(cid, escalation_ttl)
@@ -515,41 +927,53 @@ def main() -> int:
             write_self_ddos_event(state_dir, event)
             write_metrics(state_dir, metrics)
 
-        if docker_kill_enabled and (ts - last_docker_scan) >= docker_scan_interval_sec:
+        if (ts - last_docker_scan) >= docker_scan_interval_sec:
             last_docker_scan = ts
+            if host_proc_dd_scan_enabled:
+                for cid, lines in list_host_dd_zero_by_container().items():
+                    if cid in docker_killed:
+                        continue
+                    if len(lines) < dangerous_dd_if_threshold:
+                        continue
+                    metrics["host_proc_dangerous_process"] += 1
+                    contain_dangerous_container(
+                        state_dir,
+                        db_cfg,
+                        metrics,
+                        docker_killed,
+                        cid,
+                        f"host_proc_dd_zero_processes={len(lines)}",
+                        "\n".join(lines),
+                        docker_suspend_on_dangerous_process,
+                        docker_kill_enabled,
+                        dangerous_suspend_after,
+                        dangerous_strike_window_sec,
+                    )
             for cid in list_docker_container_ids():
                 if cid in docker_killed:
                     continue
-                process_text = container_process_text(cid)
+                if docker_memory_clamp_enabled and cid not in docker_memory_clamped:
+                    if enforce_container_memory_limit(cid, docker_memory_max_mb):
+                        docker_memory_clamped.add(cid)
+                process_text_raw = container_process_text_raw(cid)
+                process_text = process_text_raw.lower()
                 dd_reason = dangerous_dd_reason(process_text, dangerous_dd_if_threshold)
                 marker_reason = has_other_dangerous_marker(process_text, dangerous_proc_markers)
                 dangerous_reason = dd_reason or (f"marker={marker_reason}" if marker_reason else "")
                 if dangerous_reason:
-                    if docker_kill_container(cid, "dangerous_process_marker"):
-                        docker_killed.add(cid)
-                        metrics["container_killed"] += 1
-                        metrics["container_dangerous_process"] += 1
-                        suspended = False
-                        if docker_suspend_on_dangerous_process:
-                            suspended = suspend_server_for_container(
-                                cid,
-                                db_cfg,
-                                f"runtime investigate dangerous process: {dangerous_reason}",
-                            )
-                            if suspended:
-                                metrics["server_suspended"] += 1
-                        write_self_ddos_event(
-                            state_dir,
-                            {
-                                "ts": int(ts),
-                                "container_id": cid,
-                                "reason": "dangerous_process_marker",
-                                "detail": dangerous_reason,
-                                "action": "container_docker_kill",
-                                "killed": True,
-                                "server_suspended": suspended,
-                            },
-                        )
+                    contain_dangerous_container(
+                        state_dir,
+                        db_cfg,
+                        metrics,
+                        docker_killed,
+                        cid,
+                        dangerous_reason,
+                        process_text_raw,
+                        docker_suspend_on_dangerous_process,
+                        docker_kill_enabled,
+                        dangerous_suspend_after,
+                        dangerous_strike_window_sec,
+                    )
                     continue
 
                 cpu_pct = docker_cpu_percent(cid)
@@ -563,7 +987,22 @@ def main() -> int:
                 while q and (ts - q[0]) > strike_window:
                     q.popleft()
                 if len(q) >= docker_cpu_strikes_required:
-                    if docker_kill_container(cid, f"cpu_over_budget_{cpu_pct:.1f}_pct"):
+                    if not docker_kill_enabled:
+                        write_self_ddos_event(
+                            state_dir,
+                            {
+                                "ts": int(ts),
+                                "container_id": cid,
+                                "reason": "cpu_over_budget",
+                                "cpu_pct": cpu_pct,
+                                "threshold_pct": docker_cpu_kill_pct,
+                                "action": "container_cpu_strike_no_auto_stop",
+                                "stopped": False,
+                            },
+                        )
+                        q.clear()
+                        continue
+                    if docker_stop_container(cid, f"cpu_over_budget_{cpu_pct:.1f}_pct"):
                         docker_killed.add(cid)
                         metrics["container_killed"] += 1
                         write_self_ddos_event(
@@ -574,8 +1013,8 @@ def main() -> int:
                                 "reason": "cpu_over_budget",
                                 "cpu_pct": cpu_pct,
                                 "threshold_pct": docker_cpu_kill_pct,
-                                "action": "container_docker_kill",
-                                "killed": True,
+                                "action": "container_docker_stop",
+                                "stopped": True,
                             },
                         )
 

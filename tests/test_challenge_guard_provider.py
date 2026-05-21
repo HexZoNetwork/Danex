@@ -58,6 +58,15 @@ def main() -> int:
         root = pathlib.Path(tmp)
         cache = root / "provider_ranges.txt"
         cache.write_text("198.51.100.0/24\n", encoding="utf-8")
+        ip_cache = root / "provider_ip_cache.json"
+        ip_cache.write_text(json.dumps({
+            "192.0.2.44": {
+                "holder": "Example Hosting",
+                "prefix": "192.0.2.0/24",
+                "is_provider": True,
+                "exp": int(time.time()) + 3600,
+            }
+        }), encoding="utf-8")
         port = free_port()
         config = root / "config.json"
         config.write_text(json.dumps({
@@ -71,6 +80,7 @@ def main() -> int:
                 "provider_token_ipv4_cidrs": "127.0.0.1/32",
                 "provider_token_ipv6_cidrs": "",
                 "provider_token_cache_file": str(cache),
+                "provider_token_ip_cache_file": str(ip_cache),
             },
         }), encoding="utf-8")
         env = os.environ.copy()
@@ -98,6 +108,11 @@ def main() -> int:
                 request(port, "/check-provider-api", {"X-Real-IP": "198.51.100.10"}),
                 401,
                 "provider cache CIDR should be enforced by challenge_guard",
+            )
+            assert_equal(
+                request(port, "/check-provider-api", {"X-Real-IP": "192.0.2.44"}),
+                401,
+                "provider IP cache should be enforced without subprocess lookup",
             )
         finally:
             proc.terminate()
