@@ -155,19 +155,24 @@ const emptyState: DanexCOverviewResponse = {
     meta: { window_minutes: 60, generated_at: '' },
 };
 
-const normalizeOverview = (data: Partial<DanexCOverviewResponse> | null | undefined): DanexCOverviewResponse => ({
-    metrics: { ...emptyState.metrics, ...(data?.metrics || {}) },
-    most_targeted_paths: Array.isArray(data?.most_targeted_paths) ? data.most_targeted_paths : [],
-    system_config: { ...emptyState.system_config, ...(data?.system_config || {}) },
-    timeline: Array.isArray(data?.timeline) ? data.timeline : [],
-    threat: {
-        ...emptyState.threat,
-        ...(data?.threat || {}),
-        reason_codes: Array.isArray(data?.threat?.reason_codes) ? data.threat.reason_codes : [],
-    },
-    live_feed: Array.isArray(data?.live_feed) ? data.live_feed : [],
-    meta: { ...emptyState.meta, ...(data?.meta || {}) },
-});
+const normalizeOverview = (data: Partial<DanexCOverviewResponse> | null | undefined): DanexCOverviewResponse => {
+    const safeData = data || {};
+    const threat: Partial<DanexCOverviewResponse['threat']> = safeData.threat || {};
+
+    return {
+        metrics: { ...emptyState.metrics, ...(safeData.metrics || {}) },
+        most_targeted_paths: Array.isArray(safeData.most_targeted_paths) ? safeData.most_targeted_paths : [],
+        system_config: { ...emptyState.system_config, ...(safeData.system_config || {}) },
+        timeline: Array.isArray(safeData.timeline) ? safeData.timeline : [],
+        threat: {
+            ...emptyState.threat,
+            ...threat,
+            reason_codes: Array.isArray(threat.reason_codes) ? threat.reason_codes : [],
+        },
+        live_feed: Array.isArray(safeData.live_feed) ? safeData.live_feed : [],
+        meta: { ...emptyState.meta, ...(safeData.meta || {}) },
+    };
+};
 
 const threatColor = (level: string): string => {
     if (level === 'high') return '#ef4444';
@@ -247,7 +252,8 @@ export default () => {
 
     const scheduleRefresh = useCallback(() => {
         if (refreshTimerRef.current !== null) return;
-        const delay = Math.max(1200, errorBackoffRef.current);
+        if (document.visibilityState === 'hidden') return;
+        const delay = Math.max(1200, errorBackoffRef.current) + Math.floor(Math.random() * 1500);
         refreshTimerRef.current = window.setTimeout(() => {
             refreshTimerRef.current = null;
             void refreshAll().catch(() => undefined);

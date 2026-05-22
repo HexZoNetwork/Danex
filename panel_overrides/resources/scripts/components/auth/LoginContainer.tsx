@@ -19,9 +19,17 @@ interface Values {
 type AssetManifest = Record<string, { src?: string }>;
 
 const preloadCoreAssets = async (onProgress: (progress: number) => void): Promise<void> => {
-    const timeout = new Promise<void>((resolve) => window.setTimeout(resolve, 4500));
+    const controller = new AbortController();
+    const timeout = new Promise<void>((resolve) =>
+        window.setTimeout(() => {
+            controller.abort();
+            resolve();
+        }, 4500)
+    );
     const preload = async () => {
-        const manifest = (await fetch('/assets/manifest.json', { cache: 'no-cache', credentials: 'same-origin' }).then((r) =>
+        const manifest = (await fetch('/assets/manifest.json', { cache: 'no-cache', credentials: 'same-origin', signal: controller.signal }).then((r) =>
+            r.ok ? r : Promise.reject(new Error(`Manifest preload failed with status ${r.status}`))
+        ).then((r) =>
             r.json()
         )) as AssetManifest;
         const assets = Object.entries(manifest)
@@ -43,7 +51,7 @@ const preloadCoreAssets = async (onProgress: (progress: number) => void): Promis
                 link.setAttribute('as', 'script');
                 link.href = src;
                 document.head.appendChild(link);
-                await fetch(src, { cache: 'force-cache', credentials: 'same-origin' }).catch(() => undefined);
+                await fetch(src, { cache: 'force-cache', credentials: 'same-origin', signal: controller.signal }).catch(() => undefined);
                 completed += 1;
                 onProgress(Math.round((completed / uniqueAssets.length) * 100));
             })

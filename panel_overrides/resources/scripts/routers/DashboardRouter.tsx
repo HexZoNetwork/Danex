@@ -94,10 +94,10 @@ export default () => {
         const enable = () => setShowAds(true);
         if ('requestIdleCallback' in window) {
             (window as any).requestIdleCallback(enable, { timeout: 10000 });
-            return;
+            return undefined;
         }
-        const timer = window.setTimeout(enable, 7000);
-        return () => window.clearTimeout(timer);
+        const timer = globalThis.setTimeout(enable, 7000);
+        return () => globalThis.clearTimeout(timer);
     }, []);
 
     const isAccount = location.pathname.startsWith('/account');

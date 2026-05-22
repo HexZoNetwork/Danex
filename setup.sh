@@ -1768,7 +1768,8 @@ if command -v setfacl >/dev/null 2>&1; then
             "${INSTALL_DIR}/runtime/resilience_orchestrator.prom" >/dev/null 2>&1 || true
     done < <(panel_runtime_users)
 fi
-chmod 755 "${INSTALL_DIR}"
+chown root:www-data "${INSTALL_DIR}" >/dev/null 2>&1 || true
+chmod 2750 "${INSTALL_DIR}"
 chmod 755 "${INSTALL_DIR}/dann_guard"
 if [[ -f "${INSTALL_DIR}/challenge_guard" ]]; then
     chmod 755 "${INSTALL_DIR}/challenge_guard"
@@ -1777,8 +1778,9 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
     # Panel ProtectController writes this file from the PHP-FPM user.
     # Operational mode: panel/admin tooling must be able to save this file after setup.
     chown root:www-data "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
-    chmod 666 "${INSTALL_DIR}/config.json"
-    chmod 777 "${INSTALL_DIR}" >/dev/null 2>&1 || true
+    chmod 660 "${INSTALL_DIR}/config.json"
+    chown root:www-data "${INSTALL_DIR}" >/dev/null 2>&1 || true
+    chmod 2750 "${INSTALL_DIR}" >/dev/null 2>&1 || true
     if command -v setfacl >/dev/null 2>&1; then
         while IFS= read -r _pp_user; do
             id "${_pp_user}" >/dev/null 2>&1 || continue
@@ -1786,11 +1788,11 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
             setfacl -d -m "u:${_pp_user}:rwx" "${INSTALL_DIR}" >/dev/null 2>&1 || true
             setfacl -m "u:${_pp_user}:rw" "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
         done < <(panel_runtime_users)
-        setfacl -m m::rw,o::rw "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
-        setfacl -m m::rwx,o::rwx "${INSTALL_DIR}" >/dev/null 2>&1 || true
+        setfacl -m m::rw,o::--- "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
+        setfacl -m m::rwx,o::--- "${INSTALL_DIR}" >/dev/null 2>&1 || true
     fi
-    chmod 666 "${INSTALL_DIR}/config.json"
-    chmod 777 "${INSTALL_DIR}" >/dev/null 2>&1 || true
+    chmod 660 "${INSTALL_DIR}/config.json"
+    chmod 2750 "${INSTALL_DIR}" >/dev/null 2>&1 || true
 fi
 if [[ -f "${PROJECT_DIR}/config.json" ]]; then
     chown root:root "${PROJECT_DIR}/config.json" >/dev/null 2>&1 || true
@@ -1842,10 +1844,10 @@ if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_challenge_api.py" ]]; then
 fi
 if [[ -f "${INSTALL_DIR}/scripts/pteroprotect_terminal_helper.py" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/pteroprotect_terminal_helper.py"
-    mkdir -p /dev/shm/pteroprotect/terminal_tickets /var/log/pteroprotect/terminal
-    chown root:www-data /dev/shm/pteroprotect/terminal_tickets >/dev/null 2>&1 || true
-    chmod 2770 /dev/shm/pteroprotect/terminal_tickets
-    chmod 700 /var/log/pteroprotect/terminal
+    install -d -o root -g www-data -m 2775 /dev/shm/pteroprotect
+    install -d -o root -g www-data -m 2770 /dev/shm/pteroprotect/terminal_tickets
+    install -d -o root -g root -m 0700 /dev/shm/pteroprotect/terminal_replay
+    install -d -o root -g root -m 0750 /var/log/pteroprotect/terminal
 fi
 if [[ -f "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh" ]]; then
     chmod 755 "${INSTALL_DIR}/scripts/smoke_nodefs_abuse.sh"
@@ -2349,10 +2351,10 @@ fi
 if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     echo "[setup] applying bundled nginx host protection..."
     HTTP_CONN_LIMIT="$(read_network_setting http_conn_limit 60)"
-    HTTP_REQ_RATE="$(read_network_setting http_req_rate 30)"
+    HTTP_REQ_RATE="$(read_network_setting http_req_rate 64)"
     HTTP_REQ_BURST="$(read_network_setting http_req_burst 60)"
-    HTTP_AUTH_REQ_RATE_PER_MIN="$(read_network_setting http_auth_req_rate_per_min 20)"
-    HTTP_AUTH_REQ_BURST="$(read_network_setting http_auth_req_burst 20)"
+    HTTP_AUTH_REQ_RATE_PER_MIN="$(read_network_setting http_auth_req_rate_per_min 64r/s)"
+    HTTP_AUTH_REQ_BURST="$(read_network_setting http_auth_req_burst 128)"
     CDN_STATIC_CACHE_TTL="$(read_network_setting cdn_static_cache_ttl 7d)"
     REAL_IP_ENABLED_RAW="$(read_network_setting real_ip_enabled false)"
     REAL_IP_HEADER="$(read_network_setting real_ip_header CF-Connecting-IP)"
@@ -2372,10 +2374,10 @@ if [[ -d "${NGINX_DIR}" && -d "${INSTALL_DIR}/host_overrides/nginx" ]]; then
     WAF_CRS_PARANOIA_LEVEL="$(read_config_path_value waf.crs.paranoia_level "$(read_network_setting waf_crs_paranoia_level 1)")"
     WAF_CRS_INBOUND_THRESHOLD="$(read_config_path_value waf.crs.inbound_threshold "$(read_network_setting waf_crs_inbound_threshold 5)")"
     WAF_CRS_OUTBOUND_THRESHOLD="$(read_config_path_value waf.crs.outbound_threshold "$(read_network_setting waf_crs_outbound_threshold 4)")"
-    RATE_AUTH_RATE="$(read_config_path_value rate_limits.auth.rate "$(read_network_setting rate_limit_auth_rate 5r/s)")"
-    RATE_AUTH_BURST="$(read_config_path_value rate_limits.auth.burst "$(read_network_setting rate_limit_auth_burst 20)")"
-    RATE_API_CLIENT_RATE="$(read_config_path_value rate_limits.api_client.rate "$(read_network_setting rate_limit_api_client_rate 30r/s)")"
-    RATE_API_APPLICATION_RATE="$(read_config_path_value rate_limits.api_application.rate "$(read_network_setting rate_limit_api_application_rate 60r/s)")"
+    RATE_AUTH_RATE="$(read_config_path_value rate_limits.auth.rate "$(read_network_setting rate_limit_auth_rate 64r/s)")"
+    RATE_AUTH_BURST="$(read_config_path_value rate_limits.auth.burst "$(read_network_setting rate_limit_auth_burst 128)")"
+    RATE_API_CLIENT_RATE="$(read_config_path_value rate_limits.api_client.rate "$(read_network_setting rate_limit_api_client_rate 600r/s)")"
+    RATE_API_APPLICATION_RATE="$(read_config_path_value rate_limits.api_application.rate "$(read_network_setting rate_limit_api_application_rate 1800r/s)")"
     RATE_STATIC_RATE="$(read_config_path_value rate_limits.static.rate "$(read_network_setting rate_limit_static_rate 120r/s)")"
 
     MODSEC_RUNTIME_ENABLED=0
@@ -2521,18 +2523,39 @@ if m:
     text = text[:m.start()] + replacement + text[m.end():]
     path.write_text(text)
 PY
+    min_rps_rate() {
+        local value="${1:-}"
+        local min="${2:-64}"
+        if [[ "${value}" =~ ^([0-9]+)r/s$ ]]; then
+            if (( BASH_REMATCH[1] < min )); then
+                printf '%sr/s' "${min}"
+            else
+                printf '%s' "${value}"
+            fi
+        elif [[ "${value}" =~ ^[0-9]+$ ]]; then
+            if (( value < min )); then
+                printf '%sr/s' "${min}"
+            else
+                printf '%sr/s' "${value}"
+            fi
+        else
+            printf '%sr/s' "${min}"
+        fi
+    }
+
     if [[ "${RATE_AUTH_RATE}" =~ ^[0-9]+r/s$ ]]; then
         HTTP_AUTH_REQ_RATE_PER_MIN="${RATE_AUTH_RATE}"
     elif [[ "${HTTP_AUTH_REQ_RATE_PER_MIN}" =~ ^[0-9]+$ ]]; then
-        HTTP_AUTH_REQ_RATE_PER_MIN="${HTTP_AUTH_REQ_RATE_PER_MIN}r/m"
+        HTTP_AUTH_REQ_RATE_PER_MIN="${HTTP_AUTH_REQ_RATE_PER_MIN}r/s"
     else
-        HTTP_AUTH_REQ_RATE_PER_MIN="5r/s"
+        HTTP_AUTH_REQ_RATE_PER_MIN="64r/s"
     fi
-    [[ "${HTTP_REQ_RATE}" =~ ^[0-9]+$ ]] && HTTP_REQ_RATE="${HTTP_REQ_RATE}r/s"
-    [[ "${RATE_API_CLIENT_RATE}" =~ ^[0-9]+r/s$ ]] || RATE_API_CLIENT_RATE="400r/s"
-    [[ "${RATE_API_APPLICATION_RATE}" =~ ^[0-9]+r/s$ ]] || RATE_API_APPLICATION_RATE="600r/s"
-    [[ "${RATE_STATIC_RATE}" =~ ^[0-9]+r/s$ ]] || RATE_STATIC_RATE="30r/s"
-    perl -0pi -e "s#(zone=pteroprotect_req:20m rate=)\\d+r/s;#\${1}${HTTP_REQ_RATE};#g; s#(zone=pteroprotect_auth:10m rate=)\\d+r/[sm];#\${1}${HTTP_AUTH_REQ_RATE_PER_MIN};#g; s#(zone=pteroprotect_api_key_req:20m rate=)\\d+r/s;#\${1}${RATE_API_CLIENT_RATE};#g; s#(zone=pteroprotect_api_global_req:10m rate=)\\d+r/s;#\${1}${RATE_API_APPLICATION_RATE};#g; s#(zone=pteroprotect_global_req:10m rate=)\\d+r/s;#\${1}${RATE_STATIC_RATE};#g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
+    HTTP_AUTH_REQ_RATE_PER_MIN="$(min_rps_rate "${HTTP_AUTH_REQ_RATE_PER_MIN}" 64)"
+    HTTP_REQ_RATE="$(min_rps_rate "${HTTP_REQ_RATE}" 64)"
+    RATE_API_CLIENT_RATE="$(min_rps_rate "${RATE_API_CLIENT_RATE}" 600)"
+    RATE_API_APPLICATION_RATE="$(min_rps_rate "${RATE_API_APPLICATION_RATE}" 1800)"
+    RATE_STATIC_RATE="$(min_rps_rate "${RATE_STATIC_RATE}" 64)"
+    perl -0pi -e "s#(zone=pteroprotect_req:\\d+m rate=)\\d+r/s;#\${1}${HTTP_REQ_RATE};#g; s#(zone=pteroprotect_auth:\\d+m rate=)\\d+r/[sm];#\${1}${HTTP_AUTH_REQ_RATE_PER_MIN};#g; s#(zone=pteroprotect_api_key_req:\\d+m rate=)\\d+r/s;#\${1}${RATE_API_CLIENT_RATE};#g; s#(zone=pteroprotect_api_global_req:\\d+m rate=)\\d+r/s;#\${1}${RATE_API_APPLICATION_RATE};#g; s#(zone=pteroprotect_global_req:\\d+m rate=)\\d+r/s;#\${1}${RATE_STATIC_RATE};#g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
     python3 - "${NGINX_DIR}/conf.d/pteroprotect_realip.conf" "${REAL_IP_ENABLED_RAW}" "${REAL_IP_HEADER}" "${REAL_IP_RECURSIVE_RAW}" "${TRUSTED_PROXY_IPV4_CIDRS}" "${TRUSTED_PROXY_IPV6_CIDRS}" <<'PY'
 import ipaddress
 import pathlib
@@ -2808,7 +2831,8 @@ for old, new in [
 
 for marker in [
     "location ~* ^/api/client/servers/[^/]+/websocket$ {\n    if (-f /dev/shm/pteroprotect/brownout.flag) { return 503; }\n",
-    "location ~* ^/api/client/servers/[^/]+/resources$ {\n    if (-f /dev/shm/pteroprotect/brownout.flag) { return 503; }\n",
+    "location ~* ^/api/client/servers/[^/]+/(resources|activity)$ {\n    if (-f /dev/shm/pteroprotect/brownout.flag) { return 503; }\n",
+    "location ~* ^/api/client/(?:waf|danexc)/(?:stats|timeline|threats|config|overview|feed)$ {\n",
     "location /api/application/ {\n",
     "location /api/ {\n",
 ]:
@@ -2864,14 +2888,49 @@ if m:
     text = text[:m.start()] + new_block + text[m.end():]
 
 admin_bypass = (
+    "    location = /admin/protect/terminal/sessions {\n"
+    "        limit_conn pteroprotect_conn 20;\n"
+    "        limit_req zone=pteroprotect_auth burst=30 nodelay;\n"
+    "        try_files $uri /index.php?$query_string;\n"
+    "    }\n\n"
+    "    location ^~ /admin/protect/terminal/sessions/ {\n"
+    "        if ($request_method != GET) { return 405; }\n"
+    "        if ($http_upgrade !~* \"^websocket$\") { return 426; }\n"
+    "        modsecurity off;\n"
+    "        limit_conn pteroprotect_conn 8;\n"
+    "        limit_req zone=pteroprotect_auth burst=20 nodelay;\n"
+    "        proxy_pass http://127.0.0.1:18445;\n"
+    "        proxy_http_version 1.1;\n"
+    "        proxy_set_header Host $host;\n"
+    "        proxy_set_header X-Real-IP $remote_addr;\n"
+    "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+    "        proxy_set_header X-Forwarded-Proto $scheme;\n"
+    "        proxy_set_header Upgrade $http_upgrade;\n"
+    "        proxy_set_header Connection \"upgrade\";\n"
+    "        proxy_set_header Cookie $http_cookie;\n"
+    "        proxy_read_timeout 3600s;\n"
+    "        proxy_send_timeout 3600s;\n"
+    "    }\n\n"
     "    location ^~ /admin/protect {\n"
-    "        limit_conn pteroprotect_conn 30;\n"
-    "        limit_req zone=pteroprotect_req burst=30 nodelay;\n"
+    "        limit_conn pteroprotect_conn 60;\n"
+    "        limit_req zone=pteroprotect_req burst=90;\n"
     "        try_files $uri $uri/ /index.php?$query_string;\n"
     "    }\n\n"
 )
 text = re.sub(
     r'    location \^~ /admin/protect \{\n(?:        .*\n)*?    \}\n\n?',
+    '',
+    text,
+    count=1,
+)
+text = re.sub(
+    r'    location = /admin/protect/terminal/sessions \{\n(?:        .*\n)*?    \}\n\n?',
+    '',
+    text,
+    count=1,
+)
+text = re.sub(
+    r'    location \^~ /admin/protect/terminal/sessions/ \{\n(?:        .*\n)*?    \}\n\n?',
     '',
     text,
     count=1,
@@ -2890,7 +2949,7 @@ PY
 
     if [[ -n "${PANEL_NGINX_CONF}" && -f "${PANEL_NGINX_CONF}" ]]; then
         perl -0pi -e 's/access_log\s+off;/access_log \/var\/log\/nginx\/pteroprotect.access.log combined;/g;' "${PANEL_NGINX_CONF}"
-        perl -0pi -e "s/limit_conn pteroprotect_conn \\d+;/limit_conn pteroprotect_conn ${HTTP_CONN_LIMIT};/g; s/limit_req zone=pteroprotect_req burst=\\d+ nodelay;/limit_req zone=pteroprotect_req burst=${HTTP_REQ_BURST} nodelay;/g;" "${PANEL_NGINX_CONF}"
+        perl -0pi -e "s/limit_conn pteroprotect_conn \\d+;/limit_conn pteroprotect_conn ${HTTP_CONN_LIMIT};/g; s/limit_req zone=pteroprotect_req burst=\\d+(?: nodelay)?;/limit_req zone=pteroprotect_req burst=${HTTP_REQ_BURST};/g;" "${PANEL_NGINX_CONF}"
         if ! grep -q "limit_conn pteroprotect_conn ${HTTP_CONN_LIMIT};" "${PANEL_NGINX_CONF}"; then
             python3 - "${PANEL_NGINX_CONF}" "${HTTP_CONN_LIMIT}" "${HTTP_REQ_BURST}" <<'PY'
 import pathlib
@@ -2904,7 +2963,7 @@ needle = "    location / {\n"
 insert = (
     "    location / {\n"
     f"        limit_conn pteroprotect_conn {conn_limit};\n"
-    f"        limit_req zone=pteroprotect_req burst={req_burst} nodelay;\n"
+    f"        limit_req zone=pteroprotect_req burst={req_burst};\n"
 )
 
 if needle in text and f"limit_conn pteroprotect_conn {conn_limit};" not in text:
@@ -2927,7 +2986,7 @@ pattern = re.compile(
     r'(?:        limit_conn pteroprotect_global_conn \d+;\n)?'
     r'(?:        limit_req zone=pteroprotect_global_req burst=\d+ nodelay;\n)?'
     r'(?:        limit_conn pteroprotect_conn \d+;\n)?'
-    r'(?:        limit_req zone=pteroprotect_req burst=\d+ nodelay;\n)?'
+    r'(?:        limit_req zone=pteroprotect_req burst=\d+(?: nodelay)?;\n)?'
     r'        try_files \$uri \$uri/ /index\.php\?\$query_string;\n'
     r'    \}\n'
 )
@@ -2936,7 +2995,7 @@ replacement = (
     "        auth_request /__pteroprotect/challenge/check;\n"
     "        error_page 401 = @pteroprotect_challenge_redirect;\n"
     f"        limit_conn pteroprotect_conn {conn_limit};\n"
-    f"        limit_req zone=pteroprotect_req burst={req_burst} nodelay;\n"
+    f"        limit_req zone=pteroprotect_req burst={req_burst};\n"
     "        try_files $uri $uri/ /index.php?$query_string;\n"
     "    }\n"
 )

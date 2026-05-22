@@ -93,9 +93,10 @@ type HttpErrorLike = {
     response?: { data?: unknown };
 };
 
-export function httpErrorToHuman(error: HttpErrorLike): string {
-    if (error.response && error.response.data) {
-        let { data } = error.response as { data: unknown };
+export function httpErrorToHuman(error: unknown): string {
+    const httpError = (error || {}) as HttpErrorLike;
+    if (httpError.response && httpError.response.data) {
+        let { data } = httpError.response as { data: unknown };
 
         // Some non-JSON requests can still return the error as a JSON block. In those cases, attempt
         // to parse it into JSON so we can display an actual error.
@@ -118,13 +119,13 @@ export function httpErrorToHuman(error: HttpErrorLike): string {
         }
     }
 
-    return error.message ?? 'Request failed.';
+    return httpError.message ?? 'Request failed.';
 }
 
 export interface FractalResponseData {
     object: string;
     attributes: {
-        [k: string]: unknown;
+        [k: string]: any;
         relationships?: Record<string, FractalResponseData | FractalResponseList | null | undefined>;
     };
 }

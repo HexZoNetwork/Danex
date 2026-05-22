@@ -8,9 +8,10 @@ export type WafRealtimeEvent = {
 type UseWafRealtimeArgs = {
     enabled: boolean;
     onEvent: (event: WafRealtimeEvent) => void;
+    maxRetries?: number;
 };
 
-export default ({ enabled, onEvent }: UseWafRealtimeArgs) => {
+export default ({ enabled, onEvent, maxRetries = 2 }: UseWafRealtimeArgs) => {
     const [isConnected, setConnected] = useState(false);
     const retryRef = useRef(0);
     const timerRef = useRef<number | null>(null);
@@ -29,6 +30,8 @@ export default ({ enabled, onEvent }: UseWafRealtimeArgs) => {
         };
 
         const connect = () => {
+            if (retryRef.current > maxRetries) return;
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const url = `${protocol}//${window.location.host}/waf/live`;
 
@@ -68,6 +71,8 @@ export default ({ enabled, onEvent }: UseWafRealtimeArgs) => {
         const scheduleReconnect = () => {
             clearTimer();
             retryRef.current += 1;
+            if (retryRef.current > maxRetries) return;
+
             const delay = Math.min(30000, 1000 * Math.pow(2, Math.min(5, retryRef.current)));
             timerRef.current = window.setTimeout(connect, delay);
         };
@@ -79,7 +84,7 @@ export default ({ enabled, onEvent }: UseWafRealtimeArgs) => {
             clearTimer();
             if (socket && socket.readyState < 2) socket.close();
         };
-    }, [enabled, onEvent]);
+    }, [enabled, maxRetries, onEvent]);
 
     return { isConnected };
 };

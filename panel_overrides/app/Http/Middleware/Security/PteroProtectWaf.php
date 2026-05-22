@@ -808,6 +808,10 @@ class PteroProtectWaf
 
     private function isStaticAssetPath(string $path): bool
     {
+        if ($path === 'assets/manifest.json' || $path === 'favicons/manifest.json') {
+            return true;
+        }
+
         return preg_match('#\.(?:css|js|mjs|map|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|txt|xml)$#i', $path) === 1;
     }
 

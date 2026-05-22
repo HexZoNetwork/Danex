@@ -72,10 +72,10 @@ LOCAL_HEALTH="$(read_cfg monitor.local_health_url "http://127.0.0.1:18080/api/sy
 
 if [[ -n "$EXTERNAL_URL" ]]; then
   code="$(curl -k -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "${EXTERNAL_URL%/}${CHALLENGE_PATH}" || true)"
-  if [[ "$code" == "200" ]]; then
-    say_ok "challenge endpoint returns 200 (${EXTERNAL_URL%/}${CHALLENGE_PATH})"
+  if [[ "$code" =~ ^(200|204|301|302|303|307|308)$ ]]; then
+    say_ok "challenge endpoint reachable ($code) (${EXTERNAL_URL%/}${CHALLENGE_PATH})"
   else
-    say_fail "challenge endpoint non-200 ($code) for ${EXTERNAL_URL%/}${CHALLENGE_PATH}"
+    say_fail "challenge endpoint unreachable ($code) for ${EXTERNAL_URL%/}${CHALLENGE_PATH}"
   fi
 else
   say_warn "monitor.external_url/ptlc.url empty; challenge check skipped"

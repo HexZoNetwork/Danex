@@ -161,7 +161,7 @@ export default () => {
                 new Promise((resolve) => window.setTimeout(resolve, SPIN_DURATION_MS)),
             ]);
 
-            setReels(Array.isArray(result?.reels) && result.reels.length === 3 ? result.reels : ['?', '?', '?']);
+            setReels(Array.isArray(result?.reels) && result.reels.length === 3 ? result.reels as typeof reels : ['?', '?', '?']);
             setBalance(result.balance_after);
             setLoadError('');
 

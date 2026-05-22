@@ -11,7 +11,7 @@
         "-y",
         "@browsermcp/mcp@0.1.3"
       ],
-      "enabled": false
+      "enabled": true
     },
     "playwright-headless": {
       "type": "local",

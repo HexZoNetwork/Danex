@@ -12,13 +12,17 @@ if [[ ! -d "${INSTALL_DIR}/host_overrides/fail2ban" ]]; then
 fi
 
 install -d -o root -g root -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/tmpfiles.d
-mkdir -p /dev/shm/pteroprotect
+install -d -o root -g www-data -m 2775 /dev/shm/pteroprotect
+install -d -o root -g www-data -m 2770 /dev/shm/pteroprotect/terminal_tickets
+install -d -o root -g root -m 0700 /dev/shm/pteroprotect/terminal_replay
 touch /dev/shm/pteroprotect/waf.log
 touch /dev/shm/pteroprotect/ddos_host.log
 touch /dev/shm/pteroprotect/ddos_host.latest
 
 cat > /etc/tmpfiles.d/pteroprotect.conf <<'EOF'
-d /dev/shm/pteroprotect 0755 root root -
+d /dev/shm/pteroprotect 2775 root www-data -
+d /dev/shm/pteroprotect/terminal_tickets 2770 root www-data -
+d /dev/shm/pteroprotect/terminal_replay 0700 root root -
 f /dev/shm/pteroprotect/waf.log 0644 root root -
 f /dev/shm/pteroprotect/ddos_host.log 0644 root root -
 f /dev/shm/pteroprotect/ddos_host.latest 0644 root root -

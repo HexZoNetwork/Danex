@@ -21,6 +21,9 @@ Environment=PTEROPROTECT_TERMINAL_REPLAY_DIR=/dev/shm/pteroprotect/terminal_repl
 Environment=PTEROPROTECT_TERMINAL_BIND_IP=1
 Environment=PTEROPROTECT_TERMINAL_BIND_UA=1
 Environment=PTEROPROTECT_TERMINAL_AUDIT_DIR=/var/log/pteroprotect/terminal
+ExecStartPre=/usr/bin/install -d -o root -g www-data -m 2770 /dev/shm/pteroprotect/terminal_tickets
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /dev/shm/pteroprotect/terminal_replay
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0750 /var/log/pteroprotect/terminal
 ExecStart=/pteroprotect/scripts/pteroprotect_terminal_helper.py
 Restart=on-failure
 RestartSec=2

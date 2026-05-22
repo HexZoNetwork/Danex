@@ -1576,7 +1576,6 @@ export default () => {
                     channelCount: 1,
                     sampleRate: 48000,
                     sampleSize: 16,
-                    latency: 0.02,
                 },
                 video: false,
             });

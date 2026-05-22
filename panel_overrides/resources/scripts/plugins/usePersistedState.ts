@@ -4,7 +4,7 @@ export function usePersistedState<S = undefined>(
     key: string,
     defaultValue: S
 ): [S | undefined, Dispatch<SetStateAction<S | undefined>>] {
-    const [state, setState] = useState(() => {
+    const [state, setState] = useState<S | undefined>(() => {
         try {
             const item = localStorage.getItem(key);
             if (item === null || item === undefined || item === '') {
