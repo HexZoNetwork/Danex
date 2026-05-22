@@ -19,6 +19,16 @@ import urllib.parse
 import urllib.request
 
 
+CDN_ASN_DENYLIST = {
+    "AS13335",  # Cloudflare
+    "AS20940",  # Akamai
+    "AS16625",  # Akamai
+    "AS54113",  # Fastly
+    "AS60068",  # CDN77
+    "AS200325",  # bunny.net
+}
+
+
 def as_bool(value):
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -114,6 +124,8 @@ def main():
     seen_asns = set()
     for raw in parse_list(net.get("provider_token_bootstrap_asns", "")):
         asn = normalize_asn(raw)
+        if asn in CDN_ASN_DENYLIST:
+            continue
         if asn and asn not in seen_asns:
             seen_asns.add(asn)
             asns.append(asn)
@@ -129,6 +141,8 @@ def main():
         if direct_prefix:
             cidrs.add(direct_prefix)
         for asn in resolved_asns:
+            if asn in CDN_ASN_DENYLIST:
+                continue
             if asn not in seen_asns:
                 seen_asns.add(asn)
                 asns.append(asn)

@@ -45,6 +45,10 @@ def main() -> int:
         assert_contains(text, "2001:db8::/32 1;", "inline IPv6 CIDR should be rendered")
         assert_contains(text, "2001:db8:42::/48 1;", "cache IPv6 CIDR should be rendered")
         assert_contains(text, "~*^Bearer\\s+(ptla_|ptlc_)", "provider token map should only accept panel bearer prefixes")
+        assert_contains(text, "geo $remote_addr $pteroprotect_cdn_proxy_remote_range", "CDN bypass should check direct remote address")
+        assert_contains(text, "geo $realip_remote_addr $pteroprotect_cdn_proxy_realip_range", "CDN bypass should survive real_ip rewrites")
+        assert_contains(text, '"1:0:0" 1;', "provider block must only apply when client is not CDN bypass")
+        assert_contains(text, "173.245.48.0/20 1;", "Cloudflare bypass CIDRs should be built in")
         assert_not_contains(text, "$http_x_api_key", "provider token map should not trust X-API-Key")
         assert_not_contains(text, "$arg_token", "provider token map should not trust query token")
 

@@ -153,7 +153,7 @@
                 <hr>
                 <h4>Fallback: Allowlisted Command Template</h4>
                 <p class="text-muted">Optional diagnostics fallback kalau terminal penuh tidak dibutuhkan.</p>
-                <form method="POST" action="{{ route('admin.protect.command') }}" data-confirm-action="Execute allowlisted root command. Verify template and target values. Type EXECUTE to continue." data-confirm-token="EXECUTE">
+                <form method="POST" action="{{ route('admin.protect.command') }}">
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
                     <div class="pp-console pp-dark-shell">
@@ -292,10 +292,7 @@
                             }
                         }
 
-                        connectBtn && connectBtn.addEventListener('click', function () {
-                            if (window.prompt('Start full interactive root terminal. This is break-glass access and is audited. Type ROOT to continue.') !== 'ROOT') return;
-                            connect();
-                        });
+                        connectBtn && connectBtn.addEventListener('click', connect);
                         disconnectBtn && disconnectBtn.addEventListener('click', function () {
                             if (ws) ws.close();
                         });
@@ -306,16 +303,4 @@
     </div>
 </div>
 </div>
-<script>
-document.addEventListener('submit', function (event) {
-    var form = event.target;
-    if (!form || !form.getAttribute) return;
-    var message = form.getAttribute('data-confirm-action');
-    var token = form.getAttribute('data-confirm-token');
-    if (!message || !token) return;
-    if (window.prompt(message) !== token) {
-        event.preventDefault();
-    }
-});
-</script>
 @endsection

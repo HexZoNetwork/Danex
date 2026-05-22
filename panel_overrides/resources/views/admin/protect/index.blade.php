@@ -115,6 +115,20 @@
             </div>
         </div>
     </div>
+    <div class="col-md-6">
+        <div class="box box-danger">
+            <div class="box-header with-border"><h3 class="box-title">Offline Server Cleanup</h3></div>
+            <div class="box-body">
+                <p class="text-danger">Deletes all servers whose Wings power state is offline, not only Create Panel or madeinweb servers.</p>
+                <p class="text-muted">After offline servers are gone, every non-admin user with no remaining servers is deleted. Admin users are never deleted.</p>
+                <form method="POST" action="{{ route('admin.protect.create_panel_cleanup') }}">
+                    @csrf
+                    <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
+                    <button type="submit" class="btn btn-danger">Clear Offline Servers & Empty Owners</button>
+                </form>
+            </div>
+        </div>
+    </div>
 </div>
 
 <div class="row">

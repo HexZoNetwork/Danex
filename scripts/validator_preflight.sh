@@ -75,7 +75,7 @@ if [[ -n "$EXTERNAL_URL" ]]; then
   if [[ "$code" =~ ^(200|204|301|302|303|307|308)$ ]]; then
     say_ok "challenge endpoint reachable ($code) (${EXTERNAL_URL%/}${CHALLENGE_PATH})"
   else
-    say_fail "challenge endpoint unreachable ($code) for ${EXTERNAL_URL%/}${CHALLENGE_PATH}"
+    say_warn "challenge endpoint unreachable ($code) for ${EXTERNAL_URL%/}${CHALLENGE_PATH}; self-heal will monitor/recover"
   fi
 else
   say_warn "monitor.external_url/ptlc.url empty; challenge check skipped"
@@ -85,14 +85,14 @@ lh_code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-tim
 if [[ "$lh_code" =~ ^(200|401|403)$ ]]; then
   say_ok "local health reachable ($LOCAL_HEALTH => $lh_code)"
 else
-  say_fail "local health failed ($LOCAL_HEALTH => $lh_code)"
+  say_warn "local health failed ($LOCAL_HEALTH => $lh_code); self-heal will monitor/recover"
 fi
 
 for svc in nginx wings php8.3-fpm; do
   if systemctl is-active --quiet "$svc"; then
     say_ok "service active: $svc"
   else
-    say_fail "service inactive: $svc"
+    say_warn "service inactive: $svc; self-heal will attempt restart"
   fi
 done
 

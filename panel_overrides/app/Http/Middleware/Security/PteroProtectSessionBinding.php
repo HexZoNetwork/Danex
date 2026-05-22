@@ -31,6 +31,11 @@ class PteroProtectSessionBinding
         $ipChallengeKey = $this->ipChallengeKey($request);
         if ($ipChallengeKey !== null && (bool) Cache::get($ipChallengeKey, false)) {
             if (!$this->hasClearanceCookie($request)) {
+                if (!$this->isChallengeEnabled()) {
+                    Cache::forget($ipChallengeKey);
+                    return $next($request);
+                }
+
                 return $this->challengeResponse($request);
             }
 
@@ -45,6 +50,15 @@ class PteroProtectSessionBinding
         // If this session is marked for rebind, force challenge until clearance cookie exists.
         if ((bool) Cache::get($rebindKey, false)) {
             if (!$this->hasClearanceCookie($request)) {
+                if (!$this->isChallengeEnabled()) {
+                    Cache::forget($rebindKey);
+                    if ($ipChallengeKey !== null) {
+                        Cache::forget($ipChallengeKey);
+                    }
+
+                    return $next($request);
+                }
+
                 return $this->challengeResponse($request);
             }
 
@@ -102,6 +116,16 @@ class PteroProtectSessionBinding
         }
 
         $this->auditMismatch($request, 'clearance_required', $bound, $current, $clearance['reason']);
+        if (!$this->isChallengeEnabled()) {
+            Cache::put($cacheKey, $current, $this->ttlSeconds());
+            Cache::forget($rebindKey);
+            if ($ipChallengeKey !== null) {
+                Cache::forget($ipChallengeKey);
+            }
+
+            return $next($request);
+        }
+
         Cache::put($rebindKey, true, $this->ttlSeconds());
         Cache::forget($cacheKey);
         if ($ipChallengeKey !== null) {
@@ -261,6 +285,33 @@ class PteroProtectSessionBinding
         return max(300, $minutes * 60);
     }
 
+    private function isChallengeEnabled(): bool
+    {
+        $paths = ['/pteroprotect/config.json', '/root/Danex/config.json'];
+        foreach ($paths as $path) {
+            if (!is_file($path)) {
+                continue;
+            }
+
+            $raw = @file_get_contents($path);
+            if (!is_string($raw) || $raw === '') {
+                continue;
+            }
+
+            $config = json_decode($raw, true);
+            if (!is_array($config)) {
+                continue;
+            }
+
+            $network = $config['network'] ?? $config;
+            if (is_array($network) && array_key_exists('waf_challenge_enabled', $network)) {
+                return (bool) $network['waf_challenge_enabled'];
+            }
+        }
+
+        return true;
+    }
+
     private function challengeUrl(Request $request): string
     {
         $rd = '/' . ltrim((string) $request->path(), '/');
@@ -275,8 +326,9 @@ class PteroProtectSessionBinding
     private function challengeResponse(Request $request, string $reason = 'missing_cookie'): Response
     {
         $challengeUrl = $this->challengeUrl($request);
-        $attempts = $this->recordClearanceAttempt($request);
-        $showReset = $attempts >= 3;
+        $isMissingCookie = $reason === 'missing_cookie' || $reason === 'no_cookie_or_invalid';
+        $attempts = $isMissingCookie ? 0 : $this->recordClearanceAttempt($request);
+        $showReset = !$isMissingCookie && $attempts >= 6;
         $resetUrl = $this->clearanceResetUrl($request);
         $errorUrl = $this->clearanceErrorUrl($request);
 

@@ -67,7 +67,7 @@ Route::get('/__pteroprotect/session/clearance-error', function (Request $request
         </section>
         <section class="body">
             <div class="status"><span class="dot"></span><strong>I got clearance error</strong></div>
-            <p>Your browser passed through the same IP clearance loop three times within 30 minutes. Resetting clears the stale session binding and starts a clean challenge.</p>
+            <p>Your browser hit repeated verified clearance mismatches. Resetting clears the stale session binding and starts a clean challenge.</p>
             <p>This does not log you out unless your browser session is already invalid.</p>
             <div class="actions">
                 <a class="primary" href="{$resetUrl}">Reset Clearance</a>

@@ -270,7 +270,7 @@ def main() -> int:
         challenge_ok = True
         if challenge_url:
             okc, codec, _, _ = http_probe(challenge_url, timeout_sec=6.0)
-            challenge_ok = okc and codec == 200
+            challenge_ok = okc and codec in (200, 204, 301, 302, 303, 307, 308)
 
         window.append((ts, external_ok and challenge_ok, external_latency))
         window = [x for x in window if (ts - x[0]) <= 30]
