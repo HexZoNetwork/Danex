@@ -7,6 +7,7 @@ return [
         'mode_flag' => env('PTEROPROTECT_MODE_FLAG', '/pteroprotect/runtime/mode.json'),
         // Keep default log path aligned with fail2ban/check.sh expectations.
         'log_file' => env('PTEROPROTECT_WAF_LOG', '/dev/shm/pteroprotect/waf.log'),
+        'structured_log_file' => env('PTEROPROTECT_WAF_STRUCTURED_LOG', '/pteroprotect/runtime/waf_events.jsonl'),
 
         'trust_private_ranges' => env('PTEROPROTECT_WAF_TRUST_PRIVATE_RANGES', false),
         'trust_private_proxy_ranges' => env('PTEROPROTECT_WAF_TRUST_PRIVATE_PROXY_RANGES', false),

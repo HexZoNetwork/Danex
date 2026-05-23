@@ -22,6 +22,13 @@ def main() -> int:
     assert_contains(waf, "hasExcessiveCookies($request, $config)", "WAF must bound cookie count and size")
     assert_contains(waf, "isRateLimitedBySubject($request, $category", "WAF must include subject/session rate buckets")
     assert_contains(waf, "PteroProtectClearanceToken::isValid", "subject buckets must only trust valid clearance tokens")
+    assert_contains(waf, "logStructuredDecision($config", "WAF must emit structured decision telemetry")
+    assert_contains(waf, "logRateLimitEvent($resilienceConfig, 'subject'", "WAF must emit subject rate-limit telemetry")
+    assert_contains(waf, "logRateLimitEvent($resilienceConfig, 'fingerprint_cluster'", "WAF must emit fingerprint rate-limit telemetry")
+    assert_contains(waf, "isLightweightHydrationPath($path)", "WAF must avoid shedding lightweight panel hydration endpoints")
+    assert_contains(waf, "api/client/ads", "ads hydration endpoint must remain available during WAF recovery")
+    assert_contains(waf, "api/client/chat/notifications", "chat notification polling must remain available during WAF recovery")
+    assert_contains(waf, "api/client/servers/[^/]+/websocket", "websocket metadata endpoint must be treated as core GET flow")
 
     for key in (
         "allowed_methods",
@@ -29,6 +36,7 @@ def main() -> int:
         "max_cookie_bytes",
         "subject_limit_enabled",
         "websocket_subject_limit",
+        "structured_log_file",
     ):
         assert_contains(cfg, key, f"config must expose {key}")
 

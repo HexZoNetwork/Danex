@@ -181,6 +181,7 @@ class PteroProtectWaf
         if ($danexcSoftAllow) {
             if ($this->isRateLimitedDanexcStatus($request, $mode, $config)) {
                 $this->logDecision($config, 'deny', "danexc-status-soft-cap:{$mode}", $ip, $path, $userAgent);
+                $this->logRateLimitEvent($resilienceConfig, 'danexc_status', 'api', $mode, $path, ['soft_allow' => true]);
                 return $this->blockedResponse($request, 429, 'Too many status polling requests.');
             }
 
@@ -206,26 +207,31 @@ class PteroProtectWaf
 
         if ($this->isRateLimitedBySubject($request, $category, $lockdown, $mode, $config, $decay)) {
             $this->logDecision($config, 'deny', "subject:{$category}:{$mode}", $ip, $path, $userAgent);
+            $this->logRateLimitEvent($resilienceConfig, 'subject', $category, $mode, $path);
             return $this->blockedResponse($request, 429, 'Too many requests from this session.');
         }
 
         if ($this->isRateLimited("pteroprotect:waf:ip:{$category}:{$ip}", $perIpLimit, $decay)) {
             $this->logDecision($config, 'deny', "per-ip:{$category}:{$mode}", $ip, $path, $userAgent);
+            $this->logRateLimitEvent($resilienceConfig, 'ip', $category, $mode, $path);
             return $this->blockedResponse($request, 429, 'Too many requests.');
         }
 
         if ($this->isRateLimited("pteroprotect:waf:global:{$category}", $globalLimit, $decay)) {
             $this->logDecision($config, 'deny', "global:{$category}:{$mode}", $ip, $path, $userAgent);
+            $this->logRateLimitEvent($resilienceConfig, 'global', $category, $mode, $path);
             return $this->blockedResponse($request, 429, 'Server is under heavy load.');
         }
 
         if ($this->isRateLimitedByFingerprintCluster($request, $category, $lockdown, $mode, $config, $decay)) {
             $this->logDecision($config, 'deny', "fingerprint-cluster:{$category}:{$mode}", $ip, $path, $userAgent);
+            $this->logRateLimitEvent($resilienceConfig, 'fingerprint_cluster', $category, $mode, $path);
             return $this->blockedResponse($request, 429, 'Too many similar automated requests detected.');
         }
 
         if ($this->isRateLimitedByClearance($request, $category, $lockdown, $mode, $config, $decay)) {
             $this->logDecision($config, 'deny', "clearance:{$category}:{$mode}", $ip, $path, $userAgent);
+            $this->logRateLimitEvent($resilienceConfig, 'clearance', $category, $mode, $path);
             return $this->blockedResponse($request, 429, 'Too many requests from this clearance session.');
         }
 
@@ -530,6 +536,10 @@ class PteroProtectWaf
             return false;
         }
 
+        if ($this->isLightweightHydrationPath($path)) {
+            return false;
+        }
+
         $check = [
             'chat' => '#^api/client/chat(?:/|$)#i',
             'ads' => '#^api/client/ads(?:/|$)#i',
@@ -563,6 +573,10 @@ class PteroProtectWaf
             return true;
         }
 
+        if (strtoupper($request->method()) === 'GET' && preg_match('#^api/client/servers/[^/]+/websocket(?:/|$)#i', $path) === 1) {
+            return true;
+        }
+
         // State-changing core auth/profile operations should remain available when possible.
         return strtoupper($request->method()) !== 'GET'
             && preg_match('#^api/client/account/(password|profile|email)(?:/|$)#i', $path) === 1;
@@ -571,6 +585,10 @@ class PteroProtectWaf
     private function shouldDegradeFromCircuit(Request $request, string $path, array $circuits, string $stage): bool
     {
         if ($stage === 'normal') {
+            return false;
+        }
+
+        if (strtoupper($request->method()) === 'GET' && $this->isLightweightHydrationPath($path)) {
             return false;
         }
 
@@ -603,6 +621,12 @@ class PteroProtectWaf
         }
 
         return false;
+    }
+
+    private function isLightweightHydrationPath(string $path): bool
+    {
+        return preg_match('#^api/client/ads(?:/|$)#i', $path) === 1
+            || preg_match('#^api/client/chat/notifications(?:/|$)#i', $path) === 1;
     }
 
     private function isRateLimitedByAdaptiveBudget(Request $request, string $category, array $budgets): bool
@@ -751,6 +775,31 @@ class PteroProtectWaf
         ], $extra);
 
         @file_put_contents($file, json_encode($payload, JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND | LOCK_EX);
+    }
+
+    private function logRateLimitEvent(
+        array $resilienceConfig,
+        string $scope,
+        string $category,
+        string $mode,
+        string $path,
+        array $extra = []
+    ): void {
+        $this->logResilienceEvent(
+            $resilienceConfig,
+            'l7',
+            'waf',
+            'rate_limit_' . $scope,
+            0.68,
+            0.7,
+            'global',
+            array_merge([
+                'path' => $path,
+                'category' => $category,
+                'mode' => $mode,
+                'scope' => $scope,
+            ], $extra)
+        );
     }
 
     private function categoryForPath(string $path): string
@@ -1531,6 +1580,8 @@ class PteroProtectWaf
 
     private function logDecision(array $config, string $action, string $reason, string $ip, string $path, string $userAgent): void
     {
+        $this->logStructuredDecision($config, $action, $reason, $ip, $path, $userAgent);
+
         $file = (string) ($config['log_file'] ?? '');
         if ($file === '') {
             return;
@@ -1552,6 +1603,30 @@ class PteroProtectWaf
         );
 
         @file_put_contents($file, $line, FILE_APPEND | LOCK_EX);
+    }
+
+    private function logStructuredDecision(array $config, string $action, string $reason, string $ip, string $path, string $userAgent): void
+    {
+        $file = trim((string) ($config['structured_log_file'] ?? ''));
+        if ($file === '') {
+            return;
+        }
+
+        $dir = dirname($file);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+
+        $payload = [
+            'ts' => time(),
+            'action' => $action,
+            'reason' => $reason,
+            'path' => '/' . ltrim($path, '/'),
+            'ip_hash' => hash('sha256', $ip),
+            'ua_family' => $this->uaFamily($userAgent),
+        ];
+
+        @file_put_contents($file, json_encode($payload, JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND | LOCK_EX);
     }
 
     private function isPrivateOrReservedIp(string $ip): bool

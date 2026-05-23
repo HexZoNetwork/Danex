@@ -54,6 +54,7 @@ class SetSecurityHeaders
             'https://www.google.com',
             'https://www.gstatic.com',
             'https://recaptcha.net',
+            'https://cloudflareinsights.com',
         ];
 
         foreach (array_filter([config('app.url'), $request->getSchemeAndHttpHost()]) as $url) {
@@ -85,7 +86,7 @@ class SetSecurityHeaders
         $csp = implode('; ', [
             "default-src 'self'",
             // Existing templates still use inline scripts/styles. Keep functionality while blocking eval and broad third-party injection.
-            "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.google.com https://www.gstatic.com https://recaptcha.net",
+            "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.google.com https://www.gstatic.com https://recaptcha.net https://static.cloudflareinsights.com",
             "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
             'img-src ' . implode(' ', $imageSources),
             "font-src 'self' data: https://cdnjs.cloudflare.com",

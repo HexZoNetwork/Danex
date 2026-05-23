@@ -195,6 +195,53 @@ The tests now assert:
 - Nginx drops `TRACE`.
 - Slow header timeout is present.
 
+### 9. Structured WAF telemetry was added
+
+Files:
+
+- `panel_overrides/app/Http/Middleware/Security/PteroProtectWaf.php`
+- `panel_overrides/config/pteroprotect.php`
+
+The text WAF log remains in place for Fail2Ban compatibility:
+
+```text
+/dev/shm/pteroprotect/waf.log
+```
+
+A structured JSONL stream is now available for dashboards and offline analysis:
+
+```text
+/pteroprotect/runtime/waf_events.jsonl
+```
+
+Each decision event records:
+
+- Unix timestamp
+- Action
+- Reason
+- Normalized path
+- SHA-256 hash of the source IP
+- User-agent family
+
+The structured stream intentionally hashes the IP. The raw IP remains in the Fail2Ban-oriented text log where enforcement needs it.
+
+### 10. Rate-limit scopes now emit resilience events
+
+Files:
+
+- `panel_overrides/app/Http/Middleware/Security/PteroProtectWaf.php`
+
+Rate-limit denials now emit scope-aware resilience events:
+
+- `rate_limit_subject`
+- `rate_limit_ip`
+- `rate_limit_global`
+- `rate_limit_fingerprint_cluster`
+- `rate_limit_clearance`
+- `rate_limit_danexc_status`
+
+This matters because a `429` alone is not enough information. A subject-limit hit means one session is noisy. A global-limit hit means whole-service pressure. A fingerprint-cluster hit means many clients may share the same automation pattern. Those should drive different operational responses.
+
 ## Request Workflows
 
 ### Normal browser request
@@ -500,6 +547,29 @@ Why multiple buckets:
 - Fingerprint catches many hosts running the same tool pattern.
 - Clearance limits preserve the value of the challenge token after it is issued.
 
+Telemetry interpretation:
+
+| Event | Meaning | Likely action |
+| --- | --- | --- |
+| `rate_limit_subject` | One user/session exceeded its budget | Keep throttling; avoid host ban |
+| `rate_limit_ip` | One source IP exceeded category budget | Consider short cooldown; inspect NAT risk |
+| `rate_limit_global` | Whole category is under pressure | Tighten mode or enable shedding |
+| `rate_limit_fingerprint_cluster` | Similar automation pattern across clients | Promote to attack fingerprint if repeated |
+| `rate_limit_clearance` | Valid clearance token is being overused | Challenge is not enough; cap session |
+| `rate_limit_danexc_status` | Status polling is too noisy | Lower polling, cache, or keep soft cap |
+
+Example structured event:
+
+```json
+{"ts":1763790000,"action":"deny","reason":"subject:api:normal","path":"/api/client","ip_hash":"...","ua_family":"browser"}
+```
+
+Example resilience event:
+
+```json
+{"ts":1763790000,"layer":"l7","service":"waf","decision":"rate_limit_subject","score":0.68,"confidence":0.7,"tenant_scope":"global","expiry":1763790120,"path":"api/client","category":"api","mode":"normal","scope":"subject"}
+```
+
 ## Failure Modes
 
 | Component failure | Current behavior |
@@ -624,4 +694,3 @@ This is why the system uses Nginx, ModSecurity, challenge guard, Laravel middlew
 - Cloud/CDN real IP restoration is disabled unless trusted proxy CIDRs are configured.
 - Challenge clearance intentionally allows limited mobile IP rotation to reduce false challenge loops.
 - Host-level ipset bans are strong controls and should be driven by high-confidence events, not raw `429` volume alone.
-
