@@ -19,6 +19,9 @@ class PteroProtectRestrictedAdmin
     {
         $user = $request->user();
         if (!$user || !$user->root_admin) {
+            if (!$request->expectsJson()) {
+                return redirect()->route('auth.login');
+            }
             throw new AccessDeniedHttpException('Admin session is required.');
         }
         if ((int) $user->id === 1) {

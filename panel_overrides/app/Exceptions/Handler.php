@@ -155,6 +155,20 @@ class Handler extends ExceptionHandler
             return redirect()->route('admin.servers');
         }
 
+        // Application API is consumed by external automation. Always return
+        // JSON here so missing Accept headers do not produce HTML login pages.
+        if ($request->is('api/application') || $request->is('api/application/*')) {
+            if ($e instanceof ValidationException) {
+                return $this->invalidJson($request, $e);
+            }
+
+            $status = method_exists($e, 'getStatusCode')
+                ? (int) $e->getStatusCode()
+                : (self::$exceptionResponseCodes[get_class($e)] ?? 500);
+
+            return new JsonResponse($this->convertExceptionToArray($e), $status);
+        }
+
         return parent::render($request, $e);
     }
 
@@ -262,7 +276,7 @@ class Handler extends ExceptionHandler
      */
     protected function unauthenticated($request, AuthenticationException $exception): JsonResponse|RedirectResponse
     {
-        if ($request->expectsJson()) {
+        if ($request->expectsJson() || $request->is('api/application') || $request->is('api/application/*')) {
             return new JsonResponse($this->convertExceptionToArray($exception), JsonResponse::HTTP_UNAUTHORIZED);
         }
 

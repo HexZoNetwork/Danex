@@ -14,6 +14,10 @@ class PteroProtectSessionBinding
 {
     public function handle(Request $request, Closure $next): Response
     {
+        if (!$this->isChallengeEnabled()) {
+            return $next($request);
+        }
+
         if ($this->shouldBypass($request)) {
             return $next($request);
         }

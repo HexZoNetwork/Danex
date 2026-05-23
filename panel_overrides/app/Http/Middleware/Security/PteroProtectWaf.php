@@ -21,7 +21,7 @@ class PteroProtectWaf
         $ip = trim((string) $request->ip());
         $path = ltrim($request->path(), '/');
 
-        if ($this->isRemoteApiPath($path)) {
+        if ($this->isRemoteApiPath($path) || $this->isApplicationApiPath($path)) {
             return $next($request);
         }
 
@@ -571,10 +571,6 @@ class PteroProtectWaf
         if (preg_match('#^api/client/servers/[^/]+/(resources|websocket|files|backups|network|power|command)(?:/|$)#i', $path) === 1) {
             $deps[] = 'wings';
         }
-        if (preg_match('#^api/(client|application)(?:/|$)#i', $path) === 1) {
-            $deps[] = 'challenge';
-        }
-
         if (empty($deps)) {
             return false;
         }
@@ -775,6 +771,10 @@ class PteroProtectWaf
             return true;
         }
 
+        if ($this->isApplicationApiPath($path)) {
+            return true;
+        }
+
         return false;
     }
 
@@ -823,6 +823,11 @@ class PteroProtectWaf
     private function isRemoteApiPath(string $path): bool
     {
         return preg_match('#^api/remote(?:/|$)#i', $path) === 1;
+    }
+
+    private function isApplicationApiPath(string $path): bool
+    {
+        return preg_match('#^api/application(?:/|$)#i', $path) === 1;
     }
 
     private function shouldBypassApiRateLimit(Request $request, string $category, bool $lockdown, string $mode, array $config): bool

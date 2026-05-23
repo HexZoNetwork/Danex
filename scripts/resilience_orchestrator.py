@@ -876,7 +876,8 @@ def main() -> int:
         control_plane_url = str(net.get("control_plane_url", "http://127.0.0.1:18446")).rstrip("/")
 
         ok_local, code_local, local_rtt = http_probe(local_health_url)
-        ok_chal, code_chal, chal_rtt = http_probe(challenge_url) if challenge_url else (False, 0, 0.0)
+        challenge_enabled = as_bool(net.get("waf_challenge_enabled", False), False) or as_bool(net.get("provider_token_gate_enabled", False), False)
+        ok_chal, code_chal, chal_rtt = http_probe(challenge_url) if challenge_url and challenge_enabled else (True, 204, 0.0)
         ok_nodes, code_nodes, nodes_rtt = http_probe(control_plane_url + "/nodes")
         redis_url = str(net.get("redis_url", "") or "").strip()
         redis_rtt = redis_ping_ms(redis_url)
@@ -885,7 +886,7 @@ def main() -> int:
 
         dep_scores = {
             "db": score_from_latency(ok_local, code_local, local_rtt, [200, 401, 403], 350.0, 2000.0),
-            "challenge": score_from_latency(ok_chal, code_chal, chal_rtt, [200], 400.0, 2500.0) if challenge_url else 0.85,
+            "challenge": score_from_latency(ok_chal, code_chal, chal_rtt, [200, 204], 400.0, 2500.0) if challenge_url else 0.85,
             "wings": score_from_latency(ok_nodes, code_nodes, nodes_rtt, [200], 300.0, 2000.0),
             "redis": clamp01(1.0 - max(0.0, (redis_rtt - 50.0) / 900.0)) if redis_rtt > 0 else 0.2,
             "queue": clamp01(1.0 - max(0.0, (queue_age - 5.0) / 120.0)),

@@ -122,11 +122,16 @@ def checkhost_probe(url: str, max_nodes: int = 8, zero_threshold: int = 3, api_u
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="ignore"))
 
+        raw_results = data.get("results", [])
+        results = raw_results if isinstance(raw_results, list) else []
+        if max_nodes > 0:
+            results = results[:max_nodes]
+
         latency_info = data.get("latency", {}) if isinstance(data.get("latency"), dict) else {}
         latency = as_float(latency_info.get("avg_ms", 0.0), 0.0)
         if latency <= 0:
             result_latencies = []
-            for item in data.get("results", []) if isinstance(data.get("results", []), list) else []:
+            for item in results:
                 if isinstance(item, dict):
                     result_latencies.append(as_float(item.get("latency_ms", 0.0), 0.0))
             result_latencies = [value for value in result_latencies if value > 0]
@@ -137,6 +142,29 @@ def checkhost_probe(url: str, max_nodes: int = 8, zero_threshold: int = 3, api_u
         success = as_int(data.get("success", 0), 0)
         failed = as_int(data.get("failed", 0), 0)
         tries = as_int(data.get("tries", success + failed), success + failed)
+
+        if results:
+            healthy_codes = {200, 204, 301, 302, 303, 307, 308}
+            node_success = 0
+            node_failed = 0
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                code = as_int(item.get("http_status", 0), 0)
+                if bool(item.get("ok")) and code in healthy_codes:
+                    node_success += 1
+                else:
+                    node_failed += 1
+
+            if node_success + node_failed > 0:
+                success = node_success
+                failed = node_failed
+                tries = node_success + node_failed
+                ok = node_success > 0
+                status = "UP" if ok else "DOWN"
+
+        if tries >= zero_threshold and success <= 0:
+            return False, latency, f"mywebcheck status={status} success={success}/{tries} failed={failed}"
 
         if not ok or status != "UP" or success <= 0:
             return False, latency, f"mywebcheck status={status} success={success}/{tries} failed={failed}"
