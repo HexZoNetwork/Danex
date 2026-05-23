@@ -6,8 +6,10 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\Response;
 use Pterodactyl\Models\Server;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
 use Pterodactyl\Facades\Activity;
 use Pterodactyl\Exceptions\Http\HttpForbiddenException;
+use Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException;
 use Pterodactyl\Services\Nodes\NodeJWTService;
 use Pterodactyl\Repositories\Wings\DaemonFileRepository;
 use Pterodactyl\Transformers\Api\Client\FileObjectTransformer;
@@ -174,6 +176,36 @@ class FileController extends ClientApiController
         }
     }
 
+    /**
+     * Wings rejects rename payloads that contain traversal segments, even when
+     * the panel-normalized target remains inside /home/container. Send a clean
+     * root-relative payload so moving from a child directory to ../ works
+     * without weakening Laravel-side path checks.
+     */
+    private function normalizeRenameFilesForDaemon(?string $root, array $files): array
+    {
+        $normalized = [];
+
+        foreach ($files as $file) {
+            if (!is_array($file)) {
+                continue;
+            }
+
+            $from = $this->toDaemonPath($this->joinPath($root, (string) ($file['from'] ?? '')));
+            $toInput = (string) ($file['to'] ?? '');
+            $to = str_starts_with(str_replace('\\', '/', $toInput), '/')
+                ? $this->toDaemonPath($toInput)
+                : $this->toDaemonPath($this->joinPath($root, $toInput));
+
+            $normalized[] = [
+                'from' => ltrim($from, '/'),
+                'to' => ltrim($to, '/'),
+            ];
+        }
+
+        return $normalized;
+    }
+
     public function directory(ListFilesRequest $request, Server $server): array
     {
         $this->assertAllowedPath($request->get('directory') ?? '/');
@@ -264,15 +296,34 @@ class FileController extends ClientApiController
     public function rename(RenameFileRequest $request, Server $server): JsonResponse
     {
         $this->assertAllowedFiles($request->input('root'), $request->input('files'));
-        $root = $this->toDaemonPath($request->input('root'));
+        $root = '/';
+        $files = $this->normalizeRenameFilesForDaemon($request->input('root'), $request->input('files'));
 
-        $this->fileRepository
-            ->setServer($server)
-            ->renameFiles($root, $request->input('files'));
+        try {
+            $this->fileRepository
+                ->setServer($server)
+                ->renameFiles($root, $files);
+        } catch (DaemonConnectionException $exception) {
+            $previous = $exception->getPrevious();
+            $response = method_exists($previous, 'getResponse') ? $previous->getResponse() : null;
+
+            Log::warning('PteroProtect file rename rejected by daemon', [
+                'server_uuid' => $server->uuid,
+                'user_id' => $request->user()?->id,
+                'input_root' => $request->input('root'),
+                'daemon_root' => $root,
+                'files' => $files,
+                'status' => $exception->getStatusCode(),
+                'request_id' => method_exists($exception, 'getRequestId') ? $exception->getRequestId() : null,
+                'daemon_body' => $response ? substr($response->getBody()->__toString(), 0, 500) : null,
+            ]);
+
+            throw $exception;
+        }
 
         Activity::event('server:file.rename')
             ->property('directory', $root)
-            ->property('files', $request->input('files'))
+            ->property('files', $files)
             ->log();
 
         return new JsonResponse([], Response::HTTP_NO_CONTENT);
