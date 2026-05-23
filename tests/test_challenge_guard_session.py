@@ -47,6 +47,7 @@ def wait_ready(port: int) -> None:
 def start_guard(root: pathlib.Path, enabled: bool = True):
     port = free_port()
     config = root / f"config-{port}.json"
+    attack_rules = root / "attack_rules.tsv"
     config.write_text(json.dumps({
         "database": {"host": "127.0.0.1", "user": "", "password": "", "name": ""},
         "network": {
@@ -56,22 +57,28 @@ def start_guard(root: pathlib.Path, enabled: bool = True):
             "waf_challenge_secret": "test-secret",
             "waf_challenge_type": 1,
             "provider_token_gate_enabled": False,
+            "runtime_attack_rules_enabled": True,
+            "runtime_attack_rules_file": str(attack_rules),
+            "runtime_attack_rule_min_confidence": 72,
         },
     }), encoding="utf-8")
     env = os.environ.copy()
     env["PTEROPROTECT_CONFIG_PATH"] = str(config)
     proc = subprocess.Popen([str(BINARY)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     wait_ready(port)
-    return proc, port
+    return proc, port, attack_rules
 
 
-def stop_guard(proc) -> None:
+def stop_guard(proc) -> str:
     proc.terminate()
     try:
         proc.wait(timeout=3)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(timeout=3)
+    if proc.stderr is None:
+        return ""
+    return proc.stderr.read().decode("utf-8", errors="replace")
 
 
 def assert_equal(actual: int, expected: int, message: str) -> None:
@@ -85,9 +92,14 @@ def main() -> int:
         return 0
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
-        proc, port = start_guard(root, True)
+        proc, port, attack_rules = start_guard(root, True)
         try:
             browser = {"User-Agent": "Mozilla/5.0"}
+            now = int(time.time())
+            attack_rules.write_text(
+                f"GET|/protected|5xx|browser\t90\t30\tunit-test\t{now + 60}\t{now}\n",
+                encoding="utf-8",
+            )
             assert_equal(request(port, "/check", browser), 401, "missing clearance cookie must fail")
             assert_equal(
                 request(port, "/check", {"User-Agent": "Mozilla/5.0", "Cookie": "pterodactyl_session=fake"}),
@@ -99,13 +111,25 @@ def main() -> int:
                 401,
                 "malformed clearance cookie must fail",
             )
+            assert_equal(
+                request(port, "/check-web", {
+                    "User-Agent": "Mozilla/5.0",
+                    "X-PteroProtect-Original-URI": "/protected?cache=1",
+                    "X-PteroProtect-Original-Method": "GET",
+                }),
+                401,
+                "active runtime attack rule must require web challenge",
+            )
             assert_equal(request(port, "/new", {"User-Agent": "curl/8.0"}), 401, "non-browser challenge issuance must fail")
         finally:
-            stop_guard(proc)
+            stderr = stop_guard(proc)
+        if "runtime_attack_rule_challenge" not in stderr:
+            raise AssertionError(f"runtime attack rule challenge was not logged; stderr={stderr[-2000:]}")
 
-        proc, port = start_guard(root, False)
+        proc, port, _attack_rules = start_guard(root, False)
         try:
             assert_equal(request(port, "/check"), 204, "disabled challenge check should pass")
+            assert_equal(request(port, "/page?rd=/"), 204, "disabled challenge page should not redirect-loop")
         finally:
             stop_guard(proc)
 

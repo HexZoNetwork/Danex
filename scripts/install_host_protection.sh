@@ -91,6 +91,8 @@ SSH_GLOBAL_NEW_PER_SEC="${PTEROPROTECT_SSH_GLOBAL_NEW_PER_SEC:-90}"
 SSH_GLOBAL_NEW_BURST="${PTEROPROTECT_SSH_GLOBAL_NEW_BURST:-220}"
 TCP_GLOBAL_NEW_PER_SEC="${PTEROPROTECT_TCP_GLOBAL_NEW_PER_SEC:-1200}"
 TCP_GLOBAL_NEW_BURST="${PTEROPROTECT_TCP_GLOBAL_NEW_BURST:-2400}"
+UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN="${PTEROPROTECT_UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN:-12}"
+UNBLOCK_PORTAL_NEW_PER_IP_BURST="${PTEROPROTECT_UNBLOCK_PORTAL_NEW_PER_IP_BURST:-24}"
 IPSET_RUNTIME_OK=1
 
 have_cmd() {
@@ -552,12 +554,18 @@ prune_unblock_portal_accept_rule_v4() {
     while iptables -C INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1; do
         iptables -D INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1 || break
     done
+    while iptables -C INPUT -p tcp --dport "${port}" -m conntrack --ctstate NEW -m hashlimit --hashlimit-name pteroprotect_unblock_v4 --hashlimit-above "${UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN}"/minute --hashlimit-burst "${UNBLOCK_PORTAL_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp --dport "${port}" -m conntrack --ctstate NEW -m hashlimit --hashlimit-name pteroprotect_unblock_v4 --hashlimit-above "${UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN}"/minute --hashlimit-burst "${UNBLOCK_PORTAL_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP >/dev/null 2>&1 || break
+    done
 }
 
 ensure_unblock_portal_accept_rule_v4() {
     local port="$1"
     prune_unblock_portal_accept_rule_v4 "${port}"
     iptables -I INPUT 1 -p tcp --dport "${port}" -j ACCEPT
+    iptables -I INPUT 1 -p tcp --dport "${port}" -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_unblock_v4 --hashlimit-above "${UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN}"/minute \
+        --hashlimit-burst "${UNBLOCK_PORTAL_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
 }
 
 ensure_local_wings_access_rules_v4() {
@@ -897,13 +905,8 @@ if [[ -n "${WINGS_GUARD_PORTS}" ]]; then
     fi
     if have_cmd ipset; then
         iptables -A "${WINGS_GUARD_CHAIN4}" -m set --match-set "${IPSET4}" src -j DROP
-        iptables -A "${WINGS_GUARD_CHAIN4}" -p tcp --syn -m connlimit --connlimit-above "${WINGS_GUARD_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j SET --add-set "${IPSET4}" src
     fi
     iptables -A "${WINGS_GUARD_CHAIN4}" -p tcp --syn -m connlimit --connlimit-above "${WINGS_GUARD_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j DROP
-    if have_cmd ipset; then
-        iptables -A "${WINGS_GUARD_CHAIN4}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_wings_new_v4 \
-            --hashlimit-above "${WINGS_GUARD_NEW_CONN_RATE}"/second --hashlimit-burst "${WINGS_GUARD_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j SET --add-set "${IPSET4}" src
-    fi
     iptables -A "${WINGS_GUARD_CHAIN4}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_wings_new_v4 \
         --hashlimit-above "${WINGS_GUARD_NEW_CONN_RATE}"/second --hashlimit-burst "${WINGS_GUARD_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
     iptables -A "${WINGS_GUARD_CHAIN4}" -j RETURN
@@ -919,13 +922,8 @@ if [[ -n "${INFRA_GUARD_PORTS}" ]]; then
     iptables -A "${INFRA_GUARD_CHAIN4}" -s 192.168.0.0/16 -j RETURN
     if have_cmd ipset; then
         iptables -A "${INFRA_GUARD_CHAIN4}" -m set --match-set "${IPSET4}" src -j DROP
-        iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp --syn -m connlimit --connlimit-above "${INFRA_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j SET --add-set "${IPSET4}" src
     fi
     iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp --syn -m connlimit --connlimit-above "${INFRA_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j DROP
-    if have_cmd ipset; then
-        iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_infra_new_v4 \
-            --hashlimit-above "${INFRA_NEW_CONN_RATE}"/second --hashlimit-burst "${INFRA_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j SET --add-set "${IPSET4}" src
-    fi
     iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_infra_new_v4 \
         --hashlimit-above "${INFRA_NEW_CONN_RATE}"/second --hashlimit-burst "${INFRA_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
     iptables -A "${INFRA_GUARD_CHAIN4}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
@@ -1054,10 +1052,8 @@ fi
 iptables -A "${CHAIN}" -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
 iptables -A "${CHAIN}" -p tcp -m conntrack --ctstate NEW -j "${ABUSE_CHAIN}"
 
-# Repeated bursts from the same IP get dropped quickly.
-if have_cmd ipset; then
-    iptables -A "${ABUSE_CHAIN}" -m recent --name pteroprotect_burst --update --seconds "${RECENT_WINDOW}" --hitcount "${RECENT_HITCOUNT}" --rsource -j SET --add-set "${IPSET4}" src
-fi
+# Repeated bursts from the same IP get dropped quickly. Long dynamic blocks are
+# applied by ddos_host_logger.sh after userspace confirmation and allowlist checks.
 iptables -A "${ABUSE_CHAIN}" -m recent --name pteroprotect_burst --update --seconds "${RECENT_WINDOW}" --hitcount "${RECENT_HITCOUNT}" --rsource -j DROP
 
 # Drop obviously malformed TCP flag combinations before they consume more work.
@@ -1065,17 +1061,8 @@ iptables -A "${ABUSE_CHAIN}" -p tcp --tcp-flags ALL NONE -j DROP
 iptables -A "${ABUSE_CHAIN}" -p tcp --tcp-flags ALL ALL -j DROP
 
 # Tight SSH-specific guards to absorb auth-port floods before generic TCP limits.
-if have_cmd ipset; then
-    iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m connlimit \
-        --connlimit-above "${SSH_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j SET --add-set "${IPSET4}" src
-fi
 iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m connlimit \
     --connlimit-above "${SSH_CONNLIMIT_PER_IP}" --connlimit-mask 32 -j DROP
-if have_cmd ipset; then
-    iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
-        --hashlimit-name pteroprotect_ssh_new_src_v4 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
-        --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j SET --add-set "${IPSET4}" src
-fi
 iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
     --hashlimit-name pteroprotect_ssh_new_src_v4 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
     --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
@@ -1084,16 +1071,9 @@ iptables -A "${ABUSE_CHAIN}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -
     --hashlimit-burst "${SSH_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
 
 # Cap concurrent TCP sessions per source.
-if have_cmd ipset; then
-    iptables -A "${ABUSE_CHAIN}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 32 -j SET --add-set "${IPSET4}" src
-fi
 iptables -A "${ABUSE_CHAIN}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 32 -j DROP
 
 # Rate-limit fresh connections per source.
-if have_cmd ipset; then
-    iptables -A "${ABUSE_CHAIN}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new \
-        --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j SET --add-set "${IPSET4}" src
-fi
 iptables -A "${ABUSE_CHAIN}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new \
     --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
 iptables -A "${ABUSE_CHAIN}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
@@ -1189,13 +1169,8 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
         ip6tables -A "${WINGS_GUARD_CHAIN6}" -s fc00::/7 -j RETURN
         if have_cmd ipset; then
             ip6tables -A "${WINGS_GUARD_CHAIN6}" -m set --match-set "${IPSET6}" src -j DROP
-            ip6tables -A "${WINGS_GUARD_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${WINGS_GUARD_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j SET --add-set "${IPSET6}" src
         fi
         ip6tables -A "${WINGS_GUARD_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${WINGS_GUARD_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j DROP
-        if have_cmd ipset; then
-            ip6tables -A "${WINGS_GUARD_CHAIN6}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_wings_new_v6 \
-                --hashlimit-above "${WINGS_GUARD_NEW_CONN_RATE}"/second --hashlimit-burst "${WINGS_GUARD_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j SET --add-set "${IPSET6}" src
-        fi
         ip6tables -A "${WINGS_GUARD_CHAIN6}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_wings_new_v6 \
             --hashlimit-above "${WINGS_GUARD_NEW_CONN_RATE}"/second --hashlimit-burst "${WINGS_GUARD_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
         ip6tables -A "${WINGS_GUARD_CHAIN6}" -j RETURN
@@ -1210,13 +1185,8 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
         ip6tables -A "${INFRA_GUARD_CHAIN6}" -s fc00::/7 -j RETURN
         if have_cmd ipset; then
             ip6tables -A "${INFRA_GUARD_CHAIN6}" -m set --match-set "${IPSET6}" src -j DROP
-            ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${INFRA_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j SET --add-set "${IPSET6}" src
         fi
         ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${INFRA_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j DROP
-        if have_cmd ipset; then
-            ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_infra_new_v6 \
-                --hashlimit-above "${INFRA_NEW_CONN_RATE}"/second --hashlimit-burst "${INFRA_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j SET --add-set "${IPSET6}" src
-        fi
         ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp --syn -m hashlimit --hashlimit-name pteroprotect_infra_new_v6 \
             --hashlimit-above "${INFRA_NEW_CONN_RATE}"/second --hashlimit-burst "${INFRA_NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
         ip6tables -A "${INFRA_GUARD_CHAIN6}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
@@ -1342,25 +1312,13 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
     ip6tables -A "${CHAIN6}" -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
     ip6tables -A "${CHAIN6}" -p tcp -m conntrack --ctstate NEW -j "${ABUSE_CHAIN6}"
 
-    if have_cmd ipset; then
-        ip6tables -A "${ABUSE_CHAIN6}" -m recent --name pteroprotect_burst_v6 --update --seconds "${RECENT_WINDOW}" --hitcount "${RECENT_HITCOUNT}" --rsource -j SET --add-set "${IPSET6}" src
-    fi
     ip6tables -A "${ABUSE_CHAIN6}" -m recent --name pteroprotect_burst_v6 --update --seconds "${RECENT_WINDOW}" --hitcount "${RECENT_HITCOUNT}" --rsource -j DROP
 
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp --tcp-flags ALL NONE -j DROP
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp --tcp-flags ALL ALL -j DROP
 
-    if have_cmd ipset; then
-        ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m connlimit \
-            --connlimit-above "${SSH_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j SET --add-set "${IPSET6}" src
-    fi
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" --syn -m connlimit \
         --connlimit-above "${SSH_CONNLIMIT_PER_IP}" --connlimit-mask 128 -j DROP
-    if have_cmd ipset; then
-        ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
-            --hashlimit-name pteroprotect_ssh_new_src_v6 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
-            --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j SET --add-set "${IPSET6}" src
-    fi
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m multiport --dports "${SSH_GUARD_PORTS}" -m conntrack --ctstate NEW -m hashlimit \
         --hashlimit-name pteroprotect_ssh_new_src_v6 --hashlimit-above "${SSH_NEW_PER_IP_PER_MIN}"/minute \
         --hashlimit-burst "${SSH_NEW_PER_IP_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
@@ -1368,15 +1326,8 @@ if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
         --hashlimit-name pteroprotect_ssh_new_global_v6 --hashlimit-above "${SSH_GLOBAL_NEW_PER_SEC}"/second \
         --hashlimit-burst "${SSH_GLOBAL_NEW_BURST}" --hashlimit-mode dstport -j DROP
 
-    if have_cmd ipset; then
-        ip6tables -A "${ABUSE_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 128 -j SET --add-set "${IPSET6}" src
-    fi
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp --syn -m connlimit --connlimit-above "${CONNLIMIT_PER_IP}" --connlimit-mask 128 -j DROP
 
-    if have_cmd ipset; then
-        ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new_v6 \
-            --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j SET --add-set "${IPSET6}" src
-    fi
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m hashlimit --hashlimit-name pteroprotect_new_v6 \
         --hashlimit-above "${NEW_CONN_RATE}"/second --hashlimit-burst "${NEW_CONN_BURST}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
     ip6tables -A "${ABUSE_CHAIN6}" -p tcp -m conntrack --ctstate NEW -m hashlimit \

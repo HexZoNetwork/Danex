@@ -40,6 +40,9 @@ def main() -> int:
     assert_contains(installer, 'BLOCK_CHAIN6="PTEROPROTECT-HOST-V6-BLOCK"', "installer must define IPv6 host block chain")
     assert_contains(installer, 'ipset create "${IPSET6}" hash:ip family inet6 timeout "${BLACKHOLE_TTL}" counters', "installer IPv6 dynamic set must use counters")
     assert_contains(installer, 'ip6tables -A "${BLOCK_CHAIN6}" -m set --match-set "${IPSET6}" src -j DROP', "installer IPv6 chain must drop dynamic block set")
+    assert_contains(installer, '--hashlimit-name pteroprotect_unblock_v4', "unblock portal must be rate-limited before ACCEPT")
+    if "SET --add-set" in installer:
+        raise AssertionError("installer must not promote kernel rate-limit hits into long dynamic blackhole sets")
 
     print("firewall IPv6 parity tests ok")
     return 0

@@ -69,6 +69,9 @@ struct Settings {
     std::string provider_token_ip_cache_file;
     int provider_token_ip_cache_ttl_sec = 604800;
     std::vector<std::string> provider_token_provider_keywords;
+    bool runtime_attack_rules_enabled = true;
+    std::string runtime_attack_rules_file = "/dev/shm/pteroprotect/attack_rules.tsv";
+    int runtime_attack_rule_min_confidence = 72;
     std::string db_host = "127.0.0.1";
     std::string db_user;
     std::string db_password;
@@ -128,6 +131,17 @@ static std::mutex g_provider_ip_cache_mu;
 static std::map<std::string, bool> g_provider_ip_cache;
 static std::string g_provider_ip_cache_path;
 static std::time_t g_provider_ip_cache_loaded_at = 0;
+struct AttackRule {
+    std::string fingerprint;
+    int confidence = 0;
+    int impact = 0;
+    std::string reason;
+    std::time_t until = 0;
+};
+static std::mutex g_attack_rules_mu;
+static std::vector<AttackRule> g_attack_rules;
+static std::string g_attack_rules_path;
+static std::time_t g_attack_rules_loaded_at = 0;
 struct AcceptedClient { int fd; std::string ip; };
 static std::mutex g_client_queue_mu;
 static std::condition_variable g_client_queue_cv;
@@ -144,6 +158,8 @@ static constexpr std::size_t kMaxHeaderBytes = 32768;
 static constexpr std::size_t kMaxRequestBytes = 131072;
 static constexpr std::size_t kMaxProviderIpCacheRecords = 100000;
 static constexpr std::streamoff kMaxProviderIpCacheBytes = 8 * 1024 * 1024;
+static constexpr std::size_t kMaxAttackRuleRecords = 4096;
+static constexpr std::streamoff kMaxAttackRuleBytes = 1024 * 1024;
 static std::string random_nonce();
 static std::string to_lower(std::string s);
 static bool base64_decode(const std::string& in, std::string& out);
@@ -210,6 +226,127 @@ static void append_provider_cidrs_from_file(const std::string& path, std::vector
     }
 }
 
+static std::vector<std::string> split_char(const std::string& text, char delim) {
+    std::vector<std::string> out;
+    std::stringstream ss(text);
+    std::string part;
+    while (std::getline(ss, part, delim)) out.push_back(part);
+    return out;
+}
+
+static bool parse_int_strict(const std::string& text, int& out) {
+    try {
+        std::size_t idx = 0;
+        int value = std::stoi(trim(text), &idx);
+        if (idx != trim(text).size()) return false;
+        out = value;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static bool parse_time_strict(const std::string& text, std::time_t& out) {
+    try {
+        std::size_t idx = 0;
+        long long value = std::stoll(trim(text), &idx);
+        if (idx != trim(text).size() || value < 0) return false;
+        out = static_cast<std::time_t>(value);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static std::string to_upper_ascii(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return s;
+}
+
+static std::string collapse_slashes(const std::string& path) {
+    std::string out;
+    out.reserve(path.size());
+    bool last_slash = false;
+    for (char c : path) {
+        if (c == '/') {
+            if (!last_slash) out.push_back(c);
+            last_slash = true;
+        } else {
+            out.push_back(c);
+            last_slash = false;
+        }
+    }
+    return out.empty() ? "/" : out;
+}
+
+static bool looks_like_long_token_segment(const std::string& segment) {
+    if (segment.size() < 24) return false;
+    for (char c : segment) {
+        const bool ok = std::isxdigit(static_cast<unsigned char>(c)) || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+static std::string normalize_attack_rule_path(std::string path) {
+    std::size_t q = path.find('?');
+    if (q != std::string::npos) path = path.substr(0, q);
+    if (path.empty()) path = "/";
+    if (path[0] != '/') path = "/" + path;
+    path = collapse_slashes(path);
+
+    std::vector<std::string> parts = split_char(path, '/');
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (looks_like_long_token_segment(parts[i])) parts[i] = ":token";
+    }
+    for (std::size_t i = 0; i + 4 < parts.size(); ++i) {
+        if (parts[i] == "" && parts[i + 1] == "api" && parts[i + 2] == "client" && parts[i + 3] == "servers") {
+            parts[i + 4] = ":id";
+        }
+        if (parts[i] == "" && parts[i + 1] == "api" && parts[i + 2] == "application" && parts[i + 3] == "servers") {
+            bool numeric = !parts[i + 4].empty();
+            for (char c : parts[i + 4]) {
+                if (!std::isdigit(static_cast<unsigned char>(c))) numeric = false;
+            }
+            if (numeric) parts[i + 4] = ":id";
+        }
+    }
+
+    std::string out;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) out.push_back('/');
+        out += parts[i];
+    }
+    return collapse_slashes(out.empty() ? "/" : out);
+}
+
+static std::string attack_rule_ua_family(const std::string& ua) {
+    std::string low = to_lower(ua);
+    if (low.find("curl") != std::string::npos ||
+        low.find("wget") != std::string::npos ||
+        low.find("python") != std::string::npos ||
+        low.find("aiohttp") != std::string::npos ||
+        low.find("httpx") != std::string::npos ||
+        low.find("go-http") != std::string::npos ||
+        low.find("java") != std::string::npos ||
+        low.find("okhttp") != std::string::npos ||
+        low.find("node-fetch") != std::string::npos ||
+        low.find("axios") != std::string::npos) return "script";
+    if (low.find("bot") != std::string::npos ||
+        low.find("spider") != std::string::npos ||
+        low.find("crawler") != std::string::npos ||
+        low.find("scanner") != std::string::npos ||
+        low.find("sqlmap") != std::string::npos ||
+        low.find("nikto") != std::string::npos) return "bot";
+    if (low.find("mozilla") != std::string::npos ||
+        low.find("chrome") != std::string::npos ||
+        low.find("safari") != std::string::npos ||
+        low.find("firefox") != std::string::npos ||
+        low.find("edge") != std::string::npos) return "browser";
+    if (trim(ua).empty() || trim(ua) == "-") return "none";
+    return "other";
+}
+
 static bool provider_ip_cache_hit(const Settings& s, const std::string& ip) {
     if (s.provider_token_ip_cache_file.empty()) return false;
     const std::time_t now = std::time(nullptr);
@@ -242,6 +379,48 @@ static bool provider_ip_cache_hit(const Settings& s, const std::string& ip) {
         }
     }
     return g_provider_ip_cache.find(ip) != g_provider_ip_cache.end();
+}
+
+static std::vector<AttackRule> load_runtime_attack_rules(const Settings& s) {
+    if (!s.runtime_attack_rules_enabled || s.runtime_attack_rules_file.empty()) return {};
+    const std::time_t now = std::time(nullptr);
+    std::lock_guard<std::mutex> lock(g_attack_rules_mu);
+    if (g_attack_rules_path == s.runtime_attack_rules_file && now - g_attack_rules_loaded_at <= 1) {
+        return g_attack_rules;
+    }
+
+    g_attack_rules.clear();
+    g_attack_rules_path = s.runtime_attack_rules_file;
+    g_attack_rules_loaded_at = now;
+
+    std::ifstream f(s.runtime_attack_rules_file);
+    if (!f.is_open()) return g_attack_rules;
+    try {
+        f.seekg(0, std::ios::end);
+        const std::streamoff size = f.tellg();
+        if (size < 0 || size > kMaxAttackRuleBytes) return g_attack_rules;
+        f.seekg(0, std::ios::beg);
+
+        std::string line;
+        while (std::getline(f, line)) {
+            if (g_attack_rules.size() >= kMaxAttackRuleRecords) break;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            std::vector<std::string> fields = split_char(line, '\t');
+            if (fields.size() < 5) continue;
+            AttackRule rule;
+            rule.fingerprint = trim(fields[0]);
+            if (!parse_int_strict(fields[1], rule.confidence)) continue;
+            if (!parse_int_strict(fields[2], rule.impact)) continue;
+            rule.reason = trim(fields[3]);
+            if (!parse_time_strict(fields[4], rule.until)) continue;
+            if (rule.fingerprint.empty() || rule.until <= now) continue;
+            if (rule.confidence < s.runtime_attack_rule_min_confidence) continue;
+            g_attack_rules.push_back(rule);
+        }
+    } catch (...) {
+        g_attack_rules.clear();
+    }
+    return g_attack_rules;
 }
 
 static bool begins_with(const std::string& value, const std::string& prefix) {
@@ -1048,6 +1227,9 @@ static Settings load_settings() {
             s.provider_token_cache_file = trim(json_get_string(net, "provider_token_cache_file", "/pteroprotect/cache/provider_ranges.txt"));
             s.provider_token_ip_cache_file = trim(json_get_string(net, "provider_token_ip_cache_file", "/pteroprotect/cache/provider_ip_cache.json"));
             s.provider_token_ip_cache_ttl_sec = std::max(300, std::min(2592000, json_get_int(net, "provider_token_ip_cache_ttl_sec", 604800)));
+            s.runtime_attack_rules_enabled = parse_bool(net.value("runtime_attack_rules_enabled", json(true)), true);
+            s.runtime_attack_rules_file = trim(json_get_string(net, "runtime_attack_rules_file", "/dev/shm/pteroprotect/attack_rules.tsv"));
+            s.runtime_attack_rule_min_confidence = std::max(1, std::min(100, json_get_int(net, "runtime_attack_rule_min_confidence", 72)));
             if (net.contains("provider_token_provider_keywords")) {
                 if (net["provider_token_provider_keywords"].is_array()) {
                     for (const auto& item : net["provider_token_provider_keywords"]) {
@@ -1118,6 +1300,41 @@ struct HttpRequest {
     std::string body;
     std::string remote_ip;
 };
+
+static std::string original_request_path(const HttpRequest& req) {
+    auto it = req.headers.find("x-pteroprotect-original-uri");
+    if (it != req.headers.end() && !trim(it->second).empty()) return trim(it->second);
+    it = req.headers.find("x-original-uri");
+    if (it != req.headers.end() && !trim(it->second).empty()) return trim(it->second);
+    return req.path;
+}
+
+static std::string original_request_method(const HttpRequest& req) {
+    auto it = req.headers.find("x-pteroprotect-original-method");
+    if (it != req.headers.end() && !trim(it->second).empty()) return to_upper_ascii(trim(it->second));
+    it = req.headers.find("x-original-method");
+    if (it != req.headers.end() && !trim(it->second).empty()) return to_upper_ascii(trim(it->second));
+    return to_upper_ascii(req.method);
+}
+
+static bool runtime_attack_rule_matches(const Settings& s, const HttpRequest& req, const std::string& ua, AttackRule* matched = nullptr) {
+    std::vector<AttackRule> rules = load_runtime_attack_rules(s);
+    if (rules.empty()) return false;
+    const std::string method = original_request_method(req);
+    const std::string path = normalize_attack_rule_path(original_request_path(req));
+    const std::string ua_family = attack_rule_ua_family(ua);
+
+    for (const AttackRule& rule : rules) {
+        std::vector<std::string> parts = split_char(rule.fingerprint, '|');
+        if (parts.size() != 4) continue;
+        if (parts[0] != method) continue;
+        if (parts[1] != path) continue;
+        if (parts[3] != ua_family) continue;
+        if (matched) *matched = rule;
+        return true;
+    }
+    return false;
+}
 
 static std::map<std::string, std::string> parse_query(const std::string& q) {
     std::map<std::string, std::string> out;
@@ -2167,7 +2384,18 @@ static bool verify_token(const Settings& s, const std::string& token, const std:
                     return true;
                 }
             }
-            return fail("session_not_found");
+
+            // The signed clearance token is the source of truth. The in-memory
+            // session map is an acceleration and rotation guard, but it is lost
+            // across service restarts; rejecting otherwise valid tokens creates
+            // redirect loops after a successful challenge solve.
+            SessionRec restored;
+            restored.sid = sid;
+            restored.ua = ua_fp;
+            restored.ips.push_back(ip);
+            restored.exp = static_cast<std::time_t>(exp);
+            g_ip_session_map[session_scope_key(ip, ua_fp)] = restored;
+            return true;
         }
     } catch (...) {
         return fail("token_parse");
@@ -2324,6 +2552,17 @@ static void handle_client(int fd, std::string remote_ip) {
             log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}});
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
+            AttackRule matched_rule;
+            if (runtime_attack_rule_matches(s, req, ua, &matched_rule)) {
+                log_event_json("runtime_attack_rule_challenge", {
+                    {"ip", ip},
+                    {"path", normalize_attack_rule_path(original_request_path(req))},
+                    {"confidence", matched_rule.confidence},
+                    {"impact", matched_rule.impact},
+                    {"reason", matched_rule.reason},
+                    {"node_id", s.node_id}
+                });
+            }
             log_event_json("session_mismatch", {{"ip", ip}, {"reason", verify_reason.empty() ? "no_cookie_or_invalid" : verify_reason}, {"node_id", s.node_id}});
             send_response(fd, 401, "Unauthorized", "", {}, head_only);
         }
@@ -2350,6 +2589,21 @@ static void handle_client(int fd, std::string remote_ip) {
             log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web"}});
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
+            AttackRule matched_rule;
+            if (runtime_attack_rule_matches(s, req, ua, &matched_rule)) {
+                log_event_json("runtime_attack_rule_challenge", {
+                    {"ip", ip},
+                    {"path", normalize_attack_rule_path(original_request_path(req))},
+                    {"confidence", matched_rule.confidence},
+                    {"impact", matched_rule.impact},
+                    {"reason", matched_rule.reason},
+                    {"node_id", s.node_id},
+                    {"path_kind", "check-web"}
+                });
+                send_response(fd, 401, "Unauthorized", "", {}, head_only);
+                close(fd);
+                return;
+            }
             if (has_active_session_binding(ip, ua_fp)) {
                 log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web-session"}});
                 send_response(fd, 204, "No Content", "", {}, head_only);
@@ -2766,7 +3020,7 @@ static void handle_client(int fd, std::string remote_ip) {
         std::string rd = q.count("rd") ? q["rd"] : "/";
         if (rd.empty() || rd[0] != '/') rd = "/";
         if (!s.enabled) {
-            send_response(fd, 302, "Found", "", {{"Location", rd}}, head_only);
+            send_response(fd, 204, "No Content", "", {{"Cache-Control", "no-store"}}, head_only);
             close(fd);
             return;
         }

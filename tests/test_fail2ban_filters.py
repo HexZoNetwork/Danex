@@ -22,12 +22,14 @@ CASES = {
     },
     "pteroprotect-auth-abuse.conf": {
         "malicious": [
-            '203.0.113.10 - - [17/May/2026:12:01:00 +0000] "POST /auth/login HTTP/1.1" 422 12 "-" "curl"',
-            '203.0.113.11 - - [17/May/2026:12:01:01 +0000] "GET /auth/password/reset HTTP/1.1" 419 12 "-" "curl"',
+            '203.0.113.10 - - [17/May/2026:12:01:00 +0000] "POST /auth/login HTTP/1.1" 401 12 "-" "curl"',
+            '203.0.113.11 - - [17/May/2026:12:01:01 +0000] "GET /auth/password/reset HTTP/1.1" 403 12 "-" "curl"',
         ],
         "benign": [
             '203.0.113.12 - - [17/May/2026:12:01:02 +0000] "GET /auth/login HTTP/1.1" 200 1200 "-" "Mozilla"',
             '203.0.113.13 - - [17/May/2026:12:01:03 +0000] "GET / HTTP/1.1" 404 12 "-" "curl"',
+            '203.0.113.14 - - [17/May/2026:12:01:04 +0000] "POST /auth/login HTTP/1.1" 422 12 "-" "Mozilla"',
+            '203.0.113.15 - - [17/May/2026:12:01:05 +0000] "GET /auth/password/reset HTTP/1.1" 419 12 "-" "Mozilla"',
         ],
     },
     "pteroprotect-nginx-sqli.conf": {
@@ -68,6 +70,12 @@ def run_case(name: str, lines: list[str]) -> int:
 
 
 def main() -> int:
+    jail = (ROOT / "host_overrides/fail2ban/jail.d/pteroprotect.local").read_text(encoding="utf-8")
+    if not re.search(r"\[recidive\]\s+enabled = false", jail, re.MULTILINE):
+        raise AssertionError("recidive all-port bans must be disabled by default")
+    if not re.search(r"\[pteroprotect-auth-abuse\].*?findtime = 600.*?maxretry = 40", jail, re.DOTALL):
+        raise AssertionError("auth jail must be NAT/mobile tolerant")
+
     for name, case in CASES.items():
         malicious_matches = run_case(name, case["malicious"])
         benign_matches = run_case(name, case["benign"])

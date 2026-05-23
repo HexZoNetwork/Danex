@@ -42,8 +42,8 @@ maxretry = 4
 enabled = true
 filter = pteroprotect-auth-abuse
 logpath = /var/log/nginx/pteroprotect.access.log
-findtime = 300
-maxretry = 20
+findtime = 600
+maxretry = 40
 #bantime = 7200
 
 [pteroprotect-wings-api-abuse]
@@ -55,7 +55,7 @@ maxretry = 30
 #bantime = 14400
 
 [recidive]
-enabled = true
+enabled = false
 logpath  = /var/log/fail2ban.log
 banaction = %(banaction_allports)s
 bantime  = 604800

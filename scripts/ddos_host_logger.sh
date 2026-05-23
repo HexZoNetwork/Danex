@@ -41,6 +41,10 @@ PANEL_ENV_FILE="${PANEL_DIR}/.env"
 PANEL_ACCESS_LOG="/var/log/nginx/pteroprotect.access.log"
 TRUSTED_LOGIN_LOG="/dev/shm/pteroprotect/auth_success_ips.log"
 BLOCK_HISTORY_FILE="${RUNTIME_DIR}/block_history.tsv"
+PENDING_BLOCK_FILE="${RUNTIME_DIR}/pending_blocks.tsv"
+HEAVY_HITTER_FILE="${RUNTIME_DIR}/heavy_hitters.tsv"
+FINGERPRINT_BASELINE_FILE="${RUNTIME_DIR}/fingerprint_baseline.tsv"
+ATTACK_RULE_FILE="${RUNTIME_DIR}/attack_rules.tsv"
 TENANT_HISTORY_FILE="${RUNTIME_DIR}/tenant_quarantine.tsv"
 OWNER_LOCK_FILE="${RUNTIME_DIR}/owner_lock.tsv"
 ADAPTIVE_STATE_FILE="${RUNTIME_DIR}/adaptive_baseline.state"
@@ -68,6 +72,10 @@ chown root:www-data "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || t
 chmod 2775 "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
 touch "${LOG_FILE}"
 touch "${BLOCK_HISTORY_FILE}"
+touch "${PENDING_BLOCK_FILE}"
+touch "${HEAVY_HITTER_FILE}"
+touch "${FINGERPRINT_BASELINE_FILE}"
+touch "${ATTACK_RULE_FILE}"
 touch "${TENANT_HISTORY_FILE}"
 touch "${OWNER_LOCK_FILE}"
 
@@ -874,7 +882,7 @@ is_ip_trust_protected_ip() {
 is_high_confidence_block_reason() {
     local reason="$1"
     case "${reason}" in
-        bad-token:*|sqli-probe:*|probe-scan:*|proxy-swarm:*|nginx-limiter:*) return 0 ;;
+        bad-token:*|sqli-probe:*|probe-scan:*|proxy-swarm:*|nginx-limiter:*|fingerprint-flood:*) return 0 ;;
     esac
     return 1
 }
@@ -884,6 +892,182 @@ is_overload_block_reason() {
     case "${reason}" in
         *overload-fast:*|*overload-hard:*|http-access-hard:*|established-hard:*|syn-recv-hard:*|clear-threshold:*) return 0 ;;
     esac
+    return 1
+}
+
+is_metric_block_reason() {
+    local reason="$1"
+    is_overload_block_reason "${reason}" && return 0
+    case "${reason}" in
+        nginx-limiter:*) return 0 ;;
+    esac
+    return 1
+}
+
+is_known_cdn_proxy_ip() {
+    local ip="$1"
+    local IFS=. a b c d n
+
+    [[ "${ip}" == *:* ]] && return 1
+    IFS=. read -r a b c d <<< "${ip}"
+    for n in "${a}" "${b}" "${c}" "${d}"; do
+        [[ "${n}" =~ ^[0-9]+$ ]] || return 1
+        (( n >= 0 && n <= 255 )) || return 1
+    done
+
+    case "${a}.${b}" in
+        104.16|104.17|104.18|104.19|104.20|104.21|104.22|104.23|104.24|104.25|104.26|104.27|108.162|141.101|162.158|162.159|172.64|172.65|172.66|172.67|172.68|172.69|172.70|172.71|188.114|190.93|197.234) return 0 ;;
+    esac
+    if (( a == 103 && ((b == 21 && c >= 244 && c <= 247) || (b == 22 && c >= 200 && c <= 203) || (b == 31 && c >= 4 && c <= 7)) )); then return 0; fi
+    if (( a == 131 && b == 0 && c >= 72 && c <= 75 )); then return 0; fi
+    if (( a == 173 && b == 245 && c >= 48 && c <= 63 )); then return 0; fi
+    if (( a == 198 && b == 41 && c >= 128 && c <= 255 )); then return 0; fi
+    return 1
+}
+
+clamp_score() {
+    local value="$1"
+    [[ "${value}" =~ ^-?[0-9]+$ ]] || value=0
+    if (( value < 0 )); then value=0; fi
+    if (( value > 100 )); then value=100; fi
+    printf '%s' "${value}"
+}
+
+block_reason_family() {
+    local reason="$1"
+    reason="${reason%%:*}"
+    [[ -n "${reason}" ]] || reason="unknown"
+    printf '%s' "${reason}"
+}
+
+heavy_hitter_family_for_reason() {
+    local reason="$1"
+    case "${reason}" in
+        syn-recv-*) printf 'syn' ;;
+        established-*) printf 'established' ;;
+        http-access-*|nginx-limiter:*|bad-token:*) printf 'http' ;;
+        probe-scan:*) printf 'probe' ;;
+        sqli-probe:*) printf 'sqli' ;;
+        *) printf '' ;;
+    esac
+}
+
+default_confidence_score() {
+    local reason="$1"
+    case "${reason}" in
+        fingerprint-flood:*) printf '88' ;;
+        bad-token:*|sqli-probe:*|probe-scan:*|proxy-swarm:*) printf '92' ;;
+        clear-threshold:*) printf '78' ;;
+        *-hard:*) printf '74' ;;
+        nginx-limiter:*) printf '68' ;;
+        *overload-fast:*) printf '58' ;;
+        *) printf '60' ;;
+    esac
+}
+
+estimate_impact_score() {
+    local ip="$1"
+    local reason="$2"
+    local impact=20 row req uniq transitions max_streak
+
+    is_high_confidence_block_reason "${reason}" && impact=10
+    is_metric_block_reason "${reason}" && impact=35
+    is_whitelisted_ip "${ip}" && impact=$(( impact + 50 ))
+    is_recently_authenticated_ip "${ip}" && impact=$(( impact + 35 ))
+    is_ip_trust_protected_ip "${ip}" && impact=$(( impact + 30 ))
+
+    row="$(awk -F '\t' -v ip="${ip}" '$1 == ip {print $0; exit}' <<< "${BEHAVIOR_IP_STATS:-}" 2>/dev/null || true)"
+    if [[ -n "${row}" ]]; then
+        IFS=$'\t' read -r _ip req uniq transitions max_streak <<< "${row}"
+        [[ "${req}" =~ ^[0-9]+$ ]] || req=0
+        [[ "${uniq}" =~ ^[0-9]+$ ]] || uniq=0
+        [[ "${transitions}" =~ ^[0-9]+$ ]] || transitions=0
+        [[ "${max_streak}" =~ ^[0-9]+$ ]] || max_streak=0
+
+        if (( req >= 10 && uniq >= 4 && transitions >= 3 && max_streak * 10 <= req * 8 )); then
+            impact=$(( impact + 30 ))
+        elif (( req >= 12 && (uniq <= 1 || max_streak >= 18) )); then
+            impact=$(( impact - 20 ))
+        fi
+    fi
+
+    clamp_score "${impact}"
+}
+
+record_mitigation_decision() {
+    local ip="$1"
+    local reason="$2"
+    local stage="$3"
+    local confidence="$4"
+    local impact="$5"
+    local action="$6"
+    printf '[decision] ip=%s stage=%s confidence=%s impact=%s action=%s reason=%s\n' \
+        "${ip}" "${stage}" "${confidence}" "${impact}" "${action}" "${reason}" >> "${LATEST_FILE}"
+}
+
+mitigation_stage_for_scores() {
+    local confidence="$1"
+    local impact="$2"
+    local reason="$3"
+
+    [[ "${confidence}" =~ ^[0-9]+$ ]] || confidence=0
+    [[ "${impact}" =~ ^[0-9]+$ ]] || impact=100
+
+    if is_high_confidence_block_reason "${reason}"; then
+        if (( impact <= ${HIGH_CONFIDENCE_BLOCK_IMPACT_MAX:-80} )); then
+            printf 'block'
+        else
+            printf 'challenge'
+        fi
+        return 0
+    fi
+
+    if (( confidence >= ${BLOCK_CONFIDENCE_MIN:-70} && impact <= ${BLOCK_IMPACT_MAX:-45} )); then
+        printf 'block'
+    elif (( confidence >= ${CHALLENGE_CONFIDENCE_MIN:-55} && impact <= ${CHALLENGE_IMPACT_MAX:-75} )); then
+        printf 'challenge'
+    else
+        printf 'observe'
+    fi
+}
+
+block_confirmation_required() {
+    local reason="$1"
+    [[ "${BLOCK_CONFIRM_ENABLED:-1}" == "1" ]] || return 1
+    is_high_confidence_block_reason "${reason}" && return 1
+    is_overload_block_reason "${reason}" && return 0
+    return 1
+}
+
+confirm_dynamic_block_candidate() {
+    local ip="$1"
+    local reason="$2"
+    local now family previous_count count tmp_file
+
+    [[ "${BLOCK_CONFIRM_OBSERVATIONS:-2}" =~ ^[0-9]+$ ]] || BLOCK_CONFIRM_OBSERVATIONS=2
+    [[ "${BLOCK_CONFIRM_WINDOW_SEC:-90}" =~ ^[0-9]+$ ]] || BLOCK_CONFIRM_WINDOW_SEC=90
+    (( BLOCK_CONFIRM_OBSERVATIONS <= 1 )) && return 0
+
+    now="$(date +%s)"
+    family="$(block_reason_family "${reason}")"
+    tmp_file="${PENDING_BLOCK_FILE}.tmp"
+    previous_count="$(awk -F '\t' -v ip="${ip}" -v family="${family}" -v keep_after="$(( now - BLOCK_CONFIRM_WINDOW_SEC ))" '
+        NF >= 4 && $1 == ip && $2 == family && $4 >= keep_after { print $3; exit }
+    ' "${PENDING_BLOCK_FILE}" 2>/dev/null || true)"
+    [[ "${previous_count}" =~ ^[0-9]+$ ]] || previous_count=0
+    count=$(( previous_count + 1 ))
+
+    awk -F '\t' -v ip="${ip}" -v family="${family}" -v keep_after="$(( now - BLOCK_CONFIRM_WINDOW_SEC ))" '
+        NF >= 4 && $4 >= keep_after && !($1 == ip && $2 == family) { print $0 }
+    ' "${PENDING_BLOCK_FILE}" 2>/dev/null > "${tmp_file}" || true
+
+    if (( count >= BLOCK_CONFIRM_OBSERVATIONS )); then
+        mv "${tmp_file}" "${PENDING_BLOCK_FILE}"
+        return 0
+    fi
+
+    printf '%s\t%s\t%s\t%s\n' "${ip}" "${family}" "${count}" "${now}" >> "${tmp_file}"
+    mv "${tmp_file}" "${PENDING_BLOCK_FILE}"
     return 1
 }
 
@@ -1050,7 +1234,7 @@ ip_trust_update() {
 }
 
 ip_trust_restore_once() {
-    local ip tier
+    local ip tier restore_limit restore_source
     [[ "${IP_TRUST_ENABLED:-0}" == "1" ]] || return 0
     [[ "${IP_TRUST_RESTORE_DONE}" == "1" ]] && return 0
     [[ -f "${IP_TRUST_STATE_FILE}" ]] || {
@@ -1058,40 +1242,53 @@ ip_trust_restore_once() {
         return 0
     }
 
+    restore_limit="$(clamp_min_int "${IP_TRUST_RESTORE_MAX_RECORDS:-5000}" 500)"
+    restore_source="$(mktemp)"
+    tail -n "${restore_limit}" "${IP_TRUST_STATE_FILE}" > "${restore_source}" 2>/dev/null || true
     while IFS=$'\t' read -r ip _obs _good _bad _score _last tier; do
         [[ -n "${ip}" && -n "${tier}" ]] || continue
         is_valid_ip "${ip}" || continue
         ip_trust_apply_tier "${ip}" "${tier}"
-    done < "${IP_TRUST_STATE_FILE}"
+    done < "${restore_source}"
+    rm -f "${restore_source}" >/dev/null 2>&1 || true
 
     IP_TRUST_RESTORE_DONE=1
 }
 
 update_block_history() {
     local ip="$1"
-    local ts="$2"
-    local count="$3"
+    local family="$2"
+    local ts="$3"
+    local count="$4"
     local tmp_file="${BLOCK_HISTORY_FILE}.tmp"
 
-    awk -F '\t' -v keep_after="$(( ts - ESCALATION_WINDOW_SEC ))" -v ip="${ip}" '
-        NF >= 3 && $1 != ip && $2 >= keep_after { print $0 }
+    awk -F '\t' -v keep_after="$(( ts - ESCALATION_WINDOW_SEC ))" -v ip="${ip}" -v family="${family}" '
+        NF >= 4 && !($1 == ip && $2 == family) && $3 >= keep_after { print $0 }
+        NF == 3 && !($1 == ip && "legacy" == family) && $2 >= keep_after { print $0 }
     ' "${BLOCK_HISTORY_FILE}" 2>/dev/null > "${tmp_file}" || true
 
-    printf '%s\t%s\t%s\n' "${ip}" "${ts}" "${count}" >> "${tmp_file}"
+    printf '%s\t%s\t%s\t%s\n' "${ip}" "${family}" "${ts}" "${count}" >> "${tmp_file}"
     mv "${tmp_file}" "${BLOCK_HISTORY_FILE}"
 }
 
 next_block_timeout() {
     local ip="$1"
     local base_ttl="$2"
-    local now previous_ts previous_count new_count applied_ttl
+    local reason="${3:-unknown}"
+    local family now previous_ts previous_count new_count applied_ttl
+    family="$(block_reason_family "${reason}")"
     now="$(date +%s)"
     previous_ts=0
     previous_count=0
 
     if [[ -f "${BLOCK_HISTORY_FILE}" ]]; then
-        while IFS=$'\t' read -r hist_ip hist_ts hist_count; do
-            [[ "${hist_ip:-}" == "${ip}" ]] || continue
+        while IFS=$'\t' read -r hist_ip hist_family hist_ts hist_count _rest; do
+            if [[ -z "${hist_count:-}" ]]; then
+                hist_count="${hist_ts:-0}"
+                hist_ts="${hist_family:-0}"
+                hist_family="legacy"
+            fi
+            [[ "${hist_ip:-}" == "${ip}" && "${hist_family:-}" == "${family}" ]] || continue
             previous_ts="${hist_ts:-0}"
             previous_count="${hist_count:-0}"
             break
@@ -1117,7 +1314,7 @@ next_block_timeout() {
         applied_ttl="${MAX_BLACKHOLE_TTL_SEC}"
     fi
 
-    update_block_history "${ip}" "${now}" "${new_count}"
+    update_block_history "${ip}" "${family}" "${now}" "${new_count}"
     printf '%s' "${applied_ttl}"
 }
 
@@ -1125,13 +1322,44 @@ add_ipset_block() {
     local ip="$1"
     local reason="$2"
     local timeout="$3"
-    local applied_timeout
+    local confidence="${4:-}"
+    local impact="${5:-}"
+    local requested_stage="${6:-auto}"
+    local stage applied_timeout
 
     ip="$(normalize_ip "${ip}")"
     [[ -z "${ip}" ]] && return 0
     is_valid_ip "${ip}" || return 0
+    if [[ -z "${confidence}" ]]; then
+        confidence="$(default_confidence_score "${reason}")"
+    fi
+    confidence="$(clamp_score "${confidence}")"
+    local hh_family hh_previous
+    hh_family="$(heavy_hitter_family_for_reason "${reason}")"
+    if [[ -n "${hh_family}" ]]; then
+        hh_previous="$(heavy_hitter_previous_count "${hh_family}" "${ip}")"
+        [[ "${hh_previous}" =~ ^[0-9]+$ ]] || hh_previous=0
+        if (( hh_previous > 0 && confidence < 95 )); then
+            confidence=$(( confidence + 5 ))
+            confidence="$(clamp_score "${confidence}")"
+        fi
+    fi
+    if [[ -z "${impact}" ]]; then
+        impact="$(estimate_impact_score "${ip}" "${reason}")"
+    fi
+    impact="$(clamp_score "${impact}")"
+    stage="${requested_stage}"
+    if [[ "${stage}" == "auto" || -z "${stage}" ]]; then
+        stage="$(mitigation_stage_for_scores "${confidence}" "${impact}" "${reason}")"
+    fi
+
     if is_private_ip "${ip}" || is_host_ip "${ip}"; then
         printf '[mitigate] skip-block ip=%s reason=local-protected candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
+        return 0
+    fi
+    if is_known_cdn_proxy_ip "${ip}"; then
+        printf '[mitigate] skip-block ip=%s reason=cdn-proxy candidate_reason=%s\n' "${ip}" "${reason}" >> "${LATEST_FILE}"
+        record_mitigation_decision "${ip}" "${reason}" "observe" "${confidence}" "${impact}" "cdn-proxy-no-blackhole"
         return 0
     fi
     if is_recently_authenticated_ip "${ip}" && ! is_high_confidence_block_reason "${reason}"; then
@@ -1155,14 +1383,34 @@ add_ipset_block() {
         fi
     fi
 
+    if [[ "${stage}" != "block" ]]; then
+        record_mitigation_decision "${ip}" "${reason}" "${stage}" "${confidence}" "${impact}" "no-blackhole"
+        if [[ "${stage}" == "challenge" ]]; then
+            ip_trust_update "${ip}" 0 1 "dynamic-block-challenge" "${reason}"
+        else
+            ip_trust_update "${ip}" 0 1 "dynamic-block-observe-score" "${reason}"
+        fi
+        return 0
+    fi
+
+    if block_confirmation_required "${reason}" &&
+       ! confirm_dynamic_block_candidate "${ip}" "${reason}"; then
+        record_mitigation_decision "${ip}" "${reason}" "confirm" "${confidence}" "${impact}" "pending"
+        printf '[mitigate] observe-block-candidate ip=%s needed=%s window=%s reason=%s\n' \
+            "${ip}" "${BLOCK_CONFIRM_OBSERVATIONS}" "${BLOCK_CONFIRM_WINDOW_SEC}" "${reason}" >> "${LATEST_FILE}"
+        ip_trust_update "${ip}" 0 1 "dynamic-block-observe" "${reason}"
+        return 0
+    fi
+
     if [[ "${DYNAMIC_BLOCK_DRY_RUN:-0}" == "1" ]]; then
+        record_mitigation_decision "${ip}" "${reason}" "${stage}" "${confidence}" "${impact}" "dry-run"
         printf '[mitigate] dry-run ip=%s ttl=%s reason=%s\n' "${ip}" "${timeout}" "${reason}" >> "${LOG_FILE}"
         printf '[mitigate] dry-run ip=%s ttl=%s reason=%s\n' "${ip}" "${timeout}" "${reason}" >> "${LATEST_FILE}"
         ip_trust_update "${ip}" 0 2 "dynamic-block-dryrun" "${reason}"
         return 0
     fi
 
-    applied_timeout="$(next_block_timeout "${ip}" "${timeout}")"
+    applied_timeout="$(next_block_timeout "${ip}" "${timeout}" "${reason}")"
 
     if [[ "${ip}" == *:* ]]; then
         command -v ipset >/dev/null 2>&1 || return 0
@@ -1174,6 +1422,7 @@ add_ipset_block() {
 
     printf '[mitigate] blocked ip=%s ttl=%s reason=%s\n' "${ip}" "${applied_timeout}" "${reason}" >> "${LOG_FILE}"
     printf '[mitigate] blocked ip=%s ttl=%s reason=%s\n' "${ip}" "${applied_timeout}" "${reason}" >> "${LATEST_FILE}"
+    record_mitigation_decision "${ip}" "${reason}" "${stage}" "${confidence}" "${impact}" "block"
     ip_trust_update "${ip}" 0 3 "dynamic-block" "${reason}"
 }
 
@@ -1206,18 +1455,27 @@ prune_unblock_portal_accept_rule_v4() {
     while iptables -C INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1; do
         iptables -D INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1 || break
     done
+    while iptables -C INPUT -p tcp --dport "${port}" -m conntrack --ctstate NEW -m hashlimit --hashlimit-name pteroprotect_unblock_v4 --hashlimit-above "${UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN:-12}"/minute --hashlimit-burst "${UNBLOCK_PORTAL_NEW_PER_IP_BURST:-24}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP >/dev/null 2>&1; do
+        iptables -D INPUT -p tcp --dport "${port}" -m conntrack --ctstate NEW -m hashlimit --hashlimit-name pteroprotect_unblock_v4 --hashlimit-above "${UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN:-12}"/minute --hashlimit-burst "${UNBLOCK_PORTAL_NEW_PER_IP_BURST:-24}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP >/dev/null 2>&1 || break
+    done
 }
 
 ensure_unblock_portal_accept_rule_v4() {
     local port="$1"
     prune_unblock_portal_accept_rule_v4 "${port}"
     iptables -I INPUT 1 -p tcp --dport "${port}" -j ACCEPT
+    iptables -I INPUT 1 -p tcp --dport "${port}" -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_unblock_v4 --hashlimit-above "${UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN:-12}"/minute \
+        --hashlimit-burst "${UNBLOCK_PORTAL_NEW_PER_IP_BURST:-24}" --hashlimit-mode srcip --hashlimit-srcmask 32 -j DROP
 }
 
 prune_unblock_portal_accept_rule_v6() {
     local port="$1"
     while ip6tables -C INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1; do
         ip6tables -D INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1 || break
+    done
+    while ip6tables -C INPUT -p tcp --dport "${port}" -m conntrack --ctstate NEW -m hashlimit --hashlimit-name pteroprotect_unblock_v6 --hashlimit-above "${UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN:-12}"/minute --hashlimit-burst "${UNBLOCK_PORTAL_NEW_PER_IP_BURST:-24}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP >/dev/null 2>&1; do
+        ip6tables -D INPUT -p tcp --dport "${port}" -m conntrack --ctstate NEW -m hashlimit --hashlimit-name pteroprotect_unblock_v6 --hashlimit-above "${UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN:-12}"/minute --hashlimit-burst "${UNBLOCK_PORTAL_NEW_PER_IP_BURST:-24}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP >/dev/null 2>&1 || break
     done
 }
 
@@ -1226,6 +1484,9 @@ ensure_unblock_portal_accept_rule_v6() {
     command -v ip6tables >/dev/null 2>&1 || return 0
     prune_unblock_portal_accept_rule_v6 "${port}"
     ip6tables -I INPUT 1 -p tcp --dport "${port}" -j ACCEPT
+    ip6tables -I INPUT 1 -p tcp --dport "${port}" -m conntrack --ctstate NEW -m hashlimit \
+        --hashlimit-name pteroprotect_unblock_v6 --hashlimit-above "${UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN:-12}"/minute \
+        --hashlimit-burst "${UNBLOCK_PORTAL_NEW_PER_IP_BURST:-24}" --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
 }
 
 ensure_fail2ban_unblock_bypass_v4() {
@@ -1528,10 +1789,215 @@ extract_path_swarm_stats() {
         }' | sed '/^$/d'"
 }
 
+extract_l7_fingerprint_stats() {
+    local log_tail_lines="$1"
+    local ignore_re="$2"
+    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${ignore_re}' '
+        function norm_path(path) {
+            gsub(/\\/+/, \"/\", path);
+            sub(/[?].*$/, \"\", path);
+            gsub(/\\/api\\/client\\/servers\\/[^\\/]+/, \"/api/client/servers/:id\", path);
+            gsub(/\\/api\\/application\\/servers\\/[0-9]+/, \"/api/application/servers/:id\", path);
+            gsub(/[0-9a-fA-F-]{24,}/, \":token\", path);
+            return path;
+        }
+        function ua_family(ua, low) {
+            low = tolower(ua);
+            if (low ~ /curl|wget|python|aiohttp|httpx|go-http|java|okhttp|node-fetch|axios/) return \"script\";
+            if (low ~ /bot|spider|crawler|scanner|sqlmap|nikto/) return \"bot\";
+            if (low ~ /mozilla|chrome|safari|firefox|edge/) return \"browser\";
+            if (ua == \"\" || ua == \"-\") return \"none\";
+            return \"other\";
+        }
+        function status_family(status) {
+            if (status ~ /^[0-9][0-9][0-9]$/) return substr(status, 1, 1) \"xx\";
+            return \"unk\";
+        }
+        {
+            split($0, q, \"\\\"\");
+            if (length(q[2]) == 0) next;
+            split(q[2], req, \" \");
+            method=req[1]; path=req[2];
+            if (method == \"\" || path == \"\") next;
+            path=norm_path(path);
+            if (path ~ ignore_re) next;
+            status=\"0\";
+            split(q[3], tail, \" \");
+            for (i in tail) {
+                if (tail[i] ~ /^[0-9][0-9][0-9]$/) { status=tail[i]; break; }
+            }
+            ip=$1;
+            gsub(/,.*/, \"\", ip);
+            gsub(/^\\[/, \"\", ip);
+            gsub(/\\]$/, \"\", ip);
+            ua=q[6];
+            key=method \"|\" path \"|\" status_family(status) \"|\" ua_family(ua);
+            count[key]++;
+            if (status ~ /^(429|499|5[0-9][0-9])$/) errors[key]++;
+            ipkey=key SUBSEP ip;
+            if (!(ipkey in seen_ip)) {
+                seen_ip[ipkey]=1;
+                uniq[key]++;
+            }
+            ip_count[ipkey]++;
+        }
+        END {
+            for (key in count) {
+                printf \"FP\\t%s\\t%s\\t%s\\t%s\\n\", key, count[key]+0, uniq[key]+0, errors[key]+0;
+            }
+            for (ipkey in ip_count) {
+                split(ipkey, parts, SUBSEP);
+                printf \"IP\\t%s\\t%s\\t%s\\n\", parts[1], parts[2], ip_count[ipkey]+0;
+            }
+        }' | sed '/^$/d'"
+}
+
 extract_service_pulse_count() {
     local log_tail_lines="$1"
     local service_re="$2"
     safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v service_re='${service_re}' 'NF >= 7 { path=\$7; gsub(/\\/+/, \"/\", path); if (path ~ service_re) count++ } END {print count+0}'"
+}
+
+update_heavy_hitter_state() {
+    local family="$1"
+    local rows="$2"
+    local now tmp_file max_keys
+    now="$(date +%s)"
+    max_keys="${HEAVY_HITTER_MAX_KEYS:-2048}"
+    [[ "${max_keys}" =~ ^[0-9]+$ ]] || max_keys=2048
+    (( max_keys >= 128 )) || max_keys=128
+    tmp_file="${HEAVY_HITTER_FILE}.tmp"
+
+    awk -F '\t' -v now="${now}" -v family="${family}" '
+        NF >= 4 && now - $4 <= 3600 && $1 != family { print $0 }
+    ' "${HEAVY_HITTER_FILE}" 2>/dev/null > "${tmp_file}" || true
+
+    while read -r line; do
+        [[ -z "${line}" ]] && continue
+        local count key
+        count="$(awk '{print $1}' <<< "${line}")"
+        key="$(awk '{print $2}' <<< "${line}")"
+        [[ "${count}" =~ ^[0-9]+$ ]] || continue
+        [[ -n "${key}" ]] || continue
+        printf '%s\t%s\t%s\t%s\n' "${family}" "${key}" "${count}" "${now}" >> "${tmp_file}"
+    done <<< "${rows}"
+
+    tail -n "${max_keys}" "${tmp_file}" > "${tmp_file}.tail" 2>/dev/null || true
+    mv "${tmp_file}.tail" "${HEAVY_HITTER_FILE}"
+    rm -f "${tmp_file}" >/dev/null 2>&1 || true
+}
+
+update_path_heavy_hitter_state() {
+    local rows="$1"
+    local now tmp_file max_keys
+    now="$(date +%s)"
+    max_keys="${HEAVY_HITTER_MAX_KEYS:-2048}"
+    [[ "${max_keys}" =~ ^[0-9]+$ ]] || max_keys=2048
+    (( max_keys >= 128 )) || max_keys=128
+    tmp_file="${HEAVY_HITTER_FILE}.tmp"
+
+    awk -F '\t' -v now="${now}" '
+        NF >= 4 && now - $4 <= 3600 && $1 != "path" { print $0 }
+    ' "${HEAVY_HITTER_FILE}" 2>/dev/null > "${tmp_file}" || true
+
+    while IFS=$'\t' read -r kind path req uniq; do
+        [[ "${kind}" == "PATH" ]] || continue
+        [[ -n "${path}" ]] || continue
+        [[ "${req}" =~ ^[0-9]+$ ]] || continue
+        [[ "${uniq}" =~ ^[0-9]+$ ]] || uniq=0
+        printf 'path\t%s\t%s/%s\t%s\n' "${path}" "${req}" "${uniq}" "${now}" >> "${tmp_file}"
+    done <<< "${rows}"
+
+    tail -n "${max_keys}" "${tmp_file}" > "${tmp_file}.tail" 2>/dev/null || true
+    mv "${tmp_file}.tail" "${HEAVY_HITTER_FILE}"
+    rm -f "${tmp_file}" >/dev/null 2>&1 || true
+}
+
+heavy_hitter_previous_count() {
+    local family="$1"
+    local key="$2"
+    awk -F '\t' -v family="${family}" -v key="${key}" '
+        $1 == family && $2 == key {
+            split($3, parts, "/");
+            value = parts[1] + 0;
+            if (value > best) best = value;
+        }
+        END { print best + 0 }
+    ' "${HEAVY_HITTER_FILE}" 2>/dev/null || printf '0'
+}
+
+fingerprint_baseline_value() {
+    local fp="$1"
+    awk -F '\t' -v fp="${fp}" '$1 == fp {print $2; exit}' "${FINGERPRINT_BASELINE_FILE}" 2>/dev/null || printf '0'
+}
+
+update_fingerprint_baseline() {
+    local stats="$1"
+    local now tmp_file
+    now="$(date +%s)"
+    tmp_file="${FINGERPRINT_BASELINE_FILE}.tmp"
+
+    awk -F '\t' -v now="${now}" '
+        NF >= 5 && now - $5 <= 604800 { print $0 }
+    ' "${FINGERPRINT_BASELINE_FILE}" 2>/dev/null > "${tmp_file}" || true
+
+    while IFS=$'\t' read -r kind fp count uniq errors; do
+        [[ "${kind}" == "FP" ]] || continue
+        [[ -n "${fp}" ]] || continue
+        [[ "${count}" =~ ^[0-9]+$ ]] || continue
+        local prev samples next cap old_row old_errors
+        old_row="$(awk -F '\t' -v fp="${fp}" '$1 == fp {print $0; exit}' "${FINGERPRINT_BASELINE_FILE}" 2>/dev/null || true)"
+        prev=0; samples=0; old_errors=0
+        if [[ -n "${old_row}" ]]; then
+            IFS=$'\t' read -r _fp prev samples _old_ts old_errors <<< "${old_row}"
+        fi
+        [[ "${prev}" =~ ^[0-9]+$ ]] || prev=0
+        [[ "${samples}" =~ ^[0-9]+$ ]] || samples=0
+        [[ "${old_errors}" =~ ^[0-9]+$ ]] || old_errors=0
+        cap=$(( prev > 0 ? prev * FINGERPRINT_BASELINE_OUTLIER_FACTOR : count ))
+        if (( cap > 0 && count > cap )); then
+            count="${cap}"
+        fi
+        if (( prev <= 0 )); then
+            next="${count}"
+        else
+            next=$(( (prev * (100 - FINGERPRINT_BASELINE_ALPHA_PCT) + count * FINGERPRINT_BASELINE_ALPHA_PCT) / 100 ))
+            if (( next < 1 )); then next=1; fi
+        fi
+        samples=$(( samples + 1 ))
+        awk -F '\t' -v fp="${fp}" '$1 != fp {print $0}' "${tmp_file}" > "${tmp_file}.new" 2>/dev/null || true
+        mv "${tmp_file}.new" "${tmp_file}"
+        printf '%s\t%s\t%s\t%s\t%s\n' "${fp}" "${next}" "${samples}" "${now}" "${errors}" >> "${tmp_file}"
+    done <<< "${stats}"
+
+    mv "${tmp_file}" "${FINGERPRINT_BASELINE_FILE}"
+}
+
+trim_attack_rules() {
+    local now tmp_file
+    now="$(date +%s)"
+    tmp_file="${ATTACK_RULE_FILE}.tmp"
+    awk -F '\t' -v now="${now}" 'NF >= 6 && $5 > now {print $0}' "${ATTACK_RULE_FILE}" 2>/dev/null > "${tmp_file}" || true
+    mv "${tmp_file}" "${ATTACK_RULE_FILE}"
+}
+
+set_attack_rule() {
+    local fp="$1"
+    local confidence="$2"
+    local impact="$3"
+    local reason="$4"
+    local ttl="$5"
+    local now until tmp_file
+    now="$(date +%s)"
+    [[ "${ttl}" =~ ^[0-9]+$ ]] || ttl="${FINGERPRINT_RULE_TTL_SEC:-180}"
+    until=$(( now + ttl ))
+    trim_attack_rules
+    tmp_file="${ATTACK_RULE_FILE}.tmp"
+    awk -F '\t' -v fp="${fp}" '$1 != fp {print $0}' "${ATTACK_RULE_FILE}" 2>/dev/null > "${tmp_file}" || true
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${fp}" "${confidence}" "${impact}" "${reason}" "${until}" "${now}" >> "${tmp_file}"
+    mv "${tmp_file}" "${ATTACK_RULE_FILE}"
+    printf '[attack-rule] fp=%s confidence=%s impact=%s ttl=%s reason=%s\n' "${fp}" "${confidence}" "${impact}" "${ttl}" "${reason}" >> "${LOG_FILE}"
+    printf '[attack-rule] fp=%s confidence=%s impact=%s ttl=%s reason=%s\n' "${fp}" "${confidence}" "${impact}" "${ttl}" "${reason}" >> "${LATEST_FILE}"
 }
 
 update_tenant_history() {
@@ -1800,10 +2266,10 @@ detect_and_block_offenders() {
     overload_fast_enabled="${OVERLOAD_FAST_BAN_ENABLED:-1}"
     overload_fast_factor="${OVERLOAD_FAST_BAN_FACTOR_PCT:-70}"
     overload_fast_bot_factor="${OVERLOAD_FAST_BAN_BOT_FACTOR_PCT:-50}"
-    [[ "${overload_fast_factor}" =~ ^[0-9]+$ ]] || overload_fast_factor=70
+    [[ "${overload_fast_factor}" =~ ^[0-9]+$ ]] || overload_fast_factor=130
     [[ "${overload_fast_bot_factor}" =~ ^[0-9]+$ ]] || overload_fast_bot_factor=50
     if (( overload_fast_factor < 20 )); then overload_fast_factor=20; fi
-    if (( overload_fast_factor > 100 )); then overload_fast_factor=100; fi
+    if (( overload_fast_factor > 300 )); then overload_fast_factor=300; fi
     if (( overload_fast_bot_factor < 10 )); then overload_fast_bot_factor=10; fi
     if (( overload_fast_bot_factor > 100 )); then overload_fast_bot_factor=100; fi
     overload_state=0
@@ -1869,6 +2335,7 @@ detect_and_block_offenders() {
             fast_syn_threshold=$(( (syn_threshold * overload_fast_bot_factor + 99) / 100 ))
             if (( fast_syn_threshold < 2 )); then fast_syn_threshold=2; fi
         fi
+        if (( fast_syn_threshold < syn_threshold )); then fast_syn_threshold="${syn_threshold}"; fi
         if (( overload_state == 1 && count >= fast_syn_threshold )) && (( human_nav == 0 )) && (( trust_mul <= 1 || bot_nav == 1 )); then
             add_ipset_block "${ip}" "syn-recv-overload-fast:${count}/${syn_global}" "${block_ttl}"
         elif (( syn_global >= global_threshold && count >= hard_syn_local )); then
@@ -1917,6 +2384,7 @@ detect_and_block_offenders() {
             fast_est_threshold=$(( (est_threshold * overload_fast_bot_factor + 99) / 100 ))
             if (( fast_est_threshold < 2 )); then fast_est_threshold=2; fi
         fi
+        if (( fast_est_threshold < est_threshold )); then fast_est_threshold="${est_threshold}"; fi
         if (( overload_state == 1 && count >= fast_est_threshold )) && (( human_nav == 0 )) && (( trust_mul <= 1 || bot_nav == 1 )); then
             add_ipset_block "${ip}" "established-overload-fast:${count}" "${block_ttl}"
         elif (( count >= hard_est_local )); then
@@ -1965,6 +2433,7 @@ detect_and_block_offenders() {
             fast_http_threshold=$(( (access_threshold * overload_fast_bot_factor + 99) / 100 ))
             if (( fast_http_threshold < 2 )); then fast_http_threshold=2; fi
         fi
+        if (( fast_http_threshold < access_threshold )); then fast_http_threshold="${access_threshold}"; fi
         if (( overload_state == 1 && count >= fast_http_threshold )) && (( human_nav == 0 )) && (( trust_mul <= 1 || bot_nav == 1 )); then
             add_ipset_block "${ip}" "http-access-overload-fast:${count}" "${block_ttl}"
         elif (( count >= hard_http_local )); then
@@ -2143,6 +2612,76 @@ detect_proxy_swarm_patterns() {
     done <<< "${swarm_stats}"
 
     printf '%s' "${triggered}"
+}
+
+detect_l7_fingerprint_floods() {
+    local fp_stats="$1"
+    local kind fp count uniq errors baseline threshold confidence impact err_pct collision_pct line_ip ip ip_req
+    local -A hot_fp fp_conf fp_impact fp_reason
+
+    [[ "${FINGERPRINT_MITIGATION_ENABLED:-1}" == "1" ]] || return 0
+
+    while IFS=$'\t' read -r kind fp count uniq errors; do
+        [[ "${kind}" == "FP" ]] || continue
+        [[ -n "${fp}" ]] || continue
+        [[ "${count}" =~ ^[0-9]+$ ]] || continue
+        [[ "${uniq}" =~ ^[0-9]+$ ]] || uniq=0
+        [[ "${errors}" =~ ^[0-9]+$ ]] || errors=0
+
+        baseline="$(fingerprint_baseline_value "${fp}")"
+        [[ "${baseline}" =~ ^[0-9]+$ ]] || baseline=0
+        threshold="${FINGERPRINT_MIN_REQ_THRESHOLD}"
+        if (( baseline > 0 )); then
+            local adaptive_threshold
+            adaptive_threshold=$(( baseline * FINGERPRINT_DEVIATION_MULTIPLIER ))
+            (( adaptive_threshold > threshold )) && threshold="${adaptive_threshold}"
+        fi
+        (( threshold < FINGERPRINT_MIN_REQ_THRESHOLD )) && threshold="${FINGERPRINT_MIN_REQ_THRESHOLD}"
+        (( count >= threshold )) || continue
+
+        err_pct=0
+        if (( count > 0 )); then
+            err_pct=$(( errors * 100 / count ))
+        fi
+        collision_pct=0
+        if (( count > 0 && baseline > 0 )); then
+            collision_pct=$(( baseline * 100 / count ))
+            (( collision_pct > 100 )) && collision_pct=100
+        fi
+
+        confidence=62
+        (( count >= threshold * 2 )) && confidence=$(( confidence + 10 ))
+        (( uniq >= FINGERPRINT_UNIQUE_IP_MIN )) && confidence=$(( confidence + 8 ))
+        (( err_pct >= ORIGIN_ERROR_CONFIDENCE_MIN_PCT )) && confidence=$(( confidence + 14 ))
+        [[ "${fp}" == *"|script" || "${fp}" == *"|bot" || "${fp}" == *"|none" ]] && confidence=$(( confidence + 8 ))
+        (( collision_pct >= 50 )) && confidence=$(( confidence - 18 ))
+        confidence="$(clamp_score "${confidence}")"
+
+        impact=$(( 40 + collision_pct / 2 ))
+        [[ "${fp}" == *"|browser" ]] && impact=$(( impact + 15 ))
+        (( err_pct >= ORIGIN_ERROR_CONFIDENCE_MIN_PCT )) && impact=$(( impact - 15 ))
+        impact="$(clamp_score "${impact}")"
+
+        if (( confidence >= FINGERPRINT_RULE_CONFIDENCE_MIN )); then
+            hot_fp["${fp}"]=1
+            fp_conf["${fp}"]="${confidence}"
+            fp_impact["${fp}"]="${impact}"
+            fp_reason["${fp}"]="fingerprint-flood:${count}/${baseline}:uniq=${uniq}:err=${err_pct}:fp=${fp}"
+            set_attack_rule "${fp}" "${confidence}" "${impact}" "${fp_reason[${fp}]}" "${FINGERPRINT_RULE_TTL_SEC}"
+        else
+            printf '[fingerprint] observe fp=%s count=%s baseline=%s uniq=%s err_pct=%s confidence=%s impact=%s\n' \
+                "${fp}" "${count}" "${baseline}" "${uniq}" "${err_pct}" "${confidence}" "${impact}" >> "${LATEST_FILE}"
+        fi
+    done <<< "${fp_stats}"
+
+    while IFS=$'\t' read -r kind fp ip ip_req; do
+        [[ "${kind}" == "IP" ]] || continue
+        [[ -n "${fp}" && -n "${ip}" ]] || continue
+        [[ "${ip_req}" =~ ^[0-9]+$ ]] || continue
+        [[ -n "${hot_fp[${fp}]:-}" ]] || continue
+        (( ip_req >= FINGERPRINT_PER_IP_REQ_MIN )) || continue
+        add_ipset_block "${ip}" "${fp_reason[${fp}]}" "${BLOCK_TTL}" "${fp_conf[${fp}]}" "${fp_impact[${fp}]}" "auto"
+    done <<< "${fp_stats}"
 }
 
 update_ip_trust_from_rate_samples() {
@@ -2369,7 +2908,7 @@ while true; do
     CLEAR_THRESHOLD_HARD_MULTIPLIER="$(clamp_min_int "$(read_network_setting host_clear_threshold_hard_multiplier 3)" 2)"
     DYNAMIC_BLOCK_DRY_RUN="$(normalize_bool "$(read_network_setting dynamic_block_dry_run 0)")"
     SELF_UNBLOCK_ESSENTIALS="$(normalize_bool "$(read_network_setting self_unblock_essentials 1)")"
-    HTTP_IGNORE_PATH_REGEX="$(read_network_setting host_http_ignore_path_regex '^/api/client/servers/.+/websocket$|^/api/remote/')"
+    HTTP_IGNORE_PATH_REGEX="$(read_network_setting host_http_ignore_path_regex '^/__pteroprotect/challenge(/|$)|^/locales/|^/assets/|^/favicon\\.ico$|^/robots\\.txt$|^/api/client/servers/.+/websocket$|^/api/remote/')"
     HTTP_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${HTTP_IGNORE_PATH_REGEX}")"
     SELF_DDOS_IGNORE_PATH_REGEX="$(read_network_setting self_ddos_ignore_path_regex '^$')"
     if [[ -z "${SELF_DDOS_IGNORE_PATH_REGEX}" || "${SELF_DDOS_IGNORE_PATH_REGEX}" == "^$" ]]; then
@@ -2378,6 +2917,9 @@ while true; do
     SELF_DDOS_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${SELF_DDOS_IGNORE_PATH_REGEX}")"
     WHITELIST_PANEL_APP_URL_HOST="$(normalize_bool "$(read_network_setting whitelist_panel_app_url_host 0)")"
     WHITELIST_OVERLOAD_BYPASS_ENABLED="$(normalize_bool "$(read_network_setting whitelist_overload_bypass_enabled 1)")"
+    BLOCK_CONFIRM_ENABLED="$(normalize_bool "$(read_network_setting block_confirm_enabled 1)")"
+    BLOCK_CONFIRM_OBSERVATIONS="$(clamp_min_int "$(read_network_setting block_confirm_observations 2)" 1)"
+    BLOCK_CONFIRM_WINDOW_SEC="$(clamp_min_int "$(read_network_setting block_confirm_window_sec 90)" 10)"
     SELF_DDOS_QUARANTINE_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_quarantine_enabled 1)")"
     MADEINWEB_DELETE_SWEEP_INTERVAL_SEC="$(clamp_min_int "$(read_network_setting madeinweb_delete_sweep_interval_sec 30)" 5)"
     sweep_suspended_madeinweb_servers
@@ -2387,6 +2929,8 @@ while true; do
     SELF_DDOS_RATE_LIMIT_BURST="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_burst 20)" 1)"
     SELF_DDOS_RATE_LIMIT_TTL_SEC="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_ttl_sec 900)" 30)"
     SELF_DDOS_FLOW_WATCH_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_flow_watch_enabled 1)")"
+    UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN="$(clamp_min_int "$(read_network_setting unblock_portal_new_per_ip_per_min 12)" 2)"
+    UNBLOCK_PORTAL_NEW_PER_IP_BURST="$(clamp_min_int "$(read_network_setting unblock_portal_new_per_ip_burst 24)" 2)"
     SELF_DDOS_RATE_LIMIT_CHAIN_READY=0
     OWNER_QUARANTINE_THRESHOLD="$(clamp_min_int "$(read_network_setting owner_quarantine_threshold 5)" 1)"
     OWNER_QUARANTINE_WINDOW_SEC="$(clamp_min_int "$(read_network_setting owner_quarantine_window_sec 86400)" 300)"
@@ -2443,14 +2987,14 @@ while true; do
     MODE_EMERGENCY_HTTP_ACCESS_THRESHOLD="$(clamp_min_int "$(read_network_setting mode_emergency_http_access_threshold 360)" 20)"
     MODE_EMERGENCY_TTL_SEC="$(clamp_min_int "$(read_network_setting mode_emergency_ttl_sec 180)" 30)"
     OVERLOAD_FAST_BAN_ENABLED="$(normalize_bool "$(read_network_setting overload_fast_ban_enabled 1)")"
-    OVERLOAD_FAST_BAN_FACTOR_PCT="$(clamp_min_int "$(read_network_setting overload_fast_ban_factor_pct 70)" 20)"
+    OVERLOAD_FAST_BAN_FACTOR_PCT="$(clamp_min_int "$(read_network_setting overload_fast_ban_factor_pct 130)" 20)"
     OVERLOAD_FAST_BAN_BOT_FACTOR_PCT="$(clamp_min_int "$(read_network_setting overload_fast_ban_bot_factor_pct 50)" 10)"
     NORMAL_PROFILE_FORCE_PROTECTION="$(normalize_bool "$(read_network_setting normal_profile_force_protection 1)")"
     NORMAL_PROFILE_MAX_BLOCK_TTL_SEC="$(clamp_min_int "$(read_network_setting normal_profile_max_block_ttl_sec 1800)" 60)"
     NORMAL_PROFILE_MAX_SYN_RECV_GLOBAL="$(clamp_min_int "$(read_network_setting normal_profile_max_syn_recv_global 260)" 10)"
     NORMAL_PROFILE_MAX_SYN_RECV_PER_IP="$(clamp_min_int "$(read_network_setting normal_profile_max_syn_recv_per_ip 40)" 3)"
     NORMAL_PROFILE_MAX_ESTABLISHED_PER_IP="$(clamp_min_int "$(read_network_setting normal_profile_max_established_per_ip 120)" 5)"
-    NORMAL_PROFILE_MAX_HTTP_ACCESS_PER_WINDOW="$(clamp_min_int "$(read_network_setting normal_profile_max_http_access_per_window 64)" 10)"
+    NORMAL_PROFILE_MAX_HTTP_ACCESS_PER_WINDOW="$(clamp_min_int "$(read_network_setting normal_profile_max_http_access_per_window 240)" 10)"
     EMERGENCY_NGINX_PROFILE_ENABLED="$(normalize_bool "$(read_network_setting emergency_nginx_profile_enabled 1)")"
     EMERGENCY_NGINX_RELOAD_MIN_INTERVAL_SEC="$(clamp_min_int "$(read_network_setting emergency_nginx_reload_min_interval_sec 60)" 10)"
     SERVICE_ACTIVITY_PATH_REGEX="$(read_network_setting service_activity_path_regex '^/api/remote/|^/api/client/servers/.+/websocket$')"
@@ -2479,6 +3023,27 @@ while true; do
     ADAPTIVE_BROWNOUT_TTL_SEC="$(clamp_min_int "$(read_network_setting adaptive_brownout_ttl_sec 60)" 30)"
     ADAPTIVE_BROWNOUT_MIN_INTERVAL_SEC="$(clamp_min_int "$(read_network_setting adaptive_brownout_min_interval_sec 120)" 30)"
     ADAPTIVE_BROWNOUT_MULTIPLIER_PCT="$(clamp_percentage "$(read_network_setting adaptive_brownout_multiplier_pct 420)" 220 2000)"
+    BLOCK_CONFIDENCE_MIN="$(clamp_min_int "$(read_network_setting block_confidence_min 70)" 1)"
+    BLOCK_IMPACT_MAX="$(clamp_min_int "$(read_network_setting block_impact_max 45)" 0)"
+    CHALLENGE_CONFIDENCE_MIN="$(clamp_min_int "$(read_network_setting challenge_confidence_min 55)" 1)"
+    CHALLENGE_IMPACT_MAX="$(clamp_min_int "$(read_network_setting challenge_impact_max 75)" 0)"
+    HIGH_CONFIDENCE_BLOCK_IMPACT_MAX="$(clamp_min_int "$(read_network_setting high_confidence_block_impact_max 80)" 0)"
+    HEAVY_HITTER_MAX_KEYS="$(clamp_min_int "$(read_network_setting heavy_hitter_max_keys 2048)" 128)"
+    if (( BLOCK_CONFIDENCE_MIN > 100 )); then BLOCK_CONFIDENCE_MIN=100; fi
+    if (( BLOCK_IMPACT_MAX > 100 )); then BLOCK_IMPACT_MAX=100; fi
+    if (( CHALLENGE_CONFIDENCE_MIN > 100 )); then CHALLENGE_CONFIDENCE_MIN=100; fi
+    if (( CHALLENGE_IMPACT_MAX > 100 )); then CHALLENGE_IMPACT_MAX=100; fi
+    if (( HIGH_CONFIDENCE_BLOCK_IMPACT_MAX > 100 )); then HIGH_CONFIDENCE_BLOCK_IMPACT_MAX=100; fi
+    FINGERPRINT_MITIGATION_ENABLED="$(normalize_bool "$(read_network_setting fingerprint_mitigation_enabled 1)")"
+    FINGERPRINT_MIN_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting fingerprint_min_req_threshold 80)" 10)"
+    FINGERPRINT_UNIQUE_IP_MIN="$(clamp_min_int "$(read_network_setting fingerprint_unique_ip_min 3)" 1)"
+    FINGERPRINT_PER_IP_REQ_MIN="$(clamp_min_int "$(read_network_setting fingerprint_per_ip_req_min 8)" 1)"
+    FINGERPRINT_DEVIATION_MULTIPLIER="$(clamp_min_int "$(read_network_setting fingerprint_deviation_multiplier 4)" 2)"
+    FINGERPRINT_RULE_TTL_SEC="$(clamp_min_int "$(read_network_setting fingerprint_rule_ttl_sec 180)" 30)"
+    FINGERPRINT_RULE_CONFIDENCE_MIN="$(clamp_min_int "$(read_network_setting fingerprint_rule_confidence_min 72)" 1)"
+    FINGERPRINT_BASELINE_ALPHA_PCT="$(clamp_percentage "$(read_network_setting fingerprint_baseline_alpha_pct 12)" 2 60)"
+    FINGERPRINT_BASELINE_OUTLIER_FACTOR="$(clamp_min_int "$(read_network_setting fingerprint_baseline_outlier_factor 3)" 2)"
+    ORIGIN_ERROR_CONFIDENCE_MIN_PCT="$(clamp_percentage "$(read_network_setting origin_error_confidence_min_pct 20)" 1 100)"
     IP_TRUST_ENABLED="$(normalize_bool "$(read_network_setting ip_trust_enabled 1)")"
     IP_TRUST_PROMOTION_OBS="$(clamp_min_int "$(read_network_setting ip_trust_promotion_observations 80)" 10)"
     IP_TRUST_VTRUST_OBS="$(clamp_min_int "$(read_network_setting ip_trust_vtrusted_observations 240)" 20)"
@@ -2491,6 +3056,7 @@ while true; do
     IP_TRUST_BAD_BAD="$(clamp_min_int "$(read_network_setting ip_trust_bad_threshold 8)" 1)"
     IP_TRUST_WORST_BAD="$(clamp_min_int "$(read_network_setting ip_trust_worst_threshold 16)" 1)"
     IP_TRUST_TIER_TTL_SEC="$(clamp_min_int "$(read_network_setting ip_trust_tier_ttl_sec 86400)" 60)"
+    IP_TRUST_RESTORE_MAX_RECORDS="$(clamp_min_int "$(read_network_setting ip_trust_restore_max_records 5000)" 500)"
     if (( IP_TRUST_SCORE_MIN > IP_TRUST_SCORE_MAX )); then
         IP_TRUST_SCORE_MIN=-200
         IP_TRUST_SCORE_MAX=400
@@ -2528,8 +3094,8 @@ while true; do
             SELF_DDOS_RATE_LIMIT_RPS=$(( SELF_DDOS_RATE_LIMIT_RPS * 70 / 100 ))
             SELF_DDOS_RATE_LIMIT_BURST=$(( SELF_DDOS_RATE_LIMIT_BURST * 70 / 100 ))
 
-            if (( OVERLOAD_FAST_BAN_FACTOR_PCT > 55 )); then
-                OVERLOAD_FAST_BAN_FACTOR_PCT=55
+            if (( OVERLOAD_FAST_BAN_FACTOR_PCT < 110 )); then
+                OVERLOAD_FAST_BAN_FACTOR_PCT=110
             fi
             if (( OVERLOAD_FAST_BAN_BOT_FACTOR_PCT > 35 )); then
                 OVERLOAD_FAST_BAN_BOT_FACTOR_PCT=35
@@ -2632,6 +3198,7 @@ while true; do
     ensure_lightweight_block_hooks
     ip_trust_restore_once
     cleanup_stale_brownout_state
+    trim_attack_rules
 
     timestamp="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
@@ -2643,7 +3210,7 @@ while true; do
     established_ip_counts="$(extract_remote_ip_counts established)"
     top_established="$(sed -n '1,10p' <<< "${established_ip_counts}")"
     top_syn="$(sed -n '1,10p' <<< "${syn_ip_counts}")"
-    access_ip_counts_raw="$(safe_cmd "tail -n ${LOG_TAIL_LINES} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${HTTP_IGNORE_PATH_REGEX}' 'NF >= 7 { path=\$7; gsub(/\\/+/, \"/\", path); if (path !~ ignore_re) print \$1 }' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr")"
+    access_ip_counts_raw="$(safe_cmd "tail -n ${LOG_TAIL_LINES} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${HTTP_IGNORE_PATH_REGEX}' 'NF >= 9 { path=\$7; status=\$9; gsub(/\\/+/, \"/\", path); if (path ~ ignore_re) next; if (status !~ /^[23][0-9][0-9]$/) next; print \$1 }' | sed 's/,.*//; s/\\[//g; s/\\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr")"
     access_ip_counts="$(filter_whitelist_ip_counts "${access_ip_counts_raw}")"
     server_identifier_counts="$(extract_server_identifier_counts "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
     server_identifier_ip_stats="$(extract_server_identifier_ip_stats "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
@@ -2654,6 +3221,15 @@ while true; do
     behavior_ip_stats="$(extract_behavior_ip_stats "${LOG_TAIL_LINES}" "${HTTP_IGNORE_PATH_REGEX}")"
     BEHAVIOR_IP_STATS="${behavior_ip_stats}"
     path_swarm_stats="$(extract_path_swarm_stats "${LOG_TAIL_LINES}" "${HTTP_IGNORE_PATH_REGEX}")"
+    fingerprint_stats="$(extract_l7_fingerprint_stats "${LOG_TAIL_LINES}" "${HTTP_IGNORE_PATH_REGEX}")"
+    update_heavy_hitter_state "syn" "${syn_ip_counts}"
+    update_heavy_hitter_state "established" "${established_ip_counts}"
+    update_heavy_hitter_state "http" "${access_ip_counts_raw}"
+    update_heavy_hitter_state "probe" "${probe_ip_counts}"
+    update_heavy_hitter_state "sqli" "${sqli_probe_ip_counts}"
+    update_path_heavy_hitter_state "${path_swarm_stats}"
+    detect_l7_fingerprint_floods "${fingerprint_stats}"
+    update_fingerprint_baseline "${fingerprint_stats}"
     top_http_access="$(sed -n '1,10p' <<< "${access_ip_counts}")"
     top_http_access_raw="$(sed -n '1,10p' <<< "${access_ip_counts_raw}")"
     top_server_identifiers="$(sed -n '1,10p' <<< "${server_identifier_counts}")"
@@ -2898,7 +3474,7 @@ while true; do
     {
         echo "=== ${timestamp} ==="
         echo "summary established=${established} syn_recv=${syn_recv} time_wait=${time_wait}"
-        echo "mitigation dynamic_enabled=${DYNAMIC_BLOCK_ENABLED} block_ttl=${BLOCK_TTL} syn_global_threshold=${SYN_RECV_GLOBAL_THRESHOLD} syn_per_ip_threshold=${SYN_RECV_PER_IP_THRESHOLD} est_per_ip_threshold=${ESTABLISHED_PER_IP_THRESHOLD} http_access_threshold=${HTTP_ACCESS_PER_WINDOW_THRESHOLD} trusted_login_ttl=${TRUSTED_LOGIN_TTL_SEC} trusted_login_multiplier=${TRUSTED_LOGIN_THRESHOLD_MULTIPLIER} clear_threshold_signals=${CLEAR_THRESHOLD_SIGNALS} clear_threshold_hard_multiplier=${CLEAR_THRESHOLD_HARD_MULTIPLIER} escalation_window=${ESCALATION_WINDOW_SEC} escalation_multiplier=${ESCALATION_MULTIPLIER} escalation_max_steps=${MAX_ESCALATION_STEPS} max_block_ttl=${MAX_BLACKHOLE_TTL_SEC}"
+        echo "mitigation dynamic_enabled=${DYNAMIC_BLOCK_ENABLED} block_ttl=${BLOCK_TTL} syn_global_threshold=${SYN_RECV_GLOBAL_THRESHOLD} syn_per_ip_threshold=${SYN_RECV_PER_IP_THRESHOLD} est_per_ip_threshold=${ESTABLISHED_PER_IP_THRESHOLD} http_access_threshold=${HTTP_ACCESS_PER_WINDOW_THRESHOLD} trusted_login_ttl=${TRUSTED_LOGIN_TTL_SEC} trusted_login_multiplier=${TRUSTED_LOGIN_THRESHOLD_MULTIPLIER} clear_threshold_signals=${CLEAR_THRESHOLD_SIGNALS} clear_threshold_hard_multiplier=${CLEAR_THRESHOLD_HARD_MULTIPLIER} escalation_window=${ESCALATION_WINDOW_SEC} escalation_multiplier=${ESCALATION_MULTIPLIER} escalation_max_steps=${MAX_ESCALATION_STEPS} max_block_ttl=${MAX_BLACKHOLE_TTL_SEC} block_confidence_min=${BLOCK_CONFIDENCE_MIN} block_impact_max=${BLOCK_IMPACT_MAX} challenge_confidence_min=${CHALLENGE_CONFIDENCE_MIN} challenge_impact_max=${CHALLENGE_IMPACT_MAX} heavy_hitter_max_keys=${HEAVY_HITTER_MAX_KEYS}"
         echo "--- top_established ---"
         echo "${top_established:-none}"
         echo "--- top_syn_recv ---"
@@ -2947,7 +3523,7 @@ while true; do
     {
         echo "=== ${timestamp} ==="
         echo "summary established=${established} syn_recv=${syn_recv} time_wait=${time_wait}"
-        echo "mitigation dynamic_enabled=${DYNAMIC_BLOCK_ENABLED} block_ttl=${BLOCK_TTL} syn_global_threshold=${SYN_RECV_GLOBAL_THRESHOLD} syn_per_ip_threshold=${SYN_RECV_PER_IP_THRESHOLD} est_per_ip_threshold=${ESTABLISHED_PER_IP_THRESHOLD} http_access_threshold=${HTTP_ACCESS_PER_WINDOW_THRESHOLD} trusted_login_ttl=${TRUSTED_LOGIN_TTL_SEC} trusted_login_multiplier=${TRUSTED_LOGIN_THRESHOLD_MULTIPLIER} clear_threshold_signals=${CLEAR_THRESHOLD_SIGNALS} clear_threshold_hard_multiplier=${CLEAR_THRESHOLD_HARD_MULTIPLIER} escalation_window=${ESCALATION_WINDOW_SEC} escalation_multiplier=${ESCALATION_MULTIPLIER} escalation_max_steps=${MAX_ESCALATION_STEPS} max_block_ttl=${MAX_BLACKHOLE_TTL_SEC}"
+        echo "mitigation dynamic_enabled=${DYNAMIC_BLOCK_ENABLED} block_ttl=${BLOCK_TTL} syn_global_threshold=${SYN_RECV_GLOBAL_THRESHOLD} syn_per_ip_threshold=${SYN_RECV_PER_IP_THRESHOLD} est_per_ip_threshold=${ESTABLISHED_PER_IP_THRESHOLD} http_access_threshold=${HTTP_ACCESS_PER_WINDOW_THRESHOLD} trusted_login_ttl=${TRUSTED_LOGIN_TTL_SEC} trusted_login_multiplier=${TRUSTED_LOGIN_THRESHOLD_MULTIPLIER} clear_threshold_signals=${CLEAR_THRESHOLD_SIGNALS} clear_threshold_hard_multiplier=${CLEAR_THRESHOLD_HARD_MULTIPLIER} escalation_window=${ESCALATION_WINDOW_SEC} escalation_multiplier=${ESCALATION_MULTIPLIER} escalation_max_steps=${MAX_ESCALATION_STEPS} max_block_ttl=${MAX_BLACKHOLE_TTL_SEC} block_confidence_min=${BLOCK_CONFIDENCE_MIN} block_impact_max=${BLOCK_IMPACT_MAX} challenge_confidence_min=${CHALLENGE_CONFIDENCE_MIN} challenge_impact_max=${CHALLENGE_IMPACT_MAX} heavy_hitter_max_keys=${HEAVY_HITTER_MAX_KEYS}"
         echo "--- top_established ---"
         echo "${top_established:-none}"
         echo "--- top_syn_recv ---"
