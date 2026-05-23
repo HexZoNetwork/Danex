@@ -2548,13 +2548,13 @@ PY
     elif [[ "${HTTP_AUTH_REQ_RATE_PER_MIN}" =~ ^[0-9]+$ ]]; then
         HTTP_AUTH_REQ_RATE_PER_MIN="${HTTP_AUTH_REQ_RATE_PER_MIN}r/s"
     else
-        HTTP_AUTH_REQ_RATE_PER_MIN="64r/s"
+        HTTP_AUTH_REQ_RATE_PER_MIN="10r/s"
     fi
-    HTTP_AUTH_REQ_RATE_PER_MIN="$(min_rps_rate "${HTTP_AUTH_REQ_RATE_PER_MIN}" 64)"
-    HTTP_REQ_RATE="$(min_rps_rate "${HTTP_REQ_RATE}" 64)"
-    RATE_API_CLIENT_RATE="$(min_rps_rate "${RATE_API_CLIENT_RATE}" 600)"
-    RATE_API_APPLICATION_RATE="$(min_rps_rate "${RATE_API_APPLICATION_RATE}" 1800)"
-    RATE_STATIC_RATE="$(min_rps_rate "${RATE_STATIC_RATE}" 64)"
+    HTTP_AUTH_REQ_RATE_PER_MIN="$(min_rps_rate "${HTTP_AUTH_REQ_RATE_PER_MIN}" 5)"
+    HTTP_REQ_RATE="$(min_rps_rate "${HTTP_REQ_RATE}" 10)"
+    RATE_API_CLIENT_RATE="$(min_rps_rate "${RATE_API_CLIENT_RATE}" 60)"
+    RATE_API_APPLICATION_RATE="$(min_rps_rate "${RATE_API_APPLICATION_RATE}" 120)"
+    RATE_STATIC_RATE="$(min_rps_rate "${RATE_STATIC_RATE}" 30)"
     perl -0pi -e "s#(zone=pteroprotect_req:\\d+m rate=)\\d+r/s;#\${1}${HTTP_REQ_RATE};#g; s#(zone=pteroprotect_auth:\\d+m rate=)\\d+r/[sm];#\${1}${HTTP_AUTH_REQ_RATE_PER_MIN};#g; s#(zone=pteroprotect_api_key_req:\\d+m rate=)\\d+r/s;#\${1}${RATE_API_CLIENT_RATE};#g; s#(zone=pteroprotect_api_global_req:\\d+m rate=)\\d+r/s;#\${1}${RATE_API_APPLICATION_RATE};#g; s#(zone=pteroprotect_global_req:\\d+m rate=)\\d+r/s;#\${1}${RATE_STATIC_RATE};#g;" "${NGINX_DIR}/conf.d/pteroprotect_http_zones.conf"
     python3 - "${NGINX_DIR}/conf.d/pteroprotect_realip.conf" "${REAL_IP_ENABLED_RAW}" "${REAL_IP_HEADER}" "${REAL_IP_RECURSIVE_RAW}" "${TRUSTED_PROXY_IPV4_CIDRS}" "${TRUSTED_PROXY_IPV6_CIDRS}" <<'PY'
 import ipaddress

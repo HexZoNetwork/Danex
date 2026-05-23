@@ -42,6 +42,8 @@ def main() -> int:
 
     assert_contains(exclusions, '^/admin/protect/terminal(/|$)', "terminal exclusion must be limited to protected terminal route")
     assert_not_contains(exclusions, '^/admin(/|$)', "terminal exclusion must not cover all admin routes")
+    assert_contains(exclusions, 'id:100103,phase:1,pass,nolog,ctl:ruleRemoveById=949110', "profile exclusion must not use broad allow")
+    assert_not_contains(exclusions, 'id:100103,phase:1,allow,nolog', "profile exclusion must not short-circuit later CRS checks")
 
     print("modsecurity config tests ok")
     return 0

@@ -38,7 +38,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
 using json = nlohmann::json;
 
 struct Settings {

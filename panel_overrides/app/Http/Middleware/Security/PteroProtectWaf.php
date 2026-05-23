@@ -204,6 +204,11 @@ class PteroProtectWaf
             return $this->blockedResponse($request, 429, 'Server is limiting non-critical concurrency.');
         }
 
+        if ($this->isRateLimitedBySubject($request, $category, $lockdown, $mode, $config, $decay)) {
+            $this->logDecision($config, 'deny', "subject:{$category}:{$mode}", $ip, $path, $userAgent);
+            return $this->blockedResponse($request, 429, 'Too many requests from this session.');
+        }
+
         if ($this->isRateLimited("pteroprotect:waf:ip:{$category}:{$ip}", $perIpLimit, $decay)) {
             $this->logDecision($config, 'deny', "per-ip:{$category}:{$mode}", $ip, $path, $userAgent);
             return $this->blockedResponse($request, 429, 'Too many requests.');
@@ -920,6 +925,72 @@ class PteroProtectWaf
         return false;
     }
 
+    private function isRateLimitedBySubject(
+        Request $request,
+        string $category,
+        bool $lockdown,
+        string $mode,
+        array $config,
+        int $decay
+    ): bool {
+        if (!($config['subject_limit_enabled'] ?? true)) {
+            return false;
+        }
+
+        $subject = $this->subjectRateKey($request, $config);
+        if ($subject === '') {
+            return false;
+        }
+
+        $limit = $this->subjectLimitForCategory($category, $lockdown, $mode, $config);
+        if ($limit <= 0) {
+            return false;
+        }
+
+        return $this->isRateLimited("pteroprotect:waf:subject:{$category}:{$subject}", $limit, $decay);
+    }
+
+    private function subjectRateKey(Request $request, array $config): string
+    {
+        $userId = trim((string) ($request->user()?->id ?? ''));
+        if ($userId !== '') {
+            return 'u:' . hash('sha256', $userId);
+        }
+
+        $cookieName = trim((string) ($config['challenge_cookie_name'] ?? 'pp_clearance')) ?: 'pp_clearance';
+        $clearance = trim((string) $request->cookie($cookieName, ''));
+        if ($clearance !== '' && PteroProtectClearanceToken::isValid($request, $clearance, $cookieName)) {
+            return 'c:' . hash('sha256', $clearance);
+        }
+
+        $sessionCookie = trim((string) $request->cookie(config('session.cookie', 'laravel_session'), ''));
+        if ($sessionCookie !== '') {
+            return 's:' . hash('sha256', $sessionCookie);
+        }
+
+        return '';
+    }
+
+    private function subjectLimitForCategory(string $category, bool $lockdown, string $mode, array $config): int
+    {
+        $limit = match ($category) {
+            'resource' => (int) ($lockdown
+                ? ($config['lockdown_resource_subject_limit'] ?? 180)
+                : ($config['resource_subject_limit'] ?? 900)),
+            'websocket' => (int) ($lockdown
+                ? ($config['lockdown_websocket_subject_limit'] ?? 70)
+                : ($config['websocket_subject_limit'] ?? 300)),
+            'api' => (int) ($lockdown
+                ? ($config['lockdown_api_subject_limit'] ?? 35)
+                : ($config['api_subject_limit'] ?? 120)),
+            'web' => (int) ($config['web_subject_limit'] ?? 180),
+            default => 0,
+        };
+
+        $multiplier = $this->modeMultiplier($mode, $config);
+        return max(1, (int) ceil($limit * $multiplier));
+    }
+
     private function isRateLimitedByClearance(
         Request $request,
         string $category,
@@ -1109,7 +1180,15 @@ class PteroProtectWaf
     ): bool {
         $fullTarget = $path . ($queryString !== '' ? '?' . $queryString : '');
 
-        if (($config['block_client_ip_spoof_headers'] ?? true) && $this->hasClientIpSpoofHeaders($request)) {
+        if (!$this->isAllowedMethod($request, $config)) {
+            return true;
+        }
+
+        if (($config['block_client_ip_spoof_headers'] ?? true) && $this->hasClientIpSpoofHeaders($request, $config)) {
+            return true;
+        }
+
+        if ($this->hasExcessiveHeaders($request, $config) || $this->hasExcessiveCookies($request, $config)) {
             return true;
         }
 
@@ -1149,7 +1228,59 @@ class PteroProtectWaf
         return $contentLength > (int) ($config['max_content_length'] ?? 1048576);
     }
 
-    private function hasClientIpSpoofHeaders(Request $request): bool
+    private function isAllowedMethod(Request $request, array $config): bool
+    {
+        $allowed = $config['allowed_methods'] ?? ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+        if (!is_array($allowed)) {
+            return true;
+        }
+
+        $method = strtoupper($request->method());
+        foreach ($allowed as $candidate) {
+            if ($method === strtoupper(trim((string) $candidate))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function hasExcessiveHeaders(Request $request, array $config): bool
+    {
+        $maxCount = max(1, (int) ($config['max_header_count'] ?? 80));
+        $maxNameLength = max(16, (int) ($config['max_header_name_length'] ?? 80));
+        $maxValueLength = max(256, (int) ($config['max_header_value_length'] ?? 8192));
+        $headers = $request->headers->all();
+        if (count($headers) > $maxCount) {
+            return true;
+        }
+
+        foreach ($headers as $name => $values) {
+            if (strlen((string) $name) > $maxNameLength) {
+                return true;
+            }
+            foreach ((array) $values as $value) {
+                if (strlen((string) $value) > $maxValueLength) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function hasExcessiveCookies(Request $request, array $config): bool
+    {
+        $cookies = $request->cookies->all();
+        if (count($cookies) > max(1, (int) ($config['max_cookie_count'] ?? 40))) {
+            return true;
+        }
+
+        $rawCookie = trim((string) $request->headers->get('cookie', ''));
+        return $rawCookie !== '' && strlen($rawCookie) > max(512, (int) ($config['max_cookie_bytes'] ?? 8192));
+    }
+
+    private function hasClientIpSpoofHeaders(Request $request, array $config): bool
     {
         $remoteAddr = trim((string) $request->server('REMOTE_ADDR', ''));
         $xffRaw = trim((string) $request->header('x-forwarded-for', ''));
@@ -1168,7 +1299,7 @@ class PteroProtectWaf
         }
 
         // "Forwarded" header with multiple for= hops from direct clients is suspicious.
-        if ($forwarded !== '' && preg_match('/for=.*,/i', $forwarded) === 1 && !$this->isProxySourceAddress($remoteAddr)) {
+        if ($forwarded !== '' && preg_match('/for=.*,/i', $forwarded) === 1 && !$this->isProxySourceAddress($remoteAddr, $config)) {
             return true;
         }
 
@@ -1214,7 +1345,7 @@ class PteroProtectWaf
         // If request does not originate from a proxy edge and forwarding headers disagree
         // with REMOTE_ADDR, treat as spoof attempt.
         if ($primaryForwardedIp !== '' && $remoteAddr !== '' && filter_var($remoteAddr, FILTER_VALIDATE_IP) !== false) {
-            if (!$this->isProxySourceAddress($remoteAddr) && strtolower($remoteAddr) !== $primaryForwardedIp) {
+            if (!$this->isProxySourceAddress($remoteAddr, $config) && strtolower($remoteAddr) !== $primaryForwardedIp) {
                 return true;
             }
         }
@@ -1222,7 +1353,7 @@ class PteroProtectWaf
         return false;
     }
 
-    private function isProxySourceAddress(string $ip): bool
+    private function isProxySourceAddress(string $ip, array $config = []): bool
     {
         if ($ip === '127.0.0.1' || $ip === '::1' || $ip === '::ffff:127.0.0.1') {
             return true;
@@ -1232,7 +1363,30 @@ class PteroProtectWaf
             return false;
         }
 
-        return $this->isPrivateOrReservedIp($ip) || $this->isKnownCdnProxyAddress($ip);
+        foreach ($this->configuredProxyCidrs($config) as $cidr) {
+            if ($ip === $cidr || $this->ipInCidr($ip, $cidr)) {
+                return true;
+            }
+        }
+
+        if (($config['trust_private_proxy_ranges'] ?? false) && $this->isPrivateOrReservedIp($ip)) {
+            return true;
+        }
+
+        return $this->isKnownCdnProxyAddress($ip);
+    }
+
+    private function configuredProxyCidrs(array $config): array
+    {
+        $raw = $config['trusted_proxy_cidrs'] ?? [];
+        if (is_string($raw)) {
+            $raw = preg_split('/[\s,]+/', $raw) ?: [];
+        }
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(static fn ($value) => trim((string) $value), $raw)));
     }
 
     private function isKnownCdnProxyAddress(string $ip): bool

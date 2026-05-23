@@ -9,6 +9,8 @@ return [
         'log_file' => env('PTEROPROTECT_WAF_LOG', '/dev/shm/pteroprotect/waf.log'),
 
         'trust_private_ranges' => env('PTEROPROTECT_WAF_TRUST_PRIVATE_RANGES', false),
+        'trust_private_proxy_ranges' => env('PTEROPROTECT_WAF_TRUST_PRIVATE_PROXY_RANGES', false),
+        'trusted_proxy_cidrs' => env('PTEROPROTECT_WAF_TRUSTED_PROXY_CIDRS', ''),
         'trusted_ips' => [],
         'allow_header_bypass' => env('PTEROPROTECT_WAF_ALLOW_HEADER_BYPASS', false),
 
@@ -22,9 +24,16 @@ return [
         'max_query_pairs' => env('PTEROPROTECT_WAF_MAX_QUERY_PAIRS', 30),
         'max_query_length' => env('PTEROPROTECT_WAF_MAX_QUERY_LENGTH', 2048),
         'max_content_length' => env('PTEROPROTECT_WAF_MAX_CONTENT_LENGTH', 1048576),
+        'allowed_methods' => ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        'max_header_count' => env('PTEROPROTECT_WAF_MAX_HEADER_COUNT', 80),
+        'max_header_name_length' => env('PTEROPROTECT_WAF_MAX_HEADER_NAME_LENGTH', 80),
+        'max_header_value_length' => env('PTEROPROTECT_WAF_MAX_HEADER_VALUE_LENGTH', 8192),
+        'max_cookie_count' => env('PTEROPROTECT_WAF_MAX_COOKIE_COUNT', 40),
+        'max_cookie_bytes' => env('PTEROPROTECT_WAF_MAX_COOKIE_BYTES', 8192),
         'block_headless_stealth' => true,
         // Can trigger false positives on NAT/shared-client traffic; keep opt-in.
         'fingerprint_cluster_limit_enabled' => env('PTEROPROTECT_WAF_FP_CLUSTER_ENABLED', false),
+        'subject_limit_enabled' => env('PTEROPROTECT_WAF_SUBJECT_LIMIT_ENABLED', true),
 
         // High-confidence abusive automation markers only.
         'suspicious_user_agents' => [
@@ -61,8 +70,10 @@ return [
 
         'api_per_ip_limit' => 80,
         'api_global_limit' => 320,
+        'api_subject_limit' => 120,
         'lockdown_api_per_ip_limit' => 20,
         'lockdown_api_global_limit' => 80,
+        'lockdown_api_subject_limit' => 35,
         'rum_attack_cap_enabled' => true,
         'rum_attack_decay_seconds' => 5,
         'rum_attack_per_ip_limit' => 4,
@@ -74,16 +85,21 @@ return [
 
         'resource_per_ip_limit' => 700,
         'resource_global_limit' => 3200,
+        'resource_subject_limit' => 900,
         'lockdown_resource_per_ip_limit' => 120,
         'lockdown_resource_global_limit' => 480,
+        'lockdown_resource_subject_limit' => 180,
 
         'websocket_per_ip_limit' => 240,
         'websocket_global_limit' => 1600,
+        'websocket_subject_limit' => 300,
         'lockdown_websocket_per_ip_limit' => 48,
         'lockdown_websocket_global_limit' => 260,
+        'lockdown_websocket_subject_limit' => 70,
 
         'web_per_ip_limit' => 120,
         'web_global_limit' => 420,
+        'web_subject_limit' => 180,
         'web_flood_guard_enabled' => true,
         'web_flood_decay_seconds' => 5,
         'web_flood_per_ip_limit' => 20,

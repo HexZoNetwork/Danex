@@ -17,6 +17,13 @@ REQUIRED_SECRET_PATHS = {
     "network.node_auth_key": 32,
 }
 WEAK_PASSWORDS = {"admin", "admin001", "password", "password123", "pterodactyl", "root", "toor"}
+UNIQUE_SECRET_PATHS = [
+    "network.waf_challenge_secret",
+    "network.unblock_portal_token",
+    "network.rce_control_key",
+    "network.emergency_control_token",
+    "network.node_auth_key",
+]
 
 
 def json_get(data: object, dotted: str) -> object:
@@ -47,6 +54,15 @@ def validate(path: Path) -> list[str]:
         value = json_get(data, dotted)
         if weak_secret(value, min_len):
             findings.append(f"{dotted} is missing, placeholder, or shorter than {min_len} chars")
+
+    seen: dict[str, list[str]] = {}
+    for dotted in UNIQUE_SECRET_PATHS:
+        value = str(json_get(data, dotted) or "").strip()
+        if value:
+            seen.setdefault(value, []).append(dotted)
+    for paths in seen.values():
+        if len(paths) > 1:
+            findings.append(f"control secret is reused across {', '.join(paths)}")
 
     db_password = str(json_get(data, "database.password") or "").strip()
     if db_password.lower() in WEAK_PASSWORDS:
