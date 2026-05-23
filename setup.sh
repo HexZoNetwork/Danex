@@ -3520,12 +3520,12 @@ server {
     }
 
     location ~* ^/(api/servers/[0-9a-f-]+/files/|upload/file|download/file) {
-        limit_req_status 444;
-        limit_conn_status 444;
-        limit_conn pteroprotect_api_key_conn 80;
-        limit_conn pteroprotect_api_global_conn 300;
-        limit_req zone=pteroprotect_api_key_req burst=80;
-        limit_req zone=pteroprotect_api_global_req burst=120;
+        # File uploads/downloads use short-lived Wings JWTs and can be large or
+        # slow. Hard connection closes surface as browser "Network Error".
+        limit_req_status 429;
+        limit_conn_status 429;
+        limit_conn pteroprotect_api_key_conn 240;
+        limit_conn pteroprotect_api_global_conn 1200;
 
         if (\$request_method = OPTIONS) { return 418; }
         if (\$http_user_agent ~* "^GuzzleHttp/") { return 418; }

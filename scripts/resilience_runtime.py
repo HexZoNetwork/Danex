@@ -143,8 +143,8 @@ def cfg_resilience(cfg: Dict[str, Any]) -> Dict[str, Any]:
         },
         "feature_shedding": {
             "profile": "aggressive",
-            "stage1": ["chat", "ads", "create_panel"],
-            "stage2": ["heavy_files", "noncritical_api"],
+            "stage1": ["ads", "create_panel"],
+            "stage2": ["chat", "heavy_files", "noncritical_api"],
             "stage3": ["websocket", "polling"],
         },
         "replay": {

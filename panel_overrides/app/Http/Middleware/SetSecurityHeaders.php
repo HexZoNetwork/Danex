@@ -3,7 +3,9 @@
 namespace Pterodactyl\Http\Middleware;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
+use Pterodactyl\Models\Node;
 
 class SetSecurityHeaders
 {
@@ -49,7 +51,6 @@ class SetSecurityHeaders
         ];
         $connectSources = [
             "'self'",
-            'wss://nodes.el7.web.id:8080',
             'https://www.google.com',
             'https://www.gstatic.com',
             'https://recaptcha.net',
@@ -67,9 +68,15 @@ class SetSecurityHeaders
             }
         }
 
-        // Keep legacy absolute avatar URLs renderable after a panel domain migration.
-        foreach (['hecker.apcb.biz.id', 'hecker.el7.web.id'] as $host) {
-            $imageSources[] = 'https://' . $host;
+        foreach ($this->nodeConnectSources() as $source) {
+            $connectSources[] = $source;
+        }
+
+        foreach ((array) config('pteroprotect.security.csp_image_hosts', []) as $host) {
+            $host = trim((string) $host);
+            if ($host !== '') {
+                $imageSources[] = str_contains($host, '://') ? $host : 'https://' . $host;
+            }
         }
 
         $imageSources = array_values(array_unique(array_filter($imageSources, static fn ($source) => Str::of($source)->trim()->isNotEmpty())));
@@ -110,5 +117,43 @@ class SetSecurityHeaders
         }
 
         return $response;
+    }
+
+    /**
+     * Server file uploads/downloads and consoles talk directly to Wings nodes.
+     * Build CSP sources from configured nodes so multi-node installs and sold
+     * deployments do not need domain-specific code changes.
+     *
+     * @return string[]
+     */
+    private function nodeConnectSources(): array
+    {
+        try {
+            return Cache::remember('pteroprotect:csp-node-connect-sources', 300, function (): array {
+                return Node::query()
+                    ->select(['scheme', 'fqdn', 'daemonListen'])
+                    ->get()
+                    ->flatMap(function (Node $node): array {
+                        $scheme = strtolower(trim((string) $node->scheme));
+                        $host = trim((string) $node->fqdn);
+                        $port = (int) $node->daemonListen;
+
+                        if ($host === '' || $port <= 0 || !in_array($scheme, ['http', 'https'], true)) {
+                            return [];
+                        }
+
+                        $http = sprintf('%s://%s:%d', $scheme, $host, $port);
+                        $ws = sprintf('%s://%s:%d', $scheme === 'https' ? 'wss' : 'ws', $host, $port);
+
+                        return [$http, $ws];
+                    })
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->all();
+            });
+        } catch (\Throwable) {
+            return [];
+        }
     }
 }

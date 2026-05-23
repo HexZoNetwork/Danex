@@ -313,6 +313,14 @@ class PteroProtectWaf
             return true;
         }
 
+        // Server resource polling is first-party panel traffic and can be
+        // emitted by axios/fetch without a browser-looking User-Agent. If a
+        // transient upstream failure teaches poison fingerprints here, innocent
+        // sessions lose the console even after services recover.
+        if (preg_match('#^api/client/servers/[^/]+/(resources|activity|websocket)(?:/|$)#i', $path) === 1) {
+            return true;
+        }
+
         // DanexC dashboard telemetry endpoints are high-volume read-only requests
         // from legitimate browser sessions and prone to poisoning false positives.
         return $this->isDanexcStatusPath($path);

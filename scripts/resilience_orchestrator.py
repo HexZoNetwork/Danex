@@ -190,6 +190,10 @@ def is_challenge_path(path: str) -> bool:
     return path.startswith("/__pteroprotect/challenge")
 
 
+def is_core_client_polling_path(path: str) -> bool:
+    return re.match(r"^/api/client/servers/[^/]+/(resources|activity|websocket)(?:/|$)", path.lower()) is not None
+
+
 def has_ua_marker(ua: str, markers: List[str]) -> bool:
     raw = (ua or "").strip().lower()
     if raw == "":
@@ -826,7 +830,11 @@ def main() -> int:
                 continue
             if exclude_challenge_paths_from_scoring and is_challenge_path(s.path):
                 continue
+            if is_core_client_polling_path(s.path):
+                continue
             if s.ua_family == "browser":
+                continue
+            if s.status < 400:
                 continue
 
             status_family = f"{s.status // 100}xx"
