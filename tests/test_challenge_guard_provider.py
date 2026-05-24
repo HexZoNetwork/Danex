@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import tempfile
@@ -49,7 +50,20 @@ def assert_equal(actual: int, expected: int, message: str) -> None:
         raise AssertionError(f"{message}: expected {expected}, got {actual}")
 
 
+def assert_provider_gate_scope() -> None:
+    source = (ROOT / "src/challenge_guard.cpp").read_text(encoding="utf-8")
+    match = re.search(r'if \(req\.path == "/check-web"\) \{(?P<body>.*?)\n    if \(req\.path == "/check-token"\)', source, re.S)
+    if match is None:
+        raise AssertionError("challenge_guard must keep an explicit /check-web branch")
+    if "is_provider_range_ip(s, ip)" in match.group("body"):
+        raise AssertionError("provider-range gate must not block browser web panel checks")
+    if 'if (req.path == "/check-provider-api")' not in source or "provider_api_token_required" not in source:
+        raise AssertionError("provider-range bearer gate must remain scoped to provider API checks")
+
+
 def main() -> int:
+    assert_provider_gate_scope()
+
     if not BINARY.exists():
         print("challenge_guard provider tests skipped: binary not built")
         return 0
@@ -98,6 +112,11 @@ def main() -> int:
                 request(port, "/check-provider-api", {"Cookie": "pp_clearance=fake; pterodactyl_session=fake"}),
                 401,
                 "provider localhost with clearance/session cookies but no API token must be rejected",
+            )
+            assert_equal(
+                request(port, "/check-web"),
+                401,
+                "provider localhost web panel should receive normal challenge flow, not provider web block",
             )
             assert_equal(
                 request(port, "/check-provider-api", {"X-Real-IP": "203.0.113.10"}),

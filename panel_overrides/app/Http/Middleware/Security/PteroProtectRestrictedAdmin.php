@@ -66,16 +66,6 @@ class PteroProtectRestrictedAdmin
                 $request->attributes->set('pteroprotect_owned_server_ids', $this->ownership->ownedIdsFor('servers', (int) $user->id));
             }
 
-            if ($request->isMethod('post') && $path === 'admin/servers/new') {
-                $ownerId = (int) $request->input('owner_id', 0);
-                if ($ownerId === 1) {
-                    throw new AccessDeniedHttpException('Cannot create or modify resources owned by primary admin.');
-                }
-                if ($ownerId <= 0) {
-                    throw new AccessDeniedHttpException('Invalid server owner.');
-                }
-            }
-
             $targetServer = $this->resolveServerTarget($request, $path);
             if ($targetServer instanceof Server) {
                 if ((int) $targetServer->owner_id === 1) {

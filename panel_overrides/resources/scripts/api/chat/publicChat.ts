@@ -68,6 +68,13 @@ export interface PublicChatMessage {
     reactions: { emoji: string; count: number; mine: boolean }[];
 }
 
+export interface PublicChatMessagePage {
+    messages: PublicChatMessage[];
+    hasMoreOlder: boolean;
+    oldestId: number | null;
+    newestId: number | null;
+}
+
 export interface ChatCallParticipant {
     id: number;
     username: string;
@@ -351,17 +358,38 @@ export const setGroupAdmin = async (conversationId: number, memberId: number, ad
 export const getPublicMessages = async (opts: {
     conversationId: number;
     sinceId?: number;
+    beforeId?: number;
     limit?: number;
 }): Promise<PublicChatMessage[]> => {
+    const page = await getPublicMessagePage(opts);
+
+    return page.messages;
+};
+
+export const getPublicMessagePage = async (opts: {
+    conversationId: number;
+    sinceId?: number;
+    beforeId?: number;
+    limit?: number;
+}): Promise<PublicChatMessagePage> => {
     const { data } = await http.get('/api/client/chat/messages', {
         params: {
             conversation_id: opts.conversationId,
             since_id: opts.sinceId || undefined,
-            limit: opts.limit || (opts.sinceId ? 100 : 80),
+            before_id: opts.beforeId || undefined,
+            limit: opts.limit || 8,
         },
     });
 
-    return Array.isArray(data?.data) ? data.data.map(rawDataToMessage) : [];
+    const messages = Array.isArray(data?.data) ? data.data.map(rawDataToMessage) : [];
+    const meta = data?.meta || {};
+
+    return {
+        messages,
+        hasMoreOlder: Boolean(meta.has_more_older),
+        oldestId: meta.oldest_id !== null && meta.oldest_id !== undefined ? Number(meta.oldest_id) : (messages[0]?.id || null),
+        newestId: meta.newest_id !== null && meta.newest_id !== undefined ? Number(meta.newest_id) : (messages[messages.length - 1]?.id || null),
+    };
 };
 
 export const postPublicMessage = async (payload: {

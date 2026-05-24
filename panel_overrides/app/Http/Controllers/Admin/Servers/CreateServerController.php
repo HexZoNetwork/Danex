@@ -14,7 +14,6 @@ use Pterodactyl\Repositories\Eloquent\NestRepository;
 use Pterodactyl\Repositories\Eloquent\NodeRepository;
 use Pterodactyl\Services\PteroProtect\AdminOwnershipService;
 use Pterodactyl\Services\Servers\ServerCreationService;
-use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
 class CreateServerController extends Controller
 {
@@ -55,13 +54,6 @@ class CreateServerController extends Controller
 
     public function store(ServerFormRequest $request): RedirectResponse
     {
-        $ownerId = (int) $request->input('owner_id', 0);
-        if ($ownerId <= 0) {
-            throw new AccessDeniedHttpException('Invalid server owner.');
-        }
-        if ((int) $request->user()->id !== 1 && $ownerId === 1) {
-            throw new AccessDeniedHttpException('Cannot create or modify resources owned by primary admin.');
-        }
         $data = $request->except(['_token']);
         if (!empty($data['custom_image'])) {
             $data['image'] = $data['custom_image'];

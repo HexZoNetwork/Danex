@@ -972,6 +972,18 @@ repair_container_volume_permissions() {
 
         if [[ "${target_uid}" =~ ^[0-9]+$ && "${target_gid}" =~ ^[0-9]+$ ]]; then
             chown -R "${target_uid}:${target_gid}" "${vol}" >/dev/null 2>&1 || true
+            # npm/yarn/pnpm cache directories are frequently created by root
+            # during manual recovery or old image startup paths. If left owned
+            # by root, the next normal container boot fails before the app can
+            # start with EACCES on /home/container/.npm.
+            for cache_dir in \
+                "${vol}/.npm" \
+                "${vol}/.cache" \
+                "${vol}/node_modules/.cache" \
+                "${vol}/.pnpm-store" \
+                "${vol}/.yarn"; do
+                [[ -e "${cache_dir}" ]] && chown -R "${target_uid}:${target_gid}" "${cache_dir}" >/dev/null 2>&1 || true
+            done
         fi
         # Keep container root secure but always accessible for its owner.
         find "${vol}" -type d -exec chmod u+rwx,go+rx {} \; >/dev/null 2>&1 || true
@@ -1421,6 +1433,9 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{monitor}{emergency_health_signals_threshold} = 1 if !defined($j->{monitor}{emergency_health_signals_threshold}) || $j->{monitor}{emergency_health_signals_threshold} !~ /^\d+$/ || $j->{monitor}{emergency_health_signals_threshold} < 1;
         $j->{monitor}{require_health_degradation_for_emergency} = JSON::PP::true if !defined($j->{monitor}{require_health_degradation_for_emergency});
         $j->{monitor}{check_api_url} = "https://mywebcheck.netlify.app/.netlify/functions/check" if !defined($j->{monitor}{check_api_url}) || "$j->{monitor}{check_api_url}" eq "" || "$j->{monitor}{check_api_url}" =~ /check-host\.net/i;
+        $j->{monitor}{external_check_min_interval_sec} = 60 if !defined($j->{monitor}{external_check_min_interval_sec}) || $j->{monitor}{external_check_min_interval_sec} !~ /^\d+$/ || $j->{monitor}{external_check_min_interval_sec} < 30;
+        $j->{monitor}{external_check_cache_ttl_sec} = 120 if !defined($j->{monitor}{external_check_cache_ttl_sec}) || $j->{monitor}{external_check_cache_ttl_sec} !~ /^\d+$/ || $j->{monitor}{external_check_cache_ttl_sec} < $j->{monitor}{external_check_min_interval_sec};
+        $j->{monitor}{origin_probe_url} = "https://127.0.0.1:443/__pteroprotect/challenge/page" if !defined($j->{monitor}{origin_probe_url});
         $j->{network}{bad_token_block_enabled} = JSON::PP::false if !defined($j->{network}{bad_token_block_enabled});
         $j->{network}{bad_token_path_regex} = "^/api/application/" if !defined($j->{network}{bad_token_path_regex}) || "$j->{network}{bad_token_path_regex}" eq "";
         $j->{abuse_guard} = {} if !defined($j->{abuse_guard}) || ref($j->{abuse_guard}) ne 'HASH';
@@ -2063,16 +2078,36 @@ if [[ -f /etc/pterodactyl/config.yml ]]; then
 from pathlib import Path
 path = Path('/etc/pterodactyl/config.yml')
 text = path.read_text()
-if 'check_permissions_on_boot: true' in text:
-    text = text.replace('check_permissions_on_boot: true', 'check_permissions_on_boot: false')
+if 'check_permissions_on_boot: false' in text:
+    text = text.replace('check_permissions_on_boot: false', 'check_permissions_on_boot: true')
 elif 'check_permissions_on_boot:' not in text and '  websocket_log_count:' in text:
-    text = text.replace('  websocket_log_count:', '  check_permissions_on_boot: false\n  websocket_log_count:', 1)
+    text = text.replace('  websocket_log_count:', '  check_permissions_on_boot: true\n  websocket_log_count:', 1)
 path.write_text(text)
 PY
 fi
-systemctl stop ptero-fix-volume-perms.service ptero-fix-volume-perms.timer >/dev/null 2>&1 || true
-systemctl disable ptero-fix-volume-perms.timer >/dev/null 2>&1 || true
-systemctl reset-failed ptero-fix-volume-perms.service >/dev/null 2>&1 || true
+install -m 0755 "${PROJECT_DIR}/scripts/ptero-fix-volume-perms.sh" /usr/local/sbin/ptero-fix-volume-perms.sh
+cat > "${SYSTEMD_DIR}/ptero-fix-volume-perms.service" <<'EOF'
+[Unit]
+Description=Fix Pterodactyl volume permissions
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ptero-fix-volume-perms.sh
+EOF
+cat > "${SYSTEMD_DIR}/ptero-fix-volume-perms.timer" <<'EOF'
+[Unit]
+Description=Run Pterodactyl volume permission fix periodically
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=ptero-fix-volume-perms.service
+
+[Install]
+WantedBy=timers.target
+EOF
 if command -v docker >/dev/null 2>&1; then
     HOST_MEM_MB="$(awk '/MemTotal:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 8192)"
     CLAMP_MB=$(( (HOST_MEM_MB - 3072) / 4 ))
@@ -2081,6 +2116,8 @@ if command -v docker >/dev/null 2>&1; then
     docker ps -q --filter label=Service=Pterodactyl | xargs -r -n1 docker update --memory "${CLAMP_MB}m" --memory-swap "${CLAMP_MB}m" >/dev/null 2>&1 || true
 fi
 systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable --now ptero-fix-volume-perms.timer >/dev/null 2>&1 || true
+systemctl start ptero-fix-volume-perms.service >/dev/null 2>&1 || true
 
 PANEL_OVERRIDE_SOURCE=""
 if [[ -d "${PROJECT_DIR}/panel_overrides" ]]; then
@@ -3404,6 +3441,10 @@ for line in lines:
         out.append(f"  disable_remote_download: {'true' if disable_remote_download else 'false'}")
         continue
 
+    if in_system and re.match(r'^\s{2}check_permissions_on_boot:\s*', line):
+        out.append("  check_permissions_on_boot: true")
+        continue
+
     if in_ssl and re.match(r'^\s{4}enabled:\s*', line):
         out.append('    enabled: false')
         continue
@@ -3435,6 +3476,12 @@ for line in lines:
         out.append(f"  openat_mode: {openat_mode}")
         continue
     out.append(line)
+
+if not any(re.match(r'^\s{2}check_permissions_on_boot:\s*', line) for line in out):
+    for i, line in enumerate(out):
+        if re.match(r'^\s{2}websocket_log_count:\s*', line):
+            out.insert(i, "  check_permissions_on_boot: true")
+            break
 
 p.write_text('\n'.join(out) + '\n')
 PY

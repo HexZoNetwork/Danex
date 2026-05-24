@@ -18,6 +18,7 @@ import {
     editPublicMessage,
     getConversations,
     getCallState,
+    getPublicMessagePage,
     getPublicMessages,
     joinConversationCall,
     muteConversationNotifications,
@@ -345,6 +346,8 @@ const safeDate = (value: string | null | undefined): string => {
 
 const ONLINE_WINDOW_MS = 2 * 60 * 1000;
 const PRESENCE_HEARTBEAT_MS = 20_000;
+const CHAT_PAGE_SIZE = 8;
+const CHAT_LIVE_BUFFER = 8;
 const CALL_POLL_MS = 2500;
 const MIC_SYNC_MS = 1200;
 const CALL_RESTART_DEBOUNCE_MS = 1800;
@@ -566,6 +569,8 @@ export default () => {
     const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
 
     const [messages, setMessages] = useState<PublicChatMessage[]>([]);
+    const [hasOlderMessages, setHasOlderMessages] = useState(false);
+    const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
     const [loading, setLoading] = useState(true);
     const [sending, setSending] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -650,6 +655,7 @@ export default () => {
     const quickSendInputRef = useRef<HTMLInputElement>(null);
     const compressedSendInputRef = useRef<HTMLInputElement>(null);
     const messagePollInFlightRef = useRef(false);
+    const olderMessagesInFlightRef = useRef(false);
     const callPollInFlightRef = useRef(false);
     const callSinceIdRef = useRef(0);
     const callSignalProcessedRef = useRef<Set<number>>(new Set());
@@ -736,6 +742,7 @@ export default () => {
     }, [conversations]);
 
     const lastId = useMemo(() => (messages.length ? messages[messages.length - 1].id : undefined), [messages]);
+    const oldestId = useMemo(() => (messages.length ? messages[0].id : undefined), [messages]);
 
     const scrollToBottom = () => {
         if (!listRef.current) return;
@@ -782,9 +789,11 @@ export default () => {
         const seq = ++loadMessagesSeqRef.current;
         setLoading(true);
         try {
-            const list = await getPublicMessages({ conversationId, limit: 80 });
+            const page = await getPublicMessagePage({ conversationId, limit: CHAT_PAGE_SIZE });
             if (activeConversationRef.current !== conversationId || loadMessagesSeqRef.current !== seq) return;
+            const list = page.messages;
             setMessages(list);
+            setHasOlderMessages(page.hasMoreOlder);
             if (list.length) {
                 await markPublicMessagesRead(conversationId, list.map((m) => m.id));
             }
@@ -797,20 +806,56 @@ export default () => {
         }
     };
 
+    const loadOlderMessages = async () => {
+        const conversationId = activeConversationRef.current;
+        if (!conversationId || !oldestId || olderMessagesInFlightRef.current || loadingOlderMessages || !hasOlderMessages) return;
+
+        olderMessagesInFlightRef.current = true;
+        setLoadingOlderMessages(true);
+        const previousHeight = listRef.current?.scrollHeight || 0;
+        try {
+            const page = await getPublicMessagePage({ conversationId, beforeId: oldestId, limit: CHAT_PAGE_SIZE });
+            if (activeConversationRef.current !== conversationId || !page.messages.length) {
+                setHasOlderMessages(false);
+                return;
+            }
+
+            setMessages((current) => {
+                const known = new Set(current.map((m) => m.id));
+                const older = page.messages.filter((m) => !known.has(m.id));
+
+                return [...older, ...current];
+            });
+            setHasOlderMessages(page.hasMoreOlder);
+            await markPublicMessagesRead(conversationId, page.messages.map((m) => m.id));
+            requestAnimationFrame(() => {
+                if (!listRef.current) return;
+                listRef.current.scrollTop = listRef.current.scrollHeight - previousHeight;
+            });
+        } catch (error) {
+            clearAndAddHttpError({ key: 'dashboard', error });
+        } finally {
+            olderMessagesInFlightRef.current = false;
+            setLoadingOlderMessages(false);
+        }
+    };
+
     const pollIncoming = async () => {
         const conversationId = activeConversationRef.current;
         if (!conversationId || !lastId) return;
 
         try {
-            const incoming = await getPublicMessages({ conversationId, sinceId: lastId, limit: 100 });
+            const incoming = await getPublicMessages({ conversationId, sinceId: lastId, limit: CHAT_PAGE_SIZE });
             if (!incoming.length) return;
             if (activeConversationRef.current !== conversationId) return;
 
             setMessages((current) => {
                 const known = new Set(current.map((m) => m.id));
+                const merged = [...current, ...incoming.filter((m) => !known.has(m.id))];
 
-                return [...current, ...incoming.filter((m) => !known.has(m.id))];
+                return merged.slice(-CHAT_LIVE_BUFFER);
             });
+            setHasOlderMessages((current) => current || messages.length + incoming.length > CHAT_LIVE_BUFFER);
             await markPublicMessagesRead(conversationId, incoming.map((m) => m.id));
             requestAnimationFrame(scrollToBottom);
         } catch {
@@ -907,12 +952,14 @@ export default () => {
     useEffect(() => {
         if (!activeConversationId) {
             setMessages([]);
+            setHasOlderMessages(false);
             setLoading(false);
             setCallState({ active: false, callId: null, participants: [] });
             return;
         }
 
         setMessages([]);
+        setHasOlderMessages(false);
         loadMessages(activeConversationId).catch((error) => {
             clearAndAddHttpError({ key: 'dashboard', error });
             setLoading(false);
@@ -2533,6 +2580,11 @@ export default () => {
 
                 <Body
                     ref={listRef}
+                    onScroll={(e) => {
+                        if (e.currentTarget.scrollTop <= 24) {
+                            loadOlderMessages();
+                        }
+                    }}
                     onDragOver={(e) => {
                         e.preventDefault();
                         if (!dragging) setDragging(true);
@@ -2554,24 +2606,38 @@ export default () => {
                     ) : messages.length === 0 ? (
                         <p css={tw`text-sm text-neutral-400 text-center py-6`}>No messages yet.</p>
                     ) : (
-                        messages.map((item) => {
-                            const safeOptions = safePollOptions(item.poll);
-                            const isPollImage = Boolean(item.poll && item.mediaType === 'image' && item.mediaUrl);
-                            const previewLink = item.mediaType === 'link' && item.mediaUrl ? item.mediaUrl : firstUrlInText(item.body || '');
-                            const mentionsMe = safeMentions(item.mentions).includes(selfUsername.toLowerCase());
-                            const isMine =
-                                Boolean(item.isOwn) ||
-                                (selfUserId > 0 && Number(item.userId) === selfUserId) ||
-                                (!!selfUsername && String(item.username || '').toLowerCase() === selfUsername.toLowerCase());
+                        <>
+                            {hasOlderMessages && (
+                                <div css={tw`flex justify-center pb-1`}>
+                                    <button
+                                        type={'button'}
+                                        onClick={loadOlderMessages}
+                                        disabled={loadingOlderMessages}
+                                        css={tw`text-[11px] px-3 py-1 rounded border text-neutral-300 disabled:opacity-60`}
+                                        style={chipButtonStyle}
+                                    >
+                                        {loadingOlderMessages ? 'Loading...' : 'Load older'}
+                                    </button>
+                                </div>
+                            )}
+                            {messages.map((item) => {
+                                const safeOptions = safePollOptions(item.poll);
+                                const isPollImage = Boolean(item.poll && item.mediaType === 'image' && item.mediaUrl);
+                                const previewLink = item.mediaType === 'link' && item.mediaUrl ? item.mediaUrl : firstUrlInText(item.body || '');
+                                const mentionsMe = safeMentions(item.mentions).includes(selfUsername.toLowerCase());
+                                const isMine =
+                                    Boolean(item.isOwn) ||
+                                    (selfUserId > 0 && Number(item.userId) === selfUserId) ||
+                                    (!!selfUsername && String(item.username || '').toLowerCase() === selfUsername.toLowerCase());
 
-                            return (
-                                <BubbleWrap
-                                    key={item.id}
-                                    css={isMine ? tw`justify-end` : tw`justify-start`}
-                                    ref={(el) => {
-                                        messageRefs.current[item.id] = el;
-                                    }}
-                                >
+                                return (
+                                    <BubbleWrap
+                                        key={item.id}
+                                        css={isMine ? tw`justify-end` : tw`justify-start`}
+                                        ref={(el) => {
+                                            messageRefs.current[item.id] = el;
+                                        }}
+                                    >
                                     <Bubble
                                         css={[
                                             isMine
@@ -2775,7 +2841,8 @@ export default () => {
                                     </Bubble>
                                 </BubbleWrap>
                             );
-                        })
+                            })}
+                        </>
                     )}
                 </Body>
 

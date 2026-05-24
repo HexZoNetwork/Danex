@@ -109,7 +109,7 @@ class PteroProtectWaf
             return $this->blockedResponse($request, 429, 'Telemetry traffic is temporarily limited.');
         }
 
-        if (!$danexcSoftAllow && !$rumPath && $this->shouldShedByFeature($path, $featureFlags, $stage) && !$this->isCoreRoute($request, $path)) {
+        if (!$danexcSoftAllow && !$rumPath && $this->shouldShedByFeature($request, $path, $featureFlags, $stage) && !$this->isCoreRoute($request, $path)) {
             if ($this->shouldQueueReplay($request, $path, $stage, $replayConfig)) {
                 $ticket = $this->queueReplayTicket($request, $path, $replayConfig, $resilienceConfig);
                 $this->logResilienceEvent(
@@ -530,13 +530,17 @@ class PteroProtectWaf
         return $norm;
     }
 
-    private function shouldShedByFeature(string $path, array $featureFlags, string $stage): bool
+    private function shouldShedByFeature(Request $request, string $path, array $featureFlags, string $stage): bool
     {
         if ($stage === 'normal') {
             return false;
         }
 
-        if ($this->isLightweightHydrationPath($path)) {
+        if (
+            $this->isLightweightHydrationPath($path)
+            || $this->isRecoverySafePanelPath($request, $path)
+            || $this->isRecoverySafeChatPath($request, $path)
+        ) {
             return false;
         }
 
@@ -588,7 +592,11 @@ class PteroProtectWaf
             return false;
         }
 
-        if (strtoupper($request->method()) === 'GET' && $this->isLightweightHydrationPath($path)) {
+        if (
+            (strtoupper($request->method()) === 'GET' && $this->isLightweightHydrationPath($path))
+            || $this->isRecoverySafePanelPath($request, $path)
+            || $this->isRecoverySafeChatPath($request, $path)
+        ) {
             return false;
         }
 
@@ -627,6 +635,33 @@ class PteroProtectWaf
     {
         return preg_match('#^api/client/ads(?:/|$)#i', $path) === 1
             || preg_match('#^api/client/chat/notifications(?:/|$)#i', $path) === 1;
+    }
+
+    private function isRecoverySafePanelPath(Request $request, string $path): bool
+    {
+        $method = strtoupper($request->method());
+        if (!in_array($method, ['GET', 'HEAD'], true)) {
+            return false;
+        }
+
+        return preg_match('#^api/client/?$#i', $path) === 1
+            || preg_match('#^api/client/(?:rum|ads)(?:/|$)#i', $path) === 1
+            || preg_match('#^api/client/waf/(?:stats|timeline|threats)(?:/|$)#i', $path) === 1
+            || preg_match('#^api/client/servers/[^/]+/(?:resources|activity|websocket)(?:/|$)#i', $path) === 1;
+    }
+
+    private function isRecoverySafeChatPath(Request $request, string $path): bool
+    {
+        $method = strtoupper($request->method());
+        if (in_array($method, ['GET', 'HEAD'], true)) {
+            return preg_match('#^api/client/chat/(?:notifications|conversations|messages|calls/state)(?:/|$)#i', $path) === 1;
+        }
+
+        if ($method === 'POST') {
+            return preg_match('#^api/client/chat/(?:presence|read|notifications/read)(?:/|$)#i', $path) === 1;
+        }
+
+        return false;
     }
 
     private function isRateLimitedByAdaptiveBudget(Request $request, string $category, array $budgets): bool

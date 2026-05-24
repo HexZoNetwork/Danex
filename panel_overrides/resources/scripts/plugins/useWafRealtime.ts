@@ -11,13 +11,21 @@ type UseWafRealtimeArgs = {
     maxRetries?: number;
 };
 
+const isLiveSocketAvailable = (): boolean => {
+    const flags = window as typeof window & { __PTEROPROTECT_WAF_LIVE_WS__?: boolean };
+    return flags.__PTEROPROTECT_WAF_LIVE_WS__ === true;
+};
+
 export default ({ enabled, onEvent, maxRetries = 2 }: UseWafRealtimeArgs) => {
     const [isConnected, setConnected] = useState(false);
     const retryRef = useRef(0);
     const timerRef = useRef<number | null>(null);
 
     useEffect(() => {
-        if (!enabled) return;
+        if (!enabled || !isLiveSocketAvailable()) {
+            setConnected(false);
+            return;
+        }
 
         let closed = false;
         let socket: WebSocket | null = null;

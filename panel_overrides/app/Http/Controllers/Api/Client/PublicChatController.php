@@ -17,7 +17,7 @@ use Pterodactyl\Models\User;
 class PublicChatController extends ClientApiController
 {
     private const GLOBAL_CONVERSATION_ID = 1;
-    private const DEFAULT_LIMIT = 50;
+    private const DEFAULT_LIMIT = 8;
     private const MAX_LIMIT = 100;
     private const MAX_MESSAGE_LENGTH = 2000;
     private const PRESENCE_ONLINE_WINDOW_SECONDS = 75;
@@ -275,11 +275,13 @@ class PublicChatController extends ClientApiController
             'conversation_id' => 'sometimes|integer|min:1',
             'limit' => 'sometimes|integer|min:1|max:' . self::MAX_LIMIT,
             'since_id' => 'sometimes|integer|min:1',
+            'before_id' => 'sometimes|integer|min:1',
         ]);
 
         $conversation = $this->conversationForUser($user, (int) ($validated['conversation_id'] ?? self::GLOBAL_CONVERSATION_ID));
         $limit = (int) ($validated['limit'] ?? self::DEFAULT_LIMIT);
         $sinceId = (int) ($validated['since_id'] ?? 0);
+        $beforeId = (int) ($validated['before_id'] ?? 0);
 
         $query = PublicChatMessage::query()
             ->where('conversation_id', $conversation->id)
@@ -291,12 +293,13 @@ class PublicChatController extends ClientApiController
 
         if ($sinceId > 0) {
             $query->where('id', '>', $sinceId);
+        } elseif ($beforeId > 0) {
+            $query->where('id', '<', $beforeId);
         }
 
-        $messages = $query->limit($limit)->get();
-        if ($sinceId <= 0) {
-            $messages = $messages->reverse()->values();
-        }
+        $messages = $query->limit($limit + 1)->get();
+        $hasMore = $messages->count() > $limit;
+        $messages = $messages->take($limit)->reverse()->values();
 
         $this->markMessagesRead($messages->pluck('id')->all(), (int) $user->id, $messages->pluck('user_id')->all());
         $stats = $this->readStats($messages->pluck('id')->all());
@@ -305,6 +308,12 @@ class PublicChatController extends ClientApiController
 
         return new JsonResponse([
             'data' => $messages->map(fn (PublicChatMessage $m) => $this->transformMessage($m, (int) $user->id, $stats, $poll, $reactions))->values(),
+            'meta' => [
+                'limit' => $limit,
+                'has_more_older' => $sinceId <= 0 && $hasMore,
+                'oldest_id' => $messages->first()?->id ? (int) $messages->first()->id : null,
+                'newest_id' => $messages->last()?->id ? (int) $messages->last()->id : null,
+            ],
         ]);
     }
 

@@ -15,6 +15,7 @@ def is_valid_ip(ip):
             return False
 import subprocess
 import sys
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -85,13 +86,17 @@ def as_float(v, d: float) -> float:
         return d
 
 
-def http_probe(url: str, timeout_sec: float = 6.0) -> Tuple[bool, int, float, str]:
+def http_probe(url: str, timeout_sec: float = 6.0, headers: Dict[str, str] | None = None, insecure_tls: bool = False) -> Tuple[bool, int, float, str]:
     if not url:
         return False, 0, 0.0, "empty-url"
-    req = urllib.request.Request(url, method="GET", headers={"User-Agent": "DanexSelfHeal/1.0"})
+    req_headers = {"User-Agent": "DanexSelfHeal/1.0"}
+    if headers:
+        req_headers.update(headers)
+    req = urllib.request.Request(url, method="GET", headers=req_headers)
     start = time.time()
+    context = ssl._create_unverified_context() if insecure_tls else None
     try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_sec, context=context) as resp:
             body = resp.read(256)
             elapsed = (time.time() - start) * 1000.0
             code = int(resp.status)
@@ -106,6 +111,35 @@ def http_probe(url: str, timeout_sec: float = 6.0) -> Tuple[bool, int, float, st
     except Exception as exc:
         elapsed = (time.time() - start) * 1000.0
         return False, 0, elapsed, str(exc)
+
+
+def origin_probe(challenge_url: str, timeout_sec: float = 4.0, origin_probe_url: str = "") -> Tuple[bool, int, float, str]:
+    if not challenge_url:
+        return False, 0, 0.0, "empty-url"
+    try:
+        parsed = urllib.parse.urlparse(challenge_url)
+        host = parsed.hostname or ""
+        if not host:
+            return False, 0, 0.0, "empty-host"
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        probe_url = str(origin_probe_url).strip()
+        if not probe_url:
+            scheme = parsed.scheme if parsed.scheme in {"http", "https"} else "https"
+            port = 443 if scheme == "https" else 80
+            probe_url = f"{scheme}://127.0.0.1:{port}{path}"
+        return http_probe(
+            probe_url,
+            timeout_sec=timeout_sec,
+            headers={
+                "Host": host,
+                "X-PteroProtect-Origin-Probe": "1",
+            },
+            insecure_tls=probe_url.startswith("https://127.") or probe_url.startswith("https://localhost"),
+        )
+    except Exception as exc:
+        return False, 0, 0.0, f"origin-probe-error:{exc}"
 
 
 def checkhost_probe(url: str, max_nodes: int = 8, zero_threshold: int = 3, api_url: str = "") -> Tuple[bool, float, str]:
@@ -250,9 +284,15 @@ def main() -> int:
     base_url = resolve_external_url(cfg, monitor)
     challenge_path = str(monitor.get("challenge_path", DEFAULT_CHALLENGE_PATH))
     local_health_url = str(monitor.get("local_health_url", "http://127.0.0.1:18080/api/system"))
+    origin_probe_url = str(monitor.get("origin_probe_url", "")).strip()
 
     normal_sec = max(2, as_int(monitor.get("check_interval_normal_sec", 5), 5))
     anomaly_sec = max(2, as_int(monitor.get("check_interval_anomaly_sec", 2), 2))
+    external_check_min_interval_sec = max(30, as_int(monitor.get("external_check_min_interval_sec", 60), 60))
+    external_check_cache_ttl_sec = max(
+        external_check_min_interval_sec,
+        as_int(monitor.get("external_check_cache_ttl_sec", external_check_min_interval_sec * 2), external_check_min_interval_sec * 2),
+    )
     lockdown_ttl_sec = max(60, as_int(monitor.get("lockdown_ttl_sec", 180), 180))
 
     p95_threshold_ms = as_float(monitor.get("latency_p95_ms_threshold", 10000), 10000)
@@ -265,8 +305,15 @@ def main() -> int:
     window = []
     external_fail_streak = 0
     mode = "normal"
+    last_checkhost_ts = 0.0
+    last_checkhost = (False, 0.0, "mywebcheck:not-run")
 
-    log(f"started url={base_url} checkhost_primary={checkhost_enabled} orchestrator_primary={orchestrator_primary}")
+    log(
+        "started "
+        f"url={base_url} checkhost_primary={checkhost_enabled} "
+        f"external_min_interval={external_check_min_interval_sec}s "
+        f"orchestrator_primary={orchestrator_primary}"
+    )
 
     while True:
         ts = time.time()
@@ -276,19 +323,24 @@ def main() -> int:
 
         challenge_url = (base_url + challenge_path) if base_url else ""
 
-        if checkhost_enabled and challenge_url:
+        if checkhost_enabled and challenge_url and (ts - last_checkhost_ts) >= external_check_min_interval_sec:
             ok, lat, src = checkhost_probe(
                 challenge_url,
                 max_nodes=checkhost_max_nodes,
                 zero_threshold=checkhost_zero_node_threshold,
                 api_url=str(monitor.get("check_api_url", "")),
             )
+            last_checkhost_ts = ts
+            last_checkhost = (ok, lat, src)
             external_ok, external_latency, external_src = ok, lat, src
             if not external_ok:
                 ok2, code2, lat2, _ = http_probe(local_health_url, timeout_sec=5.0)
                 external_ok = ok2 and code2 in (200, 401, 403)
                 external_latency = lat2
                 external_src = f"local-fallback:{code2}:{src}"
+        elif checkhost_enabled and challenge_url and last_checkhost_ts > 0 and (ts - last_checkhost_ts) <= external_check_cache_ttl_sec:
+            ok, lat, src = last_checkhost
+            external_ok, external_latency, external_src = ok, lat, f"cached:{int(ts - last_checkhost_ts)}s:{src}"
         else:
             ok2, code2, lat2, _ = http_probe(local_health_url, timeout_sec=5.0)
             external_ok = ok2 and code2 in (200, 401, 403)
@@ -297,8 +349,10 @@ def main() -> int:
 
         challenge_ok = True
         if challenge_url:
-            okc, codec, _, _ = http_probe(challenge_url, timeout_sec=6.0)
+            okc, codec, _, origin_body = origin_probe(challenge_url, timeout_sec=4.0, origin_probe_url=origin_probe_url)
             challenge_ok = okc and codec in (200, 204, 301, 302, 303, 307, 308)
+            if not challenge_ok:
+                external_src = f"{external_src};origin:{codec}:{origin_body[:80]}"
 
         window.append((ts, external_ok and challenge_ok, external_latency))
         window = [x for x in window if (ts - x[0]) <= 30]

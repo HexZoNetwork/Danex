@@ -2275,11 +2275,6 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        if (is_provider_range_ip(s, ip)) {
-            send_response(fd, 403, "Forbidden", "", {}, head_only);
-            close(fd);
-            return;
-        }
         std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
         std::string tok = read_cookie(cookie, s.cookie_name);
         std::string req_sid_fp = session_cookie_fingerprint(s, read_cookie(cookie, "pterodactyl_session"));

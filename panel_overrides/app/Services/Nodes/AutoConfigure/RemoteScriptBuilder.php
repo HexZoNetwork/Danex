@@ -222,6 +222,9 @@ for line in lines:
     if in_api and re.match(r'^\s{2}port:\s*', line):
         out.append("  port: 18080")
         continue
+    if re.match(r'^\s{2}check_permissions_on_boot:\s*', line):
+        out.append("  check_permissions_on_boot: true")
+        continue
     if in_ssl and re.match(r'^\s{4}enabled:\s*', line):
         out.append("    enabled: false")
         continue
@@ -232,6 +235,11 @@ for line in lines:
 
 if not any(l.startswith("ignore_panel_config_updates:") for l in out):
     out.append("ignore_panel_config_updates: true")
+if not any(re.match(r'^\s{2}check_permissions_on_boot:\s*', l) for l in out):
+    for i, line in enumerate(out):
+        if re.match(r'^\s{2}websocket_log_count:\s*', line):
+            out.insert(i, "  check_permissions_on_boot: true")
+            break
 
 path.write_text("\n".join(out) + "\n")
 PY

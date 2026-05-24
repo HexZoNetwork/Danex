@@ -16,22 +16,79 @@
 @include('admin.protect.partials.styles')
 <div class="pp-theme">
 @include('admin.protect.partials.tabs', ['active' => 'control'])
-<div class="row">
-    <div class="col-md-12">
-        <div class="box box-default">
-            <div class="box-header with-border">
-                <h3 class="box-title">Runtime Status</h3>
+	<div class="row">
+	    <div class="col-md-12">
+	        <div class="box box-default">
+	            <div class="box-header with-border">
+	                <h3 class="box-title">Runtime Status</h3>
             </div>
             <div class="box-body">
                 <pre class="pp-runtime-status">{{ trim((string) $modeStatus) !== '' ? $modeStatus : 'Status belum tersedia.' }}</pre>
                 <p><strong>Config path:</strong> <code>{{ $configPath }}</code></p>
             </div>
-        </div>
-    </div>
-</div>
+	        </div>
+	    </div>
+	</div>
 
-<div class="row">
-    <div class="col-md-6">
+	@php
+	    $selfHeal = is_array($selfHealSnapshot ?? null) ? $selfHealSnapshot : [];
+	    $snapshotTs = (int) ($selfHeal['ts'] ?? 0);
+	    $snapshotAge = $snapshotTs > 0 ? max(0, time() - $snapshotTs) : null;
+	@endphp
+	<div class="row">
+	    <div class="col-md-12">
+	        <div class="box box-info">
+	            <div class="box-header with-border"><h3 class="box-title">Web Check Snapshot</h3></div>
+	            <div class="box-body">
+	                <div class="row">
+	                    <div class="col-sm-3">
+	                        <p class="text-muted">External</p>
+	                        <h4>{{ ($selfHeal['external_ok'] ?? false) ? 'OK' : 'Not OK' }}</h4>
+	                    </div>
+	                    <div class="col-sm-3">
+	                        <p class="text-muted">Origin</p>
+	                        <h4>{{ ($selfHeal['challenge_ok'] ?? false) ? 'OK' : 'Not OK' }}</h4>
+	                    </div>
+	                    <div class="col-sm-3">
+	                        <p class="text-muted">Latency</p>
+	                        <h4>{{ number_format((float) ($selfHeal['external_latency_ms'] ?? 0), 1) }} ms</h4>
+	                    </div>
+	                    <div class="col-sm-3">
+	                        <p class="text-muted">Age</p>
+	                        <h4>{{ $snapshotAge === null ? '-' : $snapshotAge . 's' }}</h4>
+	                    </div>
+	                </div>
+	                <table class="table table-bordered pp-table" style="margin-top: 10px;">
+	                    <tbody>
+	                    <tr>
+	                        <th style="width: 180px;">Source</th>
+	                        <td><code>{{ $selfHeal['source'] ?? 'not available' }}</code></td>
+	                    </tr>
+	                    <tr>
+	                        <th>External API</th>
+	                        <td><code>{{ $selfHeal['check_api_url'] ?? '-' }}</code></td>
+	                    </tr>
+	                    <tr>
+	                        <th>Origin Probe</th>
+	                        <td><code>{{ $selfHeal['origin_probe_url'] ?? '-' }}</code></td>
+	                    </tr>
+	                    <tr>
+	                        <th>External Limit</th>
+	                        <td>{{ (int) ($selfHeal['external_check_min_interval_sec'] ?? 60) }}s min interval, {{ (int) ($selfHeal['external_check_cache_ttl_sec'] ?? 120) }}s cache TTL</td>
+	                    </tr>
+	                    <tr>
+	                        <th>Snapshot File</th>
+	                        <td><code>{{ $selfHeal['path'] ?? '-' }}</code></td>
+	                    </tr>
+	                    </tbody>
+	                </table>
+	            </div>
+	        </div>
+	    </div>
+	</div>
+
+	<div class="row">
+	    <div class="col-md-6">
         <div class="box box-primary">
             <div class="box-header with-border"><h3 class="box-title">Protection Mode</h3></div>
             <div class="box-body">

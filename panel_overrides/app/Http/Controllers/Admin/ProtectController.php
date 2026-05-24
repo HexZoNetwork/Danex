@@ -82,6 +82,8 @@ class ProtectController extends Controller
             'rceUnlocked' => $this->isRceUnlocked($request),
             'rceUnlockedUntil' => (int) $request->session()->get(self::RCE_SESSION_KEY, 0),
             'rceAllowedCommands' => $this->rceCommandAllowlist(),
+            'monitorConfig' => $this->monitorConfig(),
+            'selfHealSnapshot' => $this->selfHealSnapshot(),
         ]);
     }
 
@@ -2022,6 +2024,99 @@ class ProtectController extends Controller
         }
 
         return [];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function monitorConfig(): array
+    {
+        foreach ($this->configPaths() as $configPath) {
+            try {
+                if (!File::exists($configPath) || !File::isReadable($configPath)) {
+                    continue;
+                }
+                $raw = File::get($configPath);
+                $data = json_decode($raw, true);
+                if (is_array($data) && is_array($data['monitor'] ?? null)) {
+                    return $data['monitor'];
+                }
+            } catch (Throwable) {
+                // try next path
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function selfHealSnapshot(): array
+    {
+        $monitor = $this->monitorConfig();
+        $network = $this->networkConfig();
+        $runtimeDir = '/pteroprotect/runtime';
+        foreach ($this->configPaths() as $configPath) {
+            try {
+                if (!File::exists($configPath) || !File::isReadable($configPath)) {
+                    continue;
+                }
+                $raw = File::get($configPath);
+                $data = json_decode($raw, true);
+                if (is_array($data) && is_array($data['runtime'] ?? null)) {
+                    $runtimeDir = (string) ($data['runtime']['state_dir'] ?? $runtimeDir);
+                    break;
+                }
+            } catch (Throwable) {
+                // try next path
+            }
+        }
+
+        $snapshotPath = (string) ($monitor['health_snapshot_file'] ?? rtrim($runtimeDir, '/') . '/self_heal_dependency.json');
+        $snapshot = [];
+        try {
+            if (File::exists($snapshotPath) && File::isReadable($snapshotPath)) {
+                $data = json_decode((string) File::get($snapshotPath), true);
+                $snapshot = is_array($data) ? $data : [];
+            }
+        } catch (Throwable) {
+            $snapshot = [];
+        }
+
+        $externalUrl = trim((string) ($monitor['external_url'] ?? ''));
+        if ($externalUrl === '') {
+            $externalUrl = trim((string) (($network['ptlc_url'] ?? '') ?: config('app.url', '')));
+        }
+
+        return [
+            'path' => $snapshotPath,
+            'ts' => (int) ($snapshot['ts'] ?? 0),
+            'external_ok' => (bool) ($snapshot['external_ok'] ?? false),
+            'challenge_ok' => (bool) ($snapshot['challenge_ok'] ?? false),
+            'external_latency_ms' => (float) ($snapshot['external_latency_ms'] ?? 0.0),
+            'p95_ms' => (float) ($snapshot['p95_ms'] ?? 0.0),
+            'error_rate' => (float) ($snapshot['error_rate'] ?? 0.0),
+            'signals' => (int) ($snapshot['signals'] ?? 0),
+            'source' => (string) ($snapshot['source'] ?? 'not available'),
+            'external_url' => $externalUrl,
+            'check_api_url' => (string) ($monitor['check_api_url'] ?? ''),
+            'origin_probe_url' => (string) ($monitor['origin_probe_url'] ?? 'https://127.0.0.1:443/__pteroprotect/challenge/page'),
+            'external_check_min_interval_sec' => (int) ($monitor['external_check_min_interval_sec'] ?? 60),
+            'external_check_cache_ttl_sec' => (int) ($monitor['external_check_cache_ttl_sec'] ?? 120),
+        ];
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function configPaths(): array
+    {
+        return array_values(array_unique(array_filter([
+            (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH),
+            self::DEFAULT_CONFIG_PATH,
+            '/root/porn/config.json',
+        ])));
     }
 
     /**
