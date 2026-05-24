@@ -915,7 +915,7 @@ class ProtectController extends Controller
             'session_id' => $sessionId,
             'ticket_hash' => hash('sha256', $ticket),
             'user_id' => $user ? (int) $user->id : 0,
-            'ip' => (string) $request->server('REMOTE_ADDR', $request->ip()),
+            'ip' => $this->terminalClientIp($request),
             'user_agent_hash' => substr(hash('sha256', (string) $request->userAgent()), 0, 16),
             'created_at' => time(),
             'expires_at' => time() + self::TERMINAL_TICKET_TTL_SEC,
@@ -1457,6 +1457,18 @@ class ProtectController extends Controller
     private function terminalTicketDir(): string
     {
         return (string) env('PTEROPROTECT_TERMINAL_TICKET_DIR', '/dev/shm/pteroprotect/terminal_tickets');
+    }
+
+    private function terminalClientIp(Request $request): string
+    {
+        foreach (['CF-Connecting-IP', 'X-Real-IP', 'X-Forwarded-For'] as $header) {
+            $value = trim(explode(',', (string) $request->headers->get($header, ''))[0]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return (string) $request->server('REMOTE_ADDR', $request->ip());
     }
 
     private function isVerified(Request $request): bool
