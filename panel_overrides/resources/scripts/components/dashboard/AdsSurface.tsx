@@ -49,6 +49,7 @@ export default () => {
     const closeButtonRef = useRef<HTMLButtonElement | null>(null);
     const returnFocusRef = useRef<HTMLElement | null>(null);
     const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+    const [closeLocked, setCloseLocked] = useState(false);
 
     useEffect(() => {
         popupOpenRef.current = popupOpen;
@@ -73,7 +74,7 @@ export default () => {
         closeButtonRef.current?.focus();
 
         const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') {
+            if (event.key === 'Escape' && !closeLocked) {
                 setPopupOpen(false);
                 return;
             }
@@ -96,7 +97,7 @@ export default () => {
             document.removeEventListener('keydown', onKeyDown);
             returnFocusRef.current?.focus();
         };
-    }, [popupOpen]);
+    }, [popupOpen, closeLocked]);
 
     useEffect(() => {
         let cancelled = false;
@@ -145,12 +146,22 @@ export default () => {
                 const popupCandidate = popupCandidateRef.current;
                 if (serviceEnabledRef.current && popupCandidate && !popupOpenRef.current) {
                     const now = Date.now();
-                    const lastShown = Number(window.localStorage.getItem('ads.popup.last_shown') || '0');
-                    const cooldownMs = 86_400_000;
-                    if (now - lastShown >= cooldownMs && Math.random() <= 0.45) {
+                    const shownKey = `ads.popup.${popupCandidate.id}.shown`;
+                    const lastShown = Number(window.localStorage.getItem(`${shownKey}.last`) || '0');
+                    const countDate = window.localStorage.getItem(`${shownKey}.date`) || '';
+                    const today = new Date().toISOString().slice(0, 10);
+                    const shownToday = countDate === today ? Number(window.localStorage.getItem(`${shownKey}.count`) || '0') : 0;
+                    const cooldownMs = popupCandidate.cooldownMinutes * 60_000;
+                    if (now - lastShown >= cooldownMs && shownToday < popupCandidate.dailyCap && Math.random() <= 0.65) {
                         setPopup(popupCandidate);
                         setPopupOpen(true);
-                        window.localStorage.setItem('ads.popup.last_shown', String(now));
+                        setCloseLocked(popupCandidate.closeDelaySeconds > 0);
+                        window.localStorage.setItem(`${shownKey}.last`, String(now));
+                        window.localStorage.setItem(`${shownKey}.date`, today);
+                        window.localStorage.setItem(`${shownKey}.count`, String(shownToday + 1));
+                        if (popupCandidate.closeDelaySeconds > 0) {
+                            window.setTimeout(() => setCloseLocked(false), popupCandidate.closeDelaySeconds * 1000);
+                        }
                     }
                 }
 
@@ -190,6 +201,7 @@ export default () => {
                                     {renderMedia(ad, true, !prefersReducedMotion)}
                                     {ad.text && (
                                         <BannerBody>
+                                            <p css={tw`text-[10px] text-yellow-300 uppercase tracking-wide mb-1`}>{ad.sponsorLabel}</p>
                                             <p css={tw`text-xs text-neutral-200 line-clamp-2`}>{ad.text}</p>
                                         </BannerBody>
                                     )}
@@ -202,12 +214,12 @@ export default () => {
             )}
 
             {popupOpen && popup && (
-                <PopupBackdrop onClick={() => setPopupOpen(false)}>
+                <PopupBackdrop onClick={() => !closeLocked && setPopupOpen(false)}>
                     <PopupCard ref={popupCardRef} role={'dialog'} aria-modal={'true'} aria-label={'Sponsored content'} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
                         <div css={tw`px-3 py-2 border-b border-neutral-700 flex items-center justify-between`}>
-                            <p css={tw`text-xs text-neutral-200 uppercase tracking-wide`}>Sponsored</p>
-                            <button ref={closeButtonRef} type={'button'} css={tw`text-xs text-neutral-300 hover:text-neutral-100`} onClick={() => setPopupOpen(false)}>
-                                Close
+                            <p css={tw`text-xs text-neutral-200 uppercase tracking-wide`}>{popup.sponsorLabel}</p>
+                            <button ref={closeButtonRef} type={'button'} css={tw`text-xs text-neutral-300 hover:text-neutral-100 disabled:opacity-50`} disabled={closeLocked} onClick={() => setPopupOpen(false)}>
+                                {closeLocked ? `Close in ${popup.closeDelaySeconds}s` : 'Close'}
                             </button>
                         </div>
                         {clickableWrap(popup, renderMedia(popup, false, !prefersReducedMotion), `ads-popup-media-${popup.id}`)}

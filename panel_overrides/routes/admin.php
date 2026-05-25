@@ -61,6 +61,7 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
     Route::group(['prefix' => 'management/danexcoin'], function () {
         Route::get('/', [Admin\DanexCoinController::class, 'index'])->name('admin.management.danexcoin.index');
         Route::post('/adjust', [Admin\DanexCoinController::class, 'adjust'])->name('admin.management.danexcoin.adjust');
+        Route::post('/settings', [Admin\DanexCoinController::class, 'settings'])->name('admin.management.danexcoin.settings');
     });
 
     Route::group(['prefix' => 'locations'], function () {

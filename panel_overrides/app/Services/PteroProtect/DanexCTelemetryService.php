@@ -349,7 +349,7 @@ class DanexCTelemetryService
         if ($raw === '') {
             return 'n/a';
         }
-        $first = (float) explode(' ', $raw)[0];
+        $first = (int) floor((float) explode(' ', $raw)[0]);
         $days = (int) floor($first / 86400);
         $hours = (int) floor(($first % 86400) / 3600);
         return sprintf('%dd %dh', $days, $hours);
@@ -357,11 +357,57 @@ class DanexCTelemetryService
 
     private function estimateBlacklistCount(): int
     {
-        $path = $this->runtimeDir() . '/block_history.tsv';
-        if (!File::exists($path)) {
+        $entries = [];
+        foreach ([
+            $this->runtimeDir() . '/unblock_blacklist.json',
+            $this->runtimeDir() . '/emergency_blacklist.json',
+        ] as $path) {
+            $data = $this->readJsonFile($path);
+            $blacklist = $data['blacklist'] ?? [];
+            if (!is_array($blacklist)) {
+                continue;
+            }
+
+            foreach ($blacklist as $key => $value) {
+                if (is_string($key) && $key !== '') {
+                    $entries[$key] = true;
+                    continue;
+                }
+                if (is_string($value) && $value !== '') {
+                    $entries[$value] = true;
+                }
+            }
+        }
+
+        return count($entries) + $this->countIpsetEntries('pteroprotect_block_v4') + $this->countIpsetEntries('pteroprotect_block_v6');
+    }
+
+    private function countIpsetEntries(string $setName): int
+    {
+        if (!function_exists('shell_exec')) {
             return 0;
         }
-        return count($this->readLastLines($path, 5000));
+
+        $output = @shell_exec('ipset list ' . escapeshellarg($setName) . ' 2>/dev/null');
+        if (!is_string($output) || $output === '') {
+            return 0;
+        }
+
+        $inMembers = false;
+        $count = 0;
+        foreach (preg_split('/\r?\n/', $output) ?: [] as $line) {
+            $line = trim($line);
+            if ($line === 'Members:') {
+                $inMembers = true;
+                continue;
+            }
+            if (!$inMembers || $line === '') {
+                continue;
+            }
+            $count++;
+        }
+
+        return $count;
     }
 
     private function resolveSensitivity(int $paranoia): string

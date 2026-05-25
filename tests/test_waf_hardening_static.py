@@ -53,6 +53,13 @@ def main() -> int:
     assert_contains(nginx, "Browser panel websocket metadata uses Laravel session + CSRF", "nginx must not require bearer API tokens for UI websocket metadata")
     assert_contains(nginx, "Browser dashboard polling uses session auth", "nginx must not require bearer API tokens for UI resource polling")
     assert_contains(nginx, "location ^~ /api/client/chat/", "nginx must keep explicit chat UI lane")
+    assert_contains(nginx, "location ^~ /api/client/create-panel/", "nginx must keep Create Panel on a JSON API lane")
+    assert_contains(nginx, "Create Panel is a JSON API", "Create Panel lane must document why it bypasses the HTML challenge")
+    assert_not_contains(
+        nginx,
+        "location ^~ /api/client/create-panel/ {\n    auth_request /__pteroprotect/challenge/check_web;",
+        "Create Panel API must not return HTML challenge pages to JSON clients",
+    )
     assert_contains(nginx, "location = /api/client/chat/conversations", "nginx must keep chat conversations bootstrap out of brownout hard 503")
     assert_contains(nginx, "location = /api/client/chat/presence", "nginx must keep chat presence heartbeat out of brownout hard 503")
     assert_contains(nginx, "location = /api/client/chat/messages", "nginx must keep chat message reads out of brownout hard 503")

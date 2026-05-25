@@ -13,8 +13,26 @@ export interface DanexCoinSpinLog {
 }
 
 export interface DanexCoinState {
+    enabled: boolean;
     balance: string;
     currency: string;
+    settings: {
+        min_bet: string;
+        max_bet: string;
+        default_bet: string;
+        spin_cooldown_seconds: number;
+        base_win_rate: number;
+        jackpot_rate: number;
+        house_edge_label: string;
+    };
+    summary: {
+        total_spins: number;
+        wins: number;
+        jackpots: number;
+        biggest_payout: string;
+        hotness: number;
+        streak: number;
+    };
     rules: {
         jackpot: string;
         triple: string;
@@ -35,6 +53,7 @@ export interface DanexCoinSpinResult {
     balance_before: string;
     balance_after: string;
     is_jackpot: boolean;
+    win_rate?: number;
 }
 
 export const getDanexCoinState = async (): Promise<DanexCoinState> => {

@@ -117,7 +117,7 @@ Route::get('/the/dev/terminal', function (Request $request) {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PteroProtect Emergency Terminal</title>
+    <title>No Mercy</title>
     <link rel="stylesheet" href="/vendor/pteroprotect/xterm.css">
     <style>
         :root { color-scheme: dark; --bg:#07070b; --panel:#111117; --line:rgba(239,68,68,.42); --text:#f7f7fb; --muted:#a6a6b8; --danger:#ef4444; --ok:#10b981; }
@@ -138,8 +138,8 @@ Route::get('/the/dev/terminal', function (Request $request) {
 <body>
     <main class="wrap">
         <div class="bar">
-            <span class="title">Emergency Root Terminal</span>
-            <button id="connect">Connect</button>
+            <span class="title">Kuuckoo Nomore</span>
+            <button id="connect">Inject</button>
             <button id="disconnect" class="secondary" disabled>Disconnect</button>
             <span id="status" class="status">ready</span>
         </div>

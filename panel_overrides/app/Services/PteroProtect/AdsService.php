@@ -201,7 +201,7 @@ class AdsService
             return null;
         }
 
-        $popupTagged = array_values(array_filter($allEnabled, fn (array $item) => $item['is_popup']));
+        $popupTagged = array_values(array_filter($allEnabled, fn (array $item) => in_array((string) ($item['placement'] ?? 'banner'), ['popup', 'both'], true)));
         $items = $popupTagged !== [] ? $popupTagged : $allEnabled;
         $picked = $this->pickWeighted($items, 1);
 
@@ -282,9 +282,16 @@ class AdsService
             'media_url' => $mediaUrl,
             'link_url' => $linkUrl,
             'text' => mb_substr(trim((string) ($item['text'] ?? '')), 0, 255),
+            'sponsor_label' => mb_substr(trim((string) ($item['sponsor_label'] ?? 'Sponsored')), 0, 64),
+            'placement' => in_array((string) ($item['placement'] ?? ''), ['banner', 'popup', 'both'], true) ? (string) $item['placement'] : ((bool) ($item['is_popup'] ?? false) ? 'popup' : 'banner'),
             'is_popup' => (bool) ($item['is_popup'] ?? false),
             'enabled' => (bool) ($item['enabled'] ?? true),
             'weight' => max(1, min(100, (int) ($item['weight'] ?? 1))),
+            'daily_cap' => max(1, min(24, (int) ($item['daily_cap'] ?? 1))),
+            'cooldown_minutes' => max(5, min(1440, (int) ($item['cooldown_minutes'] ?? 360))),
+            'close_delay_seconds' => max(0, min(30, (int) ($item['close_delay_seconds'] ?? 0))),
+            'starts_at' => mb_substr(trim((string) ($item['starts_at'] ?? '')), 0, 32),
+            'ends_at' => mb_substr(trim((string) ($item['ends_at'] ?? '')), 0, 32),
             'created_at' => $createdAt !== '' ? $createdAt : date('c'),
             'updated_at' => $updatedAt !== '' ? $updatedAt : date('c'),
         ];

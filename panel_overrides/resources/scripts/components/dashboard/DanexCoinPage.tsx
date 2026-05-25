@@ -24,6 +24,13 @@ const Panel = styled.div`
         box-shadow: 0 22px 54px rgba(0, 0, 0, 0.55), 0 0 24px rgba(139, 92, 246, 0.12);
     }
 `;
+const CasinoPanel = styled(Panel)`
+    background:
+        radial-gradient(circle at 20% 0%, rgba(234, 179, 8, 0.12), transparent 22rem),
+        linear-gradient(145deg, rgba(127, 29, 29, 0.2), rgba(11, 11, 16, 0.98) 42%),
+        #0b0b10;
+    border-color: rgba(234, 179, 8, 0.28);
+`;
 const ReelWrap = styled.div`
     ${tw`rounded-xl border p-3`};
     background: #111117;
@@ -61,6 +68,17 @@ const MessageBox = styled.div`
     background: #111117;
     border-color: rgba(139, 92, 246, 0.2);
 `;
+const StatTile = styled.div`
+    ${tw`rounded-lg border px-3 py-2`};
+    background: rgba(17, 17, 23, 0.78);
+    border-color: rgba(234, 179, 8, 0.18);
+`;
+const QuickBet = styled.button<{ $active?: boolean }>`
+    ${tw`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors`};
+    background: ${({ $active }) => ($active ? 'rgba(234, 179, 8, 0.18)' : '#111117')};
+    border-color: ${({ $active }) => ($active ? 'rgba(234, 179, 8, 0.58)' : 'rgba(139, 92, 246, 0.24)')};
+    color: ${({ $active }) => ($active ? '#fde68a' : '#d8d8e8')};
+`;
 
 const toNumber = (value: string): number => Number.parseFloat(value || '0') || 0;
 const SYMBOLS = ['7', 'BAR', 'CHERRY', 'DIAMOND', 'BELL', 'STAR'] as const;
@@ -84,6 +102,24 @@ export default () => {
     const [spinning, setSpinning] = useState(false);
     const [bet, setBet] = useState('10');
     const [balance, setBalance] = useState('0.00');
+    const [enabled, setEnabled] = useState(true);
+    const [settings, setSettings] = useState({
+        min_bet: '1.00',
+        max_bet: '100000000.00',
+        default_bet: '10.00',
+        spin_cooldown_seconds: 4,
+        base_win_rate: 0.16,
+        jackpot_rate: 0.08,
+        house_edge_label: 'volatile',
+    });
+    const [summary, setSummary] = useState({
+        total_spins: 0,
+        wins: 0,
+        jackpots: 0,
+        biggest_payout: '0.00',
+        hotness: 0,
+        streak: 0,
+    });
     const [history, setHistory] = useState<DanexCoinSpinLog[]>([]);
     const [loadError, setLoadError] = useState('');
     const [reels, setReels] = useState<[SymbolKey | '?', SymbolKey | '?', SymbolKey | '?']>(['?', '?', '?']);
@@ -92,6 +128,14 @@ export default () => {
     const load = async () => {
         const state = await getDanexCoinState();
         setBalance(String(state?.balance || '0.00'));
+        setEnabled(Boolean(state?.enabled ?? true));
+        if (state?.settings) {
+            setSettings(state.settings);
+            setBet((current) => current || String(state.settings.default_bet || '10.00'));
+        }
+        if (state?.summary) {
+            setSummary(state.summary);
+        }
         setHistory(
             Array.isArray(state?.history)
                 ? state.history.filter((row) => Array.isArray((row as any)?.reels) && (row as any).reels.length === 3)
@@ -146,6 +190,10 @@ export default () => {
             setLastMessage('Amount must be a number greater than 0.');
             return;
         }
+        if (!enabled) {
+            setLastMessage('DanexCoin table is closed by admin.');
+            return;
+        }
 
         spinLockRef.current = true;
         setSpinning(true);
@@ -167,13 +215,13 @@ export default () => {
 
             const multiplier = toNumber(result.multiplier);
             if (multiplier >= 2) {
-                setLastMessage(`Prime reward matched x${result.multiplier}.`);
+                setLastMessage(`JACKPOT line hit x${result.multiplier}. Cashout ${result.payout}.`);
             } else if (multiplier >= 1.5) {
-                setLastMessage(`Triple signal matched x${result.multiplier}.`);
+                setLastMessage(`Triple line hit x${result.multiplier}. Cashout ${result.payout}.`);
             } else if (multiplier >= 0.25) {
-                setLastMessage(`Partial signal matched x${result.multiplier}.`);
+                setLastMessage(`Pair saved the round x${result.multiplier}. Cashout ${result.payout}.`);
             } else {
-                setLastMessage('No reward on this cycle.');
+                setLastMessage('Zonk. House takes this round.');
             }
 
             setHistory((current) => [
@@ -190,6 +238,15 @@ export default () => {
                 },
                 ...current,
             ].slice(0, 20));
+            setSummary((current) => ({
+                ...current,
+                total_spins: current.total_spins + 1,
+                wins: current.wins + (multiplier > 0 ? 1 : 0),
+                jackpots: current.jackpots + (result.is_jackpot ? 1 : 0),
+                biggest_payout: String(Math.max(toNumber(current.biggest_payout), toNumber(result.payout)).toFixed(2)),
+                hotness: Math.min(100, Math.round(((current.wins + (multiplier > 0 ? 1 : 0)) / Math.max(1, current.total_spins + 1)) * 100)),
+                streak: multiplier > 0 ? current.streak + 1 : 0,
+            }));
         } catch (error: any) {
             const status = Number(error?.response?.status || 0);
             const payload = error?.response?.data;
@@ -219,19 +276,39 @@ export default () => {
     return (
         <PageContentBlock title={'DanexCoin Arcade'} showFlashKey={'dashboard'}>
             <div css={tw`mx-auto w-full max-w-5xl space-y-4`}>
-                <Panel>
+                <CasinoPanel>
                     <div css={tw`flex flex-wrap items-center justify-between gap-3`}>
                         <div>
-                            <p css={tw`text-xs uppercase tracking-wider text-neutral-400`}>Wallet</p>
-                            <p css={tw`text-lg font-semibold text-neutral-100`}>Reward Console</p>
+                            <p css={tw`text-xs uppercase tracking-wider text-yellow-300`}>DanexCoin Casino</p>
+                            <p css={tw`text-lg font-semibold text-neutral-100`}>High volatility slot table</p>
+                            <p css={tw`text-xs text-neutral-400 mt-1`}>Mode {settings.house_edge_label} | Win pulse {(settings.base_win_rate * 100).toFixed(1)}% | Jackpot {(settings.jackpot_rate * 100).toFixed(1)}%</p>
                         </div>
                         <div css={tw`text-right`}>
                             <p css={tw`text-xs uppercase tracking-wider text-neutral-400`}>Balance</p>
-                            <p css={tw`text-2xl font-bold text-purple-300`}>{balance}</p>
+                            <p css={tw`text-2xl font-bold text-yellow-300`}>{balance}</p>
                         </div>
                     </div>
+                    <div css={tw`mt-4 grid grid-cols-2 md:grid-cols-4 gap-2`}>
+                        <StatTile>
+                            <p css={tw`text-[10px] uppercase tracking-wider text-neutral-500`}>Hotness</p>
+                            <p css={tw`text-lg font-bold text-red-300`}>{summary.hotness}%</p>
+                        </StatTile>
+                        <StatTile>
+                            <p css={tw`text-[10px] uppercase tracking-wider text-neutral-500`}>Win Streak</p>
+                            <p css={tw`text-lg font-bold text-green-300`}>{summary.streak}</p>
+                        </StatTile>
+                        <StatTile>
+                            <p css={tw`text-[10px] uppercase tracking-wider text-neutral-500`}>Jackpots</p>
+                            <p css={tw`text-lg font-bold text-yellow-300`}>{summary.jackpots}</p>
+                        </StatTile>
+                        <StatTile>
+                            <p css={tw`text-[10px] uppercase tracking-wider text-neutral-500`}>Best Cashout</p>
+                            <p css={tw`text-lg font-bold text-purple-300`}>{summary.biggest_payout}</p>
+                        </StatTile>
+                    </div>
                     {loadError && <p css={tw`mt-3 text-xs text-red-300`}>{loadError}</p>}
-                </Panel>
+                    {!enabled && <p css={tw`mt-3 text-xs text-red-300`}>Table closed by admin.</p>}
+                </CasinoPanel>
 
                 <Panel>
                     <style>{`
@@ -252,27 +329,36 @@ export default () => {
                         </ReelWrap>
                     </div>
 
-                    <div css={tw`mt-4 grid grid-cols-1 sm:grid-cols-[auto_1fr_auto] items-center gap-2`}>
+                    <div css={tw`mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2`}>
+                        {[settings.default_bet, '25', '100', '1000'].map((value) => (
+                            <QuickBet key={value} type={'button'} $active={bet === value} onClick={() => setBet(value)} disabled={spinning || loading}>
+                                {value}
+                            </QuickBet>
+                        ))}
+                    </div>
+
+                    <div css={tw`mt-3 grid grid-cols-1 sm:grid-cols-[auto_1fr_auto] items-center gap-2`}>
                         <label htmlFor={'bet'} css={tw`text-sm text-neutral-300`}>
-                            Amount
+                            Bet
                         </label>
                         <input
                             id={'bet'}
                             type={'number'}
                             min={'1'}
+                            max={settings.max_bet}
                             step={'0.01'}
                             value={bet}
                             onChange={(e) => setBet(e.currentTarget.value)}
                             css={tw`w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-neutral-100`}
-                            disabled={spinning || loading}
+                            disabled={spinning || loading || !enabled}
                         />
                         <Button
                             type={'button'}
                             onClick={onSpin}
-                            disabled={spinning || loading}
+                            disabled={spinning || loading || !enabled}
                             css={tw`w-full sm:w-auto font-semibold`}
                         >
-                            {spinning ? 'Running...' : 'Run'}
+                            {spinning ? 'Spinning...' : 'Spin'}
                         </Button>
                     </div>
 
@@ -282,7 +368,7 @@ export default () => {
                 </Panel>
 
                 <Panel>
-                    <h2 css={tw`text-sm font-semibold text-neutral-100 mb-2`}>Reward History</h2>
+                    <h2 css={tw`text-sm font-semibold text-neutral-100 mb-2`}>Table History</h2>
                     {history.length === 0 ? (
                         <p css={tw`text-sm text-neutral-400`}>No reward run yet.</p>
                     ) : (
@@ -300,7 +386,7 @@ export default () => {
                                         )}
                                     </div>
                                     <div css={tw`text-xs text-neutral-300 tabular-nums`}>
-                                        Amount {row.bet} | x{row.multiplier} | Reward {row.payout} | Bal {row.balance_after}
+                                        Bet {row.bet} | x{row.multiplier} | Cashout {row.payout} | Bal {row.balance_after}
                                     </div>
                                 </HistoryRow>
                             ))}

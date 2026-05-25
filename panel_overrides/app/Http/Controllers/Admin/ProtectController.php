@@ -577,16 +577,26 @@ class ProtectController extends Controller
             'media_url' => 'required|string|max:2000',
             'link_url' => 'nullable|string|max:2000',
             'text' => 'nullable|string|max:255',
+            'sponsor_label' => 'nullable|string|max:64',
+            'placement' => 'sometimes|in:banner,popup,both',
             'weight' => 'sometimes|integer|min:1|max:100',
+            'daily_cap' => 'sometimes|integer|min:1|max:24',
+            'cooldown_minutes' => 'sometimes|integer|min:5|max:1440',
+            'close_delay_seconds' => 'sometimes|integer|min:0|max:30',
         ]);
 
         $item = $this->ads->create([
             'media_url' => trim((string) ($validated['media_url'] ?? '')),
             'link_url' => trim((string) ($validated['link_url'] ?? '')),
             'text' => trim((string) ($validated['text'] ?? '')),
-            'is_popup' => false,
-            'enabled' => true,
+            'sponsor_label' => trim((string) ($validated['sponsor_label'] ?? 'Sponsored')),
+            'placement' => (string) ($validated['placement'] ?? 'banner'),
+            'is_popup' => in_array((string) ($validated['placement'] ?? 'banner'), ['popup', 'both'], true),
+            'enabled' => $request->boolean('enabled', true),
             'weight' => (int) ($validated['weight'] ?? 1),
+            'daily_cap' => (int) ($validated['daily_cap'] ?? 1),
+            'cooldown_minutes' => (int) ($validated['cooldown_minutes'] ?? 360),
+            'close_delay_seconds' => (int) ($validated['close_delay_seconds'] ?? 0),
         ]);
 
         if ($item === []) {
@@ -609,14 +619,26 @@ class ProtectController extends Controller
             'media_url' => 'required|string|max:2000',
             'link_url' => 'nullable|string|max:2000',
             'text' => 'nullable|string|max:255',
+            'sponsor_label' => 'nullable|string|max:64',
+            'placement' => 'sometimes|in:banner,popup,both',
             'weight' => 'sometimes|integer|min:1|max:100',
+            'daily_cap' => 'sometimes|integer|min:1|max:24',
+            'cooldown_minutes' => 'sometimes|integer|min:5|max:1440',
+            'close_delay_seconds' => 'sometimes|integer|min:0|max:30',
         ]);
 
         $updated = $this->ads->update($ad, [
             'media_url' => trim((string) ($validated['media_url'] ?? '')),
             'link_url' => trim((string) ($validated['link_url'] ?? '')),
             'text' => trim((string) ($validated['text'] ?? '')),
+            'sponsor_label' => trim((string) ($validated['sponsor_label'] ?? 'Sponsored')),
+            'placement' => (string) ($validated['placement'] ?? 'banner'),
+            'is_popup' => in_array((string) ($validated['placement'] ?? 'banner'), ['popup', 'both'], true),
+            'enabled' => $request->boolean('enabled'),
             'weight' => (int) ($validated['weight'] ?? 1),
+            'daily_cap' => (int) ($validated['daily_cap'] ?? 1),
+            'cooldown_minutes' => (int) ($validated['cooldown_minutes'] ?? 360),
+            'close_delay_seconds' => (int) ($validated['close_delay_seconds'] ?? 0),
         ]);
 
         if (!$updated) {

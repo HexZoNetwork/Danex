@@ -59,9 +59,27 @@
                             <input class="form-control" name="text" placeholder="Kosong boleh" maxlength="255" />
                         </div>
                         <div class="form-group">
+                            <label>Sponsor Label</label>
+                            <input class="form-control" name="sponsor_label" value="Sponsored" maxlength="64" />
+                        </div>
+                        <div class="form-group">
+                            <label>Placement</label>
+                            <select class="form-control" name="placement">
+                                <option value="banner">Desktop Banner</option>
+                                <option value="popup">Popup</option>
+                                <option value="both">Banner + Popup</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
                             <label>Weight (1-100)</label>
                             <input type="number" min="1" max="100" class="form-control" name="weight" value="1" />
                         </div>
+                        <div class="row">
+                            <div class="col-xs-4"><label>Daily Cap</label><input type="number" min="1" max="24" class="form-control" name="daily_cap" value="1" /></div>
+                            <div class="col-xs-4"><label>Cooldown</label><input type="number" min="5" max="1440" class="form-control" name="cooldown_minutes" value="360" /></div>
+                            <div class="col-xs-4"><label>Close Delay</label><input type="number" min="0" max="30" class="form-control" name="close_delay_seconds" value="0" /></div>
+                        </div>
+                        <div class="checkbox"><label><input type="checkbox" name="enabled" value="1" checked> Enabled</label></div>
                         <button type="submit" class="btn btn-primary">Create Ad</button>
                     </form>
                 </div>
@@ -79,8 +97,8 @@
                             <tr>
                                 <th style="width:48px;">ID</th>
                                 <th>Media</th>
-                                <th>Text</th>
-                                <th style="width:90px;">Weight</th>
+                                <th>Campaign</th>
+                                <th style="width:190px;">Delivery</th>
                                 <th style="width:170px;">Action</th>
                             </tr>
                         </thead>
@@ -97,9 +115,19 @@
                                 </td>
                                 <td>
                                         <input class="form-control" name="text" value="{{ (string) ($item['text'] ?? '') }}" maxlength="255" placeholder="text optional" />
+                                        <input class="form-control" name="sponsor_label" value="{{ (string) ($item['sponsor_label'] ?? 'Sponsored') }}" maxlength="64" style="margin-top:6px;" placeholder="label" />
                                 </td>
                                 <td>
+                                        <select class="form-control" name="placement">
+                                            @foreach(['banner' => 'Banner', 'popup' => 'Popup', 'both' => 'Both'] as $value => $label)
+                                                <option value="{{ $value }}" {{ (string) ($item['placement'] ?? 'banner') === $value ? 'selected' : '' }}>{{ $label }}</option>
+                                            @endforeach
+                                        </select>
+                                        <label style="margin-top:6px;display:block;"><input type="checkbox" name="enabled" value="1" {{ !empty($item['enabled']) ? 'checked' : '' }}> enabled</label>
                                         <input type="number" min="1" max="100" class="form-control" name="weight" value="{{ (int) ($item['weight'] ?? 1) }}" />
+                                        <input type="number" min="1" max="24" class="form-control" name="daily_cap" value="{{ (int) ($item['daily_cap'] ?? 1) }}" style="margin-top:6px;" placeholder="daily cap" />
+                                        <input type="number" min="5" max="1440" class="form-control" name="cooldown_minutes" value="{{ (int) ($item['cooldown_minutes'] ?? 360) }}" style="margin-top:6px;" placeholder="cooldown minutes" />
+                                        <input type="number" min="0" max="30" class="form-control" name="close_delay_seconds" value="{{ (int) ($item['close_delay_seconds'] ?? 0) }}" style="margin-top:6px;" placeholder="close delay" />
                                 </td>
                                 <td>
                                         <button class="btn btn-xs btn-primary" type="submit">Save changes</button>

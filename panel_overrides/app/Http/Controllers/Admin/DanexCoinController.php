@@ -10,11 +10,12 @@ use Illuminate\View\View;
 use Prologue\Alerts\AlertsMessageBag;
 use Pterodactyl\Http\Controllers\Controller;
 use Pterodactyl\Models\User;
+use Pterodactyl\Services\PteroProtect\DanexCoinSettingsService;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
 class DanexCoinController extends Controller
 {
-    public function __construct(private AlertsMessageBag $alert)
+    public function __construct(private AlertsMessageBag $alert, private DanexCoinSettingsService $settings)
     {
     }
 
@@ -23,6 +24,13 @@ class DanexCoinController extends Controller
         $this->assertAdmin($request);
 
         $recent = collect();
+        $stats = [
+            'spins' => 0,
+            'wagered' => 0,
+            'paid' => 0,
+            'jackpots' => 0,
+            'unique_users' => 0,
+        ];
         if (Schema::hasTable('danexcoin_spin_logs')) {
             $recent = DB::table('danexcoin_spin_logs as l')
                 ->join('users as u', 'u.id', '=', 'l.user_id')
@@ -43,11 +51,51 @@ class DanexCoinController extends Controller
                     'l.is_jackpot',
                     'l.created_at',
                 ]);
+
+            $rawStats = DB::table('danexcoin_spin_logs')
+                ->where('created_at', '>=', now()->subDay())
+                ->selectRaw('COUNT(*) as spins, COALESCE(SUM(bet),0) as wagered, COALESCE(SUM(payout),0) as paid, COALESCE(SUM(is_jackpot),0) as jackpots, COUNT(DISTINCT user_id) as unique_users')
+                ->first();
+            $stats = [
+                'spins' => (int) ($rawStats->spins ?? 0),
+                'wagered' => (float) ($rawStats->wagered ?? 0),
+                'paid' => (float) ($rawStats->paid ?? 0),
+                'jackpots' => (int) ($rawStats->jackpots ?? 0),
+                'unique_users' => (int) ($rawStats->unique_users ?? 0),
+            ];
         }
 
         return view('admin.danexcoin.index', [
             'recent' => $recent,
+            'settings' => $this->settings->get(),
+            'stats' => $stats,
         ]);
+    }
+
+    public function settings(Request $request): RedirectResponse
+    {
+        $this->assertAdmin($request);
+
+        $validated = $request->validate([
+            'enabled' => ['sometimes', 'boolean'],
+            'min_bet' => ['required', 'numeric', 'min:0.01', 'max:100000000'],
+            'max_bet' => ['required', 'numeric', 'min:0.01', 'max:100000000'],
+            'default_bet' => ['required', 'numeric', 'min:0.01', 'max:100000000'],
+            'spin_cooldown_seconds' => ['required', 'integer', 'min:1', 'max:30'],
+            'base_win_rate' => ['required', 'numeric', 'min:0', 'max:0.95'],
+            'jackpot_rate' => ['required', 'numeric', 'min:0', 'max:0.95'],
+            'triple_multiplier' => ['required', 'numeric', 'min:0', 'max:100'],
+            'double_multiplier' => ['required', 'numeric', 'min:0', 'max:100'],
+            'jackpot_multiplier' => ['required', 'numeric', 'min:0', 'max:100'],
+            'hot_window_minutes' => ['required', 'integer', 'min:5', 'max:120'],
+            'house_edge_label' => ['nullable', 'string', 'max:32'],
+        ]);
+
+        $validated['enabled'] = $request->boolean('enabled');
+        $this->settings->update($validated);
+        $this->alert->success('DanexCoin settings updated.')->flash();
+
+        return redirect()->route('admin.management.danexcoin.index');
     }
 
     public function adjust(Request $request): RedirectResponse

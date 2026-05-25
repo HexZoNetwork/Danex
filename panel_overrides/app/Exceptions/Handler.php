@@ -162,6 +162,10 @@ class Handler extends ExceptionHandler
                 return $this->invalidJson($request, $e);
             }
 
+            if ($e instanceof ModelNotFoundException || $e->getPrevious() instanceof ModelNotFoundException) {
+                return new JsonResponse($this->convertExceptionToArray($e), 404);
+            }
+
             $status = method_exists($e, 'getStatusCode')
                 ? (int) $e->getStatusCode()
                 : (self::$exceptionResponseCodes[get_class($e)] ?? 500);
