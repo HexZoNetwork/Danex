@@ -21,8 +21,6 @@ export interface DanexCoinState {
         max_bet: string;
         default_bet: string;
         spin_cooldown_seconds: number;
-        base_win_rate: number;
-        jackpot_rate: number;
         house_edge_label: string;
     };
     summary: {

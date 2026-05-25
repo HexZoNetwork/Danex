@@ -204,6 +204,16 @@ const Tag = styled.span`
     background: #111117;
     border-color: rgba(139, 92, 246, 0.22);
 `;
+const RoomPulse = styled.div`
+    ${tw`px-3 py-2 border-b flex flex-wrap items-center justify-between gap-2`};
+    background: linear-gradient(90deg, rgba(17, 17, 23, 0.96), rgba(139, 92, 246, 0.08));
+    border-color: rgba(139, 92, 246, 0.18);
+`;
+const PulseMetric = styled.div`
+    ${tw`rounded-md border px-2 py-1 text-[11px]`};
+    background: #111117;
+    border-color: rgba(139, 92, 246, 0.22);
+`;
 
 const AvatarImage = tw.img`w-full h-full object-cover`;
 const AvatarFallback = styled.div`
@@ -743,6 +753,15 @@ export default () => {
 
     const lastId = useMemo(() => (messages.length ? messages[messages.length - 1].id : undefined), [messages]);
     const oldestId = useMemo(() => (messages.length ? messages[0].id : undefined), [messages]);
+    const activeOnlineCount = useMemo(
+        () => (activeConversation?.members || []).filter((member) => {
+            const key = String(member.username || '').toLowerCase();
+            return Boolean(member.isOnline) || Boolean(memberPresenceMap[key]?.online);
+        }).length,
+        [activeConversation, memberPresenceMap]
+    );
+    const recentMediaCount = useMemo(() => messages.filter((item) => Boolean(item.mediaUrl)).length, [messages]);
+    const quickMessages = useMemo(() => ['On it', 'Wait bentar', 'Done', 'Cek DM', 'Gas'], []);
 
     const scrollToBottom = () => {
         if (!listRef.current) return;
@@ -2461,6 +2480,22 @@ export default () => {
                     </div>
                 )}
 
+                {activeConversation && (
+                    <RoomPulse>
+                        <div css={tw`min-w-0`}>
+                            <p css={tw`text-xs font-semibold text-neutral-100 m-0`}>Room pulse</p>
+                            <p css={tw`text-[11px] text-neutral-400 truncate m-0`}>
+                                {activeConversation.type === 'group' ? activeConversation.groupUsername || activeConversation.groupCode || 'group room' : 'private room'}
+                            </p>
+                        </div>
+                        <div css={tw`flex flex-wrap gap-2`}>
+                            <PulseMetric><span css={tw`text-green-300`}>{activeOnlineCount}</span> online</PulseMetric>
+                            <PulseMetric><span css={tw`text-purple-300`}>{messages.length}</span> loaded</PulseMetric>
+                            <PulseMetric><span css={tw`text-yellow-300`}>{recentMediaCount}</span> media</PulseMetric>
+                        </div>
+                    </RoomPulse>
+                )}
+
                 {activeConversation?.type === 'group' && (myGroupRole === 'owner' || myGroupRole === 'admin') && (
                     <div css={tw`px-3 py-2 border-b space-y-2`} style={panelHeaderStyle}>
                         <div css={tw`flex items-center justify-between gap-2`}>
@@ -2796,7 +2831,7 @@ export default () => {
                                         )}
 
                                         <div css={tw`mt-1 flex flex-wrap gap-1`}>
-                                            {['👍', '❤️', '🔥'].map((emoji) => {
+                                            {['👍', '❤️', '🔥', '😂', '👀', '💎'].map((emoji) => {
                                                 const data = item.reactions.find((r) => r.emoji === emoji);
                                                 const count = data?.count || 0;
                                                 const mine = Boolean(data?.mine);
@@ -2954,6 +2989,18 @@ export default () => {
                             }
                         }}
                     />
+                    <div css={tw`flex flex-wrap gap-1`}>
+                        {quickMessages.map((text) => (
+                            <Tiny
+                                key={text}
+                                type={'button'}
+                                onClick={() => setMessage((current) => (current.trim() ? `${current} ${text}` : text))}
+                                disabled={sending}
+                            >
+                                {text}
+                            </Tiny>
+                        ))}
+                    </div>
 
                     <div css={tw`flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2`}>
                         <div css={tw`flex items-center gap-2 flex-wrap`}>

@@ -79,6 +79,11 @@ const QuickBet = styled.button<{ $active?: boolean }>`
     border-color: ${({ $active }) => ($active ? 'rgba(234, 179, 8, 0.58)' : 'rgba(139, 92, 246, 0.24)')};
     color: ${({ $active }) => ($active ? '#fde68a' : '#d8d8e8')};
 `;
+const JackpotStrip = styled.div`
+    ${tw`mt-3 rounded-lg border px-3 py-2 flex flex-wrap items-center justify-between gap-2`};
+    background: linear-gradient(90deg, rgba(127, 29, 29, 0.24), rgba(234, 179, 8, 0.08), rgba(17, 17, 23, 0.88));
+    border-color: rgba(234, 179, 8, 0.24);
+`;
 
 const toNumber = (value: string): number => Number.parseFloat(value || '0') || 0;
 const SYMBOLS = ['7', 'BAR', 'CHERRY', 'DIAMOND', 'BELL', 'STAR'] as const;
@@ -94,7 +99,7 @@ const symbolImageMap: Record<SymbolKey, string> = {
     STAR: starImage,
 };
 
-const randomSymbol = (): SymbolKey => SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
+    const randomSymbol = (): SymbolKey => SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
 
 export default () => {
     const spinLockRef = useRef(false);
@@ -108,8 +113,6 @@ export default () => {
         max_bet: '100000000.00',
         default_bet: '10.00',
         spin_cooldown_seconds: 4,
-        base_win_rate: 0.16,
-        jackpot_rate: 0.08,
         house_edge_label: 'volatile',
     });
     const [summary, setSummary] = useState({
@@ -158,6 +161,11 @@ export default () => {
         }
 
         return <ReelFallback $spinning={spinning}>{value}</ReelFallback>;
+    };
+    const setBalanceBet = (fraction: number) => {
+        const maxBet = toNumber(settings.max_bet);
+        const next = Math.max(toNumber(settings.min_bet), Math.min(maxBet, toNumber(balance) * fraction));
+        setBet(next.toFixed(2));
     };
 
     useEffect(() => {
@@ -281,7 +289,7 @@ export default () => {
                         <div>
                             <p css={tw`text-xs uppercase tracking-wider text-yellow-300`}>DanexCoin Casino</p>
                             <p css={tw`text-lg font-semibold text-neutral-100`}>High volatility slot table</p>
-                            <p css={tw`text-xs text-neutral-400 mt-1`}>Mode {settings.house_edge_label} | Win pulse {(settings.base_win_rate * 100).toFixed(1)}% | Jackpot {(settings.jackpot_rate * 100).toFixed(1)}%</p>
+                            <p css={tw`text-xs text-neutral-400 mt-1`}>Mode {settings.house_edge_label} | fast spin table | private odds</p>
                         </div>
                         <div css={tw`text-right`}>
                             <p css={tw`text-xs uppercase tracking-wider text-neutral-400`}>Balance</p>
@@ -306,6 +314,16 @@ export default () => {
                             <p css={tw`text-lg font-bold text-purple-300`}>{summary.biggest_payout}</p>
                         </StatTile>
                     </div>
+                    <JackpotStrip>
+                        <div>
+                            <p css={tw`text-[10px] uppercase tracking-wider text-yellow-300`}>Table Signal</p>
+                            <p css={tw`text-sm text-neutral-100`}>{summary.hotness >= 50 ? 'Hot table, cashouts are moving.' : 'Cold table, play tight.'}</p>
+                        </div>
+                        <div css={tw`text-right`}>
+                            <p css={tw`text-[10px] uppercase tracking-wider text-neutral-500`}>Session Spins</p>
+                            <p css={tw`text-sm font-semibold text-neutral-100`}>{summary.total_spins}</p>
+                        </div>
+                    </JackpotStrip>
                     {loadError && <p css={tw`mt-3 text-xs text-red-300`}>{loadError}</p>}
                     {!enabled && <p css={tw`mt-3 text-xs text-red-300`}>Table closed by admin.</p>}
                 </CasinoPanel>
@@ -329,12 +347,14 @@ export default () => {
                         </ReelWrap>
                     </div>
 
-                    <div css={tw`mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2`}>
+                    <div css={tw`mt-4 grid grid-cols-2 sm:grid-cols-6 gap-2`}>
                         {[settings.default_bet, '25', '100', '1000'].map((value) => (
                             <QuickBet key={value} type={'button'} $active={bet === value} onClick={() => setBet(value)} disabled={spinning || loading}>
                                 {value}
                             </QuickBet>
                         ))}
+                        <QuickBet type={'button'} onClick={() => setBalanceBet(0.5)} disabled={spinning || loading}>Half</QuickBet>
+                        <QuickBet type={'button'} onClick={() => setBalanceBet(1)} disabled={spinning || loading}>Max</QuickBet>
                     </div>
 
                     <div css={tw`mt-3 grid grid-cols-1 sm:grid-cols-[auto_1fr_auto] items-center gap-2`}>

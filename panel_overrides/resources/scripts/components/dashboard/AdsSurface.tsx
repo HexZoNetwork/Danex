@@ -50,6 +50,7 @@ export default () => {
     const returnFocusRef = useRef<HTMLElement | null>(null);
     const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
     const [closeLocked, setCloseLocked] = useState(false);
+    const [closeCountdown, setCloseCountdown] = useState(0);
 
     useEffect(() => {
         popupOpenRef.current = popupOpen;
@@ -156,11 +157,19 @@ export default () => {
                         setPopup(popupCandidate);
                         setPopupOpen(true);
                         setCloseLocked(popupCandidate.closeDelaySeconds > 0);
+                        setCloseCountdown(popupCandidate.closeDelaySeconds);
                         window.localStorage.setItem(`${shownKey}.last`, String(now));
                         window.localStorage.setItem(`${shownKey}.date`, today);
                         window.localStorage.setItem(`${shownKey}.count`, String(shownToday + 1));
                         if (popupCandidate.closeDelaySeconds > 0) {
-                            window.setTimeout(() => setCloseLocked(false), popupCandidate.closeDelaySeconds * 1000);
+                            const countdown = window.setInterval(() => {
+                                setCloseCountdown((current) => Math.max(0, current - 1));
+                            }, 1000);
+                            window.setTimeout(() => {
+                                window.clearInterval(countdown);
+                                setCloseLocked(false);
+                                setCloseCountdown(0);
+                            }, popupCandidate.closeDelaySeconds * 1000);
                         }
                     }
                 }
@@ -199,12 +208,11 @@ export default () => {
                                 ad,
                                 <BannerCard>
                                     {renderMedia(ad, true, !prefersReducedMotion)}
-                                    {ad.text && (
-                                        <BannerBody>
-                                            <p css={tw`text-[10px] text-yellow-300 uppercase tracking-wide mb-1`}>{ad.sponsorLabel}</p>
-                                            <p css={tw`text-xs text-neutral-200 line-clamp-2`}>{ad.text}</p>
-                                        </BannerBody>
-                                    )}
+                                    <BannerBody>
+                                        <p css={tw`text-[10px] text-yellow-300 uppercase tracking-wide mb-1`}>{ad.sponsorLabel}</p>
+                                        {ad.text && <p css={tw`text-xs text-neutral-200 line-clamp-2`}>{ad.text}</p>}
+                                        {ad.linkUrl && <p css={tw`mt-1 text-[10px] text-purple-300 uppercase tracking-wide`}>Open offer</p>}
+                                    </BannerBody>
                                 </BannerCard>,
                                 `ads-desktop-banner-${ad.id}`
                             )
@@ -219,7 +227,7 @@ export default () => {
                         <div css={tw`px-3 py-2 border-b border-neutral-700 flex items-center justify-between`}>
                             <p css={tw`text-xs text-neutral-200 uppercase tracking-wide`}>{popup.sponsorLabel}</p>
                             <button ref={closeButtonRef} type={'button'} css={tw`text-xs text-neutral-300 hover:text-neutral-100 disabled:opacity-50`} disabled={closeLocked} onClick={() => setPopupOpen(false)}>
-                                {closeLocked ? `Close in ${popup.closeDelaySeconds}s` : 'Close'}
+                                {closeLocked ? `Close in ${closeCountdown}s` : 'Close'}
                             </button>
                         </div>
                         {clickableWrap(popup, renderMedia(popup, false, !prefersReducedMotion), `ads-popup-media-${popup.id}`)}
@@ -227,8 +235,8 @@ export default () => {
                             <div css={tw`px-4 py-3 space-y-2`}>
                                 {popup.text && <p css={tw`text-sm text-neutral-100`}>{popup.text}</p>}
                                 {popup.linkUrl && (
-                                    <a href={popup.linkUrl} target={'_blank'} rel={'noopener noreferrer'} css={tw`text-xs text-purple-300 hover:text-white`}>
-                                        Open link
+                                    <a href={popup.linkUrl} target={'_blank'} rel={'noopener noreferrer'} css={tw`inline-flex rounded border border-purple-500/40 px-3 py-1.5 text-xs text-purple-200 hover:text-white hover:border-purple-300`}>
+                                        Open offer
                                     </a>
                                 )}
                             </div>

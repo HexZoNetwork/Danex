@@ -81,8 +81,6 @@ class DanexCoinController extends ClientApiController
                 'max_bet' => $this->asDecimal($settings['max_bet']),
                 'default_bet' => $this->asDecimal($settings['default_bet']),
                 'spin_cooldown_seconds' => (int) $settings['spin_cooldown_seconds'],
-                'base_win_rate' => $settings['base_win_rate'],
-                'jackpot_rate' => $settings['jackpot_rate'],
                 'house_edge_label' => (string) $settings['house_edge_label'],
             ],
             'summary' => $summary,
