@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Pterodactyl\Models\Node;
+use Pterodactyl\Services\PteroProtect\AdsService;
 
 class SetSecurityHeaders
 {
@@ -80,7 +81,14 @@ class SetSecurityHeaders
             }
         }
 
+        $mediaSources = $imageSources;
+        foreach ($this->adsMediaSources() as $source) {
+            $imageSources[] = $source;
+            $mediaSources[] = $source;
+        }
+
         $imageSources = array_values(array_unique(array_filter($imageSources, static fn ($source) => Str::of($source)->trim()->isNotEmpty())));
+        $mediaSources = array_values(array_unique(array_filter($mediaSources, static fn ($source) => Str::of($source)->trim()->isNotEmpty())));
         $connectSources = array_values(array_unique(array_filter($connectSources, static fn ($source) => Str::of($source)->trim()->isNotEmpty())));
 
         $csp = implode('; ', [
@@ -89,6 +97,7 @@ class SetSecurityHeaders
             "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.google.com https://www.gstatic.com https://recaptcha.net https://static.cloudflareinsights.com",
             "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
             'img-src ' . implode(' ', $imageSources),
+            'media-src ' . implode(' ', $mediaSources),
             "font-src 'self' data: https://cdnjs.cloudflare.com",
             'connect-src ' . implode(' ', $connectSources),
             "frame-src 'self' https://www.google.com https://www.gstatic.com https://recaptcha.net",
@@ -156,5 +165,50 @@ class SetSecurityHeaders
         } catch (\Throwable) {
             return [];
         }
+    }
+
+    /**
+     * Ads media is admin-configured and already validated by AdsService. Mirror the
+     * active media origins into CSP so browser policy does not hide popup images.
+     *
+     * @return string[]
+     */
+    private function adsMediaSources(): array
+    {
+        try {
+            return Cache::remember('pteroprotect:csp-ads-media-sources', 300, function (): array {
+                return collect(app(AdsService::class)->all())
+                    ->filter(fn (array $item): bool => (bool) ($item['enabled'] ?? false))
+                    ->map(fn (array $item): string => $this->cspOriginFromUrl((string) ($item['media_url'] ?? '')))
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->all();
+            });
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    private function cspOriginFromUrl(string $url): string
+    {
+        $parts = parse_url(trim($url));
+        if (!is_array($parts)) {
+            return '';
+        }
+
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = trim((string) ($parts['host'] ?? ''));
+        if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
+            return '';
+        }
+
+        $origin = sprintf('%s://%s', $scheme, $host);
+        $port = (int) ($parts['port'] ?? 0);
+        if ($port > 0) {
+            $origin .= ':' . $port;
+        }
+
+        return $origin;
     }
 }

@@ -2,6 +2,8 @@
 
 namespace Pterodactyl\Services\PteroProtect;
 
+use Illuminate\Support\Facades\Cache;
+
 class AdsService
 {
     private string $storePath;
@@ -410,6 +412,7 @@ class AdsService
             fwrite($fp, $json . "\n");
             fflush($fp);
             flock($fp, LOCK_UN);
+            Cache::forget('pteroprotect:csp-ads-media-sources');
 
             $result = [];
             if (is_array($item)) {
