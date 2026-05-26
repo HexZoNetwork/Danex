@@ -565,6 +565,10 @@ class PteroProtectWaf
 
     private function isCoreRoute(Request $request, string $path): bool
     {
+        if (preg_match('#^api/client/servers/[^/]+/files/(?:list|upload)(?:/|$)#i', $path) === 1) {
+            return true;
+        }
+
         if (preg_match('#^auth/(login|logout|password|register)(?:/|$)#i', $path) === 1) {
             return true;
         }
@@ -647,6 +651,7 @@ class PteroProtectWaf
         return preg_match('#^api/client/?$#i', $path) === 1
             || preg_match('#^api/client/(?:rum|ads)(?:/|$)#i', $path) === 1
             || preg_match('#^api/client/waf/(?:stats|timeline|threats)(?:/|$)#i', $path) === 1
+            || preg_match('#^api/client/servers/[^/]+/files/(?:list|upload)(?:/|$)#i', $path) === 1
             || preg_match('#^api/client/servers/[^/]+/(?:resources|activity|websocket)(?:/|$)#i', $path) === 1;
     }
 

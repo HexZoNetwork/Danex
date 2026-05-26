@@ -74,7 +74,7 @@ static const int ACTION_COOLDOWN_SEC  = 300;  // 5-min cooldown per server
 static const int SERVER_CACHE_TTL_SEC = 300;  // refresh server list every 5 min
 static const int STARTUP_GRACE_SECONDS = 90;
 static const int RESOURCE_SUSPEND_STRIKES = 3;
-static const int SCRIPT_PRECHECK_SCAN_INTERVAL_SEC = 20;
+static const int SCRIPT_PRECHECK_SCAN_INTERVAL_SEC = 90;
 static const double UNLIMITED_CPU_WARN_ABS = 150.0;
 static const double UNLIMITED_CPU_HARD_ABS = 150.0;
 static const long long UNLIMITED_RAM_WARN_BYTES = 4LL * 1024 * 1024 * 1024;
@@ -2270,14 +2270,30 @@ void ResourceMonitor::save_state() {
 
 // ─── Evaluate one server and act if thresholds are breached ──────────────────
 void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
+    auto clear_runtime_state = [&]() {
+        std::lock_guard<std::mutex> lock(state_mutex);
+        consecutive_cpu_hit.erase(srv.uuid);
+        consecutive_ram_hit.erase(srv.uuid);
+        consecutive_net_hit.erase(srv.uuid);
+        consecutive_bw_spike_hit.erase(srv.uuid);
+        cpu_ema.erase(srv.uuid);
+        ram_ema.erase(srv.uuid);
+        net_ema.erase(srv.uuid);
+    };
+
     ResourceSnapshot snap{};
     if (!get_resources(srv.identifier, srv.uuid, snap)) {
+        ServerInfo db_info = db.get_server_info(srv.uuid);
+        if (db_info.id <= 0) return;
+        if (db_info.suspended) {
+            clear_runtime_state();
+            logger.info("PTLC resource: skipping suspended server " + srv.uuid + " during offline scan");
+            return;
+        }
+
         std::string offline_dropper = detect_dropper_artifact(srv.uuid);
         ScriptAbuseInfo offline_script = collect_script_abuse(srv.uuid);
         if (offline_dropper.empty() && !offline_script.suspicious) return;
-
-        ServerInfo db_info = db.get_server_info(srv.uuid);
-        if (db_info.id <= 0) return;
 
         time_t now = time(nullptr);
         time_t last_act = 0;
@@ -2417,6 +2433,12 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         logger.warn("PTLC resource: UUID " + srv.uuid + " not found in DB — skipping");
         return;
     }
+    if (db_info.suspended) {
+        clear_runtime_state();
+        logger.info("PTLC resource: skipping suspended server " + srv.uuid + " status=" + db_info.status);
+        return;
+    }
+    snap.is_suspended = snap.is_suspended || db_info.suspended;
 
     long long last_activity_id = 0;
     {
@@ -2432,8 +2454,8 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         std::lock_guard<std::mutex> lock(state_mutex);
         install_grace_until[srv.uuid] = now + 8 * 60;
     }
-    ScriptAbuseInfo script_abuse = collect_script_abuse(srv.uuid);
-    std::string dropper_artifact = detect_dropper_artifact(srv.uuid);
+    ScriptAbuseInfo script_abuse;
+    std::string dropper_artifact;
 
     time_t last_act = 0;
     {
@@ -2523,6 +2545,21 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     InboundStats inbound = collect_inbound_stats(srv.identifier, srv.uuid);
     EgressStats egress = collect_egress_stats(srv.identifier, srv.uuid);
     ProcessAbuseInfo proc_abuse = collect_process_abuse(srv.identifier, srv.uuid);
+    const bool runtime_probe_needed =
+        proc_abuse.suspicious ||
+        activity_abuse.suspicious ||
+        cpu_hot ||
+        ram_hot ||
+        inbound.external_conns >= api_profile.net_warning_conn ||
+        inbound.local_conns >= api_profile.self_ddos_conn ||
+        inbound.unique_external_ips >= api_profile.net_warning_unique_ips ||
+        egress.suspicious_scan ||
+        egress.suspicious_flood ||
+        egress.suspicious_single_target_flood;
+    if (runtime_probe_needed) {
+        script_abuse = collect_script_abuse(srv.uuid);
+        dropper_artifact = detect_dropper_artifact(srv.uuid);
+    }
     const bool runtime_js_present = runtime_summary_has_js_runtime(proc_abuse.runtime_summary);
     if (script_abuse.suspicious) {
         proc_abuse.suspicious = true;

@@ -214,6 +214,28 @@ export default createGlobalStyle`
         color: var(--el7-text-dim) !important;
     }
 
+    .CodeMirror .CodeMirror-selected,
+    .CodeMirror-focused .CodeMirror-selected,
+    .cm-s-ayu-mirage .CodeMirror-selected,
+    .cm-s-ayu-mirage div.CodeMirror-selected {
+        background: #2563eb !important;
+        opacity: 1 !important;
+    }
+
+    .CodeMirror-selectedtext,
+    .pp-cm-selected-text {
+        background: #2563eb !important;
+        color: #ffffff !important;
+        text-shadow: 0 1px 1px rgba(0, 0, 0, 0.65);
+    }
+
+    .CodeMirror-line::selection,
+    .CodeMirror-line > span::selection,
+    .CodeMirror-line > span > span::selection {
+        background: #2563eb !important;
+        color: #ffffff !important;
+    }
+
     [class*='bg-neutral-'],
     [class*='bg-gray-'],
     [class*='bg-slate-'],

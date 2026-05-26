@@ -78,7 +78,7 @@ Route::prefix('/waf')->group(function () {
 
 Route::prefix('/create-panel')->group(function () {
     Route::get('/options', [Client\CreatePanelController::class, 'options']);
-    Route::post('/create', [Client\CreatePanelController::class, 'create'])->middleware('throttle:10,1');
+    Route::post('/create', [Client\CreatePanelController::class, 'create'])->middleware('throttle:create-panel');
 });
 
 Route::prefix('/account')->middleware(AccountSubject::class)->group(function () {
@@ -159,6 +159,7 @@ Route::group([
         Route::middleware([ResourceLimit::FilePull->middleware()])
             ->post('/pull', [Client\Servers\FileController::class, 'pull']);
         Route::get('/upload', Client\Servers\FileUploadController::class);
+        Route::post('/upload', [Client\Servers\FileUploadController::class, 'store']);
     });
 
     Route::group(['prefix' => '/schedules'], function () {

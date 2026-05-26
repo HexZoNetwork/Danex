@@ -971,6 +971,7 @@ def main() -> int:
 
         # Hysteresis and cooldown-based PRG transitions.
         elapsed = now - last_stage_change
+        relaxing_stage = stage_rank(target_stage) < stage_rank(stage)
         if stage == "emergency":
             if stage_rank(target_stage) < stage_rank("emergency"):
                 if (now - stable_since) >= emergency_exit_stable_sec:
@@ -992,7 +993,7 @@ def main() -> int:
                     stage = target_stage
                     last_stage_change = now
 
-        if target_stage == stage:
+        if target_stage == stage and not relaxing_stage:
             stable_since = now
 
         shedding = compute_feature_shedding(stage, res.get("feature_shedding", {}))

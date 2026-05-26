@@ -1,7 +1,7 @@
-import socket
 #!/usr/bin/env python3
 import json
 import os
+import socket
 
 def is_valid_ip(ip):
     try:
@@ -29,6 +29,7 @@ SHM_RUNTIME_DIR = os.environ.get("PTEROPROTECT_RUNTIME_DIR", "/dev/shm/pteroprot
 PANEL_RUNTIME_DIR = os.environ.get("PTEROPROTECT_PANEL_RUNTIME_DIR", "/pteroprotect/runtime")
 DEFAULT_CHALLENGE_PATH = "/__pteroprotect/challenge/page"
 DEFAULT_EXTERNAL_CHECK_API = "https://mywebcheck.netlify.app/.netlify/functions/check"
+LAST_SELF_HEAL_TS = 0.0
 
 
 def is_placeholder_url(value: str) -> bool:
@@ -261,14 +262,25 @@ def read_recent_self_ddos(state_dir: str, max_age_sec: int = 30) -> bool:
         return False
 
 
-def trigger_self_heal() -> None:
-    services = ["php8.3-fpm", "nginx", "wings"]
+def trigger_self_heal(reason: str, cooldown_sec: int = 180) -> None:
+    global LAST_SELF_HEAL_TS
+    now = time.time()
+    if now - LAST_SELF_HEAL_TS < cooldown_sec:
+        log(f"self-heal suppressed by cooldown reason={reason}")
+        return
+
+    services = ["pteroprotect", "pteroprotect-abuse-guard", "php8.3-fpm", "nginx", "wings"]
+    restarted = []
     for svc in services:
         if systemd_active(svc):
             continue
         log(f"service {svc} not active, restarting")
         run(["systemctl", "restart", svc], timeout=12)
-    run(["systemctl", "reload", "nginx"], timeout=8)
+        restarted.append(svc)
+
+    if "nginx" in restarted:
+        run(["systemctl", "reload", "nginx"], timeout=8)
+    LAST_SELF_HEAL_TS = now
 
 
 def main() -> int:
@@ -317,7 +329,10 @@ def main() -> int:
 
     while True:
         ts = time.time()
-        external_ok = False
+        domain_ok = False
+        origin_ok = False
+        local_domain_ok = False
+        local_origin_ok = False
         external_latency = 0.0
         external_src = ""
 
@@ -332,29 +347,34 @@ def main() -> int:
             )
             last_checkhost_ts = ts
             last_checkhost = (ok, lat, src)
-            external_ok, external_latency, external_src = ok, lat, src
-            if not external_ok:
-                ok2, code2, lat2, _ = http_probe(local_health_url, timeout_sec=5.0)
-                external_ok = ok2 and code2 in (200, 401, 403)
-                external_latency = lat2
-                external_src = f"local-fallback:{code2}:{src}"
+            domain_ok, external_latency, external_src = ok, lat, f"domain:{src}"
         elif checkhost_enabled and challenge_url and last_checkhost_ts > 0 and (ts - last_checkhost_ts) <= external_check_cache_ttl_sec:
             ok, lat, src = last_checkhost
-            external_ok, external_latency, external_src = ok, lat, f"cached:{int(ts - last_checkhost_ts)}s:{src}"
+            domain_ok, external_latency, external_src = ok, lat, f"domain-cached:{int(ts - last_checkhost_ts)}s:{src}"
         else:
-            ok2, code2, lat2, _ = http_probe(local_health_url, timeout_sec=5.0)
-            external_ok = ok2 and code2 in (200, 401, 403)
-            external_latency = lat2
-            external_src = f"local-primary:{code2}"
+            okd, coded, latd, _ = http_probe(challenge_url, timeout_sec=6.0) if challenge_url else (False, 0, 0.0, "")
+            domain_ok = okd and coded in (200, 204, 301, 302, 303, 307, 308)
+            external_latency = latd
+            external_src = f"domain-direct:{coded}"
 
-        challenge_ok = True
         if challenge_url:
             okc, codec, _, origin_body = origin_probe(challenge_url, timeout_sec=4.0, origin_probe_url=origin_probe_url)
-            challenge_ok = okc and codec in (200, 204, 301, 302, 303, 307, 308)
-            if not challenge_ok:
+            origin_ok = okc and codec in (200, 204, 301, 302, 303, 307, 308)
+            if not origin_ok:
                 external_src = f"{external_src};origin:{codec}:{origin_body[:80]}"
 
-        window.append((ts, external_ok and challenge_ok, external_latency))
+        ok2, code2, lat2, _ = http_probe(local_health_url, timeout_sec=5.0)
+        local_domain_ok = ok2 and code2 in (200, 204, 401, 403)
+        if not local_domain_ok:
+            external_src = f"{external_src};local-domain:{code2}"
+
+        oklo, codelo, _, bodylo = origin_probe(challenge_url, timeout_sec=4.0, origin_probe_url=origin_probe_url) if challenge_url else (False, 0, 0.0, "")
+        local_origin_ok = oklo and codelo in (200, 204, 301, 302, 303, 307, 308)
+        if not local_origin_ok:
+            external_src = f"{external_src};local-origin:{codelo}:{bodylo[:80]}"
+
+        web_ok = (domain_ok or origin_ok) and (local_domain_ok or local_origin_ok)
+        window.append((ts, web_ok, external_latency or lat2))
         window = [x for x in window if (ts - x[0]) <= 30]
 
         sample_count = len(window)
@@ -364,14 +384,14 @@ def main() -> int:
         latencies = sorted(x[2] for x in window if x[2] > 0)
         p95 = latencies[int(0.95 * (len(latencies) - 1))] if latencies else 0.0
 
-        if external_ok and challenge_ok:
+        if web_ok:
             external_fail_streak = 0
         else:
             external_fail_streak += 1
 
         cond_latency = p95 > p95_threshold_ms
         cond_error = error_rate > error_rate_threshold
-        cond_external = external_fail_streak >= external_fail_streak_threshold
+        cond_external = external_fail_streak >= external_fail_streak_threshold and not (local_domain_ok or local_origin_ok)
         signals = sum(1 for x in (cond_latency, cond_error, cond_external) if x)
 
         self_ddos_recent = read_recent_self_ddos(state_dir, max_age_sec=30)
@@ -379,8 +399,12 @@ def main() -> int:
         # Persist a dependency snapshot for orchestration and debugging.
         dep_snapshot = {
             'ts': int(ts),
-            'external_ok': bool(external_ok),
-            'challenge_ok': bool(challenge_ok),
+            'external_ok': bool(domain_ok),
+            'challenge_ok': bool(origin_ok),
+            'domain_ok': bool(domain_ok),
+            'origin_ok': bool(origin_ok),
+            'local_domain_ok': bool(local_domain_ok),
+            'local_origin_ok': bool(local_origin_ok),
             'external_latency_ms': float(external_latency),
             'p95_ms': float(p95),
             'error_rate': float(error_rate),
@@ -390,7 +414,7 @@ def main() -> int:
         write_json(os.path.join(PANEL_RUNTIME_DIR, 'self_heal_dependency.json'), dep_snapshot)
 
         if signals >= 2:
-            trigger_self_heal()
+            trigger_self_heal(f"signals={signals};src={external_src}")
             if not orchestrator_primary:
                 if self_ddos_recent:
                     if mode != "elevated":
@@ -431,8 +455,10 @@ def main() -> int:
                 'error_rate': round(error_rate, 6),
                 'external_fail_streak': external_fail_streak,
                 'source': external_src,
-                'challenge_ok': challenge_ok,
-                'external_ok': external_ok,
+                'challenge_ok': origin_ok,
+                'external_ok': domain_ok,
+                'local_domain_ok': local_domain_ok,
+                'local_origin_ok': local_origin_ok,
             },
             events_file=events_file,
         )
@@ -442,8 +468,10 @@ def main() -> int:
             "p95_ms": float(p95),
             "error_rate": float(error_rate),
             "external_fail_streak": float(external_fail_streak),
-            "challenge_ok": 1.0 if challenge_ok else 0.0,
-            "external_ok": 1.0 if external_ok else 0.0,
+            "challenge_ok": 1.0 if origin_ok else 0.0,
+            "external_ok": 1.0 if domain_ok else 0.0,
+            "local_domain_ok": 1.0 if local_domain_ok else 0.0,
+            "local_origin_ok": 1.0 if local_origin_ok else 0.0,
             "self_ddos_recent": 1.0 if self_ddos_recent else 0.0,
             "orchestrator_primary": 1.0 if orchestrator_primary else 0.0,
         })

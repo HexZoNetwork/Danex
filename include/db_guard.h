@@ -10,8 +10,10 @@ struct ServerInfo {
     int id = -1;
     int owner_id = -1;
     int egg_id = -1;
+    bool suspended = false;
     std::string uuid;
     std::string name;
+    std::string status;
     std::string username;
     std::string email;
     std::string first_name;

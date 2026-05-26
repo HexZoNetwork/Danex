@@ -2,8 +2,8 @@
 Description=PteroProtect Offline Guard
 After=network-online.target docker.service mariadb.service mysql.service
 Wants=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=3
+StartLimitIntervalSec=0
+StartLimitBurst=0
 
 [Service]
 NoNewPrivileges=true
@@ -23,7 +23,7 @@ Environment=DANN_GUARD_HOME=/pteroprotect
 ExecStartPre=/usr/bin/env python3 /pteroprotect/scripts/security_startup_policy.py /pteroprotect/config.json
 ExecStart=/pteroprotect/dann_guard
 Restart=always
-RestartSec=15
+RestartSec=5
 LimitNOFILE=1048576
 
 [Install]

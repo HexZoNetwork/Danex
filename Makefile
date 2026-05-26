@@ -39,7 +39,7 @@ $(CHALLENGE_TARGET): $(CHALLENGE_OBJECT)
 	@mkdir -p $(BINDIR)
 	$(CXX) $(CHALLENGE_OBJECT) -o $@ $(CHALLENGE_LDFLAGS)
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.cpp
+$(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(wildcard $(INCDIR)/*.h)
 	@mkdir -p $(OBJDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 

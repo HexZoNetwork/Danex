@@ -162,7 +162,13 @@ ServerInfo DatabaseGuard::get_server_info(const std::string& uuid) {
     if (!ensure_connection()) return info;
 
     std::ostringstream query;
-    query << "SELECT id, name, owner_id, egg_id FROM servers WHERE uuid = '" << escape(uuid) << "' LIMIT 1";
+    query << "SELECT id, name, owner_id, egg_id, status, ";
+    if (has_suspended_column) {
+        query << "suspended ";
+    } else {
+        query << "0 ";
+    }
+    query << "FROM servers WHERE uuid = '" << escape(uuid) << "' LIMIT 1";
 
     if (mysql_query(conn, query.str().c_str())) {
         logger.error("get_server_info query failed: " + std::string(mysql_error(conn)));
@@ -182,6 +188,8 @@ ServerInfo DatabaseGuard::get_server_info(const std::string& uuid) {
         info.owner_id = owner_id;
         egg_id = row[3] ? atoi(row[3]) : -1;
         info.egg_id = egg_id;
+        info.status = row[4] ? row[4] : "";
+        info.suspended = (row[5] && atoi(row[5]) != 0) || info.status == "suspended";
         mysql_free_result(result);
 
         if (owner_id > 0) {
@@ -321,7 +329,9 @@ bool DatabaseGuard::suspend_server(int server_id, const std::string& reason) {
     query << "UPDATE servers SET ";
     if (has_suspended_column) query << "suspended = 1, ";
     query << "status = 'suspended', updated_at = NOW() "
-          << "WHERE id = " << server_id << " AND (status IS NULL OR status != 'suspended')";
+          << "WHERE id = " << server_id << " AND (status IS NULL OR status != 'suspended'";
+    if (has_suspended_column) query << " OR suspended = 0";
+    query << ")";
 
     if (mysql_query(conn, query.str().c_str()) != 0) {
         logger.error("suspend_server failed: " + std::string(mysql_error(conn)));

@@ -12,6 +12,8 @@ use Pterodactyl\Models\Egg;
 use Pterodactyl\Models\EggVariable;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Models\User;
+use Pterodactyl\Exceptions\Service\Deployment\NoViableAllocationException;
+use Pterodactyl\Exceptions\Service\Deployment\NoViableNodeException;
 use Pterodactyl\Services\Servers\ServerCreationService;
 use Pterodactyl\Services\Servers\SuspensionService;
 use Throwable;
@@ -109,8 +111,9 @@ class CreatePanelController extends ClientApiController
         }
 
         $ram = (int) $validated['ram'];
+        $disk = max(1024, $ram * 2);
         $requestUserId = (int) $request->user()->id;
-        $result = DB::transaction(function () use ($requestUserId) {
+        $result = DB::transaction(function () use ($requestUserId, $ram, $disk) {
             $user = User::query()->whereKey($requestUserId)->lockForUpdate()->first();
             if (!$user) {
                 return ['error' => 'User tidak ditemukan.', 'status' => 404];
@@ -126,19 +129,25 @@ class CreatePanelController extends ClientApiController
             }
 
             $allocation = Allocation::query()
+                ->select(['allocations.id', 'allocations.node_id'])
+                ->join('nodes', 'nodes.id', '=', 'allocations.node_id')
                 ->whereNull('allocations.server_id')
-                ->whereExists(function ($query) {
-                    $query->selectRaw('1')
-                        ->from('nodes')
-                        ->whereColumn('nodes.id', 'allocations.node_id')
-                        ->where('nodes.maintenance_mode', false);
-                })
+                ->where('nodes.public', true)
+                ->where('nodes.maintenance_mode', false)
+                ->whereRaw(
+                    '(SELECT COALESCE(SUM(servers.memory), 0) FROM servers WHERE servers.node_id = nodes.id) + ? <= (nodes.memory * (1 + (nodes.memory_overallocate / 100)))',
+                    [$ram]
+                )
+                ->whereRaw(
+                    '(SELECT COALESCE(SUM(servers.disk), 0) FROM servers WHERE servers.node_id = nodes.id) + ? <= (nodes.disk * (1 + (nodes.disk_overallocate / 100)))',
+                    [$disk]
+                )
                 ->orderBy('allocations.id')
                 ->lockForUpdate()
-                ->first(['allocations.id']);
+                ->first();
 
             if (!$allocation) {
-                return ['error' => 'Tidak ada allocation kosong saat ini.', 'status' => 422];
+                return ['error' => 'Tidak ada node/allocation kosong yang cukup untuk RAM dan disk pilihan ini.', 'status' => 422];
             }
 
             // Reserve one-time slot inside the transaction to prevent parallel creates.
@@ -148,6 +157,7 @@ class CreatePanelController extends ClientApiController
 
             return [
                 'allocation_id' => (int) $allocation->id,
+                'node_id' => (int) $allocation->node_id,
                 'owner_id' => (int) $user->id,
             ];
         });
@@ -174,6 +184,7 @@ class CreatePanelController extends ClientApiController
                 'threads' => '1',
                 'oom_disabled' => false,
                 'allocation_id' => (int) $result['allocation_id'],
+                'node_id' => (int) $result['node_id'],
                 'database_limit' => 0,
                 'allocation_limit' => 0,
                 'backup_limit' => 0,
@@ -199,6 +210,21 @@ class CreatePanelController extends ClientApiController
                     'auto_suspended' => $autoSuspended,
                 ],
             ], 201);
+        } catch (NoViableNodeException|NoViableAllocationException $exception) {
+            report($exception);
+            User::query()
+                ->whereKey($requestUserId)
+                ->whereNotExists(function ($query) use ($requestUserId) {
+                    $query->selectRaw('1')
+                        ->from('servers')
+                        ->whereColumn('servers.owner_id', 'users.id')
+                        ->where('servers.owner_id', $requestUserId);
+                })
+                ->update(['madeinweb_panel_created_at' => null]);
+
+            return new JsonResponse([
+                'error' => 'Tidak ada node/allocation yang viable untuk pilihan ini. Coba RAM lebih kecil atau tambah allocation kosong.',
+            ], 422);
         } catch (Throwable $exception) {
             report($exception);
             // Roll back one-time lock if creation failed and user still has no server.
