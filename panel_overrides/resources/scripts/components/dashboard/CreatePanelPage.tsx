@@ -81,67 +81,71 @@ export default () => {
     return (
         <PageContentBlock title={'Create Server Panel'} showFlashKey={'dashboard'}>
             <div css={tw`mx-auto max-w-3xl space-y-4`}>
-                <div css={tw`rounded-xl border p-4`} style={panelStyle}>
-                    <h2 css={tw`text-lg font-semibold text-neutral-100`}>Create Server Panel</h2>
-                    <p css={tw`text-sm text-neutral-400 mt-1`}>
+                <div className={'el7-panel'} css={tw`p-4 sm:p-5`} style={panelStyle}>
+                    <p className={'el7-kicker'}>One-time provisioning</p>
+                    <h2 css={tw`mt-1 text-xl font-semibold text-neutral-100`}>Create Server Panel</h2>
+                    <p className={'el7-helper'} css={tw`mt-2`}>
                         Your account is eligible for one free server panel. This action can only be used once.
                     </p>
                 </div>
 
-                <div css={tw`rounded-xl border p-4 space-y-4`} style={panelStyle}>
+                <div className={'el7-form-panel'} css={tw`p-4 sm:p-5 space-y-4`} style={panelStyle}>
                     {loading ? (
-                        <p css={tw`text-neutral-300`}>Memuat opsi...</p>
+                        <p className={'el7-response'}>Memuat opsi...</p>
                     ) : created ? (
-                        <p css={tw`text-green-300`}>Create Panel sudah dipakai untuk akun ini.</p>
+                        <p className={'el7-response el7-response-success'}>Create Panel sudah dipakai untuk akun ini.</p>
                     ) : (
                         <>
-                            <div>
-                                <label htmlFor={'panel-name'} css={tw`text-sm text-neutral-300`}>
-                                    Nama Server
-                                </label>
-                                <input
-                                    id={'panel-name'}
-                                    value={name}
-                                    onChange={(e) => setName(e.currentTarget.value)}
-                                    css={tw`mt-1 w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-neutral-100`}
-                                    placeholder={'Bebas, contoh: My First Panel'}
-                                />
-                            </div>
+                            <div css={tw`grid gap-4 sm:grid-cols-2`}>
+                                <div css={tw`sm:col-span-2`}>
+                                    <label htmlFor={'panel-name'} css={tw`text-sm text-neutral-300`}>
+                                        Nama Server
+                                    </label>
+                                    <input
+                                        id={'panel-name'}
+                                        value={name}
+                                        onChange={(e) => setName(e.currentTarget.value)}
+                                        css={tw`mt-1 w-full px-3 py-2 text-neutral-100`}
+                                        placeholder={'Bebas, contoh: My First Panel'}
+                                    />
+                                    <p className={'el7-helper'} css={tw`mt-1`}>Use a clear name so it is easy to find on the Servers page.</p>
+                                </div>
 
-                            <div>
-                                <label htmlFor={'panel-egg'} css={tw`text-sm text-neutral-300`}>
-                                    Egg
-                                </label>
-                                <select
-                                    id={'panel-egg'}
-                                    value={eggId ?? ''}
-                                    onChange={(e) => setEggId(Number(e.currentTarget.value))}
-                                    css={tw`mt-1 w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-neutral-100`}
-                                >
-                                    {eggs.map((egg) => (
-                                        <option key={egg.id} value={egg.id}>
-                                            {egg.name}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
+                                <div>
+                                    <label htmlFor={'panel-egg'} css={tw`text-sm text-neutral-300`}>
+                                        Egg
+                                    </label>
+                                    <select
+                                        id={'panel-egg'}
+                                        value={eggId ?? ''}
+                                        onChange={(e) => setEggId(Number(e.currentTarget.value))}
+                                        css={tw`mt-1 w-full px-3 py-2 text-neutral-100`}
+                                    >
+                                        {eggs.map((egg) => (
+                                            <option key={egg.id} value={egg.id}>
+                                                {egg.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
 
-                            <div>
-                                <label htmlFor={'panel-ram'} css={tw`text-sm text-neutral-300`}>
-                                    RAM
-                                </label>
-                                <select
-                                    id={'panel-ram'}
-                                    value={ram}
-                                    onChange={(e) => setRam(Number(e.currentTarget.value))}
-                                    css={tw`mt-1 w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-neutral-100`}
-                                >
-                                    {ramOptions.map((value) => (
-                                        <option key={value} value={value}>
-                                            {value} MB
-                                        </option>
-                                    ))}
-                                </select>
+                                <div>
+                                    <label htmlFor={'panel-ram'} css={tw`text-sm text-neutral-300`}>
+                                        RAM
+                                    </label>
+                                    <select
+                                        id={'panel-ram'}
+                                        value={ram}
+                                        onChange={(e) => setRam(Number(e.currentTarget.value))}
+                                        css={tw`mt-1 w-full px-3 py-2 text-neutral-100`}
+                                    >
+                                        {ramOptions.map((value) => (
+                                            <option key={value} value={value}>
+                                                {value} MB
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
                             </div>
 
                             <div css={tw`rounded-lg border px-3 py-2 text-sm text-neutral-300`} style={insetPanelStyle}>
@@ -179,8 +183,8 @@ export default () => {
                         </>
                     )}
 
-                    {error && <p css={tw`text-red-300 text-sm`}>{error}</p>}
-                    {success && <p css={tw`text-green-300 text-sm`}>{success}</p>}
+                    {error && <p className={'el7-response el7-response-error'}>{error}</p>}
+                    {success && <p className={'el7-response el7-response-success'}>{success}</p>}
                 </div>
             </div>
         </PageContentBlock>

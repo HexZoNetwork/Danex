@@ -12,7 +12,7 @@ import bellImage from '@/assets/danexcoin/bell.svg';
 import starImage from '@/assets/danexcoin/star.svg';
 
 const Panel = styled.div`
-    ${tw`rounded-xl border p-4 shadow-lg`};
+    ${tw`rounded-xl border p-3 sm:p-4 shadow-lg`};
     background: #0b0b10;
     border-color: rgba(139, 92, 246, 0.24);
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
@@ -32,18 +32,18 @@ const CasinoPanel = styled(Panel)`
     border-color: rgba(234, 179, 8, 0.28);
 `;
 const ReelWrap = styled.div`
-    ${tw`rounded-xl border p-3`};
+    ${tw`rounded-xl border p-1.5 sm:p-3`};
     background: #111117;
     border-color: rgba(139, 92, 246, 0.3);
 `;
 const Reel = styled.div`
-    ${tw`rounded-lg border py-4 text-center shadow-inner min-h-[116px] flex items-center justify-center`};
+    ${tw`rounded-lg border py-3 sm:py-4 text-center shadow-inner min-h-[88px] sm:min-h-[116px] flex items-center justify-center`};
     background: #07070b;
     border-color: rgba(139, 92, 246, 0.24);
     box-shadow: inset 0 0 28px rgba(0, 0, 0, 0.5);
 `;
 const ReelImage = styled.img<{ $spinning?: boolean }>`
-    ${tw`w-16 h-16 sm:w-20 sm:h-20 object-contain`};
+    ${tw`w-12 h-12 sm:w-20 sm:h-20 object-contain`};
     animation: ${({ $spinning }) => ($spinning ? 'danex-slot-pulse 520ms ease-in-out infinite' : 'none')};
 `;
 const ReelFallback = styled.div<{ $spinning?: boolean }>`
@@ -52,7 +52,7 @@ const ReelFallback = styled.div<{ $spinning?: boolean }>`
 `;
 
 const HistoryRow = styled.div`
-    ${tw`rounded-lg border px-3 py-2 flex items-center justify-between gap-3 flex-wrap`};
+    ${tw`rounded-lg border px-3 py-2 grid gap-2 sm:flex sm:items-center sm:justify-between sm:gap-3 sm:flex-wrap`};
     background: #111117;
     border-color: rgba(139, 92, 246, 0.18);
     transition: border-color 180ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -75,6 +75,7 @@ const StatTile = styled.div`
 `;
 const QuickBet = styled.button<{ $active?: boolean }>`
     ${tw`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors`};
+    min-width: 4.5rem;
     background: ${({ $active }) => ($active ? 'rgba(234, 179, 8, 0.18)' : '#111117')};
     border-color: ${({ $active }) => ($active ? 'rgba(234, 179, 8, 0.58)' : 'rgba(139, 92, 246, 0.24)')};
     color: ${({ $active }) => ($active ? '#fde68a' : '#d8d8e8')};
@@ -347,7 +348,7 @@ export default () => {
                         </ReelWrap>
                     </div>
 
-                    <div css={tw`mt-4 grid grid-cols-2 sm:grid-cols-6 gap-2`}>
+                    <div css={tw`mt-4 flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-6 sm:overflow-visible sm:pb-0`}>
                         {[settings.default_bet, '25', '100', '1000'].map((value) => (
                             <QuickBet key={value} type={'button'} $active={bet === value} onClick={() => setBet(value)} disabled={spinning || loading}>
                                 {value}
@@ -405,8 +406,11 @@ export default () => {
                                             </span>
                                         )}
                                     </div>
-                                    <div css={tw`text-xs text-neutral-300 tabular-nums`}>
-                                        Bet {row.bet} | x{row.multiplier} | Cashout {row.payout} | Bal {row.balance_after}
+                                    <div css={tw`grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-neutral-300 tabular-nums sm:block`}>
+                                        <span>Bet {row.bet}</span>
+                                        <span>x{row.multiplier}</span>
+                                        <span>Cashout {row.payout}</span>
+                                        <span>Bal {row.balance_after}</span>
                                     </div>
                                 </HistoryRow>
                             ))}

@@ -3,10 +3,11 @@ import tw from 'twin.macro';
 import { AdsItem, getAdsPayload } from '@/api/ads';
 
 const DesktopRail = tw.div`hidden lg:flex fixed left-4 bottom-4 z-30 w-[290px] flex-col gap-3`;
-const BannerCard = tw.div`rounded-md border border-neutral-700 bg-neutral-900/95 shadow-xl overflow-hidden`;
-const BannerBody = tw.div`p-2`;
-const PopupBackdrop = tw.div`fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4`;
-const PopupCard = tw.div`w-full max-w-3xl rounded-md border border-neutral-700 bg-neutral-900 overflow-hidden`;
+const MobileRail = tw.div`lg:hidden fixed left-3 right-3 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-30`;
+const BannerCard = tw.div`rounded-xl border border-purple-500/25 bg-neutral-900 shadow-2xl overflow-hidden backdrop-blur`;
+const BannerBody = tw.div`p-3`;
+const PopupBackdrop = tw.div`fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm`;
+const PopupCard = tw.div`w-full max-w-3xl max-h-[92vh] rounded-2xl border border-purple-500/30 bg-neutral-900 overflow-hidden shadow-2xl`;
 
 const renderMedia = (ad: AdsItem, compact = false, autoplay = true) => {
     if (ad.mediaKind === 'video') {
@@ -49,6 +50,7 @@ export default () => {
     const closeButtonRef = useRef<HTMLButtonElement | null>(null);
     const returnFocusRef = useRef<HTMLElement | null>(null);
     const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+    const [isMobileViewport, setIsMobileViewport] = useState(false);
     const [closeLocked, setCloseLocked] = useState(false);
     const [closeCountdown, setCloseCountdown] = useState(0);
 
@@ -64,6 +66,15 @@ export default () => {
         const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
         if (!media) return;
         const update = () => setPrefersReducedMotion(media.matches);
+        update();
+        media.addEventListener?.('change', update);
+        return () => media.removeEventListener?.('change', update);
+    }, []);
+
+    useEffect(() => {
+        const media = window.matchMedia?.('(max-width: 767px)');
+        if (!media) return;
+        const update = () => setIsMobileViewport(media.matches);
         update();
         media.addEventListener?.('change', update);
         return () => media.removeEventListener?.('change', update);
@@ -145,7 +156,7 @@ export default () => {
                 }
 
                 const popupCandidate = popupCandidateRef.current;
-                if (serviceEnabledRef.current && popupCandidate && !popupOpenRef.current) {
+                if (!isMobileViewport && serviceEnabledRef.current && popupCandidate && !popupOpenRef.current) {
                     const now = Date.now();
                     const shownKey = `ads.popup.${popupCandidate.id}.shown`;
                     const lastShown = Number(window.localStorage.getItem(`${shownKey}.last`) || '0');
@@ -193,7 +204,7 @@ export default () => {
                 window.clearTimeout(popupTimer);
             }
         };
-    }, []);
+    }, [isMobileViewport]);
 
     const hasBanners = useMemo(() => banners.length > 0, [banners.length]);
     if (!serviceEnabled || (!hasBanners && !popupOpen)) return null;
@@ -218,15 +229,31 @@ export default () => {
                             )
                         )}
                     </DesktopRail>
+                    <MobileRail>
+                        {banners.slice(0, 1).map((ad) =>
+                            clickableWrap(
+                                ad,
+                                <BannerCard css={tw`flex max-h-24 items-center`}>
+                                    <div css={tw`w-24 flex-shrink-0`}>{renderMedia(ad, true, !prefersReducedMotion)}</div>
+                                    <BannerBody css={tw`min-w-0 flex-1`}>
+                                        <p css={tw`text-[10px] text-yellow-300 uppercase tracking-wide mb-1`}>{ad.sponsorLabel}</p>
+                                        {ad.text && <p css={tw`text-xs text-neutral-200 line-clamp-2`}>{ad.text}</p>}
+                                        {ad.linkUrl && <p css={tw`mt-1 text-[10px] text-purple-300 uppercase tracking-wide`}>Open offer</p>}
+                                    </BannerBody>
+                                </BannerCard>,
+                                `ads-mobile-banner-${ad.id}`
+                            )
+                        )}
+                    </MobileRail>
                 </>
             )}
 
             {popupOpen && popup && (
                 <PopupBackdrop onClick={() => !closeLocked && setPopupOpen(false)}>
                     <PopupCard ref={popupCardRef} role={'dialog'} aria-modal={'true'} aria-label={'Sponsored content'} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
-                        <div css={tw`px-3 py-2 border-b border-neutral-700 flex items-center justify-between`}>
-                            <p css={tw`text-xs text-neutral-200 uppercase tracking-wide`}>{popup.sponsorLabel}</p>
-                            <button ref={closeButtonRef} type={'button'} css={tw`text-xs text-neutral-300 hover:text-neutral-100 disabled:opacity-50`} disabled={closeLocked} onClick={() => setPopupOpen(false)}>
+                        <div css={tw`px-3 sm:px-4 py-2.5 border-b border-purple-500/20 flex items-center justify-between gap-3`}>
+                            <p css={tw`text-xs text-purple-200 uppercase tracking-widest truncate`}>{popup.sponsorLabel}</p>
+                            <button ref={closeButtonRef} type={'button'} css={tw`rounded-md border border-purple-500/30 px-2.5 py-1 text-xs text-neutral-300 hover:text-neutral-100 disabled:opacity-50`} disabled={closeLocked} onClick={() => setPopupOpen(false)}>
                                 {closeLocked ? `Close in ${closeCountdown}s` : 'Close'}
                             </button>
                         </div>

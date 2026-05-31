@@ -90,7 +90,7 @@
     <div class="col-md-7">
         <div class="box box-default">
             <div class="box-header with-border"><h3 class="box-title">Metric Breakdown (24h)</h3></div>
-            <div class="box-body">
+            <div class="box-body table-responsive">
                 <table class="table table-bordered pp-table">
                     <thead>
                     <tr>

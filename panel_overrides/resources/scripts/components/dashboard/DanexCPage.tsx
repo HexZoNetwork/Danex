@@ -577,7 +577,7 @@ export default () => {
                                     <Segment type={'button'} $active={sortBy === 'denied_ratio'} onClick={() => setSortBy('denied_ratio')}>denied ratio</Segment>
                                 </div>
                             </div>
-                            <div css={tw`overflow-auto`}>
+                            <div css={tw`hidden overflow-auto sm:block`}>
                                 <table css={tw`w-full text-sm`}>
                                     <thead>
                                         <tr css={tw`text-left text-[11px] uppercase tracking-wider text-neutral-500`}>
@@ -615,6 +615,37 @@ export default () => {
                                         )}
                                     </tbody>
                                 </table>
+                            </div>
+                            <div css={tw`space-y-2 sm:hidden`}>
+                                {sortedPaths.map((row: DanexCTargetPath) => (
+                                    <div key={row.path} css={tw`rounded-lg border p-3`} style={{ background: '#111117', borderColor: 'rgba(139, 92, 246, 0.16)' }}>
+                                        <p css={tw`font-mono text-xs text-neutral-100 break-all`}>{row.path || '/'}</p>
+                                        <div css={tw`mt-2 grid grid-cols-2 gap-2 text-xs`}>
+                                            <div>
+                                                <Label>Requests</Label>
+                                                <p css={tw`mt-1 font-semibold text-purple-200`}>{Number(row.count || 0).toLocaleString()}</p>
+                                            </div>
+                                            <div>
+                                                <Label>Denied</Label>
+                                                <p css={tw`mt-1 font-semibold text-red-300`}>{Number(row.denied || 0).toLocaleString()}</p>
+                                            </div>
+                                        </div>
+                                        <BarTrack css={tw`mt-3`}>
+                                            <div
+                                                css={tw`h-full transition-all duration-500`}
+                                                style={{
+                                                    width: `${Math.min(100, row.denied_ratio)}%`,
+                                                    background: row.denied_ratio >= 70 ? '#ef4444' : row.denied_ratio >= 40 ? '#f59e0b' : '#10b981',
+                                                }}
+                                            />
+                                        </BarTrack>
+                                    </div>
+                                ))}
+                                {sortedPaths.length === 0 && (
+                                    <p css={tw`rounded-lg border px-3 py-4 text-center text-sm text-neutral-400`} style={{ background: '#111117', borderColor: 'rgba(139, 92, 246, 0.16)' }}>
+                                        {loading ? 'Loading telemetry...' : 'No path data available.'}
+                                    </p>
+                                )}
                             </div>
                         </div>
                     </Surface>

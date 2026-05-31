@@ -2908,7 +2908,7 @@ while true; do
     CLEAR_THRESHOLD_HARD_MULTIPLIER="$(clamp_min_int "$(read_network_setting host_clear_threshold_hard_multiplier 3)" 2)"
     DYNAMIC_BLOCK_DRY_RUN="$(normalize_bool "$(read_network_setting dynamic_block_dry_run 0)")"
     SELF_UNBLOCK_ESSENTIALS="$(normalize_bool "$(read_network_setting self_unblock_essentials 1)")"
-    HTTP_IGNORE_PATH_REGEX="$(read_network_setting host_http_ignore_path_regex '^/__pteroprotect/challenge(/|$)|^/locales/|^/assets/|^/favicon\\.ico$|^/robots\\.txt$|^/api/client/servers/.+/websocket$|^/api/remote/')"
+    HTTP_IGNORE_PATH_REGEX="$(read_network_setting host_http_ignore_path_regex '^/__pteroprotect/challenge(/|$)|^/locales/|^/assets/|^/favicon\\.ico$|^/robots\\.txt$|^/api/client/servers/.+/(websocket|resources|activity)$|^/api/client/chat(/|$)|^/api/client/rum(/|$)|^/api/remote/')"
     HTTP_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${HTTP_IGNORE_PATH_REGEX}")"
     SELF_DDOS_IGNORE_PATH_REGEX="$(read_network_setting self_ddos_ignore_path_regex '^$')"
     if [[ -z "${SELF_DDOS_IGNORE_PATH_REGEX}" || "${SELF_DDOS_IGNORE_PATH_REGEX}" == "^$" ]]; then

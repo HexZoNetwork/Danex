@@ -33,7 +33,11 @@ export default createGlobalStyle`
         --el7-warning: #F59E0B;
         --el7-shadow: 0 18px 48px rgba(0, 0, 0, 0.52);
         --el7-glow: 0 0 28px rgba(139, 92, 246, 0.24);
+        --el7-duration-fast: 140ms;
+        --el7-duration: 220ms;
+        --el7-duration-slow: 360ms;
         --el7-ease: cubic-bezier(0.4, 0, 0.2, 1);
+        --el7-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     @keyframes danex-fade-up {
@@ -61,6 +65,11 @@ export default createGlobalStyle`
         0% { transform: translateY(-18%); opacity: 0; }
         20%, 58% { opacity: 0.5; }
         100% { transform: translateY(118%); opacity: 0; }
+    }
+
+    @keyframes danex-spinner-rotate {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
     }
 
     @font-face {
@@ -140,7 +149,7 @@ export default createGlobalStyle`
     }
 
     a, button {
-        transition: color 220ms var(--el7-ease), border-color 220ms var(--el7-ease), background-color 220ms var(--el7-ease), box-shadow 220ms var(--el7-ease), transform 220ms var(--el7-ease);
+        transition: color var(--el7-duration) var(--el7-ease), border-color var(--el7-duration) var(--el7-ease), background-color var(--el7-duration) var(--el7-ease), box-shadow var(--el7-duration) var(--el7-ease), transform var(--el7-duration) var(--el7-ease);
     }
 
     button {
@@ -194,12 +203,92 @@ export default createGlobalStyle`
         box-shadow: var(--el7-shadow), var(--el7-glow);
     }
 
+    .el7-panel,
+    .el7-form-panel,
+    .el7-table-shell,
+    .el7-response {
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(135deg, rgba(17, 17, 24, 0.96), rgba(8, 8, 13, 0.98));
+        border: 1px solid var(--el7-border-soft);
+        border-radius: 0.875rem;
+        box-shadow: var(--el7-shadow);
+    }
+
+    .el7-panel::before,
+    .el7-form-panel::before,
+    .el7-table-shell::before,
+    .el7-response::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        background: linear-gradient(110deg, transparent 15%, rgba(139, 92, 246, 0.055), transparent 52%);
+        opacity: 0.78;
+    }
+
+    .el7-panel > *,
+    .el7-form-panel > *,
+    .el7-table-shell > *,
+    .el7-response > * {
+        position: relative;
+        z-index: 1;
+    }
+
+    .el7-kicker {
+        color: var(--el7-accent-light);
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+    }
+
+    .el7-helper {
+        color: var(--el7-text-dim);
+        font-size: 0.78rem;
+        line-height: 1.45;
+    }
+
+    .el7-response {
+        padding: 0.75rem 0.875rem;
+        color: var(--el7-text-muted);
+    }
+
+    .el7-response-success {
+        border-color: rgba(16, 185, 129, 0.38);
+        background: linear-gradient(135deg, rgba(16, 185, 129, 0.14), rgba(8, 8, 13, 0.98));
+        color: #bbf7d0;
+    }
+
+    .el7-response-error {
+        border-color: rgba(239, 68, 68, 0.44);
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(8, 8, 13, 0.98));
+        color: #fecaca;
+    }
+
+    .el7-response-warning {
+        border-color: rgba(245, 158, 11, 0.44);
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.14), rgba(8, 8, 13, 0.98));
+        color: #fde68a;
+    }
+
     input:not([type='checkbox']):not([type='radio']),
     textarea,
     select {
+        min-height: 2.5rem;
         background-color: var(--el7-surface-strong) !important;
-        border-color: rgba(139, 92, 246, 0.24) !important;
+        border: 1px solid rgba(139, 92, 246, 0.24) !important;
+        border-radius: 0.625rem !important;
         color: var(--el7-text) !important;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        transition: border-color var(--el7-duration-fast) var(--el7-ease), box-shadow var(--el7-duration-fast) var(--el7-ease), background-color var(--el7-duration-fast) var(--el7-ease);
+    }
+
+    select {
+        appearance: auto;
+        background-image: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(6, 182, 212, 0.035));
+        cursor: pointer;
     }
 
     input:not([type='checkbox']):not([type='radio']):focus,
@@ -212,6 +301,25 @@ export default createGlobalStyle`
     input::placeholder,
     textarea::placeholder {
         color: var(--el7-text-dim) !important;
+    }
+
+    label {
+        color: var(--el7-text-muted);
+        font-weight: 600;
+    }
+
+    fieldset {
+        border-color: var(--el7-border-soft);
+    }
+
+    input:disabled,
+    textarea:disabled,
+    select:disabled,
+    input[readonly],
+    textarea[readonly] {
+        opacity: 0.68;
+        cursor: not-allowed;
+        background-color: #09090d !important;
     }
 
     .CodeMirror .CodeMirror-selected,
@@ -322,6 +430,27 @@ export default createGlobalStyle`
 
     table,
     [role='table'] {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        border-color: var(--el7-border-soft) !important;
+        background: var(--el7-surface) !important;
+    }
+
+    thead,
+    [role='rowgroup']:first-child {
+        background: var(--el7-surface-strong) !important;
+    }
+
+    th {
+        color: var(--el7-text-muted) !important;
+        font-size: 0.72rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+
+    th,
+    td {
         border-color: var(--el7-border-soft) !important;
     }
 
@@ -392,11 +521,62 @@ export default createGlobalStyle`
         box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.28) !important;
     }
 
+    select:hover {
+        background-color: #12121a !important;
+        border-color: rgba(167, 139, 250, 0.56) !important;
+    }
+
+    select:focus,
+    select:active,
+    select:focus-visible {
+        background-color: #171720 !important;
+        border-color: var(--el7-accent-light) !important;
+        box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.28), 0 0 22px rgba(139, 92, 246, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.07) !important;
+    }
+
+    [data-el7-spinner='true'] {
+        animation-name: danex-spinner-rotate;
+        animation-duration: 560ms;
+        animation-timing-function: linear;
+        animation-play-state: running !important;
+        animation-iteration-count: infinite !important;
+        transform-origin: 50% 50%;
+    }
+
+    .pagination,
+    [class*='pagination'] {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+    }
+
+    .pagination button,
+    .pagination a,
+    [class*='pagination'] button,
+    [class*='pagination'] a {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        vertical-align: middle;
+        margin-top: 0 !important;
+    }
+
     @media (prefers-reduced-motion: reduce) {
+        *:not([data-el7-keep-motion]):not([data-el7-spinner]),
+        *:not([data-el7-keep-motion]):not([data-el7-spinner])::before,
+        *:not([data-el7-keep-motion]):not([data-el7-spinner])::after,
         body::before,
         body::after,
         .danex-monitor-surface {
-            animation: none !important;
+            animation-duration: 0.001ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.001ms !important;
+            scroll-behavior: auto !important;
+        }
+
+        [data-el7-spinner='true'] {
+            animation-duration: 1.15s !important;
         }
 
         html:focus-within {

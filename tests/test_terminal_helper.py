@@ -91,6 +91,9 @@ def assert_false(value, message: str) -> None:
 
 
 def main() -> int:
+    emergency_panel = (ROOT / "scripts" / "pteroprotect_emergency_panel.py").read_text(encoding="utf-8")
+    assert_false("cdn.jsdelivr.net" in emergency_panel, "emergency terminal must not load privileged assets from a CDN")
+
     helper = load_helper()
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)

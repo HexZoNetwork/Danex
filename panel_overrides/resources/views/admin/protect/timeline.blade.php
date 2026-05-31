@@ -83,7 +83,7 @@
                                         @php $sev = (int) ($v->severity ?? 0); @endphp
                                         <td><strong>{{ $sev }}</strong> <span class="label label-{{ $sev >= 8 ? 'danger' : ($sev >= 5 ? 'warning' : 'default') }}">{{ $sev >= 8 ? 'critical' : ($sev >= 5 ? 'high' : 'normal') }}</span></td>
                                         <td style="max-width:220px;word-break:break-word;">{{ (string) ($v->file_name ?? '-') }}</td>
-                                        <td style="max-width:420px;word-break:break-word;">{{ (string) ($v->details ?? '-') }}</td>
+                                        <td style="max-width:420px;"><code class="pp-event-detail">{{ (string) ($v->details ?? '-') }}</code></td>
                                     </tr>
                                 @empty
                                     <tr>
@@ -128,7 +128,7 @@
                                         <td>#{{ (int) ($row->user_id ?? 0) }}</td>
                                         <td><code>{{ (string) ($row->server_uuid ?? '-') }}</code></td>
                                         <td style="max-width:320px;word-break:break-word;">{{ (string) ($row->file_path ?? ($row->file_name ?? '-')) }}</td>
-                                        <td style="max-width:260px;word-break:break-word;">{{ (string) ($row->detection_reason ?? '-') }}</td>
+                                        <td style="max-width:260px;"><code class="pp-event-detail">{{ (string) ($row->detection_reason ?? '-') }}</code></td>
                                         <td><code>{{ (string) ($row->file_hash ?? '-') }}</code></td>
                                     </tr>
                                 @empty
@@ -176,10 +176,10 @@
                                         <td>{{ (string) ($log->actor_username ?? ($log->actor_id ? ('#' . (int) $log->actor_id) : '-')) }}</td>
                                         <td>{{ isset($log->server_id) ? ('#' . (int) $log->server_id) : '-' }}</td>
                                         <td>{{ (string) ($log->ip ?? '-') }}</td>
-                                        <td style="max-width:360px;word-break:break-word;">
-                                            {{ (string) ($log->reason ?? '-') }}
+                                        <td style="max-width:360px;">
+                                            <code class="pp-event-detail">{{ (string) ($log->reason ?? '-') }}</code>
                                             @if(!empty($log->reason_detail) && (string) $log->reason_detail !== (string) $log->reason)
-                                                <div class="text-muted" style="margin-top:4px; font-size:12px;">detail: {{ (string) $log->reason_detail }}</div>
+                                                <div class="text-muted" style="margin-top:4px; font-size:12px;">detail: <code class="pp-event-detail">{{ (string) $log->reason_detail }}</code></div>
                                             @endif
                                         </td>
                                         <td style="max-width:420px;word-break:break-word;">{{ (string) ($log->description ?? '-') }}</td>

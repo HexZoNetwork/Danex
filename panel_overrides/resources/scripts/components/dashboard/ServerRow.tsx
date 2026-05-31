@@ -82,6 +82,29 @@ const StatusIndicatorBox = styled(Link)<{ $status: ServerPowerState | undefined;
         opacity: 1;
         transform: translateY(0);
     }
+
+    @media (max-width: 640px) {
+        display: flex;
+        flex-direction: column;
+        gap: ${({ $compact }) => ($compact ? '0.65rem' : '0.7rem')};
+        padding: ${({ $compact }) => ($compact ? '0.72rem' : '0.78rem')};
+        border-radius: 0.85rem;
+        border-color: rgba(139, 92, 246, 0.32);
+        box-shadow: 0 14px 32px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+        & .status-bar {
+            left: 0.7rem;
+            right: 0.7rem;
+            top: 0;
+            bottom: auto;
+            width: auto;
+            height: 3px;
+        }
+
+        &:hover {
+            transform: none;
+        }
+    }
 `;
 
 const IconBox = styled.div`
@@ -90,15 +113,30 @@ const IconBox = styled.div`
     border: 1px solid rgba(139, 92, 246, 0.36);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 20px rgba(139, 92, 246, 0.16);
     color: #a78bfa;
+
+    @media (max-width: 640px) {
+        width: 2.25rem;
+        height: 2.25rem;
+        padding: 0.55rem;
+        border-radius: 0.65rem;
+    }
 `;
 
-const ResourceCell = styled.div<{ $alarm?: boolean }>`
+const ResourceCell = styled.div<{ $alarm?: boolean; $compact?: boolean }>`
     ${tw`rounded-lg border px-2 py-2 min-w-0`};
     background: #111117;
     border-color: ${({ $alarm }) => ($alarm ? 'rgba(239, 68, 68, 0.42)' : 'rgba(139, 92, 246, 0.18)')};
 
     svg {
         color: ${({ $alarm }) => ($alarm ? '#ef4444' : '#a78bfa')};
+    }
+
+    @media (max-width: 640px) {
+        padding: ${({ $compact }) => ($compact ? '0.5rem 0.55rem' : '0.55rem 0.6rem')};
+        border-radius: 0.7rem;
+        background: #111117;
+        border-color: ${({ $alarm }) => ($alarm ? 'rgba(239, 68, 68, 0.48)' : 'rgba(139, 92, 246, 0.26)')};
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
     }
 `;
 
@@ -132,6 +170,7 @@ const ResourceMetric = ({
     limit,
     usage,
     alarm,
+    compact,
 }: {
     icon: any;
     label: string;
@@ -139,30 +178,31 @@ const ResourceMetric = ({
     limit: string;
     usage: number;
     alarm: boolean;
+    compact?: boolean;
 }) => {
     const boundedUsage = Math.max(0, Math.min(100, usage));
 
     return (
-    <ResourceCell $alarm={alarm}>
-        <div css={tw`flex items-center justify-between gap-2`}>
-            <div css={tw`flex items-center min-w-0`}>
-                <FontAwesomeIcon icon={icon} css={tw`mr-2 flex-shrink-0`} />
-                <span css={tw`text-xs uppercase tracking-wider text-neutral-500`}>{label}</span>
+        <ResourceCell $alarm={alarm} $compact={compact}>
+            <div css={compact ? tw`flex flex-col items-start gap-0.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2` : tw`flex items-center justify-between gap-2`}>
+                <div css={tw`flex items-center min-w-0`}>
+                    <FontAwesomeIcon icon={icon} css={compact ? tw`mr-1.5 flex-shrink-0 text-[10px]` : tw`mr-2 flex-shrink-0`} />
+                    <span css={compact ? tw`text-[10px] uppercase tracking-wider text-neutral-500` : tw`text-[11px] sm:text-xs uppercase tracking-wider text-neutral-500`}>{label}</span>
+                </div>
+                <span css={compact ? tw`max-w-full truncate text-left text-[10px] font-mono text-neutral-100 sm:max-w-[52%] sm:text-right` : tw`max-w-[52%] truncate text-right text-[11px] sm:text-xs font-mono text-neutral-100`}>{value}</span>
             </div>
-            <span css={tw`text-xs font-mono text-neutral-100 truncate`}>{value}</span>
-        </div>
-        <Meter
-            $value={boundedUsage}
-            $alarm={alarm}
-            role={'meter'}
-            aria-label={`${label} usage`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(boundedUsage)}
-            aria-valuetext={`${value} of ${limit}`}
-        />
-        <p css={tw`mt-1 text-[10px] text-neutral-500 text-right`}>of {limit} ({Math.round(boundedUsage)}%)</p>
-    </ResourceCell>
+            <Meter
+                $value={boundedUsage}
+                $alarm={alarm}
+                role={'meter'}
+                aria-label={`${label} usage`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(boundedUsage)}
+                aria-valuetext={`${value} of ${limit}`}
+            />
+            {!compact && <p css={tw`mt-1 truncate text-right text-[10px] text-neutral-500`}>of {limit} ({Math.round(boundedUsage)}%)</p>}
+        </ResourceCell>
     );
 };
 
@@ -259,12 +299,12 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
     const identityCss = compact
         ? tw`relative z-10 flex items-center col-span-12 md:col-span-6 lg:col-span-5 min-w-0`
         : tw`relative z-10 flex items-start min-w-0 pb-3 border-b`;
-    const networkCss = compact ? tw`relative z-10 hidden xl:flex xl:col-span-2 items-center min-w-0` : tw`hidden`;
+    const networkCss = compact ? tw`relative z-10 hidden lg:flex lg:col-span-2 items-center min-w-0` : tw`hidden`;
     const resourcesCss = compact
-        ? tw`relative z-10 hidden md:block md:col-span-6 lg:col-span-5`
+        ? tw`relative z-10 block md:col-span-6 lg:col-span-5 xl:col-span-5`
         : tw`relative z-10 flex-1`;
-    const resourceGridCss = compact ? tw`grid grid-cols-3 gap-2` : tw`grid grid-cols-1 sm:grid-cols-3 gap-2`;
-    const descriptionCss = compact ? tw`hidden sm:block mt-1 text-xs text-neutral-400 break-words line-clamp-1` : tw`mt-1 text-xs text-neutral-400 break-words line-clamp-1`;
+    const resourceGridCss = compact ? tw`grid grid-cols-3 gap-1.5 sm:gap-2` : tw`grid grid-cols-1 sm:grid-cols-3 gap-2`;
+    const descriptionCss = compact ? tw`hidden md:block mt-1 text-xs text-neutral-400 break-words line-clamp-1` : tw`mt-1 text-xs text-neutral-400 break-words line-clamp-1`;
 
     return (
         <div className={className} ref={rowRef}>
@@ -274,10 +314,10 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
                     <IconBox>
                         <FontAwesomeIcon icon={faServer} />
                     </IconBox>
-                    <div css={tw`ml-3 min-w-0 flex-1`}>
+                    <div css={tw`ml-2.5 sm:ml-3 min-w-0 flex-1`}>
                         <div css={tw`flex flex-wrap items-start justify-between gap-2`}>
-                            <p css={tw`text-base break-words text-white font-semibold`}>{server.name}</p>
-                            <span css={tw`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider flex-shrink-0`} style={{ color: resourceError && !stats ? '#f59e0b' : statusColor(statusForColor, isSuspended), borderColor: 'rgba(139, 92, 246, 0.2)', background: '#111117' }}>
+                            <p css={tw`min-w-0 flex-1 text-sm sm:text-base leading-snug break-words text-white font-semibold`}>{server.name}</p>
+                            <span css={tw`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider flex-shrink-0 leading-4`} style={{ color: resourceError && !stats ? '#f59e0b' : statusColor(statusForColor, isSuspended), borderColor: 'rgba(139, 92, 246, 0.2)', background: '#111117' }}>
                                 {status}
                             </span>
                         </div>
@@ -338,6 +378,7 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
                                 limit={cpuLimit}
                                 usage={server.limits.cpu === 0 ? Math.min(100, stats.cpuUsagePercent) : (stats.cpuUsagePercent / server.limits.cpu) * 100}
                                 alarm={alarms.cpu}
+                                compact={compact}
                             />
                             <ResourceMetric
                                 icon={faMemory}
@@ -346,6 +387,7 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
                                 limit={memoryLimit}
                                 usage={pct(stats.memoryUsageInBytes, server.limits.memory)}
                                 alarm={alarms.memory}
+                                compact={compact}
                             />
                             <ResourceMetric
                                 icon={faHdd}
@@ -354,6 +396,7 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
                                 limit={diskLimit}
                                 usage={pct(stats.diskUsageInBytes, server.limits.disk)}
                                 alarm={alarms.disk}
+                                compact={compact}
                             />
                         </div>
                     )}

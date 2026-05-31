@@ -11,7 +11,9 @@ module.exports = {
     mode: isProduction ? 'production' : 'development',
     devtool: process.env.DEVTOOL || (isProduction ? false : 'eval-source-map'),
     performance: {
-        hints: false,
+        hints: isProduction ? 'warning' : false,
+        maxEntrypointSize: 768 * 1024,
+        maxAssetSize: 768 * 1024,
     },
     entry: ['./resources/scripts/index.tsx'],
     output: {
@@ -118,9 +120,27 @@ module.exports = {
         sideEffects: false,
         runtimeChunk: false,
         removeEmptyChunks: true,
-        // Keep a single initial bundle because the blade template only injects
-        // the main entrypoint script.
-        splitChunks: false,
+        splitChunks: {
+            chunks: 'async',
+            maxAsyncRequests: 12,
+            minSize: 40 * 1024,
+            cacheGroups: {
+                editorTerminal: {
+                    test: /[\\/]node_modules[\\/](codemirror|@codemirror|xterm|xterm-addon-fit|chart\.js|react-chartjs-2)[\\/]/,
+                    name: 'heavy-tools',
+                    chunks: 'async',
+                    priority: 25,
+                    reuseExistingChunk: true,
+                },
+                asyncVendors: {
+                    test: /[\\/]node_modules[\\/]/,
+                    name: 'async-vendors',
+                    chunks: 'async',
+                    priority: 10,
+                    reuseExistingChunk: true,
+                },
+            },
+        },
         minimize: isProduction,
         minimizer: [
             new TerserPlugin({

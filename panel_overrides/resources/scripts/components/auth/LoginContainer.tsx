@@ -19,12 +19,18 @@ interface Values {
 type AssetManifest = Record<string, { src?: string }>;
 
 const preloadCoreAssets = async (onProgress: (progress: number) => void): Promise<void> => {
+    const connection = (navigator as any).connection;
+    if (connection?.saveData || ['slow-2g', '2g'].includes(String(connection?.effectiveType || ''))) {
+        onProgress(100);
+        return;
+    }
+
     const controller = new AbortController();
     const timeout = new Promise<void>((resolve) =>
         window.setTimeout(() => {
             controller.abort();
             resolve();
-        }, 4500)
+        }, 1800)
     );
     const preload = async () => {
         const manifest = (await fetch('/assets/manifest.json', { cache: 'no-cache', credentials: 'same-origin', signal: controller.signal }).then((r) =>
@@ -32,11 +38,10 @@ const preloadCoreAssets = async (onProgress: (progress: number) => void): Promis
         ).then((r) =>
             r.json()
         )) as AssetManifest;
-        const assets = Object.entries(manifest)
-            .filter(([name, entry]) => name.endsWith('.js') || ['main.js', 'dashboard.js', 'server.js', 'auth.js'].includes(name))
-            .map(([, entry]) => entry.src)
+        const assets = ['runtime.js', 'framework.js', 'vendors.js', 'main.js', 'dashboard.js']
+            .map((name) => manifest[name]?.src)
             .filter((src): src is string => typeof src === 'string' && src.endsWith('.js'));
-        const uniqueAssets = Array.from(new Set(assets));
+        const uniqueAssets = Array.from(new Set(assets)).slice(0, 5);
         let completed = 0;
 
         if (uniqueAssets.length === 0) {
@@ -51,14 +56,13 @@ const preloadCoreAssets = async (onProgress: (progress: number) => void): Promis
                 link.setAttribute('as', 'script');
                 link.href = src;
                 document.head.appendChild(link);
-                await fetch(src, { cache: 'force-cache', credentials: 'same-origin', signal: controller.signal }).catch(() => undefined);
                 completed += 1;
                 onProgress(Math.round((completed / uniqueAssets.length) * 100));
             })
         );
     };
 
-    onProgress(8);
+    onProgress(16);
     await Promise.race([preload(), timeout]);
     onProgress(100);
 };

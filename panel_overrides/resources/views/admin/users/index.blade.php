@@ -24,14 +24,14 @@
                             <input type="text" name="filter[email]" class="form-control pull-right" value="{{ request()->input('filter.email') }}" placeholder="Search">
                             <div class="input-group-btn">
                                 <button type="submit" class="btn btn-default"><i class="fa fa-search"></i></button>
-                                <a href="{{ route('admin.users.new') }}" class="btn btn-sm btn-primary" style="margin-left:6px;">Create New</a>
+                                <a href="{{ route('admin.users.new') }}" class="btn btn-sm btn-primary">Create New</a>
                             </div>
                         </div>
                     </form>
                 </div>
             </div>
             <div class="box-body table-responsive no-padding">
-                <table class="table table-hover">
+                <table class="table table-hover el7-admin-table">
                     <thead>
                         <tr>
                             <th>ID</th>

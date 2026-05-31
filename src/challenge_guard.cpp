@@ -124,6 +124,8 @@ static std::mutex g_api_token_cache_mu;
 static std::map<std::string, std::time_t> g_valid_api_token_cache;
 static std::mutex g_completed_mu;
 static std::map<std::string, std::time_t> g_completed_challenges;
+static std::mutex g_web_decision_mu;
+static std::map<std::string, std::time_t> g_web_decision_cache;
 static std::mutex g_source_bucket_mu;
 static std::map<std::string, std::pair<std::time_t, int>> g_source_buckets;
 static std::mutex g_provider_ip_cache_mu;
@@ -1314,6 +1316,49 @@ static std::string original_request_method(const HttpRequest& req) {
     it = req.headers.find("x-original-method");
     if (it != req.headers.end() && !trim(it->second).empty()) return to_upper_ascii(trim(it->second));
     return to_upper_ascii(req.method);
+}
+
+static std::string web_decision_path_class(const HttpRequest& req) {
+    std::string path = original_request_path(req);
+    std::size_t q = path.find('?');
+    if (q != std::string::npos) path.resize(q);
+    path = normalize_attack_rule_path(path);
+    if (path == "/") return "/";
+    if (path.rfind("/auth/", 0) == 0 || path == "/auth") return "/auth/";
+    if (path.rfind("/api/client/", 0) == 0 || path == "/api/client") return "/api/client/";
+    if (path.rfind("/api/", 0) == 0 || path == "/api") return "/api/";
+    if (path.rfind("/admin/", 0) == 0 || path == "/admin") return "/admin/";
+    if (path.rfind("/server/", 0) == 0 || path == "/server") return "/server/";
+    return "public";
+}
+
+static std::string web_decision_cache_key(const Settings& s, const HttpRequest& req, const std::string& ip, const std::string& ua_fp, const std::string& sid_fp, const std::string& token_fp) {
+    return ip_prefix_of(ip, s.session_ip_prefix_v4, s.session_ip_prefix_v6) + "|" + ua_fp + "|" + original_request_method(req) + "|" + web_decision_path_class(req) + "|" + sid_fp + "|" + token_fp;
+}
+
+static bool web_decision_cache_hit(const std::string& key) {
+    if (key.empty()) return false;
+    const std::time_t now = std::time(nullptr);
+    std::lock_guard<std::mutex> lock(g_web_decision_mu);
+    auto it = g_web_decision_cache.find(key);
+    if (it == g_web_decision_cache.end()) return false;
+    if (it->second <= now) {
+        g_web_decision_cache.erase(it);
+        return false;
+    }
+    return true;
+}
+
+static void web_decision_cache_store(const std::string& key, int ttl_sec = 5) {
+    if (key.empty()) return;
+    const std::time_t now = std::time(nullptr);
+    std::lock_guard<std::mutex> lock(g_web_decision_mu);
+    for (auto it = g_web_decision_cache.begin(); it != g_web_decision_cache.end();) {
+        if (it->second <= now) it = g_web_decision_cache.erase(it);
+        else ++it;
+    }
+    while (g_web_decision_cache.size() > 50000) g_web_decision_cache.erase(g_web_decision_cache.begin());
+    g_web_decision_cache[key] = now + std::max(1, ttl_sec);
 }
 
 static bool runtime_attack_rule_matches(const Settings& s, const HttpRequest& req, const std::string& ua, AttackRule* matched = nullptr) {
@@ -2578,9 +2623,15 @@ static void handle_client(int fd, std::string remote_ip) {
         std::string cookie = req.headers.count("cookie") ? req.headers["cookie"] : "";
         std::string tok = read_cookie(cookie, s.cookie_name);
         std::string req_sid_fp = session_cookie_fingerprint(s, read_cookie(cookie, "pterodactyl_session"));
+        std::string tok_fp = tok.empty() ? "" : sha256_hex_24(tok);
+        std::string decision_key = web_decision_cache_key(s, req, ip, ua_fp, req_sid_fp, tok_fp);
         std::string verify_reason;
-        if (!tok.empty() && verify_token(s, tok, ip, ua_fp, req_sid_fp, &verify_reason)) {
-            log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web"}});
+        if (web_decision_cache_hit(decision_key)) {
+            log_event_json("web_decision_cache_hit", {{"ip", ip}, {"node_id", s.node_id}, {"path_class", web_decision_path_class(req)}});
+            send_response(fd, 204, "No Content", "", {}, head_only);
+        } else if (!tok.empty() && verify_token(s, tok, ip, ua_fp, req_sid_fp, &verify_reason)) {
+            web_decision_cache_store(decision_key, 5);
+            log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web"}, {"cache", "store"}});
             send_response(fd, 204, "No Content", "", {}, head_only);
         } else {
             AttackRule matched_rule;
@@ -2599,7 +2650,8 @@ static void handle_client(int fd, std::string remote_ip) {
                 return;
             }
             if (has_active_session_binding(ip, ua_fp)) {
-                log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web-session"}});
+                web_decision_cache_store(decision_key, 3);
+                log_event_json("token_validated", {{"ok", true}, {"ip", ip}, {"node_id", s.node_id}, {"path", "check-web-session"}, {"cache", "store"}});
                 send_response(fd, 204, "No Content", "", {}, head_only);
             } else {
                 log_event_json("session_mismatch", {{"ip", ip}, {"reason", verify_reason.empty() ? "no_cookie_or_invalid" : verify_reason}, {"node_id", s.node_id}, {"path", "check-web"}});

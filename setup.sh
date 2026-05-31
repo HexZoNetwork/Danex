@@ -675,8 +675,14 @@ post_install_service_smoke_check() {
     local panel_env_file="${1:-${PANEL_ENV_FILE}}"
     local app_url=""
     local app_host=""
+    local app_scheme="http"
+    local expected_panel_url="http://127.0.0.1/"
     local panel_code=""
+    local panel_code_https=""
+    local local_ipv4=""
+    local panel_probe_url=""
     local wings_code=""
+    local wings_probe_url=""
 
     if command -v systemctl >/dev/null 2>&1; then
         for svc in nginx pteroq wings; do
@@ -688,14 +694,47 @@ post_install_service_smoke_check() {
         done
     fi
 
-    panel_code="$(curl -4 -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 http://127.0.0.1/ 2>/dev/null || true)"
-    if [[ ! "${panel_code}" =~ ^[0-9]{3}$ || "${panel_code}" == "000" ]]; then
-        warn "panel local HTTP probe failed on 127.0.0.1:80"
+    if [[ -f "${panel_env_file}" ]]; then
+        app_url="$(
+            awk -F'=' '/^\s*APP_URL\s*=/{print $2; exit}' "${panel_env_file}" 2>/dev/null \
+            | tr -d "\"'" \
+            | xargs -r echo
+        )"
+        if [[ -n "${app_url}" ]]; then
+            app_scheme="$(printf '%s' "${app_url}" | sed -E 's|^([a-zA-Z][a-zA-Z0-9+.-]*)://.*$|\1|')"
+            [[ "${app_scheme}" == "https" ]] && expected_panel_url="https://127.0.0.1/"
+        fi
     fi
 
-    wings_code="$(curl -k -sS -H 'Authorization: Bearer pteroprotect-smoke' -o /dev/null -w '%{http_code}' --connect-timeout 3 https://127.0.0.1:8080/api/system 2>/dev/null || true)"
+    panel_code="$(curl -k -4 -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 "${expected_panel_url}" 2>/dev/null || true)"
+    if [[ ! "${panel_code}" =~ ^[0-9]{3}$ || "${panel_code}" == "000" ]]; then
+        local_ipv4="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}' || true)"
+        if [[ -n "${local_ipv4}" ]]; then
+            panel_probe_url="${expected_panel_url/127.0.0.1/${local_ipv4}}"
+            panel_code="$(curl -k -4 -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 "${panel_probe_url}" 2>/dev/null || true)"
+        fi
+    fi
+    if [[ ! "${panel_code}" =~ ^[0-9]{3}$ || "${panel_code}" == "000" ]]; then
+        if [[ "${expected_panel_url}" == "http://127.0.0.1/" ]]; then
+            panel_code_https="$(curl -k -4 -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 https://127.0.0.1/ 2>/dev/null || true)"
+            if [[ "${panel_code_https}" =~ ^[0-9]{3}$ && "${panel_code_https}" != "000" ]]; then
+                warn "panel local HTTP probe failed on 127.0.0.1:80, but HTTPS on 127.0.0.1:443 responded (code=${panel_code_https}); HTTP may be intentionally disabled."
+            else
+                warn "panel local probe failed on loopback and local IPv4 (${local_ipv4:-none}) (code=${panel_code:-000}). Check nginx listener/vhost with: nginx -t && ss -ltnp | grep -E ':(80|443) '"
+            fi
+        else
+            warn "panel local probe failed on loopback and local IPv4 (${local_ipv4:-none}) for ${app_scheme} (code=${panel_code:-000}). Check nginx TLS listener/vhost with: nginx -t && ss -ltnp | grep ':443 '"
+        fi
+    fi
+
+    wings_probe_url="https://127.0.0.1:8080/api/system"
+    wings_code="$(curl -k -sS -H 'Authorization: Bearer pteroprotect-smoke' -o /dev/null -w '%{http_code}' --connect-timeout 3 "${wings_probe_url}" 2>/dev/null || true)"
+    if [[ "${wings_code}" == "000" && -n "${local_ipv4}" ]]; then
+        wings_probe_url="https://${local_ipv4}:8080/api/system"
+        wings_code="$(curl -k -sS -H 'Authorization: Bearer pteroprotect-smoke' -o /dev/null -w '%{http_code}' --connect-timeout 3 "${wings_probe_url}" 2>/dev/null || true)"
+    fi
     if [[ ! "${wings_code}" =~ ^(000|200|401|403)$ ]]; then
-        warn "wings-guard probe on 127.0.0.1:8080/api/system is unexpected (code=${wings_code:-n/a})"
+        warn "wings-guard probe on ${wings_probe_url} is unexpected (code=${wings_code:-n/a}); 502 usually means nginx reached the guard vhost but upstream Wings is not healthy."
     fi
 
     if [[ -f "${panel_env_file}" ]]; then
@@ -747,6 +786,62 @@ copy_tree() {
 
     mkdir -p "${dest}"
     tar -C "${src}" -cf - . | tar -C "${dest}" -xf -
+}
+
+install_runtime_file() {
+    local src="$1"
+    local dest="$2"
+
+    [[ -f "${src}" ]] || return 0
+    mkdir -p "$(dirname "${dest}")"
+    install -m 0644 "${src}" "${dest}"
+}
+
+stage_runtime_bundle() {
+    local script=""
+
+    mkdir -p "${INSTALL_DIR}/scripts" "${INSTALL_DIR}/systemd" "${INSTALL_DIR}/host_overrides"
+    install_runtime_file "${PROJECT_DIR}/config.example.json" "${INSTALL_DIR}/config.example.json"
+    install_runtime_file "${PROJECT_DIR}/check.sh" "${INSTALL_DIR}/check.sh"
+
+    for script in \
+        bootstrap_provider_cache.py \
+        ddos_host_logger.sh \
+        edge_origin_cloak.sh \
+        install_fail2ban.sh \
+        install_host_protection.sh \
+        pteroprotect-mode.sh \
+        pteroprotect_challenge_api.py \
+        pteroprotect_control_plane.py \
+        pteroprotect_emergency_panel.py \
+        pteroprotect_firewall_manager.sh \
+        pteroprotect_lab.py \
+        pteroprotect_node_agent.py \
+        pteroprotect_terminal_helper.py \
+        render_provider_gate.py \
+        resilience_collector.py \
+        resilience_orchestrator.py \
+        resilience_runtime.py \
+        resilience_test_harness.py \
+        runtime_abuse_guard.py \
+        security_log_watch.py \
+        self_heal_monitor.py \
+        smoke_l7_defense.sh \
+        smoke_nodefs_abuse.sh \
+        survive_60s.sh \
+        unblock_portal.py \
+        validator_preflight.sh \
+        watch_panel_overrides.sh; do
+        install_runtime_file "${PROJECT_DIR}/scripts/${script}" "${INSTALL_DIR}/scripts/${script}"
+    done
+
+    if [[ -d "${PROJECT_DIR}/systemd" ]]; then
+        mkdir -p "${INSTALL_DIR}/systemd"
+        find "${PROJECT_DIR}/systemd" -maxdepth 1 -type f -name '*.service' -exec cp -f {} "${INSTALL_DIR}/systemd/" \;
+    fi
+    if [[ -d "${PROJECT_DIR}/host_overrides" ]]; then
+        copy_tree "${PROJECT_DIR}/host_overrides" "${INSTALL_DIR}/host_overrides"
+    fi
 }
 
 sync_panel_built_assets_to_overrides() {
@@ -1191,16 +1286,11 @@ APT_DEPS+=("${MYSQL_DEV_PKG}")
 printf '%s\n' "${APT_DEPS[@]}" | sed 's/^/[setup]   will install /'
 apt-get install "${APT_INSTALL_OPTS[@]}" "${APT_DEPS[@]}"
 
-echo "[setup] creating workspace backup in ${BACKUP_DIR}..."
-mkdir -p "${BACKUP_DIR}"
-BACKUP_FILE="${BACKUP_DIR}/dann_guard_backup_$(date -u +%Y%m%d_%H%M%S).tar.gz"
-tar --exclude='./obj' --exclude='./dann_guard' --exclude='./.git' --exclude='./backups' -C "${PROJECT_DIR}" -czf "${BACKUP_FILE}" .
-
-echo "[setup] syncing project workspace to ${INSTALL_DIR}..."
+echo "[setup] staging runtime bundle in ${INSTALL_DIR} (no full source copy)..."
 mkdir -p "${INSTALL_DIR}"
-tar --exclude='./obj' --exclude='./dann_guard' --exclude='./.git' -C "${PROJECT_DIR}" -cf - . | tar -C "${INSTALL_DIR}" -xf -
+stage_runtime_bundle
 if [[ -f "${PROJECT_DIR}/config.json" ]]; then
-    cp "${PROJECT_DIR}/config.json" "${INSTALL_DIR}/config.json"
+    install -m 0640 "${PROJECT_DIR}/config.json" "${INSTALL_DIR}/config.json"
     echo "[setup] config source: ${PROJECT_DIR}/config.json -> ${INSTALL_DIR}/config.json"
 elif [[ ! -f "${INSTALL_DIR}/config.json" && -f "${INSTALL_DIR}/config.example.json" ]]; then
     cp "${INSTALL_DIR}/config.example.json" "${INSTALL_DIR}/config.json"
@@ -1539,7 +1629,7 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
 
         open my $out, ">", $f or die;
         print $out JSON::PP->new->ascii->pretty->canonical->encode($j);
-    ' "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" "${INSTALL_DIR}/config.example.json"
+    ' "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" "${PROJECT_DIR}/config.example.json"
 
     # Final safeguard: ensure database section reflects panel .env (or at least
     # replaces obvious template placeholders) before service startup.
@@ -1686,15 +1776,15 @@ fi
 BUILD_JOBS="$(nproc 2>/dev/null || echo 1)"
 BUILD_CXXFLAGS="${PTEROPROTECT_CXXFLAGS:--std=c++11 -Wall -Wno-unused-function -Wno-unused-but-set-variable -Wno-unused-variable -Iinclude}"
 
-echo "[setup] rebuilding dann_guard in ${INSTALL_DIR} with ${BUILD_JOBS} job(s)..."
-make -C "${INSTALL_DIR}" clean
-make -C "${INSTALL_DIR}" -j"${BUILD_JOBS}" CXXFLAGS="${BUILD_CXXFLAGS}"
+echo "[setup] rebuilding dann_guard in ${PROJECT_DIR} with ${BUILD_JOBS} job(s)..."
+make -C "${PROJECT_DIR}" clean
+make -C "${PROJECT_DIR}" -j"${BUILD_JOBS}" CXXFLAGS="${BUILD_CXXFLAGS}"
 
-echo "[setup] force-installing fresh binary..."
-install -m 755 "${INSTALL_DIR}/dann_guard" "${INSTALL_DIR}/dann_guard.new"
+echo "[setup] installing fresh runtime binaries only..."
+install -m 755 "${PROJECT_DIR}/dann_guard" "${INSTALL_DIR}/dann_guard.new"
 mv -f "${INSTALL_DIR}/dann_guard.new" "${INSTALL_DIR}/dann_guard"
-if [[ -f "${INSTALL_DIR}/challenge_guard" ]]; then
-    install -m 755 "${INSTALL_DIR}/challenge_guard" "${INSTALL_DIR}/challenge_guard.new"
+if [[ -f "${PROJECT_DIR}/challenge_guard" ]]; then
+    install -m 755 "${PROJECT_DIR}/challenge_guard" "${INSTALL_DIR}/challenge_guard.new"
     mv -f "${INSTALL_DIR}/challenge_guard.new" "${INSTALL_DIR}/challenge_guard"
 fi
 if [[ ! -x "${INSTALL_DIR}/dann_guard" ]]; then
@@ -2123,7 +2213,7 @@ PANEL_OVERRIDE_SOURCE=""
 if [[ -d "${PROJECT_DIR}/panel_overrides" ]]; then
     PANEL_OVERRIDE_SOURCE="${PROJECT_DIR}/panel_overrides"
 elif [[ -d "${INSTALL_DIR}/panel_overrides" ]]; then
-    PANEL_OVERRIDE_SOURCE="${INSTALL_DIR}/panel_overrides"
+    warn "ignoring legacy ${INSTALL_DIR}/panel_overrides source copy; use repository panel_overrides instead"
 fi
 
 PANEL_SYNC_WAS_ACTIVE=0

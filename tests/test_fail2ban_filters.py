@@ -75,6 +75,8 @@ def main() -> int:
         raise AssertionError("recidive all-port bans must be disabled by default")
     if not re.search(r"\[pteroprotect-auth-abuse\].*?findtime = 600.*?maxretry = 40", jail, re.DOTALL):
         raise AssertionError("auth jail must be NAT/mobile tolerant")
+    if not re.search(r"\[pteroprotect-waf-deny\].*?logpath = /var/log/pteroprotect/waf\.log.*?maxretry = 8.*?bantime = 7200", jail, re.DOTALL):
+        raise AssertionError("WAF deny jail must watch persistent log and ban high-confidence repeats")
 
     for name, case in CASES.items():
         malicious_matches = run_case(name, case["malicious"])

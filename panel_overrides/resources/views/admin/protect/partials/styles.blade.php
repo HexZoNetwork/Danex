@@ -47,6 +47,7 @@
         letter-spacing: 0.04em;
         text-transform: uppercase;
         font-size: 12px;
+        white-space: nowrap;
         transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
     }
     .pp-theme .pp-tabs > li > a:hover,
@@ -213,6 +214,16 @@
         background: #15151d;
         color: #a78bfa;
         border: 1px solid rgba(139, 92, 246, 0.18);
+    }
+    .pp-theme .pp-event-detail {
+        display: block;
+        max-width: min(100%, 34rem);
+        max-height: 4.8rem;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        line-height: 1.35;
     }
     .pp-theme code,
     .pp-theme pre {
@@ -693,13 +704,146 @@
         .pp-theme .box-header {
             padding: 12px !important;
         }
+        .pp-theme .pp-tabs {
+            gap: 6px;
+            padding: 6px;
+            margin-left: -2px;
+            margin-right: -2px;
+            max-width: 100%;
+        }
+        .pp-theme .pp-tabs > li > a {
+            padding: 7px 10px;
+            font-size: 10px;
+        }
+        .pp-theme .pp-table {
+            min-width: 620px;
+        }
+        .pp-theme .pp-ads-inventory {
+            display: grid;
+            gap: 12px;
+        }
+        .pp-theme .pp-ad-card {
+            background: linear-gradient(135deg, rgba(17, 17, 24, 0.98), rgba(9, 9, 13, 0.98));
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 14px;
+            padding: 12px;
+            box-shadow: 0 14px 34px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+        .pp-theme .pp-ad-head,
+        .pp-theme .pp-ad-actions {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .pp-theme .pp-ad-actions {
+            margin: 10px 0 0;
+            padding-top: 10px;
+            border-top: 1px solid rgba(139, 92, 246, 0.14);
+        }
+        .pp-theme .pp-ad-delete {
+            margin-top: 8px;
+            text-align: right;
+        }
+        .pp-theme .pp-ad-meta {
+            color: #a6a6b8;
+            font-size: 11px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+        .pp-theme .pp-ad-id {
+            border: 1px solid rgba(139, 92, 246, 0.26);
+            border-radius: 999px;
+            color: #a78bfa;
+            font-weight: 800;
+            padding: 3px 8px;
+        }
+        .pp-theme .pp-ad-enabled {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin: 0;
+        }
+        .pp-theme .pp-ad-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 9px;
+            padding: 10px;
+            background: rgba(9, 9, 13, 0.7);
+            border: 1px solid rgba(139, 92, 246, 0.14);
+            border-radius: 12px;
+        }
+        .pp-theme .pp-ad-field label {
+            display: block;
+            margin-bottom: 3px;
+            font-size: 10px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .pp-theme .pp-ad-wide {
+            grid-column: 1 / -1;
+        }
+        .pp-theme .pp-ads-inventory .form-control {
+            min-width: 0;
+        }
+        @media (max-width: 767px) {
+            .pp-theme .pp-ad-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .pp-theme .box-body.table-responsive,
+        .pp-theme .table-responsive {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .pp-theme textarea.form-control {
+            min-height: 150px;
+            max-height: 42vh;
+            overflow: auto;
+        }
         .pp-theme .table-responsive {
             border: 1px solid rgba(139, 92, 246, 0.18);
             border-radius: 10px;
         }
+        .pp-theme .box-body {
+            overflow-x: auto;
+        }
+        .pp-theme .box-info .box-body > .row > [class*="col-sm-3"] {
+            margin-bottom: 8px;
+        }
+        .pp-theme .box-info .box-body > .row > [class*="col-sm-3"] > p,
+        .pp-theme .box-info .box-body > .row > [class*="col-sm-3"] > h4 {
+            margin-left: 0;
+            margin-right: 0;
+        }
+        .pp-theme .box-info .box-body > .row > [class*="col-sm-3"] > p {
+            margin-bottom: 3px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .pp-theme .box-info .box-body > .row > [class*="col-sm-3"] > h4 {
+            margin-top: 0;
+            margin-bottom: 0;
+            font-size: 16px;
+        }
+        .pp-theme .box-info .box-body > .row > [class*="col-sm-3"] {
+            background: #111117;
+            border: 1px solid rgba(139, 92, 246, 0.18);
+            border-radius: 10px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+        }
         .pp-theme .btn {
             margin-bottom: 6px;
             width: 100%;
+        }
+        .pp-theme .pp-ad-actions .btn,
+        .pp-theme .pp-ad-delete .btn {
+            width: auto;
+            min-width: 118px;
+            margin-bottom: 0;
         }
         .pp-theme .form-inline {
             display: block;

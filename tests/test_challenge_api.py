@@ -58,6 +58,15 @@ def main() -> int:
         "invalid X-Real-IP should fall back to first valid XFF value",
     )
 
+    original_net_setting = api.net_setting
+    try:
+        api.net_setting = lambda name, default: "" if name == "waf_challenge_secret" else ("legacy-token" if name == "unblock_portal_token" else default)
+        assert_true(api.challenge_secret() != "legacy-token", "challenge secret must not reuse unblock token by default")
+        api.net_setting = lambda name, default: True if name == "waf_challenge_legacy_secret_fallback" else ("" if name == "waf_challenge_secret" else ("legacy-token" if name == "unblock_portal_token" else default))
+        assert_equal(api.challenge_secret(), "legacy-token", "legacy fallback should require explicit opt-in")
+    finally:
+        api.net_setting = original_net_setting
+
     assert_true(api.provider_api_allowed(FakeHandler("127.0.0.1")), "non-provider requests should not require API token")
     assert_false(
         api.provider_api_allowed(FakeHandler("127.0.0.1", {"X-PteroProtect-Provider-Token-Block": "1"})),
@@ -71,6 +80,24 @@ def main() -> int:
         api.provider_api_allowed(FakeHandler("127.0.0.1", {"X-PteroProtect-Provider-Token-Block": "1", "Authorization": "Bearer ptlc_testtoken"})),
         "fallback must not trust unvalidated bearer headers without nginx token signal",
     )
+
+    assert_equal(api.normalize_redirect_path("https://evil.example/path?q=1"), "/path?q=1", "redirect sanitizer should strip external origin")
+    assert_equal(api.normalize_redirect_path("//evil.example/path"), "/path", "redirect sanitizer should keep only a local path")
+    assert_equal(api.normalize_redirect_path("/ok/path?x=1#frag"), "/ok/path?x=1#frag", "safe local redirect should survive")
+    assert_equal(api.normalize_redirect_path("/bad\nheader"), "/", "redirect sanitizer should reject header injection")
+
+    original_time = api.time.time
+    try:
+        api._rate_windows.clear()
+        api.time.time = lambda: 1000
+        assert_true(api.rate_allow("203.0.113.44", "unit", 2, 60), "first request should pass")
+        assert_true(api.rate_allow("203.0.113.44", "unit", 2, 60), "second request should pass")
+        assert_false(api.rate_allow("203.0.113.44", "unit", 2, 60), "third request in same window should be limited")
+        api.time.time = lambda: 1061
+        assert_true(api.rate_allow("203.0.113.44", "unit", 2, 60), "new window should reset rate limit")
+    finally:
+        api.time.time = original_time
+        api._rate_windows.clear()
 
     print("challenge_api tests ok")
     return 0

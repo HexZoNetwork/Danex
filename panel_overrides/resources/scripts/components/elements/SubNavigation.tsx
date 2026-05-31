@@ -53,7 +53,12 @@ const Inner = styled.div`
         }
 
         a {
-            ${tw`px-3 py-2 text-[11px]`};
+            ${tw`px-3 py-2 text-xs`};
+            min-height: 2.5rem;
+            display: inline-flex;
+            align-items: center;
+            border-radius: 7px;
+            letter-spacing: 0.025em;
         }
     }
 `;

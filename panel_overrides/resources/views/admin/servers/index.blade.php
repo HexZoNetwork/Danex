@@ -25,24 +25,26 @@
                             <input id="admin-server-search" type="text" name="filter[*]" class="form-control pull-right" value="{{ request()->input()['filter']['*'] ?? '' }}" placeholder="Search Servers">
                             <div class="input-group-btn">
                                 <button type="submit" class="btn btn-default" aria-label="Search servers"><i class="fa fa-search" aria-hidden="true"></i></button>
-                                <a href="{{ route('admin.servers.new') }}" class="btn btn-sm btn-primary" style="margin-left:6px;">Create New</a>
+                                <a href="{{ route('admin.servers.new') }}" class="btn btn-sm btn-primary">Create New</a>
                             </div>
                         </div>
                     </form>
                 </div>
             </div>
             <div class="box-body table-responsive no-padding">
-                <table class="table table-hover">
-                    <tbody>
+                <table class="table table-hover el7-admin-table">
+                    <thead>
                         <tr>
                             <th>Server Name</th>
                             <th>UUID</th>
                             <th>Owner</th>
                             <th>Node</th>
                             <th>Connection</th>
-                            <th></th>
+                            <th>Status</th>
                             <th></th>
                         </tr>
+                    </thead>
+                    <tbody>
                         @foreach ($servers as $server)
                             <tr data-server="{{ $server->uuidShort }}">
                                 <td><a href="{{ route('admin.servers.view', $server->id) }}">{{ $server->name }}</a></td>

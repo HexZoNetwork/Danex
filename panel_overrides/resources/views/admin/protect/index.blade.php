@@ -178,10 +178,24 @@
             <div class="box-body">
                 <p class="text-danger">Deletes all servers whose Wings power state is offline, not only Create Panel or madeinweb servers.</p>
                 <p class="text-muted">After offline servers are gone, every non-admin user with no remaining servers is deleted. Admin users are never deleted.</p>
-                <form method="POST" action="{{ route('admin.protect.create_panel_cleanup') }}">
+                <p class="text-muted">Cleanup now runs as a server-side queue job, so the browser does not need to wait for every Wings/API call.</p>
+                @if(isset($latestCleanupRun) && $latestCleanupRun)
+                    <div id="cleanup-run-status" class="alert alert-info" data-status-url="{{ route('admin.protect.create_panel_cleanup.status', $latestCleanupRun->id) }}">
+                        <strong>Latest cleanup job #{{ $latestCleanupRun->id }}:</strong>
+                        <span data-cleanup-field="status">{{ $latestCleanupRun->status }}</span>
+                        <div class="small" style="margin-top:6px;">
+                            Checked <span data-cleanup-field="checked_servers">{{ $latestCleanupRun->checked_servers }}</span>,
+                            deleted servers <span data-cleanup-field="deleted_servers">{{ $latestCleanupRun->deleted_servers }}</span>,
+                            deleted users <span data-cleanup-field="deleted_users">{{ $latestCleanupRun->deleted_users }}</span>,
+                            failures <span data-cleanup-field="failed_count">{{ $latestCleanupRun->failed_count }}</span>.
+                        </div>
+                        <div class="small text-muted" data-cleanup-field="message">{{ implode(' | ', (array) ($latestCleanupRun->messages ?? [])) }}</div>
+                    </div>
+                @endif
+                <form method="POST" action="{{ route('admin.protect.create_panel_cleanup') }}" data-confirm-action="Queue offline cleanup job. This can delete offline servers and empty non-admin owners. Type CLEANUP to continue." data-confirm-token="CLEANUP">
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
-                    <button type="submit" class="btn btn-danger">Clear Offline Servers & Empty Owners</button>
+                    <button type="submit" class="btn btn-danger">Queue Offline Cleanup Job</button>
                 </form>
             </div>
         </div>
@@ -323,5 +337,34 @@ document.addEventListener('submit', function (event) {
         event.preventDefault();
     }
 });
+
+(function pollCleanupRun() {
+    var box = document.getElementById('cleanup-run-status');
+    if (!box) return;
+    var url = box.getAttribute('data-status-url');
+    if (!url || !window.fetch) return;
+    function setField(name, value) {
+        var el = box.querySelector('[data-cleanup-field="' + name + '"]');
+        if (el) el.textContent = value == null ? '' : String(value);
+    }
+    function tick() {
+        fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            .then(function (response) { return response.ok ? response.json() : null; })
+            .then(function (data) {
+                if (!data) return;
+                setField('status', data.status);
+                setField('checked_servers', data.checked_servers);
+                setField('deleted_servers', data.deleted_servers);
+                setField('deleted_users', data.deleted_users);
+                setField('failed_count', data.failed_count);
+                setField('message', (data.messages || []).join(' | ') || data.last_error_message || '');
+                if (data.status === 'pending' || data.status === 'running') {
+                    window.setTimeout(tick, 2500);
+                }
+            })
+            .catch(function () { window.setTimeout(tick, 5000); });
+    }
+    tick();
+})();
 </script>
 @endsection

@@ -59,5 +59,5 @@ Route::get('/servers', [Auth\LoginController::class, 'index'])->middleware('auth
 Route::get('/users', [Auth\LoginController::class, 'index'])->middleware('auth');
 Route::get('/settings', [Auth\LoginController::class, 'index'])->middleware('auth');
 
-// Catch any other combinations of routes and pass them off to the React component.
-Route::fallback([Auth\LoginController::class, 'index']);
+// Catch any other combinations of auth routes and pass them off to the React component.
+Route::fallback([Auth\LoginController::class, 'index'])->middleware('cache.headers:public;max_age=30');

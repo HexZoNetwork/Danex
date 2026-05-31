@@ -12,6 +12,8 @@ use Throwable;
 use Illuminate\View\View;
 use Prologue\Alerts\AlertsMessageBag;
 use Pterodactyl\Http\Controllers\Controller;
+use Pterodactyl\Jobs\ExecuteProtectCleanupJob;
+use Pterodactyl\Models\ProtectCleanupRun;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Models\User;
 use Pterodactyl\Repositories\Wings\DaemonServerRepository;
@@ -84,6 +86,9 @@ class ProtectController extends Controller
             'rceAllowedCommands' => $this->rceCommandAllowlist(),
             'monitorConfig' => $this->monitorConfig(),
             'selfHealSnapshot' => $this->selfHealSnapshot(),
+            'latestCleanupRun' => Schema::hasTable('protect_cleanup_runs')
+                ? ProtectCleanupRun::query()->orderByDesc('id')->first()
+                : null,
         ]);
     }
 
@@ -1228,118 +1233,56 @@ class ProtectController extends Controller
             return $guard;
         }
 
-        $servers = Server::query()->with('user')->orderBy('id')->get();
-
-        $deletedServers = 0;
-        $deletedUsers = 0;
-        $checkedServers = 0;
-        $skippedOnline = 0;
-        $skippedUnverified = 0;
-        $skippedAdmins = 0;
-        $skippedUsers = 0;
-        $resetAdminMarkers = 0;
-        $ownerIds = [];
-        $failures = [];
-
-        foreach ($servers as $server) {
-            $checkedServers++;
-            $state = null;
-
-            try {
-                $details = $this->daemonServerRepository->setServer($server)->getDetails();
-                $state = strtolower((string) ($details['state'] ?? ''));
-            } catch (Throwable $exception) {
-                report($exception);
-            }
-
-            $isOffline = $state === 'offline' || (string) $server->status === Server::STATUS_SUSPENDED;
-            if (!$isOffline) {
-                if ($state === null || $state === '') {
-                    $skippedUnverified++;
-                } else {
-                    $skippedOnline++;
-                }
-                continue;
-            }
-
-            try {
-                $ownerIds[(int) $server->owner_id] = true;
-                $this->serverDeletionService->withForce(true)->handle($server);
-                $deletedServers++;
-            } catch (Throwable $exception) {
-                report($exception);
-                $failures[] = sprintf('server #%d: %s', (int) $server->id, $exception->getMessage());
-            }
+        if (!Schema::hasTable('protect_cleanup_runs')) {
+            $this->alert->danger('Cleanup run table is missing. Run panel migrations first.')->flash();
+            return redirect()->route('admin.protect');
         }
 
-        $adminOwners = User::query()
-            ->whereIn('id', array_keys($ownerIds))
-            ->where('root_admin', true)
-            ->get();
-
-        foreach ($adminOwners as $user) {
-            $freshUser = User::query()->find((int) $user->id);
-            if (!$freshUser) {
-                continue;
-            }
-
-            $skippedAdmins++;
-            if (Schema::hasColumn('users', 'madeinweb_panel_created_at') && $freshUser->madeinweb_panel_created_at !== null) {
-                $freshUser->forceFill(['madeinweb_panel_created_at' => null])->save();
-                $resetAdminMarkers++;
-            }
+        $activeRun = ProtectCleanupRun::query()
+            ->whereIn('status', [ProtectCleanupRun::STATUS_PENDING, ProtectCleanupRun::STATUS_RUNNING])
+            ->orderByDesc('id')
+            ->first();
+        if ($activeRun) {
+            $this->alert->warning('Cleanup is already running as job #' . $activeRun->id . '.')->flash();
+            return redirect()->route('admin.protect');
         }
 
-        $skippedUsers = User::query()
-            ->whereIn('id', array_keys($ownerIds))
-            ->where('root_admin', false)
-            ->whereExists(function ($query) {
-                $query->selectRaw('1')
-                    ->from('servers')
-                    ->whereColumn('servers.owner_id', 'users.id');
-            })
-            ->count();
+        $run = ProtectCleanupRun::query()->create([
+            'user_id' => (int) ($request->user()?->id ?? 0),
+            'status' => ProtectCleanupRun::STATUS_PENDING,
+            'messages' => ['Queued cleanup job.'],
+        ]);
 
-        $users = User::query()
-            ->where('root_admin', false)
-            ->whereNotExists(function ($query) {
-                $query->selectRaw('1')
-                    ->from('servers')
-                    ->whereColumn('servers.owner_id', 'users.id');
-            })
-            ->get();
-
-        foreach ($users as $user) {
-            try {
-                $this->userDeletionService->handle($user);
-                $deletedUsers++;
-            } catch (Throwable $exception) {
-                report($exception);
-                $failures[] = sprintf('user #%d: %s', (int) $user->id, $exception->getMessage());
-            }
-        }
-
-        $message = sprintf(
-            'Offline cleanup done. Checked %d server(s), deleted %d offline server(s), skipped %d online server(s), skipped %d unverified server(s), deleted %d non-admin user(s) with no servers, skipped %d admin owner(s), skipped %d owner(s) with remaining servers.',
-            $checkedServers,
-            $deletedServers,
-            $skippedOnline,
-            $skippedUnverified,
-            $deletedUsers,
-            $skippedAdmins,
-            $skippedUsers
-        );
-        if ($resetAdminMarkers > 0) {
-            $message .= sprintf(' Reset %d admin marker(s).', $resetAdminMarkers);
-        }
-
-        if ($failures !== []) {
-            $this->alert->danger($message . ' Failures: ' . implode(' | ', array_slice($failures, 0, 5)))->flash();
-        } else {
-            $this->alert->success($message)->flash();
-        }
+        ExecuteProtectCleanupJob::dispatch((int) $run->id)->onQueue('standard');
+        $this->alert->success('Offline cleanup queued as job #' . $run->id . '. You can leave this page; progress is tracked below.')->flash();
 
         return redirect()->route('admin.protect');
+    }
+
+    public function cleanupCreatePanelStatus(Request $request, ProtectCleanupRun $run): JsonResponse|RedirectResponse
+    {
+        $guard = $this->requireVerified($request);
+        if ($guard instanceof RedirectResponse) {
+            return $guard;
+        }
+
+        return response()->json([
+            'id' => $run->id,
+            'status' => $run->status,
+            'checked_servers' => $run->checked_servers,
+            'deleted_servers' => $run->deleted_servers,
+            'skipped_online' => $run->skipped_online,
+            'skipped_unverified' => $run->skipped_unverified,
+            'deleted_users' => $run->deleted_users,
+            'skipped_admins' => $run->skipped_admins,
+            'skipped_users' => $run->skipped_users,
+            'reset_admin_markers' => $run->reset_admin_markers,
+            'failed_count' => $run->failed_count,
+            'messages' => $run->messages ?: [],
+            'last_error_message' => $run->last_error_message,
+            'started_at' => optional($run->started_at)->toIso8601String(),
+            'finished_at' => optional($run->finished_at)->toIso8601String(),
+        ]);
     }
 
     public function reboot(Request $request): RedirectResponse

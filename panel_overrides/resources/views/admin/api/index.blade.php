@@ -67,9 +67,11 @@
             border-radius: 6px;
             padding: 5px 7px;
             display: inline-block;
-            max-width: 32rem;
-            white-space: normal;
-            word-break: break-all;
+            max-width: min(32rem, 72vw);
+            white-space: nowrap;
+            word-break: normal;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .danex-api-danger {
             display: inline-flex;
@@ -87,6 +89,18 @@
             color: #fff;
             border-color: rgba(239, 68, 68, .72);
             box-shadow: 0 0 18px rgba(239, 68, 68, .3);
+        }
+        @media (max-width: 767px) {
+            .danex-api-table {
+                min-width: 720px;
+            }
+            .danex-api-card .box-tools {
+                float: none;
+                margin-top: 8px;
+            }
+            .danex-api-card .box-tools .btn {
+                width: 100%;
+            }
         }
     </style>
     <div class="row">

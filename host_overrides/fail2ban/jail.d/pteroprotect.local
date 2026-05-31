@@ -25,10 +25,10 @@ maxretry = 4
 [pteroprotect-waf-deny]
 enabled = true
 filter = pteroprotect-waf-deny
-logpath = /dev/shm/pteroprotect/waf.log
+logpath = /var/log/pteroprotect/waf.log
 findtime = 300
-maxretry = 60
-#bantime = 7200
+maxretry = 8
+bantime = 7200
 
 [pteroprotect-nginx-sqli]
 enabled = true

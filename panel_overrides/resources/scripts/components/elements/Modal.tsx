@@ -27,17 +27,17 @@ export const ModalMask = styled.div`
 `;
 
 const ModalContainer = styled.div<{ alignTop?: boolean }>`
-    max-width: 95%;
-    max-height: calc(100vh - 8rem);
-    ${breakpoint('md')`max-width: 75%`};
-    ${breakpoint('lg')`max-width: 50%`};
+    max-width: min(95vw, 44rem);
+    max-height: calc(100vh - 2rem);
+    ${breakpoint('md')`max-width: min(75vw, 48rem)`};
+    ${breakpoint('lg')`max-width: min(50vw, 56rem)`};
 
     ${tw`relative flex flex-col w-full m-auto`};
     ${(props) =>
         props.alignTop &&
         css`
-            margin-top: 20%;
-            ${breakpoint('md')`margin-top: 10%`};
+            margin-top: 1rem;
+            ${breakpoint('md')`margin-top: 4rem`};
         `};
 
     margin-bottom: auto;
@@ -74,7 +74,7 @@ const Modal: React.FC<ModalProps> = ({
     const [render, setRender] = useState(visible);
 
     const isDismissable = useMemo(() => {
-        return (dismissable || true) && !(showSpinnerOverlay || false);
+        return (dismissable ?? true) && !(showSpinnerOverlay || false);
     }, [dismissable, showSpinnerOverlay]);
 
     useEffect(() => {
@@ -93,7 +93,7 @@ const Modal: React.FC<ModalProps> = ({
     useEffect(() => setRender(visible), [visible]);
 
     return (
-        <Fade in={render} timeout={150} appear={appear || true} unmountOnExit onExited={() => onDismissed()}>
+        <Fade in={render} timeout={150} appear={appear ?? true} unmountOnExit onExited={() => onDismissed()}>
             <ModalMask
                 onClick={(e) => e.stopPropagation()}
                 onContextMenu={(e) => e.stopPropagation()}
@@ -127,20 +127,21 @@ const Modal: React.FC<ModalProps> = ({
                     {showSpinnerOverlay && (
                         <Fade timeout={150} appear in>
                             <div
-                                css={tw`absolute w-full h-full rounded flex items-center justify-center`}
-                                style={{ background: 'rgba(7, 7, 11, 0.72)', backdropFilter: 'blur(8px)', zIndex: 9999 }}
+                                css={tw`absolute inset-0 rounded-lg flex items-center justify-center`}
+                                style={{ background: 'rgba(7, 7, 11, 0.78)', backdropFilter: 'blur(10px)', zIndex: 9999 }}
                             >
                                 <Spinner />
                             </div>
                         </Fade>
                     )}
                     <div
-                        css={tw`p-3 sm:p-4 md:p-6 rounded-lg overflow-y-scroll transition-all duration-150 border`}
+                        css={tw`p-3 sm:p-5 md:p-6 rounded-xl overflow-y-auto transition-all duration-150 border`}
                         style={{
-                            background: '#0b0b10',
-                            borderColor: 'rgba(139, 92, 246, 0.32)',
+                            maxHeight: 'calc(100vh - 3rem)',
+                            background: 'linear-gradient(135deg, rgba(17, 17, 24, 0.98), rgba(8, 8, 13, 0.99))',
+                            borderColor: 'rgba(139, 92, 246, 0.34)',
                             boxShadow:
-                                '0 24px 70px rgba(0, 0, 0, 0.62), 0 0 34px rgba(139, 92, 246, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+                                '0 24px 70px rgba(0, 0, 0, 0.66), 0 0 34px rgba(139, 92, 246, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
                         }}
                     >
                         {children}

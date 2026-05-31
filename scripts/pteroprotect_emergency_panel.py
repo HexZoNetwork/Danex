@@ -348,6 +348,7 @@ HTML = """<!doctype html><html><head><meta charset=utf-8><meta name=viewport con
 :root{--bg:#050509;--panel:#0b0b10;--panel2:#111117;--line:rgba(139,92,246,.32);--soft:rgba(139,92,246,.16);--txt:#f7f7fb;--mut:#a3a3b2;--ok:#10b981;--bad:#ef4444;--warn:#f59e0b;--vio:#8b5cf6}*{box-sizing:border-box}body{font-family:Inter,ui-sans-serif,system-ui;background:radial-gradient(circle at 10% 0,rgba(139,92,246,.18),transparent 28rem),radial-gradient(circle at 90% 10%,rgba(6,182,212,.10),transparent 26rem),var(--bg);color:var(--txt);margin:0;padding:20px}.wrap{max-width:1320px;margin:auto}.hero{border:1px solid var(--line);background:linear-gradient(135deg,rgba(139,92,246,.16),rgba(17,17,23,.92));border-radius:22px;padding:20px;box-shadow:0 24px 70px rgba(0,0,0,.55)}h1{margin:0;font-size:28px}.card{background:rgba(11,11,16,.96);border:1px solid var(--soft);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 18px 48px rgba(0,0,0,.42)}input,select,button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:9px 11px}button{background:linear-gradient(135deg,#8b5cf6,#5b21b6);cursor:pointer;font-weight:700}button.alt{background:#15151d}button.warn{background:linear-gradient(135deg,#ef4444,#991b1b)}button.good{background:linear-gradient(135deg,#10b981,#047857)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.muted{color:var(--mut);font-size:12px}.pill{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:4px 8px;color:#ddd6fe;font-size:12px}pre{white-space:pre-wrap;max-height:360px;overflow:auto;background:#07070b;padding:10px;border-radius:8px}.ok{color:var(--ok)}.bad{color:var(--bad)}.warntext{color:var(--warn)}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid var(--soft);padding:8px;text-align:left;font-size:13px}@media(max-width:720px){body{padding:10px}.hero{padding:14px}h1{font-size:22px}}
 </style></head><body><div class=wrap><div class=hero><div class=row><h1>PteroProtect Emergency Control</h1><span class=pill>public token mode</span><span class=pill>No arbitrary shell</span></div><p class=muted>Open with <code>?token=...</code>. Wrong or missing token returns an empty response/drop like unblock portal.</p><div class=row><button onclick=loadAll()>Refresh Health</button><button class=good onclick=recover('failed')>Restart Failed Services</button><button class=good onclick=recover('protect-stack')>Restart Protect Stack</button><button class=alt onclick="dockerQuick('ps')">Docker PS</button><button class=alt onclick="dockerQuick('stats')">Docker Stats</button><button class=warn onclick=reboot()>Reboot VPS</button><span id=stat class=muted></span></div></div><div class=grid><div class=card><h3>Protection Mode</h3><div class=row><select id=mode><option>normal</option><option>aggressive</option><option>emergency</option><option>lockdown</option><option>clear-lockdown</option></select><input id=ttl type=number value=600 min=60 max=86400><button onclick=setMode()>Apply</button></div><pre id=modeout></pre></div><div class=card><h3>Firewall IP/CIDR</h3><div class=row><select id=fwa><option>ban</option><option>unban</option><option>allow</option></select><input id=fwv placeholder="IP or CIDR"><input id=fwttl type=number value=3600><button onclick=fw()>Run</button></div><p class=muted>Ban TTL 0 = permanent.</p><pre id=fwout></pre></div><div class=card><h3>Service Control</h3><div class=row><select id=svc></select><select id=svca><option>status</option><option>is-active</option><option>start</option><option>restart</option><option>reload</option></select><button onclick=serviceRun()>Run</button></div><pre id=svcout></pre></div><div class=card><h3>Docker / Containers</h3><div class=row><select id=docka><option>ps</option><option>stats</option><option>restart</option><option>start</option><option>stop</option></select><input id=dockt placeholder="container name/id"><button onclick=dockerRun()>Run</button></div><pre id=dockout></pre></div></div><div class=card><h3>Service Health</h3><table><thead><tr><th>Service</th><th>State</th><th>Quick</th></tr></thead><tbody id=services></tbody></table></div><div class=card><h3>Audit</h3><pre id=audit></pre></div></div><script>
 const CSRF='__CSRF__'; if(location.search){history.replaceState(null,'',location.pathname)} const services=__SERVICES__; document.getElementById('svc').innerHTML=services.map(s=>`<option>${s}</option>`).join('');
+(function(){let l=document.createElement('link');l.rel='stylesheet';l.href='/assets/vendor/xterm/xterm.min.css';l.onerror=()=>{};document.head.appendChild(l);loadScript('/assets/vendor/xterm/xterm.min.js').catch(()=>loadScript('/vendor/xterm/xterm.min.js').catch(()=>{}));})();
 const rootBtn=document.createElement('button');rootBtn.className='warn';rootBtn.textContent='Root Terminal';rootBtn.onclick=()=>startTerminal();document.querySelector('.hero .row')?.insertBefore(rootBtn,document.getElementById('stat'));
 async function req(p,o={}){o.headers=Object.assign({'Content-Type':'application/json','X-CSRF-Token':CSRF},o.headers||{});let r=await fetch(p,Object.assign({credentials:'same-origin'},o));let txt=await r.text();let d=txt?JSON.parse(txt):{error:'empty_response'};if(!r.ok)throw d;return d}
 async function loadAll(){try{let d=await req('/api/status');document.getElementById('services').innerHTML=d.services.map(s=>`<tr><td>${esc(s.service)}</td><td class="${s.state==='active'?'ok':(s.state==='failed'?'bad':'warntext')}">${esc(s.state)}</td><td><button class=alt onclick="quickService('${esc(s.service)}','restart')">restart</button></td></tr>`).join('');document.getElementById('audit').textContent=JSON.stringify(d.audit,null,2);document.getElementById('stat').textContent='updated '+new Date().toLocaleTimeString()}catch(e){document.getElementById('stat').textContent=e.error||'empty/error'}}
@@ -360,7 +361,7 @@ async function dockerQuick(action){docka.value=action;dockt.value='';await docke
 async function recover(target){if(!confirm('Run recovery: '+target+' ?'))return;try{let d=await req('/api/recover',{method:'POST',body:JSON.stringify({target})});document.getElementById('svcout').textContent=JSON.stringify(d,null,2);loadAll()}catch(e){document.getElementById('svcout').textContent=JSON.stringify(e,null,2)}}
 async function reboot(){if(prompt('Type REBOOT to reboot VPS')!=='REBOOT')return;try{alert(JSON.stringify(await req('/api/reboot',{method:'POST',body:JSON.stringify({confirm:'REBOOT'})})))}catch(e){alert(JSON.stringify(e))}}
 async function loadScript(src){return new Promise((res,rej)=>{let s=document.createElement('script');s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s)})}
-async function startTerminal(){if(prompt('Start full emergency root terminal. Type ROOT to continue.')!=='ROOT')return;if(!window.Terminal){let l=document.createElement('link');l.rel='stylesheet';l.href='https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css';document.head.appendChild(l);await loadScript('https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js')}let ov=document.createElement('div');ov.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.92);padding:16px;display:flex;flex-direction:column;gap:8px';ov.innerHTML='<div class=row><strong>Emergency Root Terminal</strong><button id=termClose class=alt>Close</button><span id=termStatus class=muted>connecting</span></div><div id=term style="flex:1;border:1px solid rgba(239,68,68,.45);background:#07070b;border-radius:8px;padding:6px"></div>';document.body.appendChild(ov);let term=new window.Terminal({cursorBlink:true,convertEol:true,fontSize:13,theme:{background:'#07070b',foreground:'#f7f7fb'}});term.open(document.getElementById('term'));term.focus();let proto=location.protocol==='https:'?'wss://':'ws://';let ws=new WebSocket(proto+location.host+'/api/terminal/ws');ws.binaryType='arraybuffer';document.getElementById('termClose').onclick=()=>{try{ws.close()}catch(e){}ov.remove()};ws.onopen=()=>{document.getElementById('termStatus').textContent='connected';term.write('\r\n[PteroProtect Emergency] root terminal connected\r\n');ws.send(JSON.stringify({type:'resize',cols:term.cols||120,rows:term.rows||32}))};ws.onmessage=e=>{if(e.data instanceof ArrayBuffer)term.write(new Uint8Array(e.data));else term.write(String(e.data))};ws.onclose=()=>{document.getElementById('termStatus').textContent='disconnected';term.write('\r\n[disconnected]\r\n')};ws.onerror=()=>{document.getElementById('termStatus').textContent='websocket error'};term.onData(d=>{if(ws.readyState===WebSocket.OPEN)ws.send(d)});window.addEventListener('resize',()=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'resize',cols:term.cols||120,rows:term.rows||32}))},{passive:true})}
+async function startTerminal(){if(prompt('Start full emergency root terminal. Type ROOT to continue.')!=='ROOT')return;if(!window.Terminal){document.getElementById('stat').textContent='Terminal assets missing. Install local xterm assets under /assets/vendor/xterm/ before using the emergency root terminal.';return;}let ov=document.createElement('div');ov.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.92);padding:16px;display:flex;flex-direction:column;gap:8px';ov.innerHTML='<div class=row><strong>Emergency Root Terminal</strong><button id=termClose class=alt>Close</button><span id=termStatus class=muted>connecting</span></div><div id=term style="flex:1;border:1px solid rgba(239,68,68,.45);background:#07070b;border-radius:8px;padding:6px"></div>';document.body.appendChild(ov);let term=new window.Terminal({cursorBlink:true,convertEol:true,fontSize:13,theme:{background:'#07070b',foreground:'#f7f7fb'}});term.open(document.getElementById('term'));term.focus();let proto=location.protocol==='https:'?'wss://':'ws://';let ws=new WebSocket(proto+location.host+'/api/terminal/ws');ws.binaryType='arraybuffer';document.getElementById('termClose').onclick=()=>{try{ws.close()}catch(e){}ov.remove()};ws.onopen=()=>{document.getElementById('termStatus').textContent='connected';term.write('\r\n[PteroProtect Emergency] root terminal connected\r\n');ws.send(JSON.stringify({type:'resize',cols:term.cols||120,rows:term.rows||32}))};ws.onmessage=e=>{if(e.data instanceof ArrayBuffer)term.write(new Uint8Array(e.data));else term.write(String(e.data))};ws.onclose=()=>{document.getElementById('termStatus').textContent='disconnected';term.write('\r\n[disconnected]\r\n')};ws.onerror=()=>{document.getElementById('termStatus').textContent='websocket error'};term.onData(d=>{if(ws.readyState===WebSocket.OPEN)ws.send(d)});window.addEventListener('resize',()=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'resize',cols:term.cols||120,rows:term.rows||32}))},{passive:true})}
 function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 </script></body></html>""".replace("__SERVICES__", json.dumps(SERVICES)).replace("<select id=svc></select>", "<select id=svc>__SERVICE_OPTIONS__</select>").replace("<tbody id=services></tbody>", "<tbody id=services>__SERVICE_ROWS__</tbody>").replace("<pre id=audit></pre>", "<pre id=audit>__AUDIT__</pre>")
 
@@ -416,6 +417,20 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(ln).decode() if ln else "{}"
         return json.loads(raw or "{}")
 
+    def _static_asset(self, relative_path, content_type):
+        path = Path(__file__).resolve().parent / relative_path
+        try:
+            data = path.read_bytes()
+        except Exception:
+            self._json({"error": "asset_not_found"}, 404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _query_token(self):
         try:
             values = parse_qs(urlparse(self.path).query, keep_blank_values=True).get("token", [])
@@ -423,9 +438,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return ""
 
-    def _silent_drop(self, delay_sec=2):
+    def _silent_drop(self, delay_sec=0):
         try:
-            time.sleep(delay_sec)
+            if delay_sec > 0:
+                time.sleep(min(delay_sec, 1))
+            try:
+                self.send_response(403)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except Exception:
+                pass
             self.connection.close()
         except Exception:
             pass
@@ -538,10 +561,15 @@ class Handler(BaseHTTPRequestHandler):
         return {"token": True}
 
     def do_GET(self):
-        if urlparse(self.path).path == "/api/terminal/ws":
+        request_path = urlparse(self.path).path
+        if request_path == "/api/terminal/ws":
             self._terminal_ws()
             return
-        if urlparse(self.path).path == "/":
+        if request_path == "/vendor/xterm/xterm.min.js":
+            return self._static_asset("vendor/xterm/xterm.min.js", "application/javascript; charset=utf-8")
+        if request_path == "/vendor/xterm/xterm.min.css":
+            return self._static_asset("vendor/xterm/xterm.min.css", "text/css; charset=utf-8")
+        if request_path == "/":
             query_token = self._query_token()
             if query_token:
                 if not self.server.query_bootstrap or not hmac.compare_digest(query_token, self.server.admin_token):

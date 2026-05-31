@@ -22,16 +22,18 @@ export default () => {
                         <NavLink
                             key={tile.to}
                             to={tile.to}
-                            css={tw`rounded-lg border p-4 text-sm text-neutral-200 no-underline transition-all duration-200 hover:text-white`}
-                            style={{ background: '#0b0b10', borderColor: 'rgba(139, 92, 246, 0.22)' }}
+                            className={'el7-panel'}
+                            css={tw`p-4 text-sm text-neutral-200 no-underline transition-all duration-200 hover:text-white`}
+                            style={{ borderColor: 'rgba(139, 92, 246, 0.22)' }}
                         >
-                            {tile.label}
+                            <span className={'el7-kicker'}>Settings</span>
+                            <span css={tw`mt-1 block text-base font-semibold text-neutral-100`}>{tile.label}</span>
                         </NavLink>
                     ))}
                 </div>
                 <Switch>
                     <Route path={path}>
-                        <div css={tw`rounded-lg border p-4 text-sm text-neutral-300`} style={{ background: '#0b0b10', borderColor: 'rgba(139, 92, 246, 0.22)' }}>
+                        <div className={'el7-response'}>
                             Use the cards above to open account security, API, SSH, and profile settings.
                         </div>
                     </Route>

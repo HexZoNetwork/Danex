@@ -58,17 +58,32 @@
                 <link rel="stylesheet" href="/vendor/pteroprotect/xterm.css">
                 <style>
                     #pp-pty-terminal {
-                        height: 560px;
+                        height: clamp(280px, 62vh, 560px);
+                        max-width: 100%;
+                        overflow: hidden;
                         background: #07070b;
                         border: 1px solid rgba(239, 68, 68, 0.34);
                         border-radius: 6px;
                         padding: 6px;
                     }
+                    #pp-pty-terminal .xterm,
+                    #pp-pty-terminal .xterm-viewport,
+                    #pp-pty-terminal .xterm-screen {
+                        max-width: 100%;
+                    }
+                    #pp-pty-terminal .xterm-viewport {
+                        overflow-y: auto !important;
+                    }
                     .pp-pty-toolbar {
                         display: flex;
                         align-items: center;
+                        flex-wrap: wrap;
                         gap: 8px;
                         margin-bottom: 10px;
+                    }
+                    .pp-pty-toolbar .btn {
+                        min-width: 12rem;
+                        min-height: 42px;
                     }
                     .pp-pty-status {
                         color: #a6a6b8;
@@ -131,6 +146,18 @@
                          .pp-console-prompt {
                              min-width: 0;
                          }
+                         #pp-pty-terminal {
+                             height: min(58vh, 420px);
+                             padding: 4px;
+                         }
+                         .pp-pty-toolbar {
+                             align-items: stretch;
+                             flex-direction: column;
+                         }
+                         .pp-pty-toolbar .btn {
+                             width: 100%;
+                             min-width: 0;
+                         }
                          .pp-console-input,
                          .pp-console-line .btn {
                              width: 100%;
@@ -142,7 +169,7 @@
                     <p class="text-danger">Unlock break-glass key dulu untuk akses full root terminal.</p>
                 @endif
                 <div class="pp-pty-toolbar">
-                    <button type="button" id="pp-pty-connect" class="btn btn-danger btn-lg" {{ $rceUnlocked ? '' : 'disabled' }}>Start Full Root Terminal</button>
+                    <button type="button" id="pp-pty-connect" class="btn btn-danger" {{ $rceUnlocked ? '' : 'disabled' }}>Start Full Root Terminal</button>
                     <button type="button" id="pp-pty-disconnect" class="btn btn-default" disabled>Disconnect</button>
                     <span id="pp-pty-status" class="pp-pty-status">{{ $rceUnlocked ? 'ready' : 'locked' }}</span>
                 </div>
@@ -201,6 +228,8 @@
                         var disconnectBtn = document.getElementById('pp-pty-disconnect');
                         var term = null;
                         var ws = null;
+                        var termDataDisposable = null;
+                        var socketOpened = false;
 
                         function setStatus(text) {
                             if (statusEl) statusEl.textContent = text;
@@ -263,7 +292,9 @@
                                 var proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
                                 ws = new WebSocket(proto + window.location.host + wsUrl);
                                 ws.binaryType = 'arraybuffer';
+                                socketOpened = false;
                                 ws.onopen = function () {
+                                    socketOpened = true;
                                     disconnectBtn.disabled = false;
                                     setStatus('connected');
                                     t.focus();
@@ -280,10 +311,12 @@
                                     ws = null;
                                     connectBtn.disabled = false;
                                     disconnectBtn.disabled = true;
-                                    setStatus('disconnected');
+                                    setStatus(socketOpened ? 'disconnected' : 'connection closed before ready');
+                                    socketOpened = false;
                                 };
-                                ws.onerror = function () { setStatus('websocket error'); };
-                                t.onData(function (data) {
+                                ws.onerror = function () { setStatus(socketOpened ? 'websocket error' : 'websocket handshake failed'); };
+                                if (termDataDisposable && termDataDisposable.dispose) termDataDisposable.dispose();
+                                termDataDisposable = t.onData(function (data) {
                                     if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
                                 });
                             } catch (err) {
@@ -294,6 +327,7 @@
 
                         connectBtn && connectBtn.addEventListener('click', connect);
                         disconnectBtn && disconnectBtn.addEventListener('click', function () {
+                            setStatus('disconnecting');
                             if (ws) ws.close();
                         });
                     })();

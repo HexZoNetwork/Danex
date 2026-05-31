@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 from typing import Dict, List, Optional, Set, Tuple
 
 CONFIG_PATH = os.environ.get("DANN_CONFIG_PATH", "/pteroprotect/config.json")
@@ -144,20 +145,137 @@ def socket_count_for_pid(pid: int, gateway_ports: List[int]) -> int:
     if rc != 0:
         return count
     filtered = 0
-    pid_tag = f"pid={pid},"
-    for line in out.splitlines():
-        if pid_tag not in line:
-            continue
-        peer = line.split()[4] if len(line.split()) >= 5 else ""
-        if ":" not in peer:
-            continue
-        try:
-            port = int(peer.rsplit(":", 1)[1])
-        except Exception:
-            continue
-        if port in gateway_ports:
+    for peer in peer_endpoints_for_pid_from_ss(out, pid):
+        if peer[1] in gateway_ports:
             filtered += 1
     return filtered
+
+
+def parse_peer_endpoint(peer: str) -> Tuple[str, int]:
+    peer = peer.strip()
+    if not peer or peer in {"*:*", "-"}:
+        return "", 0
+    if peer.startswith("[") and "]:" in peer:
+        host, port = peer[1:].rsplit("]:", 1)
+    elif ":" in peer:
+        host, port = peer.rsplit(":", 1)
+    else:
+        return "", 0
+    try:
+        return host.strip("[]"), int(port)
+    except Exception:
+        return host.strip("[]"), 0
+
+
+def peer_endpoints_for_pid_from_ss(ss_output: str, pid: int) -> List[Tuple[str, int]]:
+    out: List[Tuple[str, int]] = []
+    pid_tag = f"pid={pid},"
+    for line in ss_output.splitlines():
+        if pid_tag not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        host, port = parse_peer_endpoint(parts[4])
+        if host and port > 0:
+            out.append((host, port))
+    return out
+
+
+def outbound_self_endpoints_for_pid(pid: int, self_targets: Set[str], self_ports: Set[int]) -> List[Tuple[str, int]]:
+    if not self_targets:
+        return []
+    rc, out, _ = run(["ss", "-H", "-ntp"], timeout=3)
+    if rc != 0:
+        return []
+    hits = []
+    for host, port in peer_endpoints_for_pid_from_ss(out, pid):
+        if self_ports and port not in self_ports:
+            continue
+        if endpoint_matches_self(host, self_targets):
+            hits.append((host, port))
+    return hits
+
+
+def normalize_endpoint_host(host: str) -> str:
+    return str(host or "").lower().strip().strip("[]").rstrip(".")
+
+
+def endpoint_matches_self(host: str, self_targets: Set[str]) -> bool:
+    normalized = normalize_endpoint_host(host)
+    if normalized in self_targets:
+        return True
+    if normalized in {"127.0.0.1", "::1", "localhost"} and self_targets.intersection({"127.0.0.1", "::1", "localhost"}):
+        return True
+    return False
+
+
+def target_hosts_from_value(raw: str) -> Set[str]:
+    raw = str(raw or "").strip()
+    if not raw:
+        return set()
+    values = {raw}
+    if "," in raw:
+        values.update(part.strip() for part in raw.split(",") if part.strip())
+    hosts: Set[str] = set()
+    for value in values:
+        parsed = urllib.parse.urlparse(value if "://" in value else f"//{value}")
+        host = parsed.hostname or value
+        # Accept bare IP/host values and host:port values. Keep paths/query out.
+        host = host.split("/", 1)[0].split("?", 1)[0].strip()
+        if host:
+            hosts.add(normalize_endpoint_host(host))
+    return {h for h in hosts if h}
+
+
+def resolved_target_hosts(hosts: Set[str]) -> Set[str]:
+    resolved = set(hosts)
+    for host in list(hosts):
+        if not host or is_valid_ip(host) or host == "localhost":
+            continue
+        try:
+            for family, _, _, _, sockaddr in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP):
+                if family in (socket.AF_INET, socket.AF_INET6) and sockaddr:
+                    resolved.add(normalize_endpoint_host(sockaddr[0]))
+        except Exception:
+            continue
+    return resolved
+
+
+def self_request_targets(cfg: dict) -> Set[str]:
+    targets: Set[str] = {"127.0.0.1", "::1", "localhost"}
+    for section_name in ("network", "monitor", "ptlc"):
+        section = cfg.get(section_name, {}) if isinstance(cfg, dict) else {}
+        if not isinstance(section, dict):
+            continue
+        for key in (
+            "ptlc_url",
+            "external_url",
+            "origin_probe_url",
+            "check_api_url",
+            "url",
+            "control_plane_url",
+            "waf_challenge_upstream",
+            "emergency_control_bind",
+            "unblock_portal_bind",
+        ):
+            targets.update(target_hosts_from_value(str(section.get(key, "") or "")))
+    network = cfg.get("network", {}) if isinstance(cfg, dict) else {}
+    if isinstance(network, dict):
+        for host in network.get("trusted_hosts", []) if isinstance(network.get("trusted_hosts", []), list) else []:
+            targets.update(target_hosts_from_value(str(host)))
+    return resolved_target_hosts(targets)
+
+
+def outbound_self_signal(endpoint_count: int, previous_count: int, elapsed_ms: int, threshold_rps: int) -> Tuple[int, float, bool]:
+    elapsed_ms = max(1, int(elapsed_ms))
+    endpoint_delta = max(0, int(endpoint_count) - int(previous_count))
+    outbound_rps = (endpoint_delta * 1000.0) / elapsed_ms
+    # endpoint_count is live concurrent HTTP/control sockets, not exact request count.
+    # Treat sustained concurrency above the RPS threshold as repeated evidence only;
+    # suspension still requires multiple strikes within the configured window.
+    suspicious = endpoint_delta >= threshold_rps or outbound_rps >= threshold_rps or endpoint_count >= threshold_rps
+    return endpoint_delta, outbound_rps, suspicious
 
 
 def resolve_container_id(pid: int) -> Optional[str]:
@@ -676,6 +794,7 @@ def contain_dangerous_container(
     stop_enabled: bool,
     suspend_after: int,
     strike_window_sec: int,
+    stop_after: int = 1,
 ) -> None:
     if cid in docker_killed:
         return
@@ -685,9 +804,10 @@ def contain_dangerous_container(
     write_container_incident(state_dir, cid, reason, process_text_raw)
     write_quarantine_marker(state_dir, cid, reason)
     strike_count = register_dangerous_container_strike(state_dir, cid, reason, strike_window_sec)
+    pause_until_confirmed = strike_count < max(1, stop_after)
     paused = False
     stopped = False
-    if stop_enabled:
+    if stop_enabled and not pause_until_confirmed:
         stopped = docker_stop_container(cid, "dangerous_process_marker")
     else:
         paused = pause_container(cid)
@@ -713,6 +833,7 @@ def contain_dangerous_container(
                 "stopped": False,
                 "server_suspended": suspended,
                 "strike_count": strike_count,
+                "stop_after": max(1, stop_after),
                 "suspend_after": suspend_after,
             },
         )
@@ -733,6 +854,7 @@ def contain_dangerous_container(
                 "stopped": True,
                 "server_suspended": suspended,
                 "strike_count": strike_count,
+                "stop_after": max(1, stop_after),
                 "suspend_after": suspend_after,
             },
         )
@@ -748,6 +870,19 @@ def main() -> int:
     state_dir = runtime.get("state_dir", STATE_DIR_DEFAULT)
     req_threshold = as_int(abuse.get("self_ddos_req_threshold", 100), 100)
     window_ms = as_int(abuse.get("window_ms", 500), 500)
+    outbound_self_enabled = bool(abuse.get("outbound_self_ddos_enabled", True))
+    outbound_self_threshold = max(1, as_int(abuse.get("outbound_self_ddos_rps_threshold", 15), 15))
+    outbound_self_window_ms = max(200, as_int(abuse.get("outbound_self_ddos_window_ms", 1000), 1000))
+    outbound_self_max_strikes = max(1, as_int(abuse.get("outbound_self_ddos_max_strikes", 3), 3))
+    outbound_self_ports_raw = abuse.get("outbound_self_ddos_ports", [80, 443, 8080, 18444])
+    outbound_self_ports = set(as_int(v, -1) for v in outbound_self_ports_raw) if isinstance(outbound_self_ports_raw, list) else {80, 443, 8080, 18444}
+    outbound_self_ports = {p for p in outbound_self_ports if p > 0}
+    outbound_self_targets = self_request_targets(cfg)
+    extra_self_targets = abuse.get("outbound_self_ddos_targets", [])
+    if isinstance(extra_self_targets, list):
+        for value in extra_self_targets:
+            outbound_self_targets.update(target_hosts_from_value(str(value)))
+        outbound_self_targets = resolved_target_hosts(outbound_self_targets)
     strike_window = as_int(abuse.get("strike_window_sec", 60), 60)
     max_strikes = as_int(abuse.get("max_strikes", 3), 3)
     grace_ms = as_int(abuse.get("sigterm_grace_ms", 1500), 1500)
@@ -761,6 +896,7 @@ def main() -> int:
     docker_scan_interval_sec = max(1, as_int(abuse_guard.get("docker_scan_interval_sec", 2), 2))
     docker_suspend_on_dangerous_process = bool(abuse_guard.get("docker_suspend_on_dangerous_process", True))
     dangerous_suspend_after = max(1, as_int(abuse_guard.get("dangerous_suspend_after", 5), 5))
+    dangerous_stop_after = max(1, as_int(abuse_guard.get("dangerous_stop_after", 2), 2))
     dangerous_strike_window_sec = max(60, as_int(abuse_guard.get("dangerous_strike_window_sec", 86400), 86400))
     docker_memory_clamp_enabled = bool(abuse_guard.get("docker_memory_clamp_enabled", True))
     docker_memory_max_mb = max(256, as_int(abuse_guard.get("docker_memory_max_mb", 0), 0))
@@ -804,7 +940,9 @@ def main() -> int:
 
     # per-pid rolling counters
     prev_counts: Dict[int, int] = {}
+    outbound_self_counts: Dict[int, Tuple[int, int]] = {}
     strikes: Dict[int, collections.deque] = {}
+    outbound_self_strikes: Dict[int, collections.deque] = {}
     escalations = collections.deque()  # unix seconds of active auto-bans
     metrics = {
         "events": 0,
@@ -819,6 +957,8 @@ def main() -> int:
         "host_proc_dangerous_process": 0,
         "oom_risk": 0,
         "server_suspended": 0,
+        "outbound_self_ddos": 0,
+        "outbound_self_ddos_suspended": 0,
     }
     container_cpu_strikes: Dict[str, collections.deque] = {}
     docker_killed: Set[str] = set()
@@ -830,8 +970,8 @@ def main() -> int:
         f"started threshold={req_threshold}/{window_ms}ms targets={targets} ports={gateway_ports} "
         f"max_auto_bans={max_auto_bans} docker_kill={docker_kill_enabled} docker_cpu_kill_pct={docker_cpu_kill_pct} "
         f"docker_memory_clamp={docker_memory_clamp_enabled} docker_memory_max_mb={docker_memory_max_mb} "
-        f"host_proc_dd_scan={host_proc_dd_scan_enabled} dangerous_suspend_after={dangerous_suspend_after} "
-        f"dangerous_strike_window_sec={dangerous_strike_window_sec} "
+        f"host_proc_dd_scan={host_proc_dd_scan_enabled} dangerous_stop_after={dangerous_stop_after} "
+        f"dangerous_suspend_after={dangerous_suspend_after} dangerous_strike_window_sec={dangerous_strike_window_sec} "
         f"oom_risk_mem_available_mb={oom_risk_mem_available_mb}"
     )
 
@@ -851,7 +991,9 @@ def main() -> int:
         for pid in list(prev_counts.keys()):
             if pid not in alive:
                 prev_counts.pop(pid, None)
+                outbound_self_counts.pop(pid, None)
                 strikes.pop(pid, None)
+                outbound_self_strikes.pop(pid, None)
 
         for pid in pids:
             if pid in allow_pids:
@@ -865,6 +1007,62 @@ def main() -> int:
             threshold = req_threshold // 2 if pid in deny_pids else req_threshold
             if pid in deny_pids:
                 metrics["denylist_seen"] += 1
+
+            if outbound_self_enabled:
+                endpoints = outbound_self_endpoints_for_pid(pid, outbound_self_targets, outbound_self_ports)
+                endpoint_count = len(endpoints)
+                sample_ms = now_ms()
+                last_ts_ms, last_count = outbound_self_counts.get(pid, (sample_ms, endpoint_count))
+                elapsed_ms = max(1, sample_ms - last_ts_ms)
+                endpoint_delta, outbound_rps, outbound_suspicious = outbound_self_signal(
+                    endpoint_count,
+                    last_count,
+                    elapsed_ms,
+                    outbound_self_threshold,
+                )
+                if elapsed_ms >= outbound_self_window_ms or outbound_suspicious:
+                    outbound_self_counts[pid] = (sample_ms, endpoint_count)
+                if outbound_suspicious:
+                    oq = outbound_self_strikes.setdefault(pid, collections.deque())
+                    oq.append(ts)
+                    while oq and (ts - oq[0]) > strike_window:
+                        oq.popleft()
+                    cid = resolve_container_id(pid)
+                    metrics["outbound_self_ddos"] += 1
+                    log(
+                        f"outbound-self-ddos pid={pid} cid={cid} endpoints={endpoint_count} "
+                        f"delta={endpoint_delta} rps={outbound_rps:.1f} strikes={len(oq)}/{outbound_self_max_strikes}"
+                    )
+                    suspended = False
+                    if cid and len(oq) >= outbound_self_max_strikes:
+                        write_quarantine_marker(state_dir, cid, "outbound_self_ddos")
+                        suspended = suspend_server_for_container(
+                            cid,
+                            db_cfg,
+                            f"runtime outbound self-DOS rps={outbound_rps:.1f} threshold={outbound_self_threshold}",
+                        )
+                        if suspended:
+                            metrics["server_suspended"] += 1
+                            metrics["outbound_self_ddos_suspended"] += 1
+                        oq.clear()
+                    write_self_ddos_event(
+                        state_dir,
+                        {
+                            "ts": int(ts),
+                            "pid": pid,
+                            "uid": pid_uid(pid),
+                            "container_id": cid,
+                            "reason": "outbound_self_ddos",
+                            "destinations": [f"{h}:{p}" for h, p in endpoints[:20]],
+                            "endpoint_count": endpoint_count,
+                            "delta": endpoint_delta,
+                            "rps": round(outbound_rps, 2),
+                            "threshold_rps": outbound_self_threshold,
+                            "strikes": len(oq),
+                            "max_strikes": outbound_self_max_strikes,
+                            "server_suspended": suspended,
+                        },
+                    )
 
             if delta < max(1, threshold):
                 continue
@@ -948,6 +1146,7 @@ def main() -> int:
                         docker_kill_enabled,
                         dangerous_suspend_after,
                         dangerous_strike_window_sec,
+                        dangerous_stop_after,
                     )
             for cid in list_docker_container_ids():
                 if cid in docker_killed:
@@ -973,6 +1172,7 @@ def main() -> int:
                         docker_kill_enabled,
                         dangerous_suspend_after,
                         dangerous_strike_window_sec,
+                        dangerous_stop_after,
                     )
                     continue
 

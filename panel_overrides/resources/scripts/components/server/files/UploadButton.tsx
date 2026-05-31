@@ -13,6 +13,9 @@ import { ServerContext } from '@/state/server';
 import { WithClassname } from '@/components/types';
 import Portal from '@/components/elements/Portal';
 import { CloudUploadIcon } from '@heroicons/react/outline';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faUpload } from '@fortawesome/free-solid-svg-icons';
+import style from './style.module.css';
 import { useSignal } from '@preact/signals-react';
 
 function isFileOrDirectory(event: DragEvent): boolean {
@@ -151,8 +154,9 @@ export default ({ className }: WithClassname) => {
                 }}
                 multiple
             />
-            <Button className={className} onClick={() => fileUploadInput.current && fileUploadInput.current.click()}>
-                Upload
+            <Button className={className} title={'Upload files'} aria-label={'Upload files'} onClick={() => fileUploadInput.current && fileUploadInput.current.click()}>
+                <FontAwesomeIcon icon={faUpload} className={style.action_icon} />
+                <span className={style.action_label}>Upload</span>
             </Button>
         </>
     );

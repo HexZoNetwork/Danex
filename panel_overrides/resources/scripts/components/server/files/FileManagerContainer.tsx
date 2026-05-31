@@ -11,9 +11,10 @@ import Can from '@/components/elements/Can';
 import { ServerError } from '@/components/elements/ScreenBlock';
 import tw from 'twin.macro';
 import { Button } from '@/components/elements/button/index';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faFileAlt } from '@fortawesome/free-solid-svg-icons';
 import { ServerContext } from '@/state/server';
 import useFileManagerSwr from '@/plugins/useFileManagerSwr';
-import FileManagerStatus from '@/components/server/files/FileManagerStatus';
 import MassActionsBar from '@/components/server/files/MassActionsBar';
 import UploadButton from '@/components/server/files/UploadButton';
 import ServerContentBlock from '@/components/elements/ServerContentBlock';
@@ -63,7 +64,7 @@ export default () => {
         <ServerContentBlock title={'File Manager'} showFlashKey={'files'}>
             <ErrorBoundary>
                 <div
-                    className={'flex flex-wrap-reverse md:flex-nowrap mb-4 rounded-lg border p-3 gap-3'}
+                    className={'flex flex-col md:flex-row md:items-center mb-4 rounded-lg border p-2.5 sm:p-3 gap-2.5 sm:gap-3'}
                     style={{
                         background: '#0b0b10',
                         borderColor: 'rgba(139, 92, 246, 0.22)',
@@ -74,7 +75,7 @@ export default () => {
                         renderLeft={
                             <FileActionCheckbox
                                 type={'checkbox'}
-                                css={tw`mx-4`}
+                                css={tw`mx-1 sm:mx-2`}
                                 checked={selectedFilesLength === (files?.length === 0 ? -1 : files?.length)}
                                 onChange={onSelectAllClick}
                             />
@@ -82,11 +83,13 @@ export default () => {
                     />
                     <Can action={'file.create'}>
                         <div className={style.manager_actions}>
-                            <FileManagerStatus />
                             <NewDirectoryButton />
                             <UploadButton />
-                            <NavLink to={`/server/${id}/files/new${window.location.hash}`}>
-                                <Button>New File</Button>
+                            <NavLink to={`/server/${id}/files/new${window.location.hash}`} aria-label={'Create new file'}>
+                                <Button title={'Create new file'}>
+                                    <FontAwesomeIcon icon={faFileAlt} className={style.action_icon} />
+                                    <span className={style.action_label}>New File</span>
+                                </Button>
                             </NavLink>
                         </div>
                     </Can>

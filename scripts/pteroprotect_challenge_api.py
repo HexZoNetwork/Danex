@@ -1,5 +1,5 @@
-import socket
 #!/usr/bin/env python3
+import socket
 import base64
 import hashlib
 import hmac
@@ -74,15 +74,17 @@ def challenge_secret():
     secret = str(net_setting("waf_challenge_secret", "") or "").strip()
     if secret:
         return secret
-    fallback = str(net_setting("unblock_portal_token", "") or "").strip()
-    if fallback:
-        return fallback
     env_secret = str(os.environ.get("PTEROPROTECT_WAF_CHALLENGE_SECRET", "") or "").strip()
     if env_secret:
         return env_secret
-    env_fallback = str(os.environ.get("PTEROPROTECT_UNBLOCK_PORTAL_TOKEN", "") or "").strip()
-    if env_fallback:
-        return env_fallback
+    allow_legacy = str(net_setting("waf_challenge_legacy_secret_fallback", False)).strip().lower() in {"1", "true", "yes", "on"}
+    if allow_legacy:
+        fallback = str(net_setting("unblock_portal_token", "") or "").strip()
+        if fallback:
+            return fallback
+        env_fallback = str(os.environ.get("PTEROPROTECT_UNBLOCK_PORTAL_TOKEN", "") or "").strip()
+        if env_fallback:
+            return env_fallback
     return _ephemeral_secret
 
 
@@ -194,8 +196,12 @@ def cleanup_nonces():
 
 
 def normalize_redirect_path(raw: str) -> str:
+    raw_value = str(raw or "")
+    if "\n" in raw_value or "\r" in raw_value or "\x00" in raw_value:
+        return "/"
+
     try:
-        parsed = urlparse(str(raw or ""))
+        parsed = urlparse(raw_value)
     except Exception:
         return "/"
 

@@ -343,10 +343,25 @@
             .btn-group[data-toggle="buttons"] {
                 gap: 8px;
             }
+            .pagination {
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 5px;
+            }
+            .pagination > li {
+                display: inline-flex;
+                float: none !important;
+            }
             .pagination > li > a, .pagination > li > span {
                 background: var(--el7-surface-strong) !important;
                 border-color: var(--el7-border-soft) !important;
                 color: var(--el7-muted) !important;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 34px;
+                margin: 0 !important;
             }
             .pagination > .active > span,
             .pagination > .active > a {
@@ -505,6 +520,74 @@
             .dataTables_scrollBody {
                 background: var(--el7-surface) !important;
                 border-color: var(--el7-border-soft) !important;
+            }
+            .el7-admin-toolbar,
+            .box-tools form .input-group {
+                display: flex;
+                align-items: stretch;
+                gap: 8px;
+                min-width: min(100%, 420px);
+            }
+            .el7-admin-toolbar .form-control,
+            .box-tools form .form-control {
+                min-width: 180px;
+                border-radius: 8px !important;
+            }
+            .el7-admin-toolbar .input-group-btn,
+            .box-tools form .input-group-btn {
+                display: flex;
+                align-items: stretch;
+                gap: 6px;
+                width: auto;
+            }
+            .el7-admin-toolbar .btn,
+            .box-tools form .btn {
+                margin: 0 !important;
+                white-space: nowrap;
+            }
+            .el7-admin-table,
+            .table {
+                border-collapse: separate !important;
+                border-spacing: 0 4px !important;
+            }
+            .el7-admin-table > thead > tr > th,
+            .table > thead > tr > th {
+                border-bottom: 0 !important;
+                white-space: nowrap;
+            }
+            .el7-admin-table code,
+            .table code {
+                max-width: 280px;
+                display: inline-block;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                vertical-align: middle;
+            }
+            .el7-admin-action-row {
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                gap: 6px;
+                flex-wrap: wrap;
+            }
+            .el7-admin-muted {
+                color: var(--el7-muted) !important;
+            }
+            .select2-container {
+                width: 100% !important;
+            }
+            .select2-container--default .select2-selection--single {
+                min-height: 36px;
+                display: flex;
+                align-items: center;
+            }
+            .select2-container--default .select2-selection--single .select2-selection__arrow {
+                min-height: 34px;
+            }
+            .alert {
+                border: 1px solid var(--el7-border-soft) !important;
+                border-radius: 10px !important;
+                box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
             }
             .table > tbody > tr,
             .table > tfoot > tr {
@@ -763,6 +846,22 @@
                 }
             }
             @media (max-width: 767px) {
+                .main-header {
+                    z-index: 1060;
+                }
+                .main-header .navbar,
+                .main-header .sidebar-toggle {
+                    position: relative;
+                    z-index: 1070;
+                }
+                .main-header .sidebar-toggle {
+                    display: inline-flex !important;
+                    align-items: center;
+                    justify-content: center;
+                    min-width: 46px;
+                    min-height: 50px;
+                    color: #ffffff !important;
+                }
                 .main-sidebar {
                     position: fixed;
                     z-index: 1040;
@@ -773,12 +872,22 @@
                 .modal-body {
                     max-height: calc(100vh - 170px);
                 }
-                .btn + .btn,
-                .btn + form,
-                form + .btn,
-                form + form {
+                .box-body > .btn + .btn,
+                .box-body > .btn + form,
+                .box-body > form + .btn,
+                .box-body > form + form {
                     margin-left: 0;
                     margin-top: 6px;
+                }
+                .nav-tabs,
+                .nav-tabs-custom > .nav-tabs {
+                    flex-wrap: nowrap;
+                    overflow-x: auto;
+                    -webkit-overflow-scrolling: touch;
+                }
+                .nav-tabs > li,
+                .nav-tabs-custom > .nav-tabs > li {
+                    flex: 0 0 auto;
                 }
             }
         </style>

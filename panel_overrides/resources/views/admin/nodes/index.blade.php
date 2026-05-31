@@ -29,15 +29,15 @@
                             <input type="text" name="filter[name]" class="form-control pull-right" value="{{ request()->input('filter.name') }}" placeholder="Search Nodes">
                             <div class="input-group-btn">
                                 <button type="submit" class="btn btn-default"><i class="fa fa-search"></i></button>
-                                <a href="{{ route('admin.nodes.new') }}"><button type="button" class="btn btn-sm btn-primary" style="border-radius: 0 3px 3px 0;margin-left:-1px;">Create New</button></a>
+                                <a href="{{ route('admin.nodes.new') }}" class="btn btn-sm btn-primary">Create New</a>
                             </div>
                         </div>
                     </form>
                 </div>
             </div>
             <div class="box-body table-responsive no-padding">
-                <table class="table table-hover">
-                    <tbody>
+                <table class="table table-hover el7-admin-table">
+                    <thead>
                         <tr>
                             <th></th>
                             <th>Name</th>
@@ -48,6 +48,8 @@
                             <th class="text-center">SSL</th>
                             <th class="text-center">Public</th>
                         </tr>
+                    </thead>
+                    <tbody>
                         @foreach ($nodes as $node)
                             <tr>
                                 <td class="text-center text-muted left-icon" data-action="ping" data-location="/admin/nodes/view/{{ $node->id }}/system-information"><i class="fa fa-fw fa-refresh fa-spin"></i></td>
@@ -56,7 +58,7 @@
                                 <td>{{ $node->memory }} MiB</td>
                                 <td>{{ $node->disk }} MiB</td>
                                 <td class="text-center">{{ $node->servers_count }}</td>
-                                <td class="text-center" style="color:{{ ($node->scheme === 'https') ? '#50af51' : '#d9534f' }}"><i class="fa fa-{{ ($node->scheme === 'https') ? 'lock' : 'unlock' }}"></i></td>
+                                <td class="text-center"><i class="fa fa-{{ ($node->scheme === 'https') ? 'lock text-green' : 'unlock text-red' }}"></i></td>
                                 <td class="text-center"><i class="fa fa-{{ ($node->public) ? 'eye' : 'eye-slash' }}"></i></td>
                             </tr>
                         @endforeach

@@ -18,7 +18,7 @@ import { faBorderAll, faList } from '@fortawesome/free-solid-svg-icons';
 const SERVERS_PER_PAGE = 6;
 
 export default () => {
-    const { search } = useLocation();
+    const { pathname, search } = useLocation();
     const defaultPage = Number(new URLSearchParams(search).get('page') || '1');
 
     const [page, setPage] = useState(!isNaN(defaultPage) && defaultPage > 0 ? defaultPage : 1);
@@ -48,8 +48,8 @@ export default () => {
         // Don't use react-router to handle changing this part of the URL, otherwise it
         // triggers a needless re-render. We just want to track this in the URL incase the
         // user refreshes the page.
-        window.history.replaceState(null, document.title, `/${page <= 1 ? '' : `?page=${page}`}`);
-    }, [page]);
+        window.history.replaceState(null, document.title, page <= 1 ? pathname : `${pathname}?page=${page}`);
+    }, [page, pathname]);
 
     useEffect(() => {
         if (error) clearAndAddHttpError({ key: 'dashboard', error });
@@ -64,28 +64,29 @@ export default () => {
                     <h1 css={tw`mt-1 text-2xl sm:text-3xl text-neutral-50 font-semibold`}>Servers</h1>
                 </div>
             </div>
-            <div css={tw`mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2`} style={{ background: '#0b0b10', borderColor: 'rgba(139, 92, 246, 0.24)' }}>
+            <div css={tw`mb-3 flex items-center justify-between gap-2 rounded-lg border px-2 py-2 sm:flex-wrap sm:px-3`} style={{ background: '#0b0b10', borderColor: 'rgba(139, 92, 246, 0.24)' }}>
                 <div>
                     {rootAdmin && (
                         <button
                             type={'button'}
-                            css={tw`h-9 rounded-md border px-3 text-xs uppercase tracking-wider transition`}
+                            css={tw`h-8 max-w-[10.5rem] rounded-md border px-2 text-[10px] uppercase tracking-wider transition sm:h-9 sm:max-w-none sm:px-3 sm:text-xs`}
                             style={{ background: showOnlyAdmin ? '#8b5cf6' : '#07070b', color: showOnlyAdmin ? '#ffffff' : '#d6d3e8', borderColor: showOnlyAdmin ? 'rgba(167, 139, 250, 0.72)' : 'rgba(139, 92, 246, 0.24)', boxShadow: showOnlyAdmin ? '0 0 18px rgba(139, 92, 246, 0.35)' : 'none' }}
                             aria-pressed={showOnlyAdmin}
                             aria-label={showOnlyAdmin ? "Show only your servers" : "Show all admin servers"}
                             onClick={() => setShowOnlyAdmin((s) => !s)}
                         >
-                            {showOnlyAdmin ? 'Showing all admin servers' : 'Showing your servers'}
+                            <span className={'hidden sm:inline'}>{showOnlyAdmin ? 'Showing all admin servers' : 'Showing your servers'}</span>
+                            <span className={'sm:hidden'}>{showOnlyAdmin ? 'All servers' : 'My servers'}</span>
                         </button>
                     )}
                 </div>
-                <div css={tw`flex flex-wrap items-center gap-2`}>
+                <div css={tw`flex flex-wrap items-center justify-end gap-2`}>
                     <div css={tw`flex items-center gap-1 rounded-md border p-1`} style={{ background: '#07070b', borderColor: 'rgba(139, 92, 246, 0.22)' }}>
                         <button
                             type={'button'}
                             aria-label={'Comfort box view'}
                             aria-pressed={!denseMode}
-                            css={tw`w-9 h-8 rounded flex items-center justify-center transition`}
+                            css={tw`w-8 h-8 sm:w-9 rounded flex items-center justify-center transition`}
                             style={!denseMode ? { background: '#8b5cf6', color: '#ffffff', boxShadow: '0 0 18px rgba(139, 92, 246, 0.42)' } : { color: '#a6a6b8' }}
                             onClick={() => setDenseMode(false)}
                         >
@@ -95,7 +96,7 @@ export default () => {
                             type={'button'}
                             aria-label={'Dense row view'}
                             aria-pressed={denseMode}
-                            css={tw`w-9 h-8 rounded flex items-center justify-center transition`}
+                            css={tw`w-8 h-8 sm:w-9 rounded flex items-center justify-center transition`}
                             style={denseMode ? { background: '#8b5cf6', color: '#ffffff', boxShadow: '0 0 18px rgba(139, 92, 246, 0.42)' } : { color: '#a6a6b8' }}
                             onClick={() => setDenseMode(true)}
                         >

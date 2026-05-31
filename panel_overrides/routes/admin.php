@@ -39,6 +39,7 @@ Route::middleware([PteroProtectRestrictedAdmin::class])->group(function () {
         Route::post('/create-panel-web', [Admin\ProtectController::class, 'toggleCreatePanelWeb'])->name('admin.protect.create_panel_web');
         Route::post('/create-panel-auto-suspend', [Admin\ProtectController::class, 'toggleCreatePanelAutoSuspend'])->name('admin.protect.create_panel_auto_suspend');
         Route::post('/create-panel-cleanup', [Admin\ProtectController::class, 'cleanupCreatePanel'])->name('admin.protect.create_panel_cleanup');
+        Route::get('/create-panel-cleanup/{run}/status', [Admin\ProtectController::class, 'cleanupCreatePanelStatus'])->whereNumber('run')->name('admin.protect.create_panel_cleanup.status');
         Route::post('/allowed-wings', [Admin\ProtectController::class, 'updateAllowedWings'])->name('admin.protect.allowed_wings');
         Route::post('/reboot', [Admin\ProtectController::class, 'reboot'])->name('admin.protect.reboot');
         Route::post('/broadcast', [Admin\ProtectController::class, 'broadcast'])->name('admin.protect.broadcast.send');

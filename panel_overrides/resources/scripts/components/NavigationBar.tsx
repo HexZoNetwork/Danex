@@ -19,9 +19,10 @@ const RightNavigation = styled.div`
     & > a,
     & > button,
     & > .navigation-link {
-        ${tw`flex items-center justify-center h-full no-underline text-neutral-300 px-3 sm:px-4 cursor-pointer transition-all duration-150`};
+        ${tw`relative flex items-center justify-center h-full no-underline text-neutral-300 px-3 sm:px-4 cursor-pointer transition-all duration-150`};
         border-left: 1px solid rgba(139, 92, 246, 0.08);
         min-width: 3rem;
+        min-height: 3rem;
 
         &:active,
         &:hover {
@@ -40,15 +41,29 @@ const RightNavigation = styled.div`
         & > a,
         & > button,
         & > .navigation-link {
-            min-width: 2.6rem;
-            padding-left: 0.65rem;
-            padding-right: 0.65rem;
+            min-width: 2.45rem;
+            min-height: 2.45rem;
+            padding-left: 0.58rem;
+            padding-right: 0.58rem;
+        }
+    }
+
+    @media (max-width: 360px) {
+        & > a,
+        & > button,
+        & > .navigation-link {
+            min-width: 2.25rem;
+            padding-left: 0.48rem;
+            padding-right: 0.48rem;
         }
     }
 `;
 
 const Shell = styled.div`
-    ${tw`w-full overflow-x-hidden`};
+    ${tw`w-full overflow-hidden`};
+    position: sticky;
+    top: 0;
+    z-index: 40;
     background: rgba(11, 11, 16, 0.94);
     border-bottom: 1px solid rgba(139, 92, 246, 0.32);
     box-shadow: 0 14px 38px rgba(0, 0, 0, 0.5), 0 0 24px rgba(139, 92, 246, 0.12);
@@ -69,6 +84,15 @@ const Shell = styled.div`
         0%, 100% { transform: scaleX(0.18); opacity: 0.28; }
         50% { transform: scaleX(0.92); opacity: 0.86; }
     }
+
+    @media (prefers-reduced-motion: reduce) {
+        animation: none;
+
+        &::after {
+            animation: none;
+            transform: none;
+        }
+    }
 `;
 
 const Brand = styled(Link)`
@@ -86,9 +110,14 @@ const Brand = styled(Link)`
     }
 
     @media (max-width: 420px) {
-        font-size: 0.88rem;
-        padding-left: 0.75rem;
-        padding-right: 0.5rem;
+        font-size: 0.92rem;
+        padding-left: 0.28rem;
+        padding-right: 0.2rem;
+        letter-spacing: -0.035em;
+    }
+
+    @media (max-width: 360px) {
+        font-size: 0.86rem;
     }
 `;
 
@@ -150,7 +179,7 @@ export default () => {
     return (
         <Shell>
             <SpinnerOverlay visible={isLoggingOut} />
-            <div className={'mx-auto w-full grid grid-cols-[1fr_auto_1fr] items-center h-[3.55rem] sm:h-[3.75rem] max-w-[1220px] min-w-0'}>
+            <div className={'mx-auto w-full grid grid-cols-[2.3rem_minmax(6rem,auto)_minmax(8rem,1fr)] sm:grid-cols-[1fr_auto_1fr] items-center min-h-[3.35rem] sm:h-[3.75rem] max-w-[1220px] min-w-0 px-1 sm:px-0'}>
                 <div className={'min-w-0 flex items-center'}>
                     <React.Suspense fallback={null}>
                         <SearchContainer />

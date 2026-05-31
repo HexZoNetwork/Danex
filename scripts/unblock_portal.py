@@ -635,9 +635,17 @@ class Handler(BaseHTTPRequestHandler):
             pass
         return ""
 
-    def _silent_drop(self, delay_sec=35):
+    def _silent_drop(self, delay_sec=0):
         try:
-            time.sleep(delay_sec)
+            if delay_sec > 0:
+                time.sleep(min(delay_sec, 1))
+            try:
+                self.send_response(403)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except Exception:
+                pass
             try:
                 self.connection.shutdown(socket.SHUT_RDWR)
             except Exception:

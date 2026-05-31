@@ -249,6 +249,8 @@ def scan_json_file(path: Path) -> list[Finding]:
             continue
         if json_path.endswith("provider_token_provider_keywords"):
             continue
+        if json_path.endswith(("_path_regex", "_status_regex")):
+            continue
         if not SENSITIVE_KEY_RE.search(json_path):
             continue
         sensitive_values.setdefault(value, []).append(json_path)

@@ -26,8 +26,8 @@ const SearchShell = styled.button`
 
 const IconButton = styled.button`
     ${tw`md:hidden flex items-center justify-center leading-none rounded border transition`};
-    width: 2.35rem;
-    height: 2.35rem;
+    width: 2.1rem;
+    height: 2.1rem;
     background: #09090d;
     border-color: rgba(139, 92, 246, 0.22);
     color: #d4d4df;

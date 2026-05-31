@@ -91,61 +91,60 @@
                 <div class="box-header with-border">
                     <h3 class="box-title">Ads Inventory</h3>
                 </div>
-                <div class="box-body table-responsive no-padding">
-                    <table class="table table-striped pp-table">
-                        <thead>
-                            <tr>
-                                <th style="width:48px;">ID</th>
-                                <th>Media</th>
-                                <th>Campaign</th>
-                                <th style="width:190px;">Delivery</th>
-                                <th style="width:170px;">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        @forelse($adsItems as $item)
-                            <tr>
-                                <td>{{ (int) ($item['id'] ?? 0) }}</td>
-                                <td>
-                                    <form method="POST" action="{{ route('admin.protect.ads.update', ['ad' => (int) ($item['id'] ?? 0)]) }}">
-                                        @csrf
-                                        <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
+                <div class="box-body pp-ads-inventory">
+                    @forelse($adsItems as $item)
+                        <div class="pp-ad-card">
+                            <form method="POST" action="{{ route('admin.protect.ads.update', ['ad' => (int) ($item['id'] ?? 0)]) }}">
+                                @csrf
+                                <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
+                                <div class="pp-ad-head">
+                                    <span class="pp-ad-id">#{{ (int) ($item['id'] ?? 0) }}</span>
+                                    <label class="pp-ad-enabled"><input type="checkbox" name="enabled" value="1" {{ !empty($item['enabled']) ? 'checked' : '' }}> enabled</label>
+                                </div>
+                                <div class="pp-ad-grid">
+                                    <div class="pp-ad-field pp-ad-wide">
+                                        <label>Media URL</label>
                                         <input class="form-control" name="media_url" value="{{ (string) ($item['media_url'] ?? '') }}" maxlength="2000" required />
-                                        <input class="form-control" name="link_url" value="{{ (string) ($item['link_url'] ?? '') }}" maxlength="2000" style="margin-top:6px;" placeholder="link optional" />
-                                </td>
-                                <td>
+                                    </div>
+                                    <div class="pp-ad-field pp-ad-wide">
+                                        <label>Redirect Link</label>
+                                        <input class="form-control" name="link_url" value="{{ (string) ($item['link_url'] ?? '') }}" maxlength="2000" placeholder="link optional" />
+                                    </div>
+                                    <div class="pp-ad-field">
+                                        <label>Text</label>
                                         <input class="form-control" name="text" value="{{ (string) ($item['text'] ?? '') }}" maxlength="255" placeholder="text optional" />
-                                        <input class="form-control" name="sponsor_label" value="{{ (string) ($item['sponsor_label'] ?? 'Sponsored') }}" maxlength="64" style="margin-top:6px;" placeholder="label" />
-                                </td>
-                                <td>
+                                    </div>
+                                    <div class="pp-ad-field">
+                                        <label>Sponsor</label>
+                                        <input class="form-control" name="sponsor_label" value="{{ (string) ($item['sponsor_label'] ?? 'Sponsored') }}" maxlength="64" placeholder="label" />
+                                    </div>
+                                    <div class="pp-ad-field">
+                                        <label>Placement</label>
                                         <select class="form-control" name="placement">
                                             @foreach(['banner' => 'Banner', 'popup' => 'Popup', 'both' => 'Both'] as $value => $label)
                                                 <option value="{{ $value }}" {{ (string) ($item['placement'] ?? 'banner') === $value ? 'selected' : '' }}>{{ $label }}</option>
                                             @endforeach
                                         </select>
-                                        <label style="margin-top:6px;display:block;"><input type="checkbox" name="enabled" value="1" {{ !empty($item['enabled']) ? 'checked' : '' }}> enabled</label>
-                                        <input type="number" min="1" max="100" class="form-control" name="weight" value="{{ (int) ($item['weight'] ?? 1) }}" />
-                                        <input type="number" min="1" max="24" class="form-control" name="daily_cap" value="{{ (int) ($item['daily_cap'] ?? 1) }}" style="margin-top:6px;" placeholder="daily cap" />
-                                        <input type="number" min="5" max="1440" class="form-control" name="cooldown_minutes" value="{{ (int) ($item['cooldown_minutes'] ?? 360) }}" style="margin-top:6px;" placeholder="cooldown minutes" />
-                                        <input type="number" min="0" max="30" class="form-control" name="close_delay_seconds" value="{{ (int) ($item['close_delay_seconds'] ?? 0) }}" style="margin-top:6px;" placeholder="close delay" />
-                                </td>
-                                <td>
-                                        <button class="btn btn-xs btn-primary" type="submit">Save changes</button>
-                                    </form>
-                                    <form method="POST" action="{{ route('admin.protect.ads.delete', ['ad' => (int) ($item['id'] ?? 0)]) }}" style="display:inline-block;margin-top:6px;" onsubmit="return confirm('Delete ads ini?');">
-                                        @csrf
-                                        <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
-                                        <button class="btn btn-xs btn-danger" type="submit">Delete</button>
-                                    </form>
-                                </td>
-                            </tr>
-                        @empty
-                            <tr>
-                                <td colspan="5" class="text-center text-muted">Belum ada ads.</td>
-                            </tr>
-                        @endforelse
-                        </tbody>
-                    </table>
+                                    </div>
+                                    <div class="pp-ad-field"><label>Weight</label><input type="number" min="1" max="100" class="form-control" name="weight" value="{{ (int) ($item['weight'] ?? 1) }}" /></div>
+                                    <div class="pp-ad-field"><label>Daily Cap</label><input type="number" min="1" max="24" class="form-control" name="daily_cap" value="{{ (int) ($item['daily_cap'] ?? 1) }}" /></div>
+                                    <div class="pp-ad-field"><label>Cooldown</label><input type="number" min="5" max="1440" class="form-control" name="cooldown_minutes" value="{{ (int) ($item['cooldown_minutes'] ?? 360) }}" /></div>
+                                    <div class="pp-ad-field"><label>Close Delay</label><input type="number" min="0" max="30" class="form-control" name="close_delay_seconds" value="{{ (int) ($item['close_delay_seconds'] ?? 0) }}" /></div>
+                                </div>
+                                <div class="pp-ad-actions">
+                                    <span class="pp-ad-meta">{{ (string) ($item['placement'] ?? 'banner') }} · weight {{ (int) ($item['weight'] ?? 1) }}</span>
+                                    <button class="btn btn-sm btn-primary" type="submit">Save changes</button>
+                                </div>
+                            </form>
+                            <form class="pp-ad-delete" method="POST" action="{{ route('admin.protect.ads.delete', ['ad' => (int) ($item['id'] ?? 0)]) }}" onsubmit="return confirm('Delete ads ini?');">
+                                @csrf
+                                <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
+                                <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+                            </form>
+                        </div>
+                    @empty
+                        <p class="text-center text-muted">Belum ada ads.</p>
+                    @endforelse
                 </div>
             </div>
         </div>
