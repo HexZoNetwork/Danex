@@ -23,7 +23,7 @@ function isFileOrDirectory(event: DragEvent): boolean {
         return false;
     }
 
-    return event.dataTransfer.types.some((value) => value.toLowerCase() === 'files');
+    return Array.from(event.dataTransfer.types).some((value) => value.toLowerCase() === 'files');
 }
 
 export default ({ className }: WithClassname) => {
@@ -53,7 +53,46 @@ export default ({ className }: WithClassname) => {
         { capture: true }
     );
 
-    useEventListener('dragexit', () => (visible.value = false), { capture: true });
+    useEventListener(
+        'dragover',
+        (e) => {
+            if (!isFileOrDirectory(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            visible.value = true;
+        },
+        { capture: true }
+    );
+
+    useEventListener(
+        'dragleave',
+        (e) => {
+            const event = e as DragEvent;
+            if (
+                event.clientX <= 0 ||
+                event.clientY <= 0 ||
+                event.clientX >= window.innerWidth ||
+                event.clientY >= window.innerHeight
+            ) {
+                visible.value = false;
+            }
+        },
+        { capture: true }
+    );
+
+    useEventListener(
+        'drop',
+        (e) => {
+            if (!isFileOrDirectory(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            visible.value = false;
+            if (e.dataTransfer?.files.length) {
+                onFileSubmission(e.dataTransfer.files);
+            }
+        },
+        { capture: true }
+    );
 
     useEventListener('keydown', () => (visible.value = false));
 
@@ -86,16 +125,14 @@ export default ({ className }: WithClassname) => {
                 onUploadProgress: (data: AxiosProgressEvent) => onUploadProgress(data, file.name),
             };
 
-            const uploadViaPanel = () => {
-                const form = new FormData();
-                form.append('files', file, file.name);
+            const form = new FormData();
+            form.append('files', file, file.name);
 
-                return http.post(`/api/client/servers/${uuid}/files/upload`, form, uploadOptions);
-            };
+            const uploadViaPanel = () => http.post(`/api/client/servers/${uuid}/files/upload`, form, uploadOptions);
 
             return () =>
                 getFileUploadUrl(uuid)
-                    .then((url) => axios.post(url, { files: file }, uploadOptions).catch(uploadViaPanel))
+                    .then((url) => axios.post(url, form, uploadOptions).catch(uploadViaPanel))
                     .catch(uploadViaPanel)
                     .then(() => timeouts.value.push(setTimeout(() => removeFileUpload(file.name), 500)));
         });
@@ -149,7 +186,7 @@ export default ({ className }: WithClassname) => {
 
                     onFileSubmission(e.currentTarget.files);
                     if (fileUploadInput.current) {
-                        fileUploadInput.current.files = null;
+                        fileUploadInput.current.value = '';
                     }
                 }}
                 multiple

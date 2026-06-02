@@ -304,7 +304,13 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
         ? tw`relative z-10 block md:col-span-6 lg:col-span-5 xl:col-span-5`
         : tw`relative z-10 flex-1`;
     const resourceGridCss = compact ? tw`grid grid-cols-3 gap-1.5 sm:gap-2` : tw`grid grid-cols-1 sm:grid-cols-3 gap-2`;
-    const descriptionCss = compact ? tw`hidden md:block mt-1 text-xs text-neutral-400 break-words line-clamp-1` : tw`mt-1 text-xs text-neutral-400 break-words line-clamp-1`;
+    const descriptionCss = compact ? tw`hidden md:block mt-1 text-xs text-neutral-400 break-words` : tw`mt-1 text-xs text-neutral-400 break-words`;
+    const descriptionStyle = {
+        display: '-webkit-box',
+        WebkitLineClamp: 1,
+        WebkitBoxOrient: 'vertical' as const,
+        overflow: 'hidden',
+    };
 
     return (
         <div className={className} ref={rowRef}>
@@ -321,7 +327,7 @@ const ServerRow = ({ server, className, eager = false, compact = false }: { serv
                                 {status}
                             </span>
                         </div>
-                        <p css={descriptionCss}>
+                        <p css={descriptionCss} style={descriptionStyle}>
                             {server.description || 'No description configured.'}
                         </p>
                         <div css={compact ? tw`mt-1 flex items-center text-xs text-neutral-500 lg:hidden` : tw`mt-2 flex items-center text-xs text-neutral-500`}>

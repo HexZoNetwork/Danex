@@ -135,28 +135,30 @@ export default () => {
                     <AdsSurface />
                 </React.Suspense>
             )}
-            <TransitionRouter>
+            <TransitionRouter variant={isAccount ? 'default' : 'dashboard'}>
                 <React.Suspense fallback={<Spinner centered />}>
-                    <Switch location={location}>
-                        <Route path={'/'} exact><DashboardContainer /></Route>
-                        <Route path={'/dashboard'} exact><DanexCPage /></Route>
-                        <Route path={'/servers'} exact><DashboardContainer /></Route>
-                        <Route path={'/users'} exact><UsersPage /></Route>
-                        <Route path={'/settings'} exact><SettingsHubPage /></Route>
-                        <Route path={'/chat'} exact><PublicChatPage /></Route>
-                        <Route path={'/danexcoin'} exact><DanexCoinPage /></Route>
-                        <Route path={'/judi'} exact><Redirect to={'/danexcoin'} /></Route>
-                        <Route path={'/danexc'} exact><Redirect to={'/dashboard'} /></Route>
-                        <Route path={'/create-panel'} exact><CreatePanelPage /></Route>
-                        <Route path={'/notifications'} exact><NotificationsPage /></Route>
-                        {accountRoutes.map(({ path, component: Component }) => (
-                            <Route key={path} path={`/account/${path}`.replace('//', '/')} exact>
-                                <Component />
-                            </Route>
-                        ))}
-                        <Route path={'/account/profile'} exact><AccountProfileContainer /></Route>
-                        <Route path={'*'}><NotFound /></Route>
-                    </Switch>
+                    <div className={'el7-route-shell'}>
+                        <Switch location={location}>
+                            <Route path={'/'} exact><DashboardContainer /></Route>
+                            <Route path={'/dashboard'} exact><DanexCPage /></Route>
+                            <Route path={'/servers'} exact><DashboardContainer /></Route>
+                            <Route path={'/users'} exact><UsersPage /></Route>
+                            <Route path={'/settings'} exact><SettingsHubPage /></Route>
+                            <Route path={'/chat'} exact><PublicChatPage /></Route>
+                            <Route path={'/danexcoin'} exact><DanexCoinPage /></Route>
+                            <Route path={'/judi'} exact><Redirect to={'/danexcoin'} /></Route>
+                            <Route path={'/danexc'} exact><Redirect to={'/dashboard'} /></Route>
+                            <Route path={'/create-panel'} exact><CreatePanelPage /></Route>
+                            <Route path={'/notifications'} exact><NotificationsPage /></Route>
+                            {accountRoutes.map(({ path, component: Component }) => (
+                                <Route key={path} path={`/account/${path}`.replace('//', '/')} exact>
+                                    <Component />
+                                </Route>
+                            ))}
+                            <Route path={'/account/profile'} exact><AccountProfileContainer /></Route>
+                            <Route path={'*'}><NotFound /></Route>
+                        </Switch>
+                    </div>
                 </React.Suspense>
             </TransitionRouter>
         </>

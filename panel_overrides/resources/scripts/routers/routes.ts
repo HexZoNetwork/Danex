@@ -1,25 +1,26 @@
 import React, { lazy } from 'react';
-import ServerConsole from '@/components/server/console/ServerConsoleContainer';
-import DatabasesContainer from '@/components/server/databases/DatabasesContainer';
-import ScheduleContainer from '@/components/server/schedules/ScheduleContainer';
-import UsersContainer from '@/components/server/users/UsersContainer';
-import BackupContainer from '@/components/server/backups/BackupContainer';
-import NetworkContainer from '@/components/server/network/NetworkContainer';
-import StartupContainer from '@/components/server/startup/StartupContainer';
-import FileManagerContainer from '@/components/server/files/FileManagerContainer';
-import SettingsContainer from '@/components/server/settings/SettingsContainer';
+
+const ServerConsole = lazy(() => import(/* webpackChunkName: "server-console" */ '@/components/server/console/ServerConsoleContainer'));
+const DatabasesContainer = lazy(() => import('@/components/server/databases/DatabasesContainer'));
+const ScheduleContainer = lazy(() => import('@/components/server/schedules/ScheduleContainer'));
+const UsersContainer = lazy(() => import('@/components/server/users/UsersContainer'));
+const BackupContainer = lazy(() => import('@/components/server/backups/BackupContainer'));
+const NetworkContainer = lazy(() => import('@/components/server/network/NetworkContainer'));
+const StartupContainer = lazy(() => import('@/components/server/startup/StartupContainer'));
+const FileManagerContainer = lazy(() => import('@/components/server/files/FileManagerContainer'));
+const SettingsContainer = lazy(() => import('@/components/server/settings/SettingsContainer'));
 const AccountOverviewContainer = lazy(() => import('@/components/dashboard/AccountOverviewContainer'));
 const AccountApiContainer = lazy(() => import('@/components/dashboard/AccountApiContainer'));
 const AccountSSHContainer = lazy(() => import('@/components/dashboard/ssh/AccountSSHContainer'));
 const ActivityLogContainer = lazy(() => import('@/components/dashboard/activity/ActivityLogContainer'));
-import ServerActivityLogContainer from '@/components/server/ServerActivityLogContainer';
+const ServerActivityLogContainer = lazy(() => import('@/components/server/ServerActivityLogContainer'));
 
 // Each of the router files is already code split out appropriately — so
 // all of the items above will only be loaded in when that router is loaded.
 //
 // These specific lazy loaded routes are to avoid loading in heavy screens
 // for the server dashboard when they're only needed for specific instances.
-const FileEditContainer = lazy(() => import('@/components/server/files/FileEditContainer'));
+const FileEditContainer = lazy(() => import(/* webpackChunkName: "editor-route" */ '@/components/server/files/FileEditContainer'));
 const ScheduleEditContainer = lazy(() => import('@/components/server/schedules/ScheduleEditContainer'));
 
 interface RouteDefinition {

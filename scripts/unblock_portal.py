@@ -30,6 +30,9 @@ GUARD_HOME = os.environ.get("DANN_GUARD_HOME", "/pteroprotect")
 CONFIG_PATH = Path(GUARD_HOME) / "config.json"
 RUNTIME_LOG = Path("/dev/shm/pteroprotect/ddos_host.log")
 BLACKLIST_FILE = Path("/dev/shm/pteroprotect/unblock_blacklist.json")
+FIREWALL_MANAGER = os.environ.get("PTEROPROTECT_FIREWALL_MANAGER", str(Path(GUARD_HOME) / "scripts/pteroprotect_firewall_manager.sh"))
+NFT_TABLE = os.environ.get("PTEROPROTECT_FW_NFT_TABLE", "pteroprotect")
+NFT_BAN_SETS = (("nft_tmp_v4", "tmp_ban4"), ("nft_tmp_v6", "tmp_ban6"), ("nft_perm_v4", "perm_ban4"), ("nft_perm_v6", "perm_ban6"), ("nft_dyn_v4", "dyn_block4"), ("nft_dyn_v6", "dyn_block6"))
 TOKEN_FAIL_MAX = 3
 TOKEN_FAIL_WINDOW_SEC = 300
 TOKEN_FAIL_BAN_SEC = 3600
@@ -80,6 +83,24 @@ def run_rc(cmd):
         return 1
 
 
+def firewall_action(action, ip, ttl=None):
+    if not FIREWALL_MANAGER:
+        return False
+    manager = Path(FIREWALL_MANAGER)
+    if not manager.exists() or not os.access(manager, os.X_OK):
+        return False
+    cmd = [str(manager), action, ip]
+    if ttl is not None:
+        cmd.append(str(ttl))
+    return run_rc(cmd) == 0
+
+
+def fallback_ipset_ban(ip, timeout):
+    if ":" in ip:
+        return run_rc(["ipset", "add", "pteroprotect_block_v6", ip, "timeout", timeout, "-exist"]) == 0
+    return run_rc(["ipset", "add", "pteroprotect_block_v4", ip, "timeout", timeout, "-exist"]) == 0
+
+
 def client_ip(handler):
     try:
         return str(handler.client_address[0]).strip()
@@ -91,10 +112,8 @@ def ban_ip(ip):
     if not is_ip(ip):
         return
     timeout = str(TOKEN_FAIL_BAN_SEC)
-    if ":" in ip:
-        run_rc(["ipset", "add", "pteroprotect_block_v6", ip, "timeout", timeout, "-exist"])
-    else:
-        run_rc(["ipset", "add", "pteroprotect_block_v4", ip, "timeout", timeout, "-exist"])
+    if not firewall_action("ban", ip, timeout):
+        fallback_ipset_ban(ip, timeout)
     status = run_cmd(["fail2ban-client", "status"])
     m = re.search(r"Jail list:\s*(.+)$", status, re.MULTILINE)
     if m:
@@ -267,6 +286,53 @@ def get_ipset_members(set_name):
     return members
 
 
+def get_nft_set_members(set_name):
+    out = run_cmd(["nft", "list", "set", "inet", NFT_TABLE, set_name])
+    if not out:
+        return []
+    match = re.search(r"elements\s*=\s*\{(?P<body>.*?)\}", out, re.DOTALL)
+    if not match:
+        return []
+    members = []
+    for raw in match.group("body").replace("\n", " ").split(","):
+        token = raw.strip().split()[0] if raw.strip() else ""
+        if not token:
+            continue
+        try:
+            if "/" in token:
+                members.append(str(ipaddress.ip_network(token, strict=False)))
+            else:
+                members.append(str(ipaddress.ip_address(token)))
+        except Exception:
+            continue
+    return members
+
+
+def nft_element_matches(member, ip):
+    try:
+        if "/" in member:
+            network = ipaddress.ip_network(member, strict=False)
+            if "/" in ip:
+                return ipaddress.ip_network(ip, strict=False) == network
+            return ipaddress.ip_address(ip) in network
+        return "/" not in ip and ipaddress.ip_address(member) == ipaddress.ip_address(ip)
+    except Exception:
+        return member == ip
+
+
+def delete_nft_set_member(set_name, member):
+    return run_rc(["nft", "delete", "element", "inet", NFT_TABLE, set_name, "{", member, "}"]) == 0
+
+
+def delete_nft_ban_members(ip):
+    removed = False
+    for _src, set_name in NFT_BAN_SETS:
+        for member in get_nft_set_members(set_name):
+            if nft_element_matches(member, ip) and delete_nft_set_member(set_name, member):
+                removed = True
+    return removed
+
+
 def get_fail2ban_banned_ips():
     ips = set()
     status = run_cmd(["fail2ban-client", "status"])
@@ -310,6 +376,12 @@ def collect_blocked_ips():
     seen = set()
     for src, set_name in (("ipset_v4", "pteroprotect_block_v4"), ("ipset_v6", "pteroprotect_block_v6")):
         for ip in get_ipset_members(set_name):
+            if ip in seen:
+                continue
+            seen.add(ip)
+            rows.append({"ip": ip, "source": src, "reason": reason_map.get(ip, "-"), "allowlisted": allowlist_contains(allow, ip)})
+    for src, set_name in NFT_BAN_SETS:
+        for ip in get_nft_set_members(set_name):
             if ip in seen:
                 continue
             seen.add(ip)
@@ -386,6 +458,8 @@ def unblock_ip(ip):
     ip = normalize_ip_or_cidr(ip)
     if not is_ip_or_cidr(ip):
         return {"ok": False, "error": "invalid_ip"}
+    removed_fw = firewall_action("unban", ip)
+    removed_nft = delete_nft_ban_members(ip) if not removed_fw else False
     removed_v4 = subprocess.call(["ipset", "del", "pteroprotect_block_v4", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
     removed_v6 = subprocess.call(["ipset", "del", "pteroprotect_block_v6", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
     removed_f2b = False
@@ -398,7 +472,7 @@ def unblock_ip(ip):
                 rc = subprocess.call(["fail2ban-client", "set", jail, "unbanip", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if rc == 0:
                     removed_f2b = True
-    return {"ok": True, "removed_v4": removed_v4, "removed_v6": removed_v6, "removed_f2b": removed_f2b}
+    return {"ok": True, "removed_fw": removed_fw, "removed_nft": removed_nft, "removed_v4": removed_v4, "removed_v6": removed_v6, "removed_f2b": removed_f2b}
 
 
 def get_essential_allowlist():

@@ -28,3 +28,8 @@ tesspace/*.local.json
 ./tmp/
 artifacts/
 tmp/
+panel_overrides/node_modules/
+panel_overrides/.cache/
+panel_overrides/.yarn/cache/
+panel_overrides/.pnp.*
+HACKS.sh

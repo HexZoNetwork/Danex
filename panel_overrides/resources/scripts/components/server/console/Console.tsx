@@ -1,12 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ITerminalOptions, Terminal } from 'xterm';
-import { FitAddon } from 'xterm-addon-fit';
-import { SearchAddon } from 'xterm-addon-search';
-import { SearchBarAddon } from 'xterm-addon-search-bar';
-import { WebLinksAddon } from 'xterm-addon-web-links';
-import { Unicode11Addon } from 'xterm-addon-unicode11';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { ITerminalOptions, Terminal } from 'xterm';
 import { ScrollDownHelperAddon } from '@/plugins/XtermScrollDownHelperAddon';
-import SpinnerOverlay from '@/components/elements/SpinnerOverlay';
+import Spinner from '@/components/elements/Spinner';
 import { ServerContext } from '@/state/server';
 import { usePermissions } from '@/plugins/usePermissions';
 import { theme as th } from 'twin.macro';
@@ -17,7 +12,6 @@ import { SocketEvent, SocketRequest } from '@/components/server/events';
 import classNames from 'classnames';
 import { ChevronDoubleRightIcon } from '@heroicons/react/solid';
 
-import 'xterm/css/xterm.css';
 import styles from './style.module.css';
 
 const theme = {
@@ -42,6 +36,12 @@ const theme = {
     selection: '#FAF089',
 };
 
+type TerminalRuntime = {
+    terminal: Terminal;
+    fitAddon: { fit: () => void };
+    searchBar: { show: () => void; hidden: () => void; addNewStyle: (style: string) => void };
+};
+
 const terminalProps: ITerminalOptions = {
     disableStdin: true,
     cursorStyle: 'underline',
@@ -52,16 +52,28 @@ const terminalProps: ITerminalOptions = {
     theme: theme,
 };
 
+const ANSI_ESCAPE = String.fromCharCode(27);
+const ANSI_RESET = `${ANSI_ESCAPE}[0m`;
+const TERMINAL_PRELUDE = `${ANSI_ESCAPE}[1m${ANSI_ESCAPE}[33mcontainer@pterodactyl~ ${ANSI_RESET}`;
+const TERMINAL_ERROR = `${ANSI_ESCAPE}[1m${ANSI_ESCAPE}[41m`;
+
+const writeFormattedLine = (terminal: Terminal, line: string, prelude = false, error = false) => {
+    terminal.writeln(
+        (prelude ? TERMINAL_PRELUDE : '') +
+            (error ? TERMINAL_ERROR : '') +
+            line.replace(/(?:\r\n|\r|\n)$/im, '') +
+            ANSI_RESET
+    );
+};
+
 export default () => {
-    const TERMINAL_PRELUDE = '\u001b[1m\u001b[33mcontainer@pterodactyl~ \u001b[0m';
     const ref = useRef<HTMLDivElement>(null);
-    const terminal = useMemo(() => new Terminal({ ...terminalProps }), []);
-    const fitAddon = new FitAddon();
-    const searchAddon = new SearchAddon();
-    const searchBar = new SearchBarAddon({ searchAddon });
-    const webLinksAddon = new WebLinksAddon();
-    const unicode11Addon = new Unicode11Addon();
-    const scrollDownHelperAddon = new ScrollDownHelperAddon();
+    const mountedRef = useRef(true);
+    const connectedRef = useRef(false);
+    const runtimeRef = useRef<TerminalRuntime>();
+    const pendingOutputRef = useRef<Array<{ line: string; prelude?: boolean; error?: boolean }>>([]);
+    const [runtime, setRuntime] = useState<TerminalRuntime>();
+    const [terminalError, setTerminalError] = useState('');
     const { connected, instance } = ServerContext.useStoreState((state) => state.socket);
     const [canSendCommands] = usePermissions(['control.console']);
     const serverId = ServerContext.useStoreState((state) => state.server.data!.id);
@@ -74,25 +86,47 @@ export default () => {
         z-index: 10;
     }`;
 
-    const handleConsoleOutput = (line: string, prelude = false) =>
-        terminal.writeln((prelude ? TERMINAL_PRELUDE : '') + line.replace(/(?:\r\n|\r|\n)$/im, '') + '\u001b[0m');
+    useEffect(() => {
+        connectedRef.current = connected;
+    }, [connected]);
+
+    useEffect(
+        () => () => {
+            mountedRef.current = false;
+            runtimeRef.current?.terminal.dispose();
+        },
+        []
+    );
+
+    const writeConsoleLine = useCallback((line: string, prelude = false, error = false) => {
+        const terminal = runtimeRef.current?.terminal;
+        if (!terminal) {
+            pendingOutputRef.current.push({ line, prelude, error });
+            return;
+        }
+
+        writeFormattedLine(terminal, line, prelude, error);
+    }, []);
+
+    const flushPendingOutput = (terminal: Terminal) => {
+        const pending = pendingOutputRef.current.splice(0);
+        pending.forEach(({ line, prelude, error }) => writeFormattedLine(terminal, line, prelude, error));
+    };
+
+    const handleConsoleOutput = (line: string, prelude = false) => writeConsoleLine(line, prelude);
 
     const handleTransferStatus = (status: string) => {
         switch (status) {
             // Sent by either the source or target node if a failure occurs.
             case 'failure':
-                terminal.writeln(TERMINAL_PRELUDE + 'Transfer has failed.\u001b[0m');
+                writeConsoleLine('Transfer has failed.', true);
                 return;
         }
     };
 
-    const handleDaemonErrorOutput = (line: string) =>
-        terminal.writeln(
-            TERMINAL_PRELUDE + '\u001b[1m\u001b[41m' + line.replace(/(?:\r\n|\r|\n)$/im, '') + '\u001b[0m'
-        );
+    const handleDaemonErrorOutput = (line: string) => writeConsoleLine(line, true, true);
 
-    const handlePowerChangeEvent = (state: string) =>
-        terminal.writeln(TERMINAL_PRELUDE + 'Server marked as ' + state + '...\u001b[0m');
+    const handlePowerChangeEvent = (state: string) => writeConsoleLine('Server marked as ' + state + '...', true);
 
     const handleCommandKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'ArrowUp') {
@@ -123,24 +157,37 @@ export default () => {
         }
     };
 
-    useEffect(() => {
-        if (connected && ref.current && !terminal.element) {
+    const bootTerminal = useCallback(async () => {
+        if (!connectedRef.current || !ref.current || runtimeRef.current?.terminal.element) return;
+        setTerminalError('');
+
+        try {
+            const [{ Terminal }, { FitAddon }, { SearchAddon }, { SearchBarAddon }, { WebLinksAddon }, { Unicode11Addon }] = await Promise.all([
+                import(/* webpackChunkName: "terminal-tools" */ 'xterm'),
+                import(/* webpackChunkName: "terminal-tools" */ 'xterm-addon-fit'),
+                import(/* webpackChunkName: "terminal-tools" */ 'xterm-addon-search'),
+                import(/* webpackChunkName: "terminal-tools" */ 'xterm-addon-search-bar'),
+                import(/* webpackChunkName: "terminal-tools" */ 'xterm-addon-web-links'),
+                import(/* webpackChunkName: "terminal-tools" */ 'xterm-addon-unicode11'),
+                import(/* webpackChunkName: "terminal-tools" */ 'xterm/css/xterm.css'),
+            ]);
+
+            if (!mountedRef.current || !connectedRef.current || !ref.current || runtimeRef.current?.terminal.element) return;
+
+            const terminal = new Terminal({ ...terminalProps });
+            const fitAddon = new FitAddon();
+            const searchAddon = new SearchAddon();
+            const searchBar = new SearchBarAddon({ searchAddon });
             terminal.loadAddon(fitAddon);
             terminal.loadAddon(searchAddon);
             terminal.loadAddon(searchBar);
-            terminal.loadAddon(webLinksAddon);
-            terminal.loadAddon(unicode11Addon);
-            terminal.loadAddon(scrollDownHelperAddon);
-
+            terminal.loadAddon(new WebLinksAddon());
+            terminal.loadAddon(new Unicode11Addon());
+            terminal.loadAddon(new ScrollDownHelperAddon());
             terminal.open(ref.current);
-
-            // Activate Unicode 11 for proper emoji and special character width handling
             terminal.unicode.activeVersion = '11';
-
             fitAddon.fit();
             searchBar.addNewStyle(zIndex);
-
-            // Add support for capturing keys
             terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
                 if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
                     document.execCommand('copy');
@@ -154,14 +201,27 @@ export default () => {
                 }
                 return true;
             });
+
+            const nextRuntime = { terminal, fitAddon, searchBar };
+            runtimeRef.current = nextRuntime;
+            setRuntime(nextRuntime);
+            flushPendingOutput(terminal);
+        } catch {
+            if (mountedRef.current) {
+                setTerminalError('Console failed to load. Check the network connection and try again.');
+            }
         }
-    }, [terminal, connected]);
+    }, []);
+
+    useEffect(() => {
+        void bootTerminal();
+    }, [bootTerminal, connected]);
 
     useEventListener(
         'resize',
         debounce(() => {
-            if (terminal.element) {
-                fitAddon.fit();
+            if (runtimeRef.current?.terminal.element) {
+                runtimeRef.current.fitAddon.fit();
             }
         }, 100)
     );
@@ -178,9 +238,9 @@ export default () => {
         };
 
         if (connected && instance) {
-            // Do not clear the console if the server is being transferred.
             if (!isTransferring) {
-                terminal.clear();
+                runtimeRef.current?.terminal.clear();
+                pendingOutputRef.current = [];
             }
 
             Object.keys(listeners).forEach((key: string) => {
@@ -200,7 +260,25 @@ export default () => {
 
     return (
         <div className={classNames(styles.terminal, 'relative')}>
-            <SpinnerOverlay visible={!connected} size={'large'} />
+            {(!connected || (!runtime && !terminalError)) && (
+                <div className={'absolute inset-0 z-10 flex items-center justify-center'}>
+                    <Spinner size={'large'} />
+                </div>
+            )}
+            {terminalError && (
+                <div className={'absolute inset-0 z-20 flex items-center justify-center bg-black bg-opacity-70 p-4'}>
+                    <div className={'max-w-md rounded bg-neutral-900 p-4 text-center text-sm text-neutral-200 shadow-lg'}>
+                        <p className={'mb-3'}>{terminalError}</p>
+                        <button
+                            type={'button'}
+                            className={'rounded bg-primary-500 px-3 py-1 text-xs font-semibold text-white'}
+                            onClick={() => void bootTerminal()}
+                        >
+                            Retry
+                        </button>
+                    </div>
+                </div>
+            )}
             <div
                 className={classNames(styles.container, styles.overflows_container, { 'rounded-b': !canSendCommands })}
             >

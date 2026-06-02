@@ -785,7 +785,27 @@ copy_tree() {
     local dest="$2"
 
     mkdir -p "${dest}"
-    tar -C "${src}" -cf - . | tar -C "${dest}" -xf -
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a \
+            --exclude='node_modules/' \
+            --exclude='.git/' \
+            --exclude='.cache/' \
+            --exclude='.yarn/cache/' \
+            --exclude='.pnp.*' \
+            "${src}/" "${dest}/"
+    else
+        tar -C "${src}" \
+            --exclude='./node_modules' \
+            --exclude='*/node_modules' \
+            --exclude='./.git' \
+            --exclude='*/.git' \
+            --exclude='./.cache' \
+            --exclude='*/.cache' \
+            --exclude='./.yarn/cache' \
+            --exclude='*/.yarn/cache' \
+            --exclude='./.pnp.*' \
+            -cf - . | tar -C "${dest}" -xf -
+    fi
 }
 
 install_runtime_file() {
@@ -896,7 +916,11 @@ backup_panel_override_targets() {
             mkdir -p "${backup_root}/$(dirname "${rel_path}")"
             cp -a "${dest_root}/${rel_path}" "${backup_root}/${rel_path}"
         fi
-    done < <(cd "${src_root}" && find . -type f | sed 's#^\./##' | sort)
+    done < <(
+        cd "${src_root}" && find . \
+            \( -name node_modules -o -name .git -o -name .cache -o -path './.yarn/cache' \) -prune -o \
+            -type f -print | sed 's#^\./##' | sort
+    )
 }
 
 lint_php_tree() {
@@ -911,7 +935,11 @@ lint_php_tree() {
         [[ -z "${rel_path}" ]] && continue
         [[ -f "${dest_root}/${rel_path}" ]] || continue
         php -l "${dest_root}/${rel_path}" >/dev/null
-    done < <(cd "${src_root}" && find . -type f -name '*.php' | sed 's#^\./##' | sort)
+    done < <(
+        cd "${src_root}" && find . \
+            \( -name node_modules -o -name .git -o -name .cache -o -path './.yarn/cache' \) -prune -o \
+            -type f -name '*.php' -print | sed 's#^\./##' | sort
+    )
 }
 
 collect_infra_hosts() {
@@ -2190,9 +2218,9 @@ cat > "${SYSTEMD_DIR}/ptero-fix-volume-perms.timer" <<'EOF'
 Description=Run Pterodactyl volume permission fix periodically
 
 [Timer]
-OnBootSec=20s
-OnUnitActiveSec=30s
-AccuracySec=5s
+OnBootSec=30s
+OnUnitActiveSec=5min
+AccuracySec=30s
 Unit=ptero-fix-volume-perms.service
 
 [Install]
@@ -2231,8 +2259,7 @@ if [[ -d "${PANEL_DIR}" && -n "${PANEL_OVERRIDE_SOURCE}" ]]; then
     ensure_panel_autoconfigure_defaults "${PANEL_DIR}" "${PANEL_ENV_FILE}"
 
     # Reviactyl compatibility bridge:
-    # ensure known extra frontend deps and line-clamp plugin are present
-    # before dependency install/build is attempted.
+    # ensure known extra frontend deps are present before dependency install/build is attempted.
     if [[ -f "${PANEL_DIR}/package.json" ]] && command -v python3 >/dev/null 2>&1; then
         python3 - "${PANEL_DIR}/package.json" <<'PY'
 import json
@@ -2269,31 +2296,13 @@ PY
 
     if [[ -f "${PANEL_DIR}/tailwind.config.js" ]] && command -v python3 >/dev/null 2>&1; then
         python3 - "${PANEL_DIR}/tailwind.config.js" <<'PY'
+import re
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text()
-
-if "require('@tailwindcss/line-clamp')" in text:
-    raise SystemExit(0)
-
-marker = "require('@tailwindcss/forms')({\n            strategy: 'class',\n        }),"
-if marker in text:
-    text = text.replace(
-        marker,
-        marker + "\n        require('@tailwindcss/line-clamp'),",
-        1,
-    )
-else:
-    plugins_open = "plugins: ["
-    idx = text.find(plugins_open)
-    if idx != -1:
-        end_idx = text.find("]", idx)
-        if end_idx != -1:
-            insertion = "\n        require('@tailwindcss/line-clamp'),"
-            text = text[:end_idx] + insertion + text[end_idx:]
-
+text = re.sub(r"\n\s*require\(['\"]@tailwindcss/line-clamp['\"]\),", "", text)
 path.write_text(text)
 PY
     fi

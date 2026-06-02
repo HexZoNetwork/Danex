@@ -146,6 +146,7 @@
     "overload_fast_ban_factor_pct": 130,
     "overload_fast_ban_bot_factor_pct": 50,
     "normal_profile_max_http_access_per_window": 240,
+    "access_limiter_req_threshold": 6,
     "host_http_ignore_path_regex": "^/__pteroprotect/challenge(/|$)|^/locales/|^/assets/|^/favicon\\.ico$|^/robots\\.txt$|^/api/client/servers/.+/(websocket|resources|activity)$|^/api/client/chat(/|$)|^/api/client/rum(/|$)|^/api/remote/",
     "fingerprint_mitigation_enabled": true,
     "fingerprint_min_req_threshold": 80,

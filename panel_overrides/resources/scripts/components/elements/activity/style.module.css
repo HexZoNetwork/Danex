@@ -13,7 +13,11 @@
 }
 
 .description {
-    @apply mt-1 text-sm break-words line-clamp-2 pr-4;
+    @apply mt-1 text-sm break-words pr-4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 
     & strong {
         @apply font-semibold break-all;

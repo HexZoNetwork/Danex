@@ -49,7 +49,8 @@ const FileObjectRow = ({ file }: { file: FileObject }) => {
             key={file.name}
             onContextMenu={(e) => {
                 e.preventDefault();
-                window.dispatchEvent(new CustomEvent(`pterodactyl:files:ctx:${file.key}`, { detail: e.clientX }));
+                e.stopPropagation();
+                window.dispatchEvent(new CustomEvent(`pterodactyl:files:ctx:${file.key}`, { detail: { x: e.clientX, y: e.clientY } }));
             }}
         >
             <div className={styles.select_cell}>

@@ -109,17 +109,19 @@ export default () => {
                         <ConflictStateRenderer />
                     ) : (
                         <ErrorBoundary>
-                            <TransitionRouter>
-                                <Switch location={location}>
-                                    {routes.server.map(({ path, permission, component: Component }) => (
-                                        <PermissionRoute key={path} permission={permission} path={to(path)} exact>
-                                            <Spinner.Suspense>
-                                                <Component />
-                                            </Spinner.Suspense>
-                                        </PermissionRoute>
-                                    ))}
-                                    <Route path={'*'} component={NotFound} />
-                                </Switch>
+                            <TransitionRouter variant={'server'}>
+                                <div className={'el7-route-shell'}>
+                                    <Switch location={location}>
+                                        {routes.server.map(({ path, permission, component: Component }) => (
+                                            <PermissionRoute key={path} permission={permission} path={to(path)} exact>
+                                                <Spinner.Suspense>
+                                                    <Component />
+                                                </Spinner.Suspense>
+                                            </PermissionRoute>
+                                        ))}
+                                        <Route path={'*'} component={NotFound} />
+                                    </Switch>
+                                </div>
                             </TransitionRouter>
                         </ErrorBoundary>
                     )}

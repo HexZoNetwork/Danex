@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import CodeMirror from 'codemirror';
 import styled from 'styled-components/macro';
 import tw from 'twin.macro';
@@ -41,44 +41,90 @@ require('codemirror/addon/search/search');
 require('codemirror/addon/search/searchcursor');
 require('codemirror/addon/selection/mark-selection');
 
-require('codemirror/mode/brainfuck/brainfuck');
-require('codemirror/mode/clike/clike');
-require('codemirror/mode/css/css');
-require('codemirror/mode/dart/dart');
-require('codemirror/mode/diff/diff');
-require('codemirror/mode/dockerfile/dockerfile');
-require('codemirror/mode/erlang/erlang');
-require('codemirror/mode/gfm/gfm');
-require('codemirror/mode/go/go');
-require('codemirror/mode/handlebars/handlebars');
-require('codemirror/mode/htmlembedded/htmlembedded');
-require('codemirror/mode/htmlmixed/htmlmixed');
-require('codemirror/mode/http/http');
-require('codemirror/mode/javascript/javascript');
-require('codemirror/mode/jsx/jsx');
-require('codemirror/mode/julia/julia');
-require('codemirror/mode/lua/lua');
-require('codemirror/mode/markdown/markdown');
-require('codemirror/mode/nginx/nginx');
-require('codemirror/mode/perl/perl');
-require('codemirror/mode/php/php');
-require('codemirror/mode/properties/properties');
-require('codemirror/mode/protobuf/protobuf');
-require('codemirror/mode/pug/pug');
-require('codemirror/mode/python/python');
-require('codemirror/mode/rpm/rpm');
-require('codemirror/mode/ruby/ruby');
-require('codemirror/mode/rust/rust');
-require('codemirror/mode/sass/sass');
-require('codemirror/mode/shell/shell');
-require('codemirror/mode/smarty/smarty');
-require('codemirror/mode/sql/sql');
-require('codemirror/mode/swift/swift');
-require('codemirror/mode/toml/toml');
-require('codemirror/mode/twig/twig');
-require('codemirror/mode/vue/vue');
-require('codemirror/mode/xml/xml');
-require('codemirror/mode/yaml/yaml');
+const modeLoaders: Record<string, () => Promise<unknown>> = {
+    brainfuck: () => import('codemirror/mode/brainfuck/brainfuck'),
+    clike: () => import('codemirror/mode/clike/clike'),
+    css: () => import('codemirror/mode/css/css'),
+    dart: () => import('codemirror/mode/dart/dart'),
+    diff: () => import('codemirror/mode/diff/diff'),
+    dockerfile: () => import('codemirror/mode/dockerfile/dockerfile'),
+    erlang: () => import('codemirror/mode/erlang/erlang'),
+    gfm: () => import('codemirror/mode/gfm/gfm'),
+    go: () => import('codemirror/mode/go/go'),
+    handlebars: () => import('codemirror/mode/handlebars/handlebars'),
+    htmlembedded: () => import('codemirror/mode/htmlembedded/htmlembedded'),
+    htmlmixed: () => import('codemirror/mode/htmlmixed/htmlmixed'),
+    http: () => import('codemirror/mode/http/http'),
+    javascript: () => import('codemirror/mode/javascript/javascript'),
+    jsx: () => import('codemirror/mode/jsx/jsx'),
+    julia: () => import('codemirror/mode/julia/julia'),
+    lua: () => import('codemirror/mode/lua/lua'),
+    markdown: () => import('codemirror/mode/markdown/markdown'),
+    nginx: () => import('codemirror/mode/nginx/nginx'),
+    perl: () => import('codemirror/mode/perl/perl'),
+    php: () => import('codemirror/mode/php/php'),
+    properties: () => import('codemirror/mode/properties/properties'),
+    protobuf: () => import('codemirror/mode/protobuf/protobuf'),
+    pug: () => import('codemirror/mode/pug/pug'),
+    python: () => import('codemirror/mode/python/python'),
+    rpm: () => import('codemirror/mode/rpm/rpm'),
+    ruby: () => import('codemirror/mode/ruby/ruby'),
+    rust: () => import('codemirror/mode/rust/rust'),
+    sass: () => import('codemirror/mode/sass/sass'),
+    shell: () => import('codemirror/mode/shell/shell'),
+    smarty: () => import('codemirror/mode/smarty/smarty'),
+    sql: () => import('codemirror/mode/sql/sql'),
+    swift: () => import('codemirror/mode/swift/swift'),
+    toml: () => import('codemirror/mode/toml/toml'),
+    twig: () => import('codemirror/mode/twig/twig'),
+    vue: () => import('codemirror/mode/vue/vue'),
+    xml: () => import('codemirror/mode/xml/xml'),
+    yaml: () => import('codemirror/mode/yaml/yaml'),
+};
+
+const modeAliases: Record<string, string> = {
+    'text/css': 'css',
+    'text/x-scss': 'sass',
+    'text/x-sass': 'sass',
+    'text/x-diff': 'diff',
+    'text/x-dockerfile': 'dockerfile',
+    'text/x-go': 'go',
+    'text/x-csrc': 'clike',
+    'text/x-chdr': 'clike',
+    'text/x-c++src': 'clike',
+    'text/x-c++hdr': 'clike',
+    'text/x-java': 'clike',
+    'text/x-csharp': 'clike',
+    'text/x-objectivec': 'clike',
+    'text/x-scala': 'clike',
+    'text/x-kotlin': 'clike',
+    'text/html': 'htmlmixed',
+    'text/x-httpd-php': 'php',
+    'application/json': 'javascript',
+    'application/javascript': 'javascript',
+    'text/javascript': 'javascript',
+    'text/jsx': 'jsx',
+    'text/x-lua': 'lua',
+    'text/markdown': 'gfm',
+    'text/x-nginx-conf': 'nginx',
+    'text/x-perl': 'perl',
+    'text/x-python': 'python',
+    'text/x-ruby': 'ruby',
+    'text/x-rustsrc': 'rust',
+    'text/x-sh': 'shell',
+    'text/x-sql': 'sql',
+    'text/x-swift': 'swift',
+    'text/x-toml': 'toml',
+    'text/x-vue': 'vue',
+    'application/xml': 'xml',
+    'text/xml': 'xml',
+    'text/x-yaml': 'yaml',
+};
+
+const loadEditorMode = (mime: string) => {
+    const modeName = modeAliases[mime] || mime;
+    return (modeLoaders[modeName] || (() => Promise.resolve()))().catch(() => undefined);
+};
 
 const EditorContainer = styled.div`
     min-height: 16rem;
@@ -90,8 +136,14 @@ const EditorContainer = styled.div`
     }
 
     .CodeMirror {
-        font-size: 12px;
-        line-height: 1.375rem;
+        height: 100%;
+        min-height: inherit;
+        font-size: 13px;
+        line-height: 1.45rem;
+    }
+
+    .CodeMirror-scroll {
+        min-height: inherit;
     }
 
     .CodeMirror div.CodeMirror-selected,
@@ -145,9 +197,11 @@ export interface Props {
     initialContent?: string;
     mode: string;
     filename?: string;
+    jumpToLine?: number;
     onModeChanged: (mode: string) => void;
     fetchContent: (callback: () => Promise<string>) => void;
     onContentSaved: () => void;
+    onContentChanged?: (content: string) => void;
 }
 
 const findModeByFilename = (filename: string) => {
@@ -178,8 +232,15 @@ const findModeByFilename = (filename: string) => {
     return undefined;
 };
 
-export default ({ style, initialContent, filename, mode, fetchContent, onContentSaved, onModeChanged }: Props) => {
+export default ({ style, initialContent, filename, mode, jumpToLine, fetchContent, onContentSaved, onContentChanged, onModeChanged }: Props) => {
     const [editor, setEditor] = useState<CodeMirror.Editor>();
+    const onContentSavedRef = useRef(onContentSaved);
+    const onContentChangedRef = useRef(onContentChanged);
+
+    useEffect(() => {
+        onContentSavedRef.current = onContentSaved;
+        onContentChangedRef.current = onContentChanged;
+    }, [onContentSaved, onContentChanged]);
 
     const ref = useCallback((node) => {
         if (!node) return;
@@ -223,12 +284,22 @@ export default ({ style, initialContent, filename, mode, fetchContent, onContent
     }, [filename]);
 
     useEffect(() => {
-        editor && editor.setOption('mode', mode);
+        if (!editor) return;
+        let cancelled = false;
+        loadEditorMode(mode).finally(() => {
+            if (!cancelled) editor.setOption('mode', mode);
+        });
+        return () => {
+            cancelled = true;
+        };
     }, [editor, mode]);
 
     useEffect(() => {
         if (editor) {
-            editor.setValue(initialContent || '');
+            const nextContent = initialContent || '';
+            if (editor.getValue() === nextContent) return;
+
+            editor.setValue(nextContent);
             // Reset the history so that "Ctrl+Z" doesn't delete the intial content
             // we just set above.
             editor.setHistory({ done: [], undone: [] });
@@ -241,13 +312,38 @@ export default ({ style, initialContent, filename, mode, fetchContent, onContent
             return;
         }
 
-        editor.addKeyMap({
-            'Ctrl-S': () => onContentSaved(),
-            'Cmd-S': () => onContentSaved(),
-        });
+        const keyMap = {
+            'Ctrl-S': () => onContentSavedRef.current(),
+            'Cmd-S': () => onContentSavedRef.current(),
+        };
+        const changeHandler = () => onContentChangedRef.current?.(editor.getValue());
 
+        editor.addKeyMap(keyMap);
+        editor.on('change', changeHandler);
         fetchContent(() => Promise.resolve(editor.getValue()));
-    }, [editor, fetchContent, onContentSaved]);
+
+        return () => {
+            editor.off('change', changeHandler);
+            editor.removeKeyMap(keyMap);
+        };
+    }, [editor, fetchContent]);
+
+    useEffect(() => {
+        if (!editor) return;
+
+        const refresh = () => window.requestAnimationFrame(() => editor.refresh());
+        refresh();
+        window.addEventListener('resize', refresh);
+        return () => window.removeEventListener('resize', refresh);
+    }, [editor]);
+
+    useEffect(() => {
+        if (!editor || !jumpToLine || jumpToLine < 1) return;
+        const line = Math.max(0, jumpToLine - 1);
+        editor.focus();
+        editor.setCursor({ line, ch: 0 });
+        editor.scrollIntoView({ line, ch: 0 }, 80);
+    }, [editor, jumpToLine]);
 
     return (
         <EditorContainer style={style}>

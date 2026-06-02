@@ -66,12 +66,12 @@
             color: #ddd6fe;
             border-radius: 6px;
             padding: 5px 7px;
-            display: inline-block;
-            max-width: min(32rem, 72vw);
-            white-space: nowrap;
-            word-break: normal;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            display: block;
+            max-width: min(42rem, 72vw);
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            line-height: 1.45;
         }
         .danex-api-danger {
             display: inline-flex;

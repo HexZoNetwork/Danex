@@ -117,7 +117,9 @@ module.exports = {
     ],
     optimization: {
         usedExports: true,
-        sideEffects: false,
+        sideEffects: true,
+        moduleIds: 'deterministic',
+        chunkIds: 'deterministic',
         runtimeChunk: false,
         removeEmptyChunks: true,
         splitChunks: {
@@ -125,11 +127,24 @@ module.exports = {
             maxAsyncRequests: 12,
             minSize: 40 * 1024,
             cacheGroups: {
-                editorTerminal: {
-                    test: /[\\/]node_modules[\\/](codemirror|@codemirror|xterm|xterm-addon-fit|chart\.js|react-chartjs-2)[\\/]/,
-                    name: 'heavy-tools',
+                editorTools: {
+                    test: /[\\/]node_modules[\\/](codemirror|@codemirror)[\\/]/,
+                    name: 'editor-tools',
                     chunks: 'async',
-                    priority: 25,
+                    priority: 35,
+                    reuseExistingChunk: true,
+                },
+                terminalTools: {
+                    test: /[\\/]node_modules[\\/](xterm|xterm-addon-[^\\/]+)[\\/]/,
+                    chunks: 'async',
+                    priority: 34,
+                    reuseExistingChunk: true,
+                },
+                chartTools: {
+                    test: /[\\/]node_modules[\\/](chart\.js|react-chartjs-2)[\\/]/,
+                    name: 'chart-tools',
+                    chunks: 'async',
+                    priority: 33,
                     reuseExistingChunk: true,
                 },
                 asyncVendors: {

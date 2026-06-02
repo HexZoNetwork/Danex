@@ -65,6 +65,7 @@
                 100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
             }
             :root {
+                color-scheme: dark;
                 --el7-bg-a: #07070b;
                 --el7-surface: #0b0b10;
                 --el7-surface-strong: #111117;

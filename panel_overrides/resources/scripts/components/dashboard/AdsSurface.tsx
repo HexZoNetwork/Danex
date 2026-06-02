@@ -3,7 +3,6 @@ import tw from 'twin.macro';
 import { AdsItem, getAdsPayload } from '@/api/ads';
 
 const DesktopRail = tw.div`hidden lg:flex fixed left-4 bottom-4 z-30 w-[290px] flex-col gap-3`;
-const MobileRail = tw.div`lg:hidden fixed left-3 right-3 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-30`;
 const BannerCard = tw.div`rounded-xl border border-purple-500/25 bg-neutral-900 shadow-2xl overflow-hidden backdrop-blur`;
 const BannerBody = tw.div`p-3`;
 const PopupBackdrop = tw.div`fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm`;
@@ -156,7 +155,7 @@ export default () => {
                 }
 
                 const popupCandidate = popupCandidateRef.current;
-                if (!isMobileViewport && serviceEnabledRef.current && popupCandidate && !popupOpenRef.current) {
+                if (serviceEnabledRef.current && popupCandidate && !popupOpenRef.current) {
                     const now = Date.now();
                     const shownKey = `ads.popup.${popupCandidate.id}.shown`;
                     const lastShown = Number(window.localStorage.getItem(`${shownKey}.last`) || '0');
@@ -221,7 +220,7 @@ export default () => {
                                     {renderMedia(ad, true, !prefersReducedMotion)}
                                     <BannerBody>
                                         <p css={tw`text-[10px] text-yellow-300 uppercase tracking-wide mb-1`}>{ad.sponsorLabel}</p>
-                                        {ad.text && <p css={tw`text-xs text-neutral-200 line-clamp-2`}>{ad.text}</p>}
+                                        {ad.text && <p css={tw`text-xs text-neutral-200`} style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{ad.text}</p>}
                                         {ad.linkUrl && <p css={tw`mt-1 text-[10px] text-purple-300 uppercase tracking-wide`}>Open offer</p>}
                                     </BannerBody>
                                 </BannerCard>,
@@ -229,22 +228,6 @@ export default () => {
                             )
                         )}
                     </DesktopRail>
-                    <MobileRail>
-                        {banners.slice(0, 1).map((ad) =>
-                            clickableWrap(
-                                ad,
-                                <BannerCard css={tw`flex max-h-24 items-center`}>
-                                    <div css={tw`w-24 flex-shrink-0`}>{renderMedia(ad, true, !prefersReducedMotion)}</div>
-                                    <BannerBody css={tw`min-w-0 flex-1`}>
-                                        <p css={tw`text-[10px] text-yellow-300 uppercase tracking-wide mb-1`}>{ad.sponsorLabel}</p>
-                                        {ad.text && <p css={tw`text-xs text-neutral-200 line-clamp-2`}>{ad.text}</p>}
-                                        {ad.linkUrl && <p css={tw`mt-1 text-[10px] text-purple-300 uppercase tracking-wide`}>Open offer</p>}
-                                    </BannerBody>
-                                </BannerCard>,
-                                `ads-mobile-banner-${ad.id}`
-                            )
-                        )}
-                    </MobileRail>
                 </>
             )}
 

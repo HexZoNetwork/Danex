@@ -1,38 +1,55 @@
-import socket
 #!/usr/bin/env python3
+import ipaddress
 import json
 import os
-
-def is_valid_ip(ip):
-    try:
-        socket.inet_pton(socket.AF_INET, ip)
-        return True
-    except socket.error:
-        try:
-            socket.inet_pton(socket.AF_INET6, ip)
-            return True
-        except socket.error:
-            return False
 import re
 import subprocess
 import time
 from collections import deque
-from typing import Dict
+from typing import Dict, Optional
+
+
+def is_valid_ip(ip: str) -> bool:
+    try:
+        ipaddress.ip_address(ip)
+        return True
+    except ValueError:
+        return False
+
+
+def parse_client_ip(line: str) -> Optional[str]:
+    m = IP_RE.match(line)
+    if not m:
+        return None
+
+    raw = m.group(1).strip('[] ,')
+    ip = raw.split(',', 1)[0].strip('[] ')
+    return ip if is_valid_ip(ip) else None
+
 
 CONFIG_PATH = os.environ.get("DANN_CONFIG_PATH", "/pteroprotect/config.json")
 ACCESS_LOG = "/var/log/nginx/pteroprotect.access.log"
 STATE_DIR = "/pteroprotect/runtime"
 
-IP_RE = re.compile(r"^(\d+\.\d+\.\d+\.\d+)")
+IP_RE = re.compile(r"^(\S+)")
 BAD_STATUS = {"401", "403", "429", "444", "461", "463", "500", "502", "503", "504"}
+METRICS_INTERVAL_SEC = 5
+FIREWALL_MANAGER = os.environ.get("PTEROPROTECT_FIREWALL_MANAGER", "/pteroprotect/scripts/pteroprotect_firewall_manager.sh")
+FALLBACK_IPSET4 = os.environ.get("PTEROPROTECT_DYNAMIC_BLOCK_SET4", "pteroprotect_block_v4")
+FALLBACK_IPSET6 = os.environ.get("PTEROPROTECT_DYNAMIC_BLOCK_SET6", "pteroprotect_block_v6")
 
 
 def run(cmd):
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         return p.returncode == 0
     except Exception:
         return False
+
+
+def fallback_ipset_ban(ip: str, ttl_sec: int) -> bool:
+    set_name = FALLBACK_IPSET6 if ":" in ip else FALLBACK_IPSET4
+    return run(["ipset", "add", set_name, ip, "timeout", str(max(60, ttl_sec)), "-exist"])
 
 
 def load_cfg() -> Dict:
@@ -52,7 +69,13 @@ def should_count(line: str) -> bool:
 
 
 def ban_ip(ip: str, ttl_sec: int) -> bool:
-    return run(["ipset", "add", "pteroprotect_block_v4", ip, "timeout", str(max(60, ttl_sec)), "-exist"])
+    if not is_valid_ip(ip):
+        return False
+    ttl = str(max(60, ttl_sec))
+    if os.path.exists(FIREWALL_MANAGER) and os.access(FIREWALL_MANAGER, os.X_OK):
+        if run([FIREWALL_MANAGER, "ban", ip, ttl]):
+            return True
+    return fallback_ipset_ban(ip, ttl_sec)
 
 
 def main() -> int:
@@ -70,6 +93,18 @@ def main() -> int:
 
     counters: Dict[str, deque] = {}
     active_bans: Dict[str, int] = {}
+    last_metrics_write = 0
+
+    def write_metrics(now: int, force: bool = False) -> None:
+        nonlocal last_metrics_write
+        if not force and (now - last_metrics_write) < METRICS_INTERVAL_SEC:
+            return
+        last_metrics_write = now
+        with open(metrics_path, "w", encoding="utf-8") as mf:
+            mf.write("# HELP pteroprotect_security_log_watch gauge metrics for log watcher\n")
+            mf.write("# TYPE pteroprotect_security_log_watch gauge\n")
+            mf.write(f"pteroprotect_security_log_watch{{metric=\"active_bans\"}} {len(active_bans)}\n")
+            mf.write(f"pteroprotect_security_log_watch{{metric=\"tracked_ips\"}} {len(counters)}\n")
 
     with open(ACCESS_LOG, "r", encoding="utf-8", errors="ignore") as f:
         f.seek(0, os.SEEK_END)
@@ -79,10 +114,9 @@ def main() -> int:
                 time.sleep(0.2)
                 continue
 
-            m = IP_RE.match(line)
-            if not m:
+            ip = parse_client_ip(line)
+            if not ip:
                 continue
-            ip = m.group(1)
             now = int(time.time())
 
             # expire old tracked bans
@@ -103,11 +137,7 @@ def main() -> int:
                     active_bans[ip] = now + ban_ttl_sec
                     q.clear()
 
-            with open(metrics_path, "w", encoding="utf-8") as mf:
-                mf.write("# HELP pteroprotect_security_log_watch gauge metrics for log watcher\\n")
-                mf.write("# TYPE pteroprotect_security_log_watch gauge\\n")
-                mf.write(f"pteroprotect_security_log_watch{{metric=\"active_bans\"}} {len(active_bans)}\\n")
-                mf.write(f"pteroprotect_security_log_watch{{metric=\"tracked_ips\"}} {len(counters)}\\n")
+            write_metrics(now)
 
 
 if __name__ == "__main__":

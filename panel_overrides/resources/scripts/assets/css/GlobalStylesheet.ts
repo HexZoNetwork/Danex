@@ -32,7 +32,13 @@ export default createGlobalStyle`
         --el7-success: #10B981;
         --el7-warning: #F59E0B;
         --el7-shadow: 0 18px 48px rgba(0, 0, 0, 0.52);
+        --el7-shadow-deck: 0 22px 54px rgba(0, 0, 0, 0.58), 0 1px 0 rgba(255, 255, 255, 0.045) inset;
         --el7-glow: 0 0 28px rgba(139, 92, 246, 0.24);
+        --el7-telemetry-cyan: #22D3EE;
+        --el7-telemetry-amber: #FBBF24;
+        --el7-perspective: 1200px;
+        --el7-route-z: 22px;
+        --el7-route-tilt: 1.2deg;
         --el7-duration-fast: 140ms;
         --el7-duration: 220ms;
         --el7-duration-slow: 360ms;
@@ -70,6 +76,11 @@ export default createGlobalStyle`
     @keyframes danex-spinner-rotate {
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
+    }
+
+    @keyframes danex-deck-arrive {
+        0% { opacity: 0; transform: translate3d(18px, 18px, -32px) rotateX(1.4deg) rotateY(-1.2deg) scale(0.986); }
+        100% { opacity: 1; transform: translate3d(0, 0, 0) rotateX(0) rotateY(0) scale(1); }
     }
 
     @font-face {
@@ -179,6 +190,72 @@ export default createGlobalStyle`
         background: var(--el7-surface);
         border: 1px solid var(--el7-border);
         box-shadow: var(--el7-shadow);
+    }
+
+    .el7-route-shell {
+        position: relative;
+        perspective: var(--el7-perspective);
+        transform-style: preserve-3d;
+        padding: clamp(0.7rem, 1.8vw, 1.35rem);
+    }
+
+    .el7-route-shell::before {
+        content: '';
+        position: absolute;
+        inset: 0.35rem 0.2rem auto;
+        height: 9rem;
+        pointer-events: none;
+        border-radius: 1.4rem;
+        background: linear-gradient(105deg, rgba(34, 211, 238, 0.09), rgba(139, 92, 246, 0.08) 42%, rgba(251, 191, 36, 0.035));
+        filter: blur(18px);
+        opacity: 0.72;
+        transform: translateZ(-34px);
+    }
+
+    .el7-route-panel,
+    .el7-ops-card,
+    .el7-hero-panel {
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(145deg, rgba(18, 18, 26, 0.96), rgba(7, 7, 11, 0.98));
+        border: 1px solid rgba(139, 92, 246, 0.24);
+        border-radius: 1.05rem;
+        box-shadow: var(--el7-shadow-deck);
+        transform: translateZ(0);
+    }
+
+    .el7-route-panel::before,
+    .el7-ops-card::before,
+    .el7-hero-panel::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        border-top: 1px solid rgba(255, 255, 255, 0.075);
+        background:
+            linear-gradient(120deg, transparent 8%, rgba(34, 211, 238, 0.045), transparent 36%),
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 54px);
+        opacity: 0.78;
+    }
+
+    .el7-ops-card,
+    .el7-lift-3d {
+        transition: transform var(--el7-duration) var(--el7-ease-out), border-color var(--el7-duration) var(--el7-ease), box-shadow var(--el7-duration) var(--el7-ease);
+    }
+
+    .el7-ops-card:hover,
+    .el7-lift-3d:hover {
+        transform: translate3d(0, -3px, 18px) rotateX(0.45deg);
+        border-color: rgba(34, 211, 238, 0.38);
+        box-shadow: var(--el7-shadow-deck), 0 0 34px rgba(34, 211, 238, 0.12);
+    }
+
+    .el7-telemetry-kicker {
+        color: var(--el7-telemetry-cyan);
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
     }
 
     .danex-monitor-surface {
@@ -583,7 +660,9 @@ export default createGlobalStyle`
             scroll-behavior: auto !important;
         }
 
-        button:hover {
+        button:hover,
+        .el7-ops-card:hover,
+        .el7-lift-3d:hover {
             transform: none !important;
         }
     }

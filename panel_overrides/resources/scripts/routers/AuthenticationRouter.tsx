@@ -3,6 +3,7 @@ import { Route, Switch, useRouteMatch } from 'react-router-dom';
 import { NotFound } from '@/components/elements/ScreenBlock';
 import { useHistory, useLocation } from 'react-router';
 import Spinner from '@/components/elements/Spinner';
+import TransitionRouter from '@/TransitionRouter';
 
 const LoginContainer = lazy(() => import('@/components/auth/LoginContainer'));
 const ForgotPasswordContainer = lazy(() => import('@/components/auth/ForgotPasswordContainer'));
@@ -29,19 +30,23 @@ export default () => {
 
     return (
         <div className={'pt-8 xl:pt-32'}>
-            <React.Suspense fallback={<Spinner centered />}>
-                <Switch location={location}>
-                    <Route path={`${path}/login`} component={LoginContainer} exact />
-                    <Route path={`${path}/register`} component={RegisterContainer} exact />
-                    <Route path={`${path}/login/checkpoint`} component={LoginCheckpointContainer} />
-                    <Route path={`${path}/password`} component={ForgotPasswordContainer} exact />
-                    <Route path={`${path}/password/reset/:token`} component={ResetPasswordContainer} />
-                    <Route path={`${path}/checkpoint`} />
-                    <Route path={'*'}>
-                        <NotFound onBack={() => history.push('/auth/login')} />
-                    </Route>
-                </Switch>
-            </React.Suspense>
+            <TransitionRouter variant={'auth'}>
+                <React.Suspense fallback={<Spinner centered />}>
+                    <div className={'el7-route-shell'}>
+                        <Switch location={location}>
+                            <Route path={`${path}/login`} component={LoginContainer} exact />
+                            <Route path={`${path}/register`} component={RegisterContainer} exact />
+                            <Route path={`${path}/login/checkpoint`} component={LoginCheckpointContainer} />
+                            <Route path={`${path}/password`} component={ForgotPasswordContainer} exact />
+                            <Route path={`${path}/password/reset/:token`} component={ResetPasswordContainer} />
+                            <Route path={`${path}/checkpoint`} />
+                            <Route path={'*'}>
+                                <NotFound onBack={() => history.push('/auth/login')} />
+                            </Route>
+                        </Switch>
+                    </div>
+                </React.Suspense>
+            </TransitionRouter>
         </div>
     );
 };

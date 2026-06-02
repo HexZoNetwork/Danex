@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html style="color-scheme: dark; background: #07070b;">
     <head>
         <title>{{ config('app.name', 'Pterodactyl') }}</title>
 
@@ -35,12 +35,13 @@
         @yield('assets')
         @include('layouts.scripts')
     </head>
-    <body class="{{ $css['body'] ?? 'bg-neutral-900' }}" style="background:#07070b;color:#f9fafb;">
+    <body class="{{ $css['body'] ?? 'bg-neutral-900' }} el7-document-shell" style="background:#07070b;color:#f9fafb;">
         @section('content')
             @yield('above-container')
             @yield('container')
             @yield('below-container')
         @show
+        <div id="modal-portal"></div>
         @section('scripts')
             {!! $asset->js('main.js') !!}
         @show

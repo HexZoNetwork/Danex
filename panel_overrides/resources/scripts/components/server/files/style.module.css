@@ -38,7 +38,8 @@
 }
 
 .file_row {
-    @apply grid items-stretch rounded-lg mb-1.5 text-sm no-underline min-w-0 overflow-hidden;
+    @apply grid items-stretch rounded-lg mb-1.5 text-sm no-underline min-w-0;
+    overflow: visible;
     grid-template-columns: 42px minmax(0, 1fr) 44px;
     background: linear-gradient(135deg, rgba(17, 17, 24, 0.96), rgba(8, 8, 13, 0.98));
     border: 1px solid rgba(139, 92, 246, 0.16);

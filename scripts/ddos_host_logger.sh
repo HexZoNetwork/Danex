@@ -89,6 +89,47 @@ write_runtime_payload() {
     chmod 664 "${primary}" "${mirror}" >/dev/null 2>&1 || true
 }
 
+firewall_manager_cmd() {
+    if [[ -x "${GUARD_HOME}/scripts/pteroprotect_firewall_manager.sh" ]]; then
+        printf '%s\n' "${GUARD_HOME}/scripts/pteroprotect_firewall_manager.sh"
+        return 0
+    fi
+    if command -v pteroprotect-firewall >/dev/null 2>&1; then
+        command -v pteroprotect-firewall
+        return 0
+    fi
+    return 1
+}
+
+dynamic_firewall_ban() {
+    local ip="$1"
+    local timeout="$2"
+    local manager
+    if manager="$(firewall_manager_cmd)"; then
+        "${manager}" ban "${ip}" "${timeout}" >/dev/null 2>&1 && return 0
+    fi
+    command -v ipset >/dev/null 2>&1 || return 1
+    if [[ "${ip}" == *:* ]]; then
+        ipset add "${IPSET6}" "${ip}" timeout "${timeout}" -exist >/dev/null 2>&1
+    else
+        ipset add "${IPSET4}" "${ip}" timeout "${timeout}" -exist >/dev/null 2>&1
+    fi
+}
+
+dynamic_firewall_unban() {
+    local ip="$1"
+    local manager
+    if manager="$(firewall_manager_cmd)"; then
+        "${manager}" unban "${ip}" >/dev/null 2>&1 || true
+    fi
+    command -v ipset >/dev/null 2>&1 || return 0
+    if [[ "${ip}" == *:* ]]; then
+        ipset del "${IPSET6}" "${ip}" >/dev/null 2>&1 || true
+    else
+        ipset del "${IPSET4}" "${ip}" >/dev/null 2>&1 || true
+    fi
+}
+
 remove_runtime_payload() {
     local primary="$1"
     local mirror="$2"
@@ -291,7 +332,13 @@ build_ports_regex() {
 }
 
 safe_cmd() {
-    bash -lc "$1" 2>/dev/null || true
+    local timeout_sec="${SAFE_CMD_TIMEOUT_SEC:-${PTEROPROTECT_SAFE_CMD_TIMEOUT_SEC:-8}}"
+    [[ "${timeout_sec}" =~ ^[0-9]+$ ]] || timeout_sec=8
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${timeout_sec}s" bash -lc "$1" 2>/dev/null || true
+    else
+        bash -lc "$1" 2>/dev/null || true
+    fi
 }
 
 sanitize_shell_single_quoted() {
@@ -882,7 +929,7 @@ is_ip_trust_protected_ip() {
 is_high_confidence_block_reason() {
     local reason="$1"
     case "${reason}" in
-        bad-token:*|sqli-probe:*|probe-scan:*|proxy-swarm:*|nginx-limiter:*|fingerprint-flood:*) return 0 ;;
+        bad-token:*|sqli-probe:*|probe-scan:*|proxy-swarm:*|nginx-limiter:*|access-limiter:*|fingerprint-flood:*) return 0 ;;
     esac
     return 1
 }
@@ -899,7 +946,7 @@ is_metric_block_reason() {
     local reason="$1"
     is_overload_block_reason "${reason}" && return 0
     case "${reason}" in
-        nginx-limiter:*) return 0 ;;
+        nginx-limiter:*|access-limiter:*) return 0 ;;
     esac
     return 1
 }
@@ -945,7 +992,7 @@ heavy_hitter_family_for_reason() {
     case "${reason}" in
         syn-recv-*) printf 'syn' ;;
         established-*) printf 'established' ;;
-        http-access-*|nginx-limiter:*|bad-token:*) printf 'http' ;;
+        http-access-*|nginx-limiter:*|access-limiter:*|bad-token:*) printf 'http' ;;
         probe-scan:*) printf 'probe' ;;
         sqli-probe:*) printf 'sqli' ;;
         *) printf '' ;;
@@ -959,7 +1006,7 @@ default_confidence_score() {
         bad-token:*|sqli-probe:*|probe-scan:*|proxy-swarm:*) printf '92' ;;
         clear-threshold:*) printf '78' ;;
         *-hard:*) printf '74' ;;
-        nginx-limiter:*) printf '68' ;;
+        nginx-limiter:*|access-limiter:*) printf '68' ;;
         *overload-fast:*) printf '58' ;;
         *) printf '60' ;;
     esac
@@ -1412,12 +1459,12 @@ add_ipset_block() {
 
     applied_timeout="$(next_block_timeout "${ip}" "${timeout}" "${reason}")"
 
-    if [[ "${ip}" == *:* ]]; then
-        command -v ipset >/dev/null 2>&1 || return 0
-        validate_ip "${ip}" && ipset add "${IPSET6}" "${ip}" timeout "${applied_timeout}" -exist >/dev/null 2>&1 || true
-    else
-        command -v ipset >/dev/null 2>&1 || return 0
-        validate_ip "${ip}" && ipset add "${IPSET4}" "${ip}" timeout "${applied_timeout}" -exist >/dev/null 2>&1 || true
+    if ! dynamic_firewall_ban "${ip}" "${applied_timeout}"; then
+        printf '[mitigate] block-failed ip=%s ttl=%s reason=%s\n' "${ip}" "${applied_timeout}" "${reason}" >> "${LOG_FILE}"
+        printf '[mitigate] block-failed ip=%s ttl=%s reason=%s\n' "${ip}" "${applied_timeout}" "${reason}" >> "${LATEST_FILE}"
+        record_mitigation_decision "${ip}" "${reason}" "${stage}" "${confidence}" "${impact}" "block-failed"
+        ip_trust_update "${ip}" 0 1 "dynamic-block-failed" "${reason}"
+        return 0
     fi
 
     printf '[mitigate] blocked ip=%s ttl=%s reason=%s\n' "${ip}" "${applied_timeout}" "${reason}" >> "${LOG_FILE}"
@@ -1431,12 +1478,7 @@ remove_ipset_block() {
     ip="$(normalize_ip "${ip}")"
     is_valid_ip "${ip}" || return 0
 
-    command -v ipset >/dev/null 2>&1 || return 0
-    if [[ "${ip}" == *:* ]]; then
-        ipset del "${IPSET6}" "${ip}" >/dev/null 2>&1 || true
-    else
-        ipset del "${IPSET4}" "${ip}" >/dev/null 2>&1 || true
-    fi
+    dynamic_firewall_unban "${ip}"
 }
 
 ensure_whitelist_not_blocked() {
@@ -1712,6 +1754,25 @@ extract_sqli_probe_ip_counts() {
 extract_limiter_ip_counts() {
     local log_tail_lines="$1"
     safe_cmd "tail -n ${log_tail_lines} /var/log/nginx/pterodactyl.app-error.log 2>/dev/null | awk '/limiting requests|limiting connections/ { if (match(\$0, /client: ([0-9A-Fa-f:.]+)/, m)) print m[1] }' | sed '/^$/d' | sort | uniq -c | sort -nr"
+}
+
+extract_access_limiter_ip_counts() {
+    local log_tail_lines="$1"
+    local ignore_re="$2"
+    safe_cmd "tail -n ${log_tail_lines} ${PANEL_ACCESS_LOG} 2>/dev/null | awk -v ignore_re='${ignore_re}' 'NF >= 9 { ip=\$1; path=\$7; status=\$9; gsub(/\/+/, \"/\", path); if (path ~ ignore_re) next; if (status ~ /^(429|461|463|503)$/) print ip }' | sed 's/,.*//; s/\[//g; s/\]//g' | sed '/^$/d' | sort | uniq -c | sort -nr"
+}
+
+merge_ip_count_sets() {
+    awk '
+        NF >= 2 {
+            count=$1 + 0;
+            ip=$2;
+            if (ip != "") totals[ip] += count;
+        }
+        END {
+            for (ip in totals) print totals[ip], ip;
+        }
+    ' | sort -nr
 }
 
 extract_bad_token_ip_counts() {
@@ -2536,11 +2597,17 @@ detect_sqli_probes() {
 
 detect_limiter_abusers() {
     local limiter_counts="$1"
-    local line count ip threshold
+    local threshold="${2:-}"
+    local reason_prefix="${3:-nginx-limiter}"
+    local line count ip
 
     [[ "${LIMITER_BLOCK_ENABLED}" == "1" ]] || return 0
-    threshold=$(( LIMITER_REQ_THRESHOLD * 4 ))
-    if (( threshold < LIMITER_REQ_THRESHOLD + 1 )); then threshold=$(( LIMITER_REQ_THRESHOLD + 1 )); fi
+    if [[ -z "${threshold}" ]]; then
+        threshold=$(( LIMITER_REQ_THRESHOLD * 4 ))
+        if (( threshold < LIMITER_REQ_THRESHOLD + 1 )); then threshold=$(( LIMITER_REQ_THRESHOLD + 1 )); fi
+    fi
+    [[ "${threshold}" =~ ^[0-9]+$ ]] || threshold=6
+    if (( threshold < 2 )); then threshold=2; fi
 
     while read -r line; do
         [[ -z "${line}" ]] && continue
@@ -2551,7 +2618,7 @@ detect_limiter_abusers() {
             continue
         fi
         if (( count >= threshold )); then
-            add_ipset_block "${ip}" "nginx-limiter:${count}" "${BLOCK_TTL}"
+            add_ipset_block "${ip}" "${reason_prefix}:${count}" "${BLOCK_TTL}"
         fi
     done <<< "${limiter_counts}"
 }
@@ -2928,6 +2995,9 @@ while true; do
     SELF_DDOS_RATE_LIMIT_RPS="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_rps 10)" 1)"
     SELF_DDOS_RATE_LIMIT_BURST="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_burst 20)" 1)"
     SELF_DDOS_RATE_LIMIT_TTL_SEC="$(clamp_min_int "$(read_network_setting self_ddos_rate_limit_ttl_sec 900)" 30)"
+    ACCESS_LIMITER_REQ_THRESHOLD="$(clamp_min_int "$(read_network_setting access_limiter_req_threshold 6)" 2)"
+    ACCESS_LIMITER_IGNORE_PATH_REGEX="$(read_network_setting access_limiter_ignore_path_regex '^/__pteroprotect/challenge(/|$)|^/locales/|^/assets/|^/favicon\.ico$|^/robots\.txt$')"
+    ACCESS_LIMITER_IGNORE_PATH_REGEX="$(sanitize_shell_single_quoted "${ACCESS_LIMITER_IGNORE_PATH_REGEX}")"
     SELF_DDOS_FLOW_WATCH_ENABLED="$(normalize_bool "$(read_network_setting self_ddos_flow_watch_enabled 1)")"
     UNBLOCK_PORTAL_NEW_PER_IP_PER_MIN="$(clamp_min_int "$(read_network_setting unblock_portal_new_per_ip_per_min 12)" 2)"
     UNBLOCK_PORTAL_NEW_PER_IP_BURST="$(clamp_min_int "$(read_network_setting unblock_portal_new_per_ip_burst 24)" 2)"
@@ -3216,7 +3286,9 @@ while true; do
     server_identifier_ip_stats="$(extract_server_identifier_ip_stats "${LOG_TAIL_LINES}" "${SELF_DDOS_IGNORE_PATH_REGEX}")"
     probe_ip_counts="$(extract_probe_ip_counts "${LOG_TAIL_LINES}" "${PROBE_PATH_REGEX}")"
     sqli_probe_ip_counts="$(extract_sqli_probe_ip_counts "${LOG_TAIL_LINES}")"
-    limiter_ip_counts="$(extract_limiter_ip_counts "${LIMITER_LOG_TAIL_LINES}")"
+    limiter_error_ip_counts="$(extract_limiter_ip_counts "${LIMITER_LOG_TAIL_LINES}")"
+    limiter_access_ip_counts="$(extract_access_limiter_ip_counts "${LIMITER_LOG_TAIL_LINES}" "${ACCESS_LIMITER_IGNORE_PATH_REGEX}")"
+    limiter_ip_counts="$(printf '%s\n%s\n' "${limiter_error_ip_counts}" "${limiter_access_ip_counts}" | merge_ip_count_sets)"
     bad_token_ip_counts="$(extract_bad_token_ip_counts "${BAD_TOKEN_LOG_TAIL_LINES}" "${BAD_TOKEN_PATH_REGEX}" "${BAD_TOKEN_STATUS_REGEX}")"
     behavior_ip_stats="$(extract_behavior_ip_stats "${LOG_TAIL_LINES}" "${HTTP_IGNORE_PATH_REGEX}")"
     BEHAVIOR_IP_STATS="${behavior_ip_stats}"
@@ -3260,7 +3332,8 @@ while true; do
     enforce_locked_owners
     detect_probe_scanners "${probe_ip_counts}"
     detect_sqli_probes "${sqli_probe_ip_counts}"
-    detect_limiter_abusers "${limiter_ip_counts}"
+    detect_limiter_abusers "${limiter_error_ip_counts}"
+    detect_limiter_abusers "${limiter_access_ip_counts}" "${ACCESS_LIMITER_REQ_THRESHOLD}" "access-limiter"
     detect_bad_token_abusers "${bad_token_ip_counts}"
     swarm_hits="$(detect_proxy_swarm_patterns "${path_swarm_stats}")"
     [[ "${swarm_hits}" =~ ^[0-9]+$ ]] || swarm_hits=0

@@ -31,6 +31,7 @@ class Handler extends ExceptionHandler
      * replaced with 'p_' in the response code.
      */
     private const PTERODACTYL_RULE_STRING = 'pterodactyl\_rules\_';
+    private const RATE_LIMIT_MESSAGE = 'Yahh Stupid mau berharap bisa DDOS';
 
     /**
      * A list of the exception types that should not be reported.
@@ -138,11 +139,12 @@ class Handler extends ExceptionHandler
             $connections->rollBack(0);
         }
 
-        // Treat repeated delete of already-removed servers as idempotent success.
+        // Treat repeated delete of already-removed servers as idempotent success,
+        // but do not hide missing resources on other application API DELETE routes.
         if (($e instanceof ModelNotFoundException || $e->getPrevious() instanceof ModelNotFoundException)
             && $request->isMethod('DELETE')
             && $request->expectsJson()
-            && $request->is('api/application/*')
+            && preg_match('#^api/application/servers/[^/]+(?:/force)?$#', $request->path()) === 1
         ) {
             return response()->noContent();
         }
@@ -153,6 +155,22 @@ class Handler extends ExceptionHandler
             && $request->is('admin/servers/*')
         ) {
             return redirect()->route('admin.servers');
+        }
+
+        $status = method_exists($e, 'getStatusCode')
+            ? (int) $e->getStatusCode()
+            : (self::$exceptionResponseCodes[get_class($e)] ?? 500);
+
+        if ($status === Response::HTTP_TOO_MANY_REQUESTS) {
+            $headers = $e instanceof HttpExceptionInterface ? $e->getHeaders() : [];
+
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return new JsonResponse($this->convertExceptionToArray($e), Response::HTTP_TOO_MANY_REQUESTS, $headers);
+            }
+
+            return response(self::RATE_LIMIT_MESSAGE, Response::HTTP_TOO_MANY_REQUESTS, array_merge($headers, [
+                'Content-Type' => 'text/plain; charset=UTF-8',
+            ]));
         }
 
         // Application API is consumed by external automation. Always return
@@ -260,6 +278,10 @@ class Handler extends ExceptionHandler
                         ->all(),
                 ],
             ]);
+        }
+
+        if (($error['status'] ?? '') === (string) Response::HTTP_TOO_MANY_REQUESTS) {
+            $error['detail'] = self::RATE_LIMIT_MESSAGE;
         }
 
         return ['errors' => [array_merge($error, $override)]];

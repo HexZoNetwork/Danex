@@ -91,10 +91,26 @@ class SetSecurityHeaders
         $mediaSources = array_values(array_unique(array_filter($mediaSources, static fn ($source) => Str::of($source)->trim()->isNotEmpty())));
         $connectSources = array_values(array_unique(array_filter($connectSources, static fn ($source) => Str::of($source)->trim()->isNotEmpty())));
 
+        $scriptSources = [
+            "'self'",
+            "'unsafe-inline'",
+            'https://cdnjs.cloudflare.com',
+            'https://www.google.com',
+            'https://www.gstatic.com',
+            'https://recaptcha.net',
+            'https://static.cloudflareinsights.com',
+        ];
+
+        if ($request->is('server/*/files/edit*')) {
+            // The in-browser ESLint linter used by the file editor validates rule schemas through Ajv,
+            // which requires eval/new Function. Keep this exception scoped to the file editor route only.
+            $scriptSources[] = "'unsafe-eval'";
+        }
+
         $csp = implode('; ', [
             "default-src 'self'",
             // Existing templates still use inline scripts/styles. Keep functionality while blocking eval and broad third-party injection.
-            "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.google.com https://www.gstatic.com https://recaptcha.net https://static.cloudflareinsights.com",
+            'script-src ' . implode(' ', array_values(array_unique($scriptSources))),
             "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
             'img-src ' . implode(' ', $imageSources),
             'media-src ' . implode(' ', $mediaSources),
