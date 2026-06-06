@@ -25,7 +25,8 @@
             <div class="box-body">
                 <p>Step 1: akun yang login wajib <code>id=1</code>.</p>
                 <p>Step 2: masukkan token protect rahasia milik server ini.</p>
-                <p><small>Portal unblock: <a href="{{ $portalUrl }}" target="_blank">{{ $portalUrl }}</a></small></p>
+                <p><small><a class="btn btn-xs btn-default" href="{{ $portalUrl }}" target="_blank" rel="noopener">Open Unblock Portal</a></small></p>
+                <p><small><a class="btn btn-xs btn-default" href="{{ $emergencyPortalUrl ?? '#' }}" target="_blank" rel="noopener">Open Emergency Panel</a></small></p>
 
                 <form method="POST" action="{{ route('admin.protect.verify') }}">
                     @csrf

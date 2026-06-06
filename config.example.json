@@ -6,6 +6,16 @@
     "password": "replace_me",
     "name": "panel_db"
   },
+  "minigames": {
+    "uno": {
+      "database": {
+        "host": "127.0.0.1",
+        "user": "game",
+        "password": "replace_me",
+        "name": "uno_online"
+      }
+    }
+  },
   "telegram": {
     "token": "",
     "chat_id": "-1000000000000",

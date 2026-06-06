@@ -14,6 +14,7 @@ import { ApplicationStore } from '@/state';
 
 const PublicChatPage = lazy(() => import('@/components/dashboard/PublicChatPage'));
 const DanexCoinPage = lazy(() => import('@/components/dashboard/DanexCoinPage'));
+const MiniGamesPage = lazy(() => import('@/components/dashboard/MiniGamesPage'));
 const DanexCPage = lazy(() => import('@/components/dashboard/DanexCPage'));
 const NotificationsPage = lazy(() => import('@/components/dashboard/NotificationsPage'));
 const CreatePanelPage = lazy(() => import('@/components/dashboard/CreatePanelPage'));
@@ -112,6 +113,7 @@ export default () => {
                         <NavLink to={'/servers'} exact>Servers</NavLink>
                         <NavLink to={'/chat'} exact>Chat</NavLink>
                         <NavLink to={'/danexcoin'} exact>DanexCoin</NavLink>
+                        <NavLink to={'/mini-games'} exact>Mini Games</NavLink>
                         {canCreatePanel && <NavLink to={'/create-panel'} exact>Create Panel</NavLink>}
                     </div>
                 </SubNavigation>
@@ -146,6 +148,7 @@ export default () => {
                             <Route path={'/settings'} exact><SettingsHubPage /></Route>
                             <Route path={'/chat'} exact><PublicChatPage /></Route>
                             <Route path={'/danexcoin'} exact><DanexCoinPage /></Route>
+                            <Route path={'/mini-games'} exact><MiniGamesPage /></Route>
                             <Route path={'/judi'} exact><Redirect to={'/danexcoin'} /></Route>
                             <Route path={'/danexc'} exact><Redirect to={'/dashboard'} /></Route>
                             <Route path={'/create-panel'} exact><CreatePanelPage /></Route>

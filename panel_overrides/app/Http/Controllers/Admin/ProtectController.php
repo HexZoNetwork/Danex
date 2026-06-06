@@ -50,6 +50,7 @@ class ProtectController extends Controller
         if (!$this->isVerified($request)) {
             return view('admin.protect.verify', [
                 'portalUrl' => $this->unblockPortalUrl($request),
+                'emergencyPortalUrl' => $this->emergencyPortalUrl($request),
             ]);
         }
 
@@ -59,6 +60,9 @@ class ProtectController extends Controller
             'pteroprotect',
             'pteroprotect-hostguard',
             'pteroprotect-ddoslog',
+            'pteroprotect-challenge',
+            'pteroprotect-unblock-portal',
+            'pteroprotect-emergency-panel',
             'fail2ban',
             'nginx',
             'wings',
@@ -85,6 +89,8 @@ class ProtectController extends Controller
             'rceUnlockedUntil' => (int) $request->session()->get(self::RCE_SESSION_KEY, 0),
             'rceAllowedCommands' => $this->rceCommandAllowlist(),
             'monitorConfig' => $this->monitorConfig(),
+            'challengeStatus' => $this->challengeStatus(),
+            'operatorPortals' => $this->operatorPortalStatus($request),
             'selfHealSnapshot' => $this->selfHealSnapshot(),
             'latestCleanupRun' => Schema::hasTable('protect_cleanup_runs')
                 ? ProtectCleanupRun::query()->orderByDesc('id')->first()
@@ -1065,12 +1071,16 @@ class ProtectController extends Controller
         $service = (string) $request->input('service', 'pteroprotect');
         $action = (string) $request->input('action', 'restart');
 
-        $allowedServices = ['pteroprotect', 'pteroprotect-hostguard', 'pteroprotect-ddoslog', 'fail2ban', 'nginx', 'wings', 'pteroq'];
+        $allowedServices = ['pteroprotect', 'pteroprotect-hostguard', 'pteroprotect-ddoslog', 'pteroprotect-challenge', 'pteroprotect-unblock-portal', 'pteroprotect-emergency-panel', 'fail2ban', 'nginx', 'wings', 'pteroq'];
         $allowedActions = ['start', 'stop', 'restart', 'reload'];
 
         if (!in_array($service, $allowedServices, true) || !in_array($action, $allowedActions, true)) {
             $this->alert->danger('Invalid service action.')->flash();
             return redirect()->route('admin.protect');
+        }
+
+        if ($service === 'pteroprotect-challenge' && $action === 'reload') {
+            $action = 'restart';
         }
 
         $result = $this->runServiceAction($service, $action);
@@ -1619,50 +1629,115 @@ class ProtectController extends Controller
 
     private function unblockPortalUrl(Request $request): string
     {
-        $host = $this->detectEth0Ipv4();
-        if ($host === '') {
-            $host = (string) $request->server('SERVER_ADDR', '');
-        }
-        if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            $fallbackHost = parse_url((string) config('app.url', ''), PHP_URL_HOST);
-            $host = is_string($fallbackHost) ? $fallbackHost : '';
-        }
-        if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            $host = '127.0.0.1';
-        }
+        return $this->operatorPortalUrl($request, 'unblock_portal', 18443);
+    }
 
-        $port = $this->unblockPortalPort();
+    private function emergencyPortalUrl(Request $request): string
+    {
+        return $this->operatorPortalUrl($request, 'emergency_control', 18447);
+    }
+
+    private function operatorPortalUrl(Request $request, string $prefix, int $defaultPort): string
+    {
+        $network = $this->networkConfig();
+        $host = $this->firstUsableIpv4([
+            (string) ($network[$prefix . '_public_host'] ?? ''),
+            (string) parse_url((string) ($network[$prefix . '_url'] ?? ''), PHP_URL_HOST),
+            (string) $request->server('SERVER_ADDR', ''),
+            (string) $request->getHost(),
+            (string) parse_url((string) config('app.url', ''), PHP_URL_HOST),
+            $this->detectPrimaryIpv4(),
+        ]);
+
+        $port = $this->networkPort($prefix . '_port', $defaultPort);
         return sprintf('http://%s:%d/', $host, $port);
     }
 
-    private function detectEth0Ipv4(): string
+    /**
+     * @param array<int,string> $candidates
+     */
+    private function firstUsableIpv4(array $candidates): string
     {
-        $result = $this->run(['ip', '-4', '-o', 'addr', 'show', 'dev', 'eth0', 'scope', 'global'], 4);
-        if (($result['exit'] ?? 1) !== 0) {
-            return '';
+        foreach ($candidates as $candidate) {
+            $host = trim($candidate);
+            if ($host === '') {
+                continue;
+            }
+            $host = trim($host, '[]');
+            if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && $host !== '0.0.0.0') {
+                return $host;
+            }
         }
 
-        $output = (string) ($result['output'] ?? '');
-        if (preg_match('/\binet\s+([0-9.]+)\//', $output, $m) === 1) {
-            $ip = trim((string) ($m[1] ?? ''));
-            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-                return $ip;
+        return '127.0.0.1';
+    }
+
+    private function detectPrimaryIpv4(): string
+    {
+        foreach ([['ip', '-4', 'route', 'get', '1.1.1.1'], ['hostname', '-I']] as $command) {
+            $result = $this->run($command, 3);
+            if (($result['exit'] ?? 1) !== 0) {
+                continue;
+            }
+            if (preg_match('/\b(?:src\s+)?([0-9]{1,3}(?:\.[0-9]{1,3}){3})\b/', (string) ($result['output'] ?? ''), $m) === 1) {
+                $ip = (string) ($m[1] ?? '');
+                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && $ip !== '0.0.0.0') {
+                    return $ip;
+                }
             }
         }
 
         return '';
     }
 
-    private function unblockPortalPort(): int
+    private function portalDisplayHost(string $url): string
     {
-        $network = $this->networkConfig();
-        $raw = $network['unblock_portal_port'] ?? 18443;
-        $port = (int) $raw;
+        $host = parse_url($url, PHP_URL_HOST);
+        $port = parse_url($url, PHP_URL_PORT);
+        if (!is_string($host) || $host === '') {
+            return '-';
+        }
+        return $port ? sprintf('%s:%d', $host, (int) $port) : $host;
+    }
+
+    private function networkPort(string $key, int $default): int
+    {
+        $port = (int) ($this->networkConfig()[$key] ?? $default);
         if ($port < 1 || $port > 65535) {
-            return 18443;
+            return $default;
         }
 
         return $port;
+    }
+
+    /**
+     * @return array{unblock:array<string,mixed>,emergency:array<string,mixed>}
+     */
+    private function operatorPortalStatus(Request $request): array
+    {
+        $network = $this->networkConfig();
+        $unblockUrl = $this->unblockPortalUrl($request);
+        $emergencyUrl = $this->emergencyPortalUrl($request);
+        return [
+            'unblock' => [
+                'label' => 'Unblock Portal',
+                'url' => $unblockUrl,
+                'displayHost' => $this->portalDisplayHost($unblockUrl),
+                'bind' => (string) ($network['unblock_portal_bind'] ?? '0.0.0.0'),
+                'port' => $this->networkPort('unblock_portal_port', 18443),
+                'tokenConfigured' => trim((string) ($network['unblock_portal_token'] ?? '')) !== '',
+                'service' => $this->detectServiceStatus('pteroprotect-unblock-portal'),
+            ],
+            'emergency' => [
+                'label' => 'Emergency Panel',
+                'url' => $emergencyUrl,
+                'displayHost' => $this->portalDisplayHost($emergencyUrl),
+                'bind' => (string) ($network['emergency_control_bind'] ?? '0.0.0.0'),
+                'port' => $this->networkPort('emergency_control_port', 18447),
+                'tokenConfigured' => trim((string) ($network['emergency_control_token'] ?? '')) !== '',
+                'service' => $this->detectServiceStatus('pteroprotect-emergency-panel'),
+            ],
+        ];
     }
 
     private function buildTemplateCommand(string $templateId, Request $request): ?array
@@ -1815,13 +1890,13 @@ class ProtectController extends Controller
 
     private function isAllowedSystemService(string $service): bool
     {
-        $allowed = ['nginx', 'wings', 'fail2ban', 'pteroprotect', 'pteroprotect-selfheal', 'pteroprotect-abuse-guard', 'pteroq'];
+        $allowed = ['nginx', 'wings', 'fail2ban', 'pteroprotect', 'pteroprotect-challenge', 'pteroprotect-unblock-portal', 'pteroprotect-emergency-panel', 'pteroprotect-selfheal', 'pteroprotect-abuse-guard', 'pteroq'];
         return in_array($service, $allowed, true);
     }
 
     private function isAllowedJournalUnit(string $unit): bool
     {
-        $allowed = ['nginx', 'wings', 'fail2ban', 'pteroprotect', 'pteroprotect-selfheal', 'pteroprotect-abuse-guard', 'pteroq'];
+        $allowed = ['nginx', 'wings', 'fail2ban', 'pteroprotect', 'pteroprotect-challenge', 'pteroprotect-unblock-portal', 'pteroprotect-emergency-panel', 'pteroprotect-selfheal', 'pteroprotect-abuse-guard', 'pteroq'];
         return in_array($unit, $allowed, true);
     }
 
@@ -2084,13 +2159,34 @@ class ProtectController extends Controller
         ];
     }
 
+    private function configPath(): string
+    {
+        $path = trim((string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH));
+        return $path !== '' ? $path : self::DEFAULT_CONFIG_PATH;
+    }
+
+    private function installDir(): string
+    {
+        $home = trim((string) env('DANN_GUARD_HOME', ''));
+        if ($home !== '' && str_starts_with($home, '/')) {
+            return rtrim($home, '/');
+        }
+
+        $configPath = $this->configPath();
+        if (str_ends_with($configPath, '/config.json')) {
+            return rtrim(dirname($configPath), '/');
+        }
+
+        return '/pteroprotect';
+    }
+
     /**
      * @return array<int,string>
      */
     private function configPaths(): array
     {
         return array_values(array_unique(array_filter([
-            (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH),
+            $this->configPath(),
             self::DEFAULT_CONFIG_PATH,
             '/root/porn/config.json',
         ])));
@@ -2472,6 +2568,142 @@ class ProtectController extends Controller
         return ($result['exit'] ?? 1) === 0;
     }
 
+    /**
+     * @return array{configured:bool,service:string,healthy:bool,endpoint:string,probe:string,message:string}
+     */
+    private function challengeStatus(): array
+    {
+        $network = $this->networkConfig();
+        $configured = filter_var($network['waf_challenge_enabled'] ?? false, FILTER_VALIDATE_BOOL);
+        $target = $this->challengeProbeTarget($network);
+        $service = $this->detectServiceStatus('pteroprotect-challenge');
+        $health = ['ok' => false, 'error' => 'not probed'];
+        if ($configured || str_starts_with($service, 'active')) {
+            $health = $this->probeLocalHttp($target['probe'], 1);
+        }
+        $healthy = $health['ok'];
+
+        $message = 'Challenge disabled in config.';
+        if ($configured && $healthy) {
+            $message = 'Challenge configured and local health probe is OK.';
+        } elseif ($configured && !$healthy) {
+            $message = 'Challenge is enabled in config but health probe failed; nginx auth_request may fail open.';
+        } elseif (!$configured && str_starts_with($service, 'active')) {
+            $message = 'Challenge service is running, but enforcement is disabled in config.';
+        }
+
+        if (!$healthy && $health['error'] !== '') {
+            $message .= ' Probe: ' . $health['error'];
+        }
+
+        return [
+            'configured' => $configured,
+            'service' => $service,
+            'healthy' => $healthy,
+            'endpoint' => $target['configured'],
+            'probe' => $target['probe'],
+            'message' => $message,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $network
+     * @return array{configured:string,probe:string}
+     */
+    private function challengeProbeTarget(array $network): array
+    {
+        $upstream = trim((string) ($network['waf_challenge_upstream'] ?? ''));
+        if ($upstream !== '') {
+            $url = str_starts_with($upstream, 'http://') || str_starts_with($upstream, 'https://')
+                ? $upstream
+                : 'http://' . $upstream;
+            return [
+                'configured' => $url,
+                'probe' => $this->normalizeChallengeHealthUrl($url),
+            ];
+        }
+
+        $bind = trim((string) ($network['waf_challenge_bind'] ?? '127.0.0.1'));
+        if ($bind === '' || $bind === '0.0.0.0' || $bind === '::') {
+            $bind = '127.0.0.1';
+        }
+        $port = (int) ($network['waf_challenge_port'] ?? 18444);
+        if ($port < 1 || $port > 65535) {
+            $port = 18444;
+        }
+        $host = filter_var($bind, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? '[' . $bind . ']' : $bind;
+        $url = sprintf('http://%s:%d/health', $host, $port);
+
+        return ['configured' => $url, 'probe' => $url];
+    }
+
+    private function normalizeChallengeHealthUrl(string $url): string
+    {
+        $parts = parse_url($url);
+        $scheme = strtolower((string) ($parts['scheme'] ?? 'http'));
+        $host = (string) ($parts['host'] ?? '127.0.0.1');
+        $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+        if ($port < 1 || $port > 65535) {
+            $port = 18444;
+        }
+        $path = (string) ($parts['path'] ?? '');
+        if ($path === '' || $path === '/') {
+            $path = '/health';
+        }
+        $displayHost = filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? '[' . $host . ']' : $host;
+        return sprintf('%s://%s:%d%s', $scheme === 'https' ? 'https' : 'http', $displayHost, $port, $path);
+    }
+
+    /**
+     * @return array{ok:bool,error:string}
+     */
+    private function probeLocalHttp(string $url, int $timeoutSeconds): array
+    {
+        $parts = parse_url($url);
+        $scheme = strtolower((string) ($parts['scheme'] ?? 'http'));
+        $host = (string) ($parts['host'] ?? '');
+        $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+        $path = (string) ($parts['path'] ?? '/');
+        if (!$this->isLocalProbeHost($host) || $port < 1 || $port > 65535) {
+            return ['ok' => false, 'error' => 'invalid local endpoint'];
+        }
+
+        $errno = 0;
+        $errstr = '';
+        $transportHost = filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? '[' . $host . ']' : $host;
+        $fp = @stream_socket_client("tcp://{$transportHost}:{$port}", $errno, $errstr, max(1, $timeoutSeconds));
+        if (!is_resource($fp)) {
+            return ['ok' => false, 'error' => trim($errstr) !== '' ? $errstr : 'connection failed'];
+        }
+
+        stream_set_timeout($fp, max(1, $timeoutSeconds));
+        fwrite($fp, "GET {$path} HTTP/1.1\r\nHost: {$host}\r\nConnection: close\r\nAccept: application/json\r\n\r\n");
+        $line = fgets($fp, 256);
+        fclose($fp);
+
+        if (!is_string($line) || $line === '') {
+            return ['ok' => false, 'error' => 'empty response'];
+        }
+
+        if (preg_match('/^HTTP\/\d(?:\.\d)?\s+2\d\d\b/', trim($line)) === 1) {
+            return ['ok' => true, 'error' => ''];
+        }
+
+        return ['ok' => false, 'error' => trim($line)];
+    }
+
+    private function isLocalProbeHost(string $host): bool
+    {
+        $host = strtolower(trim($host, '[]'));
+        if (in_array($host, ['localhost', '127.0.0.1', '::1'], true)) {
+            return true;
+        }
+        if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return str_starts_with($host, '127.');
+        }
+        return false;
+    }
+
     private function detectServiceStatus(string $service): string
     {
         if ($this->isSystemdOperational()) {
@@ -2481,9 +2713,12 @@ class ProtectController extends Controller
         }
 
         return match ($service) {
-            'pteroprotect' => $this->isProcessRunning('/pteroprotect/dann_guard') ? 'active (manual)' : 'inactive (manual)',
+            'pteroprotect' => $this->isProcessRunning($this->installDir() . '/dann_guard') ? 'active (manual)' : 'inactive (manual)',
             'pteroprotect-hostguard' => $this->rootFileExists('/dev/shm/pteroprotect/mode.flag') ? 'active (oneshot)' : 'inactive (oneshot)',
-            'pteroprotect-ddoslog' => $this->isProcessRunning('/pteroprotect/scripts/ddos_host_logger.sh') ? 'active (manual)' : 'inactive (manual)',
+            'pteroprotect-ddoslog' => $this->isProcessRunning($this->installDir() . '/scripts/ddos_host_logger.sh') ? 'active (manual)' : 'inactive (manual)',
+            'pteroprotect-challenge' => $this->isProcessRunning($this->installDir() . '/challenge_guard') ? 'active (manual)' : 'inactive (manual)',
+            'pteroprotect-unblock-portal' => $this->isProcessRunning($this->installDir() . '/scripts/unblock_portal.py') ? 'active (manual)' : 'inactive (manual)',
+            'pteroprotect-emergency-panel' => $this->isProcessRunning($this->installDir() . '/scripts/pteroprotect_emergency_panel.py') ? 'active (manual)' : 'inactive (manual)',
             'fail2ban' => (($this->run(['fail2ban-client', 'ping'], 5)['exit'] ?? 1) === 0) ? 'active (manual)' : 'inactive (manual)',
             'nginx' => $this->isProcessRunning('nginx: master process') ? 'active (manual)' : 'inactive (manual)',
             'wings' => ($this->isProcessRunning('/usr/local/bin/wings') || $this->isProcessRunning('/usr/bin/wings') || $this->isProcessRunning('wings_mock.py'))
@@ -2555,6 +2790,40 @@ class ProtectController extends Controller
                 '-lc',
                 "pkill -f '/pteroprotect/scripts/ddos_host_logger.sh' >/dev/null 2>&1 || true; " .
                 "nohup env DANN_GUARD_HOME=/pteroprotect /pteroprotect/scripts/ddos_host_logger.sh >> /dev/shm/pteroprotect/ddos_host.log 2>&1 &",
+            ];
+        }
+
+        if ($service === 'pteroprotect-challenge') {
+            $installDir = $this->installDir();
+            $binary = $installDir . '/challenge_guard';
+            $configPath = $this->configPath();
+            $logPath = $installDir . '/challenge_guard.log';
+            if ($action === 'stop') {
+                return ['pkill', '-f', $binary];
+            }
+
+            return [
+                'bash',
+                '-lc',
+                'pkill -f ' . escapeshellarg($binary) . ' >/dev/null 2>&1 || true; ' .
+                'nohup env PTEROPROTECT_CONFIG_PATH=' . escapeshellarg($configPath) . ' ' . escapeshellarg($binary) . ' >> ' . escapeshellarg($logPath) . ' 2>&1 &',
+            ];
+        }
+
+        if ($service === 'pteroprotect-unblock-portal' || $service === 'pteroprotect-emergency-panel') {
+            $installDir = $this->installDir();
+            $script = $service === 'pteroprotect-unblock-portal' ? 'unblock_portal.py' : 'pteroprotect_emergency_panel.py';
+            $path = $installDir . '/scripts/' . $script;
+            $log = $installDir . '/' . $service . '.log';
+            if ($action === 'stop') {
+                return ['pkill', '-f', $path];
+            }
+
+            return [
+                'bash',
+                '-lc',
+                'pkill -f ' . escapeshellarg($path) . ' >/dev/null 2>&1 || true; ' .
+                'nohup env DANN_GUARD_HOME=' . escapeshellarg($installDir) . ' ' . escapeshellarg($path) . ' >> ' . escapeshellarg($log) . ' 2>&1 &',
             ];
         }
 

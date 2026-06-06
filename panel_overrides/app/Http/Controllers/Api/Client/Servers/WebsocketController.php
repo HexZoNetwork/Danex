@@ -4,6 +4,7 @@ namespace Pterodactyl\Http\Controllers\Api\Client\Servers;
 
 use Throwable;
 use Carbon\CarbonImmutable;
+use Pterodactyl\Enum\JwtScope;
 use Pterodactyl\Models\Server;
 use Illuminate\Http\JsonResponse;
 use Pterodactyl\Models\Permission;
@@ -66,6 +67,7 @@ class WebsocketController extends ClientApiController
         $token = $this->jwtService
             ->setExpiresAt(CarbonImmutable::now()->addMinutes(10))
             ->setUser($request->user())
+            ->setScopes(JwtScope::Websocket)
             ->setClaims([
                 'server_uuid' => $server->uuid,
                 'permissions' => $permissions,

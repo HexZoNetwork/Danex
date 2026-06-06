@@ -87,6 +87,79 @@
 	    </div>
 	</div>
 
+    @php
+        $challenge = is_array($challengeStatus ?? null) ? $challengeStatus : [];
+        $challengeServiceActive = str_starts_with((string) ($challenge['service'] ?? ''), 'active');
+        $challengeMismatch = (($challenge['configured'] ?? false) && (!($challenge['healthy'] ?? false) || !$challengeServiceActive)) || (!($challenge['configured'] ?? false) && $challengeServiceActive);
+        $portals = is_array($operatorPortals ?? null) ? $operatorPortals : [];
+    @endphp
+    <div class="row">
+        <div class="col-md-12">
+            <div class="box {{ $challengeMismatch ? 'box-warning' : 'box-success' }}">
+                <div class="box-header with-border"><h3 class="box-title">Challenge Runtime Status</h3></div>
+                <div class="box-body">
+                    @if($challengeMismatch)
+                        <div class="alert alert-warning">Challenge runtime/config mismatch. Jika config aktif tapi service/health tidak OK, nginx auth_request bisa fail-open. Jika service aktif tapi config disabled, ada daemon stray yang perlu dicek.</div>
+                    @endif
+                    <table class="table table-bordered pp-table">
+                        <tbody>
+                        <tr>
+                            <th style="width: 180px;">Config Enabled</th>
+                            <td>{{ ($challenge['configured'] ?? false) ? 'enabled' : 'disabled' }}</td>
+                        </tr>
+                        <tr>
+                            <th>Service</th>
+                            <td><code>{{ $challenge['service'] ?? 'unknown' }}</code></td>
+                        </tr>
+                        <tr>
+                            <th>Configured Endpoint</th>
+                            <td><code>{{ $challenge['endpoint'] ?? '-' }}</code></td>
+                        </tr>
+                        <tr>
+                            <th>Health Probe</th>
+                            <td>{{ ($challenge['healthy'] ?? false) ? 'OK' : 'Not OK' }} <code>{{ $challenge['probe'] ?? ($challenge['endpoint'] ?? '-') }}</code></td>
+                        </tr>
+                        <tr>
+                            <th>Message</th>
+                            <td>{{ $challenge['message'] ?? '-' }}</td>
+                        </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        @foreach(['unblock', 'emergency'] as $portalKey)
+            @php
+                $portal = is_array($portals[$portalKey] ?? null) ? $portals[$portalKey] : [];
+                $serviceActive = str_starts_with((string) ($portal['service'] ?? ''), 'active');
+                $tokenOk = (bool) ($portal['tokenConfigured'] ?? false);
+                $portalOk = $serviceActive && $tokenOk;
+            @endphp
+            <div class="col-md-6">
+                <div class="box {{ $portalOk ? 'box-success' : 'box-warning' }}">
+                    <div class="box-header with-border"><h3 class="box-title">{{ $portal['label'] ?? ucfirst($portalKey) }}</h3></div>
+                    <div class="box-body">
+                        @if(!$portalOk)
+                            <div class="alert alert-warning">Portal belum siap: service harus active dan token harus configured.</div>
+                        @endif
+                        <p><a class="btn btn-primary" href="{{ $portal['url'] ?? '#' }}" target="_blank" rel="noopener">Open {{ $portal['label'] ?? ucfirst($portalKey) }}</a></p>
+                        <table class="table table-bordered pp-table">
+                            <tbody>
+                            <tr><th style="width: 160px;">Access Host</th><td><code>{{ $portal['displayHost'] ?? '-' }}</code></td></tr>
+                            <tr><th>Service</th><td><code>{{ $portal['service'] ?? 'unknown' }}</code></td></tr>
+                            <tr><th>Bind / Port</th><td><code>{{ $portal['bind'] ?? '-' }}:{{ $portal['port'] ?? '-' }}</code></td></tr>
+                            <tr><th>Token</th><td>{{ $tokenOk ? 'configured' : 'missing' }}</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        @endforeach
+    </div>
+
 	<div class="row">
 	    <div class="col-md-6">
         <div class="box box-primary">

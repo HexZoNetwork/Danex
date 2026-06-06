@@ -845,15 +845,22 @@ stage_runtime_bundle() {
         resilience_test_harness.py \
         runtime_abuse_guard.py \
         security_log_watch.py \
+        security_startup_policy.py \
         self_heal_monitor.py \
         smoke_l7_defense.sh \
         smoke_nodefs_abuse.sh \
         survive_60s.sh \
+        sync_panel_overrides.sh \
         unblock_portal.py \
         validator_preflight.sh \
         watch_panel_overrides.sh; do
         install_runtime_file "${PROJECT_DIR}/scripts/${script}" "${INSTALL_DIR}/scripts/${script}"
     done
+
+    chmod 0755 \
+        "${INSTALL_DIR}/scripts/sync_panel_overrides.sh" \
+        "${INSTALL_DIR}/scripts/watch_panel_overrides.sh" \
+        >/dev/null 2>&1 || true
 
     if [[ -d "${PROJECT_DIR}/systemd" ]]; then
         mkdir -p "${INSTALL_DIR}/systemd"
@@ -861,6 +868,34 @@ stage_runtime_bundle() {
     fi
     if [[ -d "${PROJECT_DIR}/host_overrides" ]]; then
         copy_tree "${PROJECT_DIR}/host_overrides" "${INSTALL_DIR}/host_overrides"
+    fi
+}
+
+validate_runtime_bundle() {
+    local missing=0
+    local path=""
+
+    for path in \
+        "${INSTALL_DIR}/scripts/security_startup_policy.py" \
+        "${INSTALL_DIR}/scripts/sync_panel_overrides.sh" \
+        "${INSTALL_DIR}/scripts/watch_panel_overrides.sh"; do
+        if [[ ! -f "${path}" ]]; then
+            echo "[setup] error: required runtime file missing after staging: ${path}" >&2
+            missing=1
+        fi
+    done
+
+    for path in \
+        "${INSTALL_DIR}/scripts/sync_panel_overrides.sh" \
+        "${INSTALL_DIR}/scripts/watch_panel_overrides.sh"; do
+        if [[ -f "${path}" && ! -x "${path}" ]]; then
+            echo "[setup] error: required runtime script is not executable after staging: ${path}" >&2
+            missing=1
+        fi
+    done
+
+    if [[ "${missing}" -ne 0 ]]; then
+        exit 1
     fi
 }
 
@@ -889,6 +924,87 @@ sync_panel_built_assets_to_overrides() {
             "${panel_assets}/" "${override_assets}/"
     else
         find "${panel_assets}" -maxdepth 1 -type f \( -name '*.js' -o -name '*.map' -o -name 'manifest.json' \) -exec cp -f {} "${override_assets}/" \;
+    fi
+}
+
+install_uno_minigame() {
+    local panel_dir="${1:-${PANEL_DIR}}"
+    local target_dir="${panel_dir}/public/minigames/uno"
+    local source_dir="${PROJECT_DIR}/panel_overrides/public/minigames/uno"
+    local db_host=""
+    local db_name=""
+    local db_user=""
+    local db_pass=""
+    local sql_file=""
+    local sql_pass=""
+
+    [[ -d "${panel_dir}/public" ]] || return 0
+    if [[ ! -d "${source_dir}" ]]; then
+        warn "repo-owned UNO mini-game source missing at ${source_dir}; skipping UNO deploy"
+        return 0
+    fi
+
+    echo "[setup] installing UNO mini-game from repo source to ${target_dir}..."
+    rm -rf "${target_dir}"
+    mkdir -p "$(dirname "${target_dir}")"
+    copy_tree "${source_dir}" "${target_dir}"
+
+    cat > "${target_dir}/keys.php" <<'PHP'
+<?php
+$configPath = '/pteroprotect/config.json';
+$config = json_decode(file_get_contents($configPath), true);
+$database = $config['minigames']['uno']['database'] ?? [];
+
+$serverIp = $database['host'] ?? '127.0.0.1';
+$dbName = $database['name'] ?? 'uno_online';
+$username = $database['user'] ?? 'game';
+$pass = $database['password'] ?? '';
+?>
+PHP
+    chown -R www-data:www-data "${target_dir}" >/dev/null 2>&1 || true
+    chmod 0640 "${target_dir}/keys.php" >/dev/null 2>&1 || true
+
+    db_host="$(read_config_path_value minigames.uno.database.host 127.0.0.1)"
+    db_name="$(read_config_path_value minigames.uno.database.name uno_online)"
+    db_user="$(read_config_path_value minigames.uno.database.user game)"
+    db_pass="$(read_config_path_value minigames.uno.database.password hexzo)"
+    sql_file="${target_dir}/uno_online_db.sql"
+
+    if ! command -v mysql >/dev/null 2>&1; then
+        warn "mysql client unavailable; UNO files installed but database was not initialized"
+        return 0
+    fi
+    if [[ ! -f "${sql_file}" ]]; then
+        warn "UNO SQL dump missing at ${sql_file}; database was not initialized"
+        return 0
+    fi
+    if [[ "${db_host}" != "127.0.0.1" && "${db_host}" != "localhost" ]]; then
+        warn "UNO database host is ${db_host}; skipping local MySQL user/database bootstrap"
+        return 0
+    fi
+
+    sql_pass="${db_pass//\\/\\\\}"
+    sql_pass="${sql_pass//\'/\'\'}"
+    if printf "CREATE DATABASE IF NOT EXISTS \`%s\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s'; CREATE USER IF NOT EXISTS '%s'@'127.0.0.1' IDENTIFIED BY '%s'; GRANT ALL PRIVILEGES ON \`%s\`.* TO '%s'@'localhost'; GRANT ALL PRIVILEGES ON \`%s\`.* TO '%s'@'127.0.0.1'; FLUSH PRIVILEGES;\n" "${db_name}" "${db_user}" "${sql_pass}" "${db_user}" "${sql_pass}" "${db_name}" "${db_user}" "${db_name}" "${db_user}" | mysql; then
+        if mysql "${db_name}" < "${sql_file}"; then
+            echo "[setup] UNO database initialized (${db_name})."
+        else
+            warn "UNO database schema import failed; applying idempotent upgrade queries for existing installs"
+        fi
+        if mysql "${db_name}" <<'SQL'; then
+ALTER TABLE player MODIFY name varchar(191) NOT NULL;
+SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'player' AND COLUMN_NAME = 'user_id') = 0, 'ALTER TABLE player ADD COLUMN user_id bigint unsigned NULL AFTER roomCode', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
+SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'player' AND COLUMN_NAME = 'avatar_url') = 0, 'ALTER TABLE player ADD COLUMN avatar_url varchar(2048) NULL AFTER user_id', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
+SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'player' AND COLUMN_NAME = 'is_host') = 0, 'ALTER TABLE player ADD COLUMN is_host tinyint(1) NOT NULL DEFAULT 0 AFTER avatar_url', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
+CREATE TABLE IF NOT EXISTS uno_spectators (id bigint unsigned NOT NULL AUTO_INCREMENT, roomCode varchar(5) NOT NULL, user_id bigint unsigned NOT NULL, username varchar(191) NOT NULL, avatar_url varchar(2048) NULL, created_at timestamp NULL DEFAULT CURRENT_TIMESTAMP, updated_at timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, PRIMARY KEY (id), UNIQUE KEY uno_spectators_room_user (roomCode, user_id), KEY uno_spectators_room (roomCode)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS uno_launch_tokens (token_hash char(64) NOT NULL, roomCode varchar(5) NOT NULL, player_id varchar(5) NULL, user_id bigint unsigned NOT NULL, username varchar(191) NOT NULL, avatar_url varchar(2048) NULL, role varchar(16) NOT NULL, expires_at int unsigned NOT NULL, used_at int unsigned NULL, PRIMARY KEY (token_hash), KEY uno_launch_tokens_room (roomCode), KEY uno_launch_tokens_expiry (expires_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+SQL
+            echo "[setup] UNO authenticated lobby schema ready (${db_name})."
+        else
+            warn "UNO authenticated lobby schema upgrade failed; create missing columns/tables manually"
+        fi
+    else
+        warn "UNO database bootstrap failed; create database/user manually if needed"
     fi
 }
 
@@ -1317,6 +1433,7 @@ apt-get install "${APT_INSTALL_OPTS[@]}" "${APT_DEPS[@]}"
 echo "[setup] staging runtime bundle in ${INSTALL_DIR} (no full source copy)..."
 mkdir -p "${INSTALL_DIR}"
 stage_runtime_bundle
+validate_runtime_bundle
 if [[ -f "${PROJECT_DIR}/config.json" ]]; then
     install -m 0640 "${PROJECT_DIR}/config.json" "${INSTALL_DIR}/config.json"
     echo "[setup] config source: ${PROJECT_DIR}/config.json -> ${INSTALL_DIR}/config.json"
@@ -1404,6 +1521,13 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network} = {} if ref($j->{network}) ne "HASH";
         $j->{monitor} = {} if ref($j->{monitor}) ne "HASH";
         $j->{ptlc} = {} if ref($j->{ptlc}) ne "HASH";
+        $j->{minigames} = {} if ref($j->{minigames}) ne "HASH";
+        $j->{minigames}{uno} = {} if ref($j->{minigames}{uno}) ne "HASH";
+        $j->{minigames}{uno}{database} = {} if ref($j->{minigames}{uno}{database}) ne "HASH";
+        $j->{minigames}{uno}{database}{host} = "127.0.0.1" if !defined($j->{minigames}{uno}{database}{host}) || $j->{minigames}{uno}{database}{host} eq "";
+        $j->{minigames}{uno}{database}{name} = "uno_online" if !defined($j->{minigames}{uno}{database}{name}) || $j->{minigames}{uno}{database}{name} eq "" || $j->{minigames}{uno}{database}{name} eq "replace_me";
+        $j->{minigames}{uno}{database}{user} = "game" if !defined($j->{minigames}{uno}{database}{user}) || $j->{minigames}{uno}{database}{user} eq "" || $j->{minigames}{uno}{database}{user} eq "replace_me";
+        $j->{minigames}{uno}{database}{password} = "hexzo" if !defined($j->{minigames}{uno}{database}{password}) || $j->{minigames}{uno}{database}{password} eq "" || $j->{minigames}{uno}{database}{password} eq "replace_me";
 
         if (defined $env_file && -f $env_file) {
             my %env = ();
@@ -2257,6 +2381,7 @@ if [[ -d "${PANEL_DIR}" && -n "${PANEL_OVERRIDE_SOURCE}" ]]; then
     backup_panel_override_targets "${PANEL_OVERRIDE_SOURCE}" "${PANEL_DIR}" "${PANEL_OVERRIDE_BACKUP_DIR}"
     copy_tree "${PANEL_OVERRIDE_SOURCE}" "${PANEL_DIR}"
     ensure_panel_autoconfigure_defaults "${PANEL_DIR}" "${PANEL_ENV_FILE}"
+    install_uno_minigame "${PANEL_DIR}"
 
     # Reviactyl compatibility bridge:
     # ensure known extra frontend deps are present before dependency install/build is attempted.

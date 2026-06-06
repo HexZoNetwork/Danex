@@ -32,6 +32,12 @@ def main() -> int:
     public_chat = (ROOT / "panel_overrides/app/Http/Controllers/Api/Client/PublicChatController.php").read_text(encoding="utf-8")
     public_chat_api = (ROOT / "panel_overrides/resources/scripts/api/chat/publicChat.ts").read_text(encoding="utf-8")
     public_chat_panel = (ROOT / "panel_overrides/resources/scripts/components/dashboard/chat/PublicChatPanel.tsx").read_text(encoding="utf-8")
+    file_upload_controller = (ROOT / "panel_overrides/app/Http/Controllers/Api/Client/Servers/FileUploadController.php").read_text(encoding="utf-8")
+    websocket_controller = (ROOT / "panel_overrides/app/Http/Controllers/Api/Client/Servers/WebsocketController.php").read_text(encoding="utf-8")
+    node_jwt_service = (ROOT / "panel_overrides/app/Services/Nodes/NodeJWTService.php").read_text(encoding="utf-8")
+    session_binding = (ROOT / "panel_overrides/app/Http/Middleware/Security/PteroProtectSessionBinding.php").read_text(encoding="utf-8")
+    recaptcha = (ROOT / "panel_overrides/app/Http/Middleware/VerifyReCaptcha.php").read_text(encoding="utf-8")
+    route_service = (ROOT / "panel_overrides/app/Providers/RouteServiceProvider.php").read_text(encoding="utf-8")
 
     assert_contains(waf, "isAllowedMethod($request, $config)", "WAF must reject disallowed HTTP methods")
     assert_contains(waf, "hasExcessiveHeaders($request, $config)", "WAF must bound header count and size")
@@ -53,6 +59,19 @@ def main() -> int:
     assert_contains(nginx, "Browser panel websocket metadata uses Laravel session + CSRF", "nginx must not require bearer API tokens for UI websocket metadata")
     assert_contains(nginx, "Browser dashboard polling uses session auth", "nginx must not require bearer API tokens for UI resource polling")
     assert_contains(nginx, "location ^~ /api/client/chat/", "nginx must keep explicit chat UI lane")
+    assert_contains(nginx, "location ^~ /locales/", "locale bootstrap payloads must bypass challenge auth_request")
+    assert_not_contains(
+        nginx,
+        "location ^~ /locales/ {\n    auth_request",
+        "locale bootstrap payloads must not be challenged into nginx auth_request 302/500 loops",
+    )
+    assert_contains(nginx, "location = /api/client/rum", "RUM telemetry needs an explicit JSON-safe lane")
+    assert_not_contains(
+        nginx,
+        "location = /api/client/rum {\n    auth_request",
+        "RUM telemetry must not depend on HTML challenge redirects",
+    )
+    assert_contains(nginx, "location @pteroprotect_challenge_redirect", "challenge redirect named location must exist when referenced")
     assert_contains(nginx, "location ^~ /api/client/create-panel/", "nginx must keep Create Panel on a JSON API lane")
     assert_contains(nginx, "Create Panel is a JSON API", "Create Panel lane must document why it bypasses the HTML challenge")
     assert_not_contains(
@@ -163,6 +182,20 @@ def main() -> int:
         "setConnected(false);",
         "WAF realtime hook must fail closed to polling mode without websocket console spam",
     )
+    assert_contains(session_binding, "str_starts_with($path, 'auth/')", "session binding must bypass guest auth bootstrap")
+    assert_contains(session_binding, "str_starts_with($path, 'locales/')", "session binding must bypass locale bootstrap")
+    assert_contains(session_binding, "$path === 'sanctum/csrf-cookie'", "session binding must bypass CSRF bootstrap")
+    assert_contains(session_binding, "$path === 'api/client/rum'", "session binding must bypass low-value RUM telemetry")
+    assert_contains(waf, "isSafeGuestAuthFlow($request, $path)", "auth login must avoid generic subject/session WAF buckets")
+    assert_contains(recaptcha, "'connect_timeout' => 2.0", "reCAPTCHA verification must have a short connect timeout")
+    assert_contains(recaptcha, "'timeout' => 5.0", "reCAPTCHA verification must have a bounded total timeout")
+    assert_contains(route_service, "Limit::perMinute(10)->by($key)", "auth rate limiter must use an explicit stable key")
+    assert_contains(file_upload_controller, "use Pterodactyl\\Enum\\JwtScope;", "file upload controller must import JWT scopes")
+    assert_contains(file_upload_controller, "->setScopes(JwtScope::FileUpload)", "server file uploads must mint file-upload scoped Wings JWTs")
+    assert_contains(websocket_controller, "use Pterodactyl\\Enum\\JwtScope;", "websocket controller must import JWT scopes")
+    assert_contains(websocket_controller, "->setScopes(JwtScope::Websocket)", "server websocket endpoint must mint websocket scoped Wings JWTs")
+    assert_contains(node_jwt_service, "private array $scopes = [];", "NodeJWTService scopes must be initialized to avoid upload/websocket 500s on missing scope")
+
     assert_contains(public_chat, "private const DEFAULT_LIMIT = 8;", "chat API must default to an 8-message window")
     assert_contains(public_chat, "'before_id' => 'sometimes|integer|min:1'", "chat API must support older-message cursor pagination")
     assert_contains(public_chat_api, "getPublicMessagePage", "chat frontend API must expose paged message metadata")

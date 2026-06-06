@@ -23,18 +23,27 @@ class VerifyReCaptcha
         }
 
         if ($request->filled('g-recaptcha-response')) {
-            $client = new Client();
-            $res = $client->post($this->config->get('recaptcha.domain'), [
-                'form_params' => [
-                    'secret' => $this->config->get('recaptcha.secret_key'),
-                    'response' => $request->input('g-recaptcha-response'),
-                ],
-            ]);
+            try {
+                $client = new Client([
+                    'connect_timeout' => 2.0,
+                    'timeout' => 5.0,
+                ]);
+                $res = $client->post($this->config->get('recaptcha.domain'), [
+                    'connect_timeout' => 2.0,
+                    'timeout' => 5.0,
+                    'form_params' => [
+                        'secret' => $this->config->get('recaptcha.secret_key'),
+                        'response' => $request->input('g-recaptcha-response'),
+                    ],
+                ]);
+            } catch (\Throwable $exception) {
+                throw new HttpException(Response::HTTP_SERVICE_UNAVAILABLE, 'reCAPTCHA verification service unavailable.', $exception);
+            }
 
-            if ($res->getStatusCode() === 200) {
+            if ($res && $res->getStatusCode() === 200) {
                 $result = json_decode($res->getBody());
 
-                if ($result->success && (!$this->config->get('recaptcha.verify_domain') || $this->isResponseVerified($result, $request))) {
+                if (is_object($result) && !empty($result->success) && (!$this->config->get('recaptcha.verify_domain') || $this->isResponseVerified($result, $request))) {
                     return $next($request);
                 }
             }
@@ -53,6 +62,6 @@ class VerifyReCaptcha
 
         $url = parse_url($request->url());
 
-        return $result->hostname === array_get($url, 'host');
+        return ($result->hostname ?? null) === ($url['host'] ?? null);
     }
 }

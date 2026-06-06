@@ -369,6 +369,16 @@ def read_reason_map():
     return reason_map
 
 
+def portal_diagnostics():
+    return {
+        "ipset": "ok" if run_rc(["ipset", "list", "pteroprotect_block_v4"]) == 0 or run_rc(["ipset", "list", "pteroprotect_block_v6"]) == 0 else "unavailable",
+        "nft": "ok" if run_rc(["nft", "list", "table", "inet", NFT_TABLE]) == 0 else "unavailable",
+        "fail2ban": "ok" if run_rc(["fail2ban-client", "ping"]) == 0 else "unavailable",
+        "firewall_manager": "ok" if Path(FIREWALL_MANAGER).exists() and os.access(FIREWALL_MANAGER, os.X_OK) else "missing",
+        "config": str(CONFIG_PATH),
+    }
+
+
 def collect_blocked_ips():
     reason_map = read_reason_map()
     allow = set(get_essential_allowlist())
@@ -576,14 +586,16 @@ HTML_PAGE = """<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>PteroProtect Unblock Portal</title>
   <style>
-    body { font-family: ui-sans-serif, system-ui; margin: 20px; background: linear-gradient(180deg,#08101d,#0e1b30); color: #e7edf8; }
-    .card { max-width: 1080px; margin: 0 auto; background: #111a2b; border: 1px solid #1e2a43; border-radius: 12px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    body { font-family: ui-sans-serif, system-ui; margin: 20px; background: radial-gradient(circle at 10% 0,rgba(20,83,255,.22),transparent 28rem),linear-gradient(180deg,#08101d,#0e1b30); color: #e7edf8; }
+    .card { max-width: 1080px; margin: 0 auto 14px; background: #111a2b; border: 1px solid #1e2a43; border-radius: 14px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
     input, button { font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid #2d3d5e; background: #0d1424; color: #e7edf8; }
     button { cursor: pointer; background: #1453ff; border-color: #1453ff; }
     button.alt { background: #23314f; border-color: #23314f; }
     button.warn { background:#8f2e00; border-color:#8f2e00; }
     .ok { color:#8bf4be; }
     .bad { color:#ff9b9b; }
+    .pill { display:inline-block; border:1px solid #2d3d5e; border-radius:999px; padding:4px 8px; margin:2px; color:#c7d2fe; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
     th, td { padding: 8px; border-bottom: 1px solid #1e2a43; text-align: left; font-size: 13px; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
@@ -592,7 +604,15 @@ HTML_PAGE = """<!doctype html>
 </head>
 <body>
   <div class="card">
-    <div class="row">
+    <h2>PteroProtect Unblock Portal</h2>
+    <p class="muted" id="diag">Authenticated operator portal. If the list is empty, check diagnostics below before assuming no blocks exist.</p>
+    <div class="grid" id="summary"><span class="pill">Blocked: -</span><span class="pill">Allowlisted: -</span><span class="pill">Sources: loading</span></div>
+    <div class="row" style="margin-top:10px">
+      <input id="manual_ip" placeholder="IP or CIDR to unblock/allow" style="min-width:260px">
+      <button onclick="unblockManual(false)">Unblock IP</button>
+      <button class="alt" onclick="unblockManual(true)">Unblock + Allowlist</button>
+    </div>
+    <div class="row" style="margin-top:10px">
       <button onclick="loadList()">Refresh List</button>
       <button class="alt" onclick="selectAll(true)">Select All</button>
       <button class="alt" onclick="selectAll(false)">Clear</button>
@@ -617,7 +637,10 @@ async function loadList(){
   const r = await fetch('/api/list?token=' + encodeURIComponent(Q_TOKEN), { headers: headers() });
   if(!r.ok){ document.getElementById('stat').textContent = 'Auth failed / error'; return; }
   const d = await r.json();
+  if(d.diagnostics){ document.getElementById('diag').textContent = `Sources: ipset=${d.diagnostics.ipset || 'unknown'} nft=${d.diagnostics.nft || 'unknown'} fail2ban=${d.diagnostics.fail2ban || 'unknown'} firewall_manager=${d.diagnostics.firewall_manager || 'unknown'}`; }
   cache = d.items || [];
+  const allowCount = cache.filter(it => it.allowlisted).length;
+  document.getElementById('summary').innerHTML = `<span class="pill">Blocked: ${cache.length}</span><span class="pill">Allowlisted: ${allowCount}</span><span class="pill">ipset ${d.diagnostics?.ipset || 'unknown'}</span><span class="pill">nft ${d.diagnostics?.nft || 'unknown'}</span><span class="pill">fail2ban ${d.diagnostics?.fail2ban || 'unknown'}</span>`;
   const body = document.getElementById('rows');
   body.innerHTML = cache.map(it => `<tr><td><input type="checkbox" data-ip="${esc(it.ip)}"></td><td>${esc(it.ip)}</td><td>${esc(it.source)}</td><td>${esc(it.reason||'-')}</td><td>${it.allowlisted ? '<span class="ok">yes</span>' : '-'}</td></tr>`).join('');
   document.getElementById('stat').textContent = `Blocked IP total: ${cache.length}`;
@@ -625,10 +648,19 @@ async function loadList(){
 function selectAll(v){
   document.querySelectorAll('#rows input[type=checkbox]').forEach(el => el.checked = v);
 }
+async function unblockManual(alsoAllow){
+  const ip = document.getElementById('manual_ip').value.trim();
+  if(!ip){ document.getElementById('stat').textContent = 'Enter an IP or CIDR first.'; return; }
+  await unblockIps([ip], alsoAllow);
+  document.getElementById('manual_ip').value = '';
+}
 async function unblockSelected(){
   const ips = [...document.querySelectorAll('#rows input[type=checkbox]:checked')].map(x => x.dataset.ip);
   if(!ips.length){ return; }
   const alsoAllow = !!document.getElementById('also_allow').checked;
+  await unblockIps(ips, alsoAllow);
+}
+async function unblockIps(ips, alsoAllow){
   const MAX_PER_REQ = 25;
   let totalUnblocked = 0;
   let totalAllowAdded = 0;
@@ -759,7 +791,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 self._silent_drop()
                 return
-            self._send_json({"items": collect_blocked_ips()})
+            self._send_json({"items": collect_blocked_ips(), "diagnostics": portal_diagnostics()})
             return
         self._send_json({"error": "not_found"}, 404)
 

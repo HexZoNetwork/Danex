@@ -205,7 +205,7 @@ class PteroProtectWaf
             return $this->blockedResponse($request, 429, 'Server is limiting non-critical concurrency.');
         }
 
-        if ($this->isRateLimitedBySubject($request, $category, $lockdown, $mode, $config, $decay)) {
+        if (!$this->isSafeGuestAuthFlow($request, $path) && $this->isRateLimitedBySubject($request, $category, $lockdown, $mode, $config, $decay)) {
             $this->logDecision($config, 'deny', "subject:{$category}:{$mode}", $ip, $path, $userAgent);
             $this->logRateLimitEvent($resilienceConfig, 'subject', $category, $mode, $path);
             return $this->blockedResponse($request, 429, 'Too many requests from this session.');
@@ -861,6 +861,40 @@ class PteroProtectWaf
         }
 
         return 'web';
+    }
+
+    private function isSafeGuestAuthPageLoad(Request $request, string $path): bool
+    {
+        if (!$request->isMethod('GET') && !$request->isMethod('HEAD')) {
+            return false;
+        }
+
+        return in_array($path, [
+            'auth/login',
+            'auth/password',
+            'auth/password/reset',
+            'auth/register',
+            'auth/register/meta',
+        ], true) || str_starts_with($path, 'auth/password/reset/');
+    }
+
+    private function isSafeGuestAuthFlow(Request $request, string $path): bool
+    {
+        if ($this->isSafeGuestAuthPageLoad($request, $path)) {
+            return true;
+        }
+
+        if (!$request->isMethod('POST')) {
+            return false;
+        }
+
+        return in_array($path, [
+            'auth/login',
+            'auth/logout',
+            'auth/password',
+            'auth/password/email',
+            'auth/register',
+        ], true) || str_starts_with($path, 'auth/password/reset/');
     }
 
     private function shouldBypassRequest(Request $request, string $category, string $path): bool

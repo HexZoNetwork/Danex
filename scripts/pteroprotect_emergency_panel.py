@@ -14,7 +14,9 @@ import selectors
 import secrets
 import select
 import signal
+import socket
 import subprocess
+import re
 import struct
 import tempfile
 import termios
@@ -117,6 +119,11 @@ def read_config():
         "token": str(net.get("emergency_control_token", "")),
         "session_ttl": int(net.get("emergency_control_session_ttl_sec", SESSION_TTL_DEFAULT) or SESSION_TTL_DEFAULT),
         "query_bootstrap": bool(net.get("emergency_control_query_bootstrap_enabled", True)),
+        "unblock_url": str(net.get("unblock_portal_url", "")),
+        "unblock_bind": str(net.get("unblock_portal_bind", "0.0.0.0")),
+        "unblock_port": int(net.get("unblock_portal_port", 18443) or 18443),
+        "challenge_bind": str(net.get("waf_challenge_bind", "127.0.0.1")),
+        "challenge_port": int(net.get("waf_challenge_port", 18444) or 18444),
     }
 
 
@@ -155,9 +162,82 @@ def valid_ip_or_cidr(value):
 def compact_status(service):
     if "*" in service:
         return {"service": service, "state": "pattern", "detail": "status unavailable for wildcard"}
-    r = adminctl("service-is-active", service, timeout=5)
+    r = adminctl("service-is-active", service, timeout=3)
     state = (r.get("output") or "unknown").splitlines()[0].strip() if r.get("output") else "unknown"
     return {"service": service, "state": state, "exit": r.get("exit", 1)}
+
+
+def mode_snapshot():
+    for candidate in ("/usr/local/bin/pteroprotect-mode", str(Path(GUARD_HOME) / "scripts/pteroprotect-mode.sh")):
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return run([candidate, "status"], timeout=4)
+    return {"exit": 1, "output": "mode helper unavailable"}
+
+
+def health_probe(host, port, path="/health", timeout=1.0):
+    if host in {"0.0.0.0", "::", ""}:
+        host = "127.0.0.1"
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout) as conn:
+            conn.settimeout(timeout)
+            conn.sendall(f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
+            line = conn.recv(96).decode(errors="ignore")
+        return {"ok": line.startswith("HTTP/") and " 2" in line[:16], "line": line.strip()}
+    except Exception as exc:
+        return {"ok": False, "line": str(exc)}
+
+
+def first_ipv4(*values):
+    for value in values:
+        text = str(value or "").strip().strip("[]")
+        if not text:
+            continue
+        if ":" in text and text.count(":") == 1:
+            text = text.split(":", 1)[0]
+        try:
+            ip = ipaddress.ip_address(text)
+            if ip.version == 4 and str(ip) != "0.0.0.0":
+                return str(ip)
+        except Exception:
+            continue
+    try:
+        out = subprocess.check_output(["ip", "-4", "route", "get", "1.1.1.1"], text=True, stderr=subprocess.DEVNULL, timeout=2)
+        m = re.search(r"\bsrc\s+([0-9.]+)", out)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
+def portal_url_from_request(handler, cfg):
+    explicit_host = ""
+    if cfg.get("unblock_url"):
+        try:
+            explicit_host = urlparse(str(cfg.get("unblock_url"))).hostname or ""
+        except Exception:
+            explicit_host = ""
+    host_header = handler.headers.get("X-Forwarded-Host") or handler.headers.get("Host") or ""
+    bind = str(cfg.get("unblock_bind", ""))
+    host = first_ipv4(explicit_host, bind if bind not in {"0.0.0.0", "::"} else "", host_header)
+    return f"http://{host}:{int(cfg.get('unblock_port', 18443))}/"
+
+
+def incident_summary(handler=None):
+    cfg = read_config()
+    statuses = [compact_status(s) for s in ("nginx", "pteroq", "wings", "pteroprotect", "pteroprotect-challenge", "pteroprotect-unblock-portal")]
+    down = [s for s in statuses if s.get("state") not in {"active", "pattern"}]
+    challenge = health_probe(str(cfg.get("challenge_bind", "127.0.0.1")), int(cfg.get("challenge_port", 18444)))
+    mode = mode_snapshot()
+    return {
+        "down_count": len(down),
+        "down": down,
+        "critical": statuses,
+        "challenge": challenge,
+        "mode": mode,
+        "unblock_url": portal_url_from_request(handler, cfg) if handler is not None else cfg.get("unblock_url", ""),
+        "audit_tail": recent_audit(8),
+    }
 
 
 def audit(ip, action, target, result, extra=None):
@@ -346,12 +426,13 @@ def pty_resize(fd, cols, rows):
 
 HTML = """<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>PteroProtect Emergency</title><style>
 :root{--bg:#050509;--panel:#0b0b10;--panel2:#111117;--line:rgba(139,92,246,.32);--soft:rgba(139,92,246,.16);--txt:#f7f7fb;--mut:#a3a3b2;--ok:#10b981;--bad:#ef4444;--warn:#f59e0b;--vio:#8b5cf6}*{box-sizing:border-box}body{font-family:Inter,ui-sans-serif,system-ui;background:radial-gradient(circle at 10% 0,rgba(139,92,246,.18),transparent 28rem),radial-gradient(circle at 90% 10%,rgba(6,182,212,.10),transparent 26rem),var(--bg);color:var(--txt);margin:0;padding:20px}.wrap{max-width:1320px;margin:auto}.hero{border:1px solid var(--line);background:linear-gradient(135deg,rgba(139,92,246,.16),rgba(17,17,23,.92));border-radius:22px;padding:20px;box-shadow:0 24px 70px rgba(0,0,0,.55)}h1{margin:0;font-size:28px}.card{background:rgba(11,11,16,.96);border:1px solid var(--soft);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 18px 48px rgba(0,0,0,.42)}input,select,button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:9px 11px}button{background:linear-gradient(135deg,#8b5cf6,#5b21b6);cursor:pointer;font-weight:700}button.alt{background:#15151d}button.warn{background:linear-gradient(135deg,#ef4444,#991b1b)}button.good{background:linear-gradient(135deg,#10b981,#047857)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.muted{color:var(--mut);font-size:12px}.pill{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:4px 8px;color:#ddd6fe;font-size:12px}pre{white-space:pre-wrap;max-height:360px;overflow:auto;background:#07070b;padding:10px;border-radius:8px}.ok{color:var(--ok)}.bad{color:var(--bad)}.warntext{color:var(--warn)}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid var(--soft);padding:8px;text-align:left;font-size:13px}@media(max-width:720px){body{padding:10px}.hero{padding:14px}h1{font-size:22px}}
-</style></head><body><div class=wrap><div class=hero><div class=row><h1>PteroProtect Emergency Control</h1><span class=pill>public token mode</span><span class=pill>No arbitrary shell</span></div><p class=muted>Open with <code>?token=...</code>. Wrong or missing token returns an empty response/drop like unblock portal.</p><div class=row><button onclick=loadAll()>Refresh Health</button><button class=good onclick=recover('failed')>Restart Failed Services</button><button class=good onclick=recover('protect-stack')>Restart Protect Stack</button><button class=alt onclick="dockerQuick('ps')">Docker PS</button><button class=alt onclick="dockerQuick('stats')">Docker Stats</button><button class=warn onclick=reboot()>Reboot VPS</button><span id=stat class=muted></span></div></div><div class=grid><div class=card><h3>Protection Mode</h3><div class=row><select id=mode><option>normal</option><option>aggressive</option><option>emergency</option><option>lockdown</option><option>clear-lockdown</option></select><input id=ttl type=number value=600 min=60 max=86400><button onclick=setMode()>Apply</button></div><pre id=modeout></pre></div><div class=card><h3>Firewall IP/CIDR</h3><div class=row><select id=fwa><option>ban</option><option>unban</option><option>allow</option></select><input id=fwv placeholder="IP or CIDR"><input id=fwttl type=number value=3600><button onclick=fw()>Run</button></div><p class=muted>Ban TTL 0 = permanent.</p><pre id=fwout></pre></div><div class=card><h3>Service Control</h3><div class=row><select id=svc></select><select id=svca><option>status</option><option>is-active</option><option>start</option><option>restart</option><option>reload</option></select><button onclick=serviceRun()>Run</button></div><pre id=svcout></pre></div><div class=card><h3>Docker / Containers</h3><div class=row><select id=docka><option>ps</option><option>stats</option><option>restart</option><option>start</option><option>stop</option></select><input id=dockt placeholder="container name/id"><button onclick=dockerRun()>Run</button></div><pre id=dockout></pre></div></div><div class=card><h3>Service Health</h3><table><thead><tr><th>Service</th><th>State</th><th>Quick</th></tr></thead><tbody id=services></tbody></table></div><div class=card><h3>Audit</h3><pre id=audit></pre></div></div><script>
+</style></head><body><div class=wrap><div class=hero><div class=row><h1>PteroProtect Emergency Control</h1><span class=pill>public token mode</span><span class=pill>break-glass root terminal</span></div><p class=muted>Open with <code>?token=...</code>. Wrong or missing token returns an empty response/drop like unblock portal.</p><div class=row><button onclick=loadAll()>Refresh Health</button><a id=unblockLink class=pill href="__UNBLOCK_URL__" target="_blank" rel="noopener">Open Unblock Portal</a><button class=good onclick=recover('failed')>Restart Failed Services</button><button class=good onclick=recover('protect-stack')>Restart Protect Stack</button><button class=alt onclick="dockerQuick('ps')">Docker PS</button><button class=alt onclick="dockerQuick('stats')">Docker Stats</button><button class=warn onclick=reboot()>Reboot VPS</button><span id=stat class=muted></span></div></div><div class=card><h3>Incident Summary</h3><div id=summary class=grid>__SUMMARY__</div></div><div class=grid><div class=card><h3>Protection Mode</h3><div class=row><select id=mode><option>normal</option><option>aggressive</option><option>emergency</option><option>lockdown</option><option>clear-lockdown</option></select><input id=ttl type=number value=600 min=60 max=86400><button onclick=setMode()>Apply</button></div><pre id=modeout></pre></div><div class=card><h3>Firewall IP/CIDR</h3><div class=row><select id=fwa><option>ban</option><option>unban</option><option>allow</option></select><input id=fwv placeholder="IP or CIDR"><input id=fwttl type=number value=3600><button onclick=fw()>Run</button></div><p class=muted>Ban TTL 0 = permanent.</p><pre id=fwout></pre></div><div class=card><h3>Service Control</h3><div class=row><select id=svc></select><select id=svca><option>status</option><option>is-active</option><option>start</option><option>restart</option><option>reload</option></select><button onclick=serviceRun()>Run</button></div><pre id=svcout></pre></div><div class=card><h3>Docker / Containers</h3><div class=row><select id=docka><option>ps</option><option>stats</option><option>restart</option><option>start</option><option>stop</option></select><input id=dockt placeholder="container name/id"><button onclick=dockerRun()>Run</button></div><pre id=dockout></pre></div></div><div class=card><h3>Service Health</h3><table><thead><tr><th>Service</th><th>State</th><th>Quick</th></tr></thead><tbody id=services></tbody></table></div><div class=card><h3>Audit</h3><pre id=audit></pre></div></div><script>
 const CSRF='__CSRF__'; if(location.search){history.replaceState(null,'',location.pathname)} const services=__SERVICES__; document.getElementById('svc').innerHTML=services.map(s=>`<option>${s}</option>`).join('');
 (function(){let l=document.createElement('link');l.rel='stylesheet';l.href='/assets/vendor/xterm/xterm.min.css';l.onerror=()=>{};document.head.appendChild(l);loadScript('/assets/vendor/xterm/xterm.min.js').catch(()=>loadScript('/vendor/xterm/xterm.min.js').catch(()=>{}));})();
 const rootBtn=document.createElement('button');rootBtn.className='warn';rootBtn.textContent='Root Terminal';rootBtn.onclick=()=>startTerminal();document.querySelector('.hero .row')?.insertBefore(rootBtn,document.getElementById('stat'));
 async function req(p,o={}){o.headers=Object.assign({'Content-Type':'application/json','X-CSRF-Token':CSRF},o.headers||{});let r=await fetch(p,Object.assign({credentials:'same-origin'},o));let txt=await r.text();let d=txt?JSON.parse(txt):{error:'empty_response'};if(!r.ok)throw d;return d}
-async function loadAll(){try{let d=await req('/api/status');document.getElementById('services').innerHTML=d.services.map(s=>`<tr><td>${esc(s.service)}</td><td class="${s.state==='active'?'ok':(s.state==='failed'?'bad':'warntext')}">${esc(s.state)}</td><td><button class=alt onclick="quickService('${esc(s.service)}','restart')">restart</button></td></tr>`).join('');document.getElementById('audit').textContent=JSON.stringify(d.audit,null,2);document.getElementById('stat').textContent='updated '+new Date().toLocaleTimeString()}catch(e){document.getElementById('stat').textContent=e.error||'empty/error'}}
+async function loadAll(){try{let d=await req('/api/status');document.getElementById('services').innerHTML=d.services.map(s=>`<tr><td>${esc(s.service)}</td><td class="${s.state==='active'?'ok':(s.state==='failed'?'bad':'warntext')}">${esc(s.state)}</td><td><button class=alt onclick="quickService('${esc(s.service)}','restart')">restart</button></td></tr>`).join('');document.getElementById('audit').textContent=JSON.stringify(d.audit,null,2);renderSummary(d.summary||{});if(d.summary&&d.summary.unblock_url){document.getElementById('unblockLink').href=d.summary.unblock_url}document.getElementById('stat').textContent='updated '+new Date().toLocaleTimeString()}catch(e){document.getElementById('stat').textContent=e.error||'empty/error'}}
+function renderSummary(s){document.getElementById('summary').innerHTML=[`<div><p class=muted>Critical Down</p><h2 class="${Number(s.down_count||0)>0?'bad':'ok'}">${Number(s.down_count||0)}</h2></div>`,`<div><p class=muted>Challenge Health</p><h2 class="${s.challenge&&s.challenge.ok?'ok':'warntext'}">${s.challenge&&s.challenge.ok?'OK':'Not OK'}</h2><p class=muted>${esc((s.challenge&&s.challenge.line)||'')}</p></div>`,`<div><p class=muted>Mode Helper</p><h2 class="${s.mode&&s.mode.exit===0?'ok':'warntext'}">${s.mode&&s.mode.exit===0?'OK':'Check'}</h2><p class=muted>${esc((s.mode&&s.mode.output)||'')}</p></div>`,`<div><p class=muted>Unblock</p><p><a class=pill href="${esc(s.unblock_url||'#')}" target=_blank rel=noopener>open portal</a></p></div>`].join('')}
 async function serviceRun(){let out=document.getElementById('svcout');try{out.textContent=JSON.stringify(await req('/api/service',{method:'POST',body:JSON.stringify({service:svc.value,action:svca.value})}),null,2);loadAll()}catch(e){out.textContent=JSON.stringify(e,null,2)}}
 async function quickService(service,action){document.getElementById('svc').value=service;document.getElementById('svca').value=action;await serviceRun()}
 async function setMode(){let out=document.getElementById('modeout');try{out.textContent=JSON.stringify(await req('/api/mode',{method:'POST',body:JSON.stringify({mode:mode.value,ttl:Number(ttl.value)})}),null,2);loadAll()}catch(e){out.textContent=JSON.stringify(e,null,2)}}
@@ -366,22 +447,30 @@ function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>
 </script></body></html>""".replace("__SERVICES__", json.dumps(SERVICES)).replace("<select id=svc></select>", "<select id=svc>__SERVICE_OPTIONS__</select>").replace("<tbody id=services></tbody>", "<tbody id=services>__SERVICE_ROWS__</tbody>").replace("<pre id=audit></pre>", "<pre id=audit>__AUDIT__</pre>")
 
 
-def render_html(csrf):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        statuses = list(pool.map(compact_status, SERVICES))
+def render_summary_html(summary):
+    challenge = summary.get("challenge", {}) if isinstance(summary, dict) else {}
+    mode = summary.get("mode", {}) if isinstance(summary, dict) else {}
+    down_count = int(summary.get("down_count", 0) or 0) if isinstance(summary, dict) else 0
+    return "".join([
+        f"<div><p class=muted>Critical Down</p><h2 class={'bad' if down_count else 'ok'}>{down_count}</h2></div>",
+        f"<div><p class=muted>Challenge Health</p><h2 class={'ok' if challenge.get('ok') else 'warntext'}>{'OK' if challenge.get('ok') else 'Not OK'}</h2><p class=muted>{html.escape(str(challenge.get('line', '')))}</p></div>",
+        f"<div><p class=muted>Mode Helper</p><h2 class={'ok' if mode.get('exit') == 0 else 'warntext'}>{'OK' if mode.get('exit') == 0 else 'Check'}</h2><p class=muted>{html.escape(str(mode.get('output', '')))}</p></div>",
+        f"<div><p class=muted>Unblock</p><p><a class=pill href=\"{html.escape(str(summary.get('unblock_url', '#')))}\" target=_blank rel=noopener>open portal</a></p></div>",
+    ])
+
+
+def render_html(csrf, handler=None):
     options = "".join(f"<option>{html.escape(s)}</option>" for s in SERVICES)
-    rows = []
-    for item in statuses:
-        state = str(item.get("state", "unknown"))
-        cls = "ok" if state == "active" else ("bad" if state == "failed" else "warntext")
-        service = str(item.get("service", ""))
-        rows.append(f"<tr><td>{html.escape(service)}</td><td class=\"{cls}\">{html.escape(state)}</td><td><button class=alt onclick=\"quickService('{html.escape(service)}','restart')\">restart</button></td></tr>")
-    audit_rows = recent_audit()
+    rows = "<tr><td colspan=3 class=muted>Click Refresh Health to load live service status.</td></tr>"
+    summary = incident_summary(handler)
+    audit_rows = recent_audit(20)
     audit_text = json.dumps(audit_rows, indent=2) if audit_rows else "No audit entries yet."
     return (HTML
         .replace("__CSRF__", csrf)
         .replace("__SERVICE_OPTIONS__", options)
-        .replace("__SERVICE_ROWS__", "".join(rows))
+        .replace("__SERVICE_ROWS__", rows)
+        .replace("__SUMMARY__", render_summary_html(summary))
+        .replace("__UNBLOCK_URL__", html.escape(str(summary.get("unblock_url", "#"))))
         .replace("__AUDIT__", html.escape(audit_text)))
 
 
@@ -582,20 +671,20 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 clear_auth_fail(client_ip(self))
                 session_cookie, csrf = make_cookie(self.server.admin_token, self.server.session_ttl)
-                self._html(render_html(csrf), session_cookie)
+                self._html(render_html(csrf, self), session_cookie)
                 return
             auth = self._require()
             if not auth:
                 return
             csrf = auth.get("session", {}).get("csrf", "")
-            self._html(render_html(csrf))
+            self._html(render_html(csrf, self))
             return
         if urlparse(self.path).path == "/api/status":
             if not self._require():
                 return
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
                 services = list(pool.map(compact_status, SERVICES))
-            self._json({"services": services, "audit": recent_audit()})
+            self._json({"services": services, "summary": incident_summary(self), "audit": recent_audit()})
             return
         self._json({"error": "not_found"}, 404)
 

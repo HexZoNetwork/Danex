@@ -69,6 +69,13 @@ Route::prefix('/danexc')->group(function () {
     Route::get('/feed', [Client\DanexCController::class, 'feed'])->middleware('throttle:90,1');
 });
 
+Route::prefix('/uno')->group(function () {
+    Route::get('/rooms', [Client\UnoController::class, 'rooms'])->middleware('throttle:90,1');
+    Route::post('/rooms', [Client\UnoController::class, 'create'])->middleware('throttle:20,1');
+    Route::post('/rooms/{roomCode}/join', [Client\UnoController::class, 'join'])->middleware('throttle:30,1');
+    Route::post('/rooms/{roomCode}/spectate', [Client\UnoController::class, 'spectate'])->middleware('throttle:60,1');
+});
+
 Route::prefix('/waf')->group(function () {
     Route::get('/stats', [Client\DanexCController::class, 'overview'])->middleware('throttle:90,1');
     Route::get('/timeline', [Client\DanexCController::class, 'timeline'])->middleware('throttle:90,1');

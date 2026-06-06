@@ -80,7 +80,11 @@ class RouteServiceProvider extends ServiceProvider
                 return Limit::perMinute(2)->by($request->ip());
             }
 
-            return Limit::perMinute(10);
+            $routeName = (string) ($request->route()?->getName() ?? 'auth');
+            $login = strtolower(trim((string) $request->input('user', $request->input('email', ''))));
+            $key = implode('|', array_filter([$request->ip(), $routeName, $login]));
+
+            return Limit::perMinute(10)->by($key);
         });
 
         // Configure the throttles for both the application and client APIs below.

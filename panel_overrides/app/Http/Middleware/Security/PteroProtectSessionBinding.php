@@ -156,10 +156,24 @@ class PteroProtectSessionBinding
             return true;
         }
 
-        // Ads payload is non-sensitive UI content and can be polled frequently.
-        // Excluding it prevents noisy session-binding loops that redirect to
-        // challenge page with rd=/api/client/ads.
-        if ($path === 'api/client/ads' || str_starts_with($path, 'api/client/ads/')) {
+        // Guest/login bootstrap routes must not be challenged by session binding
+        // before Laravel has had a chance to create or rotate the session.
+        if (
+            str_starts_with($path, 'auth/') ||
+            str_starts_with($path, 'locales/') ||
+            $path === 'sanctum/csrf-cookie'
+        ) {
+            return true;
+        }
+
+        // Ads and RUM payloads are non-sensitive UI telemetry/content and can be
+        // polled frequently. Excluding them prevents noisy binding loops that
+        // redirect JSON clients to challenge pages.
+        if (
+            $path === 'api/client/ads' ||
+            str_starts_with($path, 'api/client/ads/') ||
+            $path === 'api/client/rum'
+        ) {
             return true;
         }
 

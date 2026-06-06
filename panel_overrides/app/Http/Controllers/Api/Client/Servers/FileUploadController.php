@@ -4,6 +4,7 @@ namespace Pterodactyl\Http\Controllers\Api\Client\Servers;
 
 use Carbon\CarbonImmutable;
 use GuzzleHttp\Client;
+use Pterodactyl\Enum\JwtScope;
 use Pterodactyl\Models\User;
 use Pterodactyl\Models\Server;
 use Illuminate\Http\JsonResponse;
@@ -98,6 +99,7 @@ class FileUploadController extends ClientApiController
         $token = $this->jwtService
             ->setExpiresAt(CarbonImmutable::now()->addMinutes(15))
             ->setUser($user)
+            ->setScopes(JwtScope::FileUpload)
             ->setClaims(['server_uuid' => $server->uuid])
             ->handle($server->node, $user->id . $server->uuid);
 
