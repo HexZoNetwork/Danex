@@ -21,19 +21,15 @@ const AuthShell = styled.div`
     border-radius: 14px;
     background: #0b0b10;
     border-color: rgba(139, 92, 246, 0.3);
-    box-shadow: 0 22px 70px rgba(0, 0, 0, 0.58), 0 0 30px rgba(139, 92, 246, 0.12);
+    box-shadow: 0 22px 70px rgba(0, 0, 0, 0.58);
 
     &::before {
         content: '';
         position: absolute;
         inset: 0;
         pointer-events: none;
-        background:
-            linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.08), transparent),
-            repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 48px);
-        opacity: 0.78;
-        transform: translateX(-24%);
-        animation: auth-panel-scan 7s ease-in-out infinite;
+        background: repeating-linear-gradient(90deg, rgba(255,255,255,0.014) 0 1px, transparent 1px 48px);
+        opacity: 0.42;
     }
 `;
 
@@ -50,13 +46,13 @@ const LogoPlate = styled.div`
     border-radius: 14px;
     background: #111117;
     border-color: rgba(139, 92, 246, 0.38);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 20px rgba(139, 92, 246, 0.16);
+    box-shadow: none;
 
     img {
         width: 34px;
         height: 34px;
         object-fit: contain;
-        filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.38));
+        filter: none;
     }
 `;
 

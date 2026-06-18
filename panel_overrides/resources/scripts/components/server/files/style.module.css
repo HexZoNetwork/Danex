@@ -41,15 +41,15 @@
     @apply grid items-stretch rounded-lg mb-1.5 text-sm no-underline min-w-0;
     overflow: visible;
     grid-template-columns: 42px minmax(0, 1fr) 44px;
-    background: linear-gradient(135deg, rgba(17, 17, 24, 0.96), rgba(8, 8, 13, 0.98));
+    background: #111117;
     border: 1px solid rgba(139, 92, 246, 0.16);
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
     transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1), border-color 180ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1), background 180ms cubic-bezier(0.4, 0, 0.2, 1);
 
     &:hover {
-        background: linear-gradient(135deg, rgba(23, 23, 32, 0.98), rgba(10, 10, 16, 0.98));
+        background: #15151d;
         border-color: rgba(139, 92, 246, 0.46);
-        box-shadow: 0 18px 38px rgba(0, 0, 0, 0.44), inset 2px 0 0 rgba(139, 92, 246, 0.72);
+        box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42), inset 2px 0 0 rgba(139, 92, 246, 0.72);
         transform: translateX(2px);
     }
 

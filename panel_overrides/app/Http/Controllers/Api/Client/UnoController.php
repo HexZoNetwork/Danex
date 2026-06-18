@@ -4,13 +4,13 @@ namespace Pterodactyl\Http\Controllers\Api\Client;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Cookie;
 use mysqli;
 use Pterodactyl\Models\User;
 
 class UnoController extends ClientApiController
 {
-    private const CONFIG_PATH = '/pteroprotect/config.json';
     private const TOKEN_TTL_SECONDS = 90;
 
     public function rooms(Request $request): JsonResponse
@@ -184,19 +184,14 @@ class UnoController extends ClientApiController
 
     private function db(): mysqli
     {
-        $database = [];
-        if (is_readable(self::CONFIG_PATH)) {
-            $config = json_decode((string) file_get_contents(self::CONFIG_PATH), true);
-            if (is_array($config)) {
-                $database = $config['minigames']['uno']['database'] ?? [];
-            }
-        }
+        $mysql = Config::get('database.connections.mysql', []);
 
         $link = new mysqli(
-            (string) ($database['host'] ?? '127.0.0.1'),
-            (string) ($database['user'] ?? 'game'),
-            (string) ($database['password'] ?? ''),
-            (string) ($database['name'] ?? 'uno_online')
+            (string) ($mysql['host'] ?? '127.0.0.1'),
+            (string) ($mysql['username'] ?? 'pterodactyl'),
+            (string) ($mysql['password'] ?? ''),
+            (string) ($mysql['database'] ?? 'pterodactyl'),
+            (int) ($mysql['port'] ?? 3306)
         );
         if ($link->connect_error) {
             abort(503, 'UNO database unavailable.');
@@ -208,6 +203,10 @@ class UnoController extends ClientApiController
 
     private function ensureSchema(mysqli $link): void
     {
+        $link->query("create table if not exists room (roomCode varchar(5) not null, numberOfPlayersRemaining int not null default 3, isStarted tinyint(1) not null default 0, cardOnTable varchar(32) not null default '-', isEnded tinyint(1) not null default 0, playerTurn varchar(5) null, direction int not null default 1, color varchar(16) null, created_at timestamp null default current_timestamp, updated_at timestamp null default current_timestamp on update current_timestamp, primary key (roomCode), key room_started_ended (isStarted, isEnded)) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_unicode_ci");
+        $link->query("create table if not exists player (id varchar(5) not null, name varchar(191) not null, numCards int not null default 7, roomCode varchar(5) not null, nextPlayer varchar(5) null, previousPlayer varchar(5) null, unoPressed tinyint(1) not null default 0, user_id bigint unsigned null, avatar_url varchar(2048) null, is_host tinyint(1) not null default 0, created_at timestamp null default current_timestamp, updated_at timestamp null default current_timestamp on update current_timestamp, primary key (id), key player_room (roomCode), key player_user (user_id)) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_unicode_ci");
+        $link->query("create table if not exists stack (stack_id varchar(5) not null, numberOfCardsRemaining int not null default 0, roomCode varchar(5) not null, nextCardNumber int not null default 0, primary key (stack_id), key stack_room (roomCode)) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_unicode_ci");
+        $link->query("create table if not exists card (stack_id varchar(5) not null, number int not null, order_in_stack int not null, content varchar(32) not null, id varchar(5) null, key card_stack_order (stack_id, order_in_stack), key card_player (id), key card_number_stack_player (number, stack_id, id)) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_unicode_ci");
         $this->addColumnIfMissing($link, 'player', 'user_id', 'bigint unsigned null after roomCode');
         $this->addColumnIfMissing($link, 'player', 'avatar_url', 'varchar(2048) null after user_id');
         $this->addColumnIfMissing($link, 'player', 'is_host', 'tinyint(1) not null default 0 after avatar_url');

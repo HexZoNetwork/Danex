@@ -5,10 +5,10 @@ import styled from 'styled-components/macro';
 const Wrapper = styled.div`
     ${tw`w-full overflow-x-auto px-2 sm:px-4 py-2`};
     position: relative;
-    background: linear-gradient(180deg, rgba(9, 9, 13, 0.94), rgba(7, 7, 11, 0.86));
-    border-top: 1px solid rgba(34, 211, 238, 0.1);
+    background: #09090d;
+    border-top: 1px solid rgba(139, 92, 246, 0.14);
     border-bottom: 1px solid rgba(139, 92, 246, 0.24);
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255,255,255,0.035);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
     backdrop-filter: blur(14px);
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
@@ -29,9 +29,9 @@ const Inner = styled.div`
         ${tw`text-[12px] sm:text-sm text-neutral-300 no-underline px-3 sm:px-4 py-2 whitespace-nowrap border uppercase rounded-md`};
         position: relative;
         letter-spacing: 0.05em;
-        background: linear-gradient(145deg, rgba(17, 17, 24, 0.94), rgba(8, 8, 13, 0.98));
+        background: #111117;
         border-color: rgba(139, 92, 246, 0.18);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+        box-shadow: none;
         transform: translateZ(0);
         transition: transform 180ms var(--el7-ease-out), color 180ms var(--el7-ease), border-color 180ms var(--el7-ease), box-shadow 180ms var(--el7-ease), background 180ms var(--el7-ease);
     }
@@ -39,17 +39,17 @@ const Inner = styled.div`
     a:hover {
         color: #f8fbff;
         background: #111117;
-        border-color: rgba(34, 211, 238, 0.34);
-        box-shadow: 0 0 18px rgba(34, 211, 238, 0.11);
-        transform: translate3d(0, -1px, 12px);
+        border-color: rgba(139, 92, 246, 0.42);
+        box-shadow: 0 8px 20px rgba(76, 29, 149, 0.16);
+        transform: translateY(-1px);
     }
 
     a.active {
         color: #ffffff;
-        background: linear-gradient(145deg, rgba(139, 92, 246, 0.22), rgba(34, 211, 238, 0.08));
-        border-color: rgba(34, 211, 238, 0.46);
-        box-shadow: inset 0 -2px 0 rgba(34, 211, 238, 0.72), 0 0 22px rgba(139, 92, 246, 0.18);
-        text-shadow: 0 0 18px rgba(34, 211, 238, 0.34);
+        background: rgba(139, 92, 246, 0.24);
+        border-color: rgba(139, 92, 246, 0.54);
+        box-shadow: inset 0 -2px 0 rgba(139, 92, 246, 0.72);
+        text-shadow: none;
     }
 
     @media (max-width: 640px) {

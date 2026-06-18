@@ -108,30 +108,26 @@
                             </span>
                         </label>
                     </div>
-                    <div class="row">
-                        <div class="col-md-4">
-                            <div class="form-group">
-                                <label for="waf_challenge_theme_gradient_start">Surface Start</label>
-                                <input id="waf_challenge_theme_gradient_start" type="color" class="form-control" name="waf_challenge_theme_gradient_start" value="{{ (string) ($cs['theme_gradient_start'] ?? '#07070b') }}">
-                            </div>
+                    <div class="pp-field-grid">
+                        <div class="form-group">
+                            <label for="waf_challenge_theme_gradient_start">Surface Base</label>
+                            <input id="waf_challenge_theme_gradient_start" type="color" class="form-control" name="waf_challenge_theme_gradient_start" value="{{ (string) ($cs['theme_gradient_start'] ?? '#07070b') }}">
                         </div>
-                        <div class="col-md-4">
-                            <div class="form-group">
-                                <label for="waf_challenge_theme_gradient_end">Surface End</label>
-                                <input id="waf_challenge_theme_gradient_end" type="color" class="form-control" name="waf_challenge_theme_gradient_end" value="{{ (string) ($cs['theme_gradient_end'] ?? '#111117') }}">
-                            </div>
+                        <div class="form-group">
+                            <label for="waf_challenge_theme_gradient_end">Surface Raised</label>
+                            <input id="waf_challenge_theme_gradient_end" type="color" class="form-control" name="waf_challenge_theme_gradient_end" value="{{ (string) ($cs['theme_gradient_end'] ?? '#111117') }}">
                         </div>
-                        <div class="col-md-4">
-                            <div class="form-group">
-                                <label for="waf_challenge_theme_accent">Accent</label>
-                                <input id="waf_challenge_theme_accent" type="color" class="form-control" name="waf_challenge_theme_accent" value="{{ (string) ($cs['theme_accent'] ?? '#8b5cf6') }}">
-                            </div>
+                        <div class="form-group">
+                            <label for="waf_challenge_theme_accent">Accent</label>
+                            <input id="waf_challenge_theme_accent" type="color" class="form-control" name="waf_challenge_theme_accent" value="{{ (string) ($cs['theme_accent'] ?? '#8b5cf6') }}">
                         </div>
                     </div>
-                    <button type="submit" class="btn btn-primary">Save Challenge Settings</button>
-                    <a href="{{ ($challengePreviewBaseUrl ?? '/__pteroprotect/challenge/page?rd=%2F') . '&type=' . (int) ($challengeType ?? 1) }}" target="_blank" rel="noopener" class="btn btn-default" style="margin-left:8px;">
-                        Preview Current
-                    </a>
+                    <div class="pp-action-row">
+                        <button type="submit" class="btn btn-primary">Save Challenge Settings</button>
+                        <a href="{{ ($challengePreviewBaseUrl ?? '/__pteroprotect/challenge/page?rd=%2F') . '&type=' . (int) ($challengeType ?? 1) }}" target="_blank" rel="noopener" class="btn btn-default">
+                            Preview Current
+                        </a>
+                    </div>
                 </form>
                 <p class="text-muted" style="margin-top: 10px;">
                     Setiap type memakai profile challenge unik (66 varian berbeda) + tuning anti-bot.
@@ -157,7 +153,9 @@
                         @endforeach
                     </select>
                 </div>
-                <button type="button" id="preview_btn" class="btn btn-primary">Open Preview</button>
+                <div class="pp-action-row">
+                    <button type="button" id="preview_btn" class="btn btn-primary">Open Preview</button>
+                </div>
             </div>
         </div>
     </div>
@@ -170,14 +168,16 @@
                 <h3 class="box-title">All 66 Challenge Types</h3>
             </div>
             <div class="box-body">
-                <div class="row">
+                <div class="pp-challenge-grid">
                     @foreach(($challengeProfiles ?? []) as $profile)
-                        <div class="col-md-3 col-sm-4 col-xs-6" style="margin-bottom:8px;">
-                            <a class="btn btn-default btn-block" target="_blank" rel="noopener"
-                               href="{{ ($challengePreviewBaseUrl ?? '/__pteroprotect/challenge/page?rd=%2F') . '&type=' . (int) $profile['id'] }}">
-                                #{{ str_pad((string) ((int) $profile['id']), 2, '0', STR_PAD_LEFT) }} {{ $profile['name'] }}
-                            </a>
-                        </div>
+                        <a class="pp-challenge-card" target="_blank" rel="noopener"
+                           href="{{ ($challengePreviewBaseUrl ?? '/__pteroprotect/challenge/page?rd=%2F') . '&type=' . (int) $profile['id'] }}">
+                            <span class="pp-card-index">#{{ str_pad((string) ((int) $profile['id']), 2, '0', STR_PAD_LEFT) }}</span>
+                            <span>
+                                <strong>{{ $profile['name'] }}</strong>
+                                <small>Open preview</small>
+                            </span>
+                        </a>
                     @endforeach
                 </div>
             </div>

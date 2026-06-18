@@ -151,7 +151,7 @@ const EditorContainer = styled.div`
     .cm-s-ayu-mirage div.CodeMirror-selected,
     .CodeMirror .CodeMirror-selected,
     .cm-s-ayu-mirage .CodeMirror-selected {
-        background: #2563eb !important;
+        background: #8b5cf6 !important;
         opacity: 1 !important;
     }
 
@@ -161,13 +161,13 @@ const EditorContainer = styled.div`
     .cm-s-ayu-mirage .CodeMirror-line::selection,
     .cm-s-ayu-mirage .CodeMirror-line > span::selection,
     .cm-s-ayu-mirage .CodeMirror-line > span > span::selection {
-        background: #2563eb !important;
+        background: #8b5cf6 !important;
         color: #ffffff !important;
     }
 
     .CodeMirror-selectedtext,
     .pp-cm-selected-text {
-        background: #2563eb !important;
+        background: #8b5cf6 !important;
         color: #ffffff !important;
         text-shadow: 0 1px 1px rgba(0, 0, 0, 0.65);
     }

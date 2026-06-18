@@ -61,7 +61,6 @@ const Root = styled.div`
             repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 54px),
             repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 54px);
         opacity: 0.7;
-        animation: chat-grid-drift 18s linear infinite;
     }
 
     &::after {
@@ -69,11 +68,8 @@ const Root = styled.div`
         position: absolute;
         inset: 0;
         pointer-events: none;
-        background:
-            linear-gradient(120deg, transparent 0 36%, rgba(139, 92, 246, 0.08) 36.2% 36.8%, transparent 37% 100%),
-            linear-gradient(30deg, transparent 0 58%, rgba(6, 182, 212, 0.05) 58.2% 58.7%, transparent 59% 100%);
-        opacity: 0.72;
-        animation: chat-geometry-sweep 12s ease-in-out infinite alternate;
+        background: rgba(139, 92, 246, 0.04);
+        opacity: 0.38;
     }
 
     @media (max-width: 767px) {
@@ -237,7 +233,7 @@ const VoiceStatusPill = styled.div<{ $active: boolean; $state: 'idle' | 'connect
             : $state === 'recovering'
             ? 'rgba(245,158,11,.46)'
             : $state === 'connecting'
-            ? 'rgba(6,182,212,.42)'
+            ? 'rgba(139,92,246,.42)'
             : 'rgba(139,92,246,.22)'};
 
     &::before {
@@ -246,7 +242,7 @@ const VoiceStatusPill = styled.div<{ $active: boolean; $state: 'idle' | 'connect
         height: 7px;
         border-radius: 999px;
         background: ${({ $state, $active }) =>
-            !$active ? '#74748a' : $state === 'connected' ? '#10b981' : $state === 'recovering' ? '#f59e0b' : '#06b6d4'};
+            !$active ? '#74748a' : $state === 'connected' ? '#10b981' : $state === 'recovering' ? '#f59e0b' : '#8b5cf6'};
         box-shadow: ${({ $state, $active }) =>
             !$active
                 ? 'none'
@@ -254,7 +250,7 @@ const VoiceStatusPill = styled.div<{ $active: boolean; $state: 'idle' | 'connect
                 ? '0 0 14px rgba(16,185,129,.7)'
                 : $state === 'recovering'
                 ? '0 0 14px rgba(245,158,11,.7)'
-                : '0 0 14px rgba(6,182,212,.7)'};
+                : '0 0 14px rgba(139,92,246,.58)'};
         animation: ${({ $active }) => ($active ? 'chat-call-pulse 1.2s ease-in-out infinite' : 'none')};
     }
 `;

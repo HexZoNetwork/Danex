@@ -935,8 +935,8 @@ install_uno_minigame() {
     local db_name=""
     local db_user=""
     local db_pass=""
-    local sql_file=""
-    local sql_pass=""
+    local db_port="3306"
+    local mysql_args=()
 
     [[ -d "${panel_dir}/public" ]] || return 0
     if [[ ! -d "${source_dir}" ]]; then
@@ -949,62 +949,77 @@ install_uno_minigame() {
     mkdir -p "$(dirname "${target_dir}")"
     copy_tree "${source_dir}" "${target_dir}"
 
-    cat > "${target_dir}/keys.php" <<'PHP'
-<?php
-$configPath = '/pteroprotect/config.json';
-$config = json_decode(file_get_contents($configPath), true);
-$database = $config['minigames']['uno']['database'] ?? [];
-
-$serverIp = $database['host'] ?? '127.0.0.1';
-$dbName = $database['name'] ?? 'uno_online';
-$username = $database['user'] ?? 'game';
-$pass = $database['password'] ?? '';
-?>
-PHP
     chown -R www-data:www-data "${target_dir}" >/dev/null 2>&1 || true
     chmod 0640 "${target_dir}/keys.php" >/dev/null 2>&1 || true
 
-    db_host="$(read_config_path_value minigames.uno.database.host 127.0.0.1)"
-    db_name="$(read_config_path_value minigames.uno.database.name uno_online)"
-    db_user="$(read_config_path_value minigames.uno.database.user game)"
-    db_pass="$(read_config_path_value minigames.uno.database.password hexzo)"
-    sql_file="${target_dir}/uno_online_db.sql"
+    if [[ ! -f "${PANEL_ENV_FILE}" ]]; then
+        warn "panel .env missing at ${PANEL_ENV_FILE}; UNO files installed but schema was not initialized"
+        return 0
+    fi
+
+    while IFS='=' read -r key value; do
+        case "${key}" in
+            DB_HOST) db_host="${value}" ;;
+            DB_PORT) db_port="${value}" ;;
+            DB_DATABASE) db_name="${value}" ;;
+            DB_USERNAME) db_user="${value}" ;;
+            DB_PASSWORD) db_pass="${value}" ;;
+        esac
+    done < <(python3 - "${PANEL_ENV_FILE}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+env = {}
+for raw in Path(sys.argv[1]).read_text().splitlines():
+    line = raw.rstrip("\r")
+    if not line or line.lstrip().startswith("#"):
+        continue
+    m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$", line)
+    if not m:
+        continue
+    key, value = m.group(1), m.group(2).strip()
+    if len(value) >= 2 and ((value[0] == '"' and value[-1] == '"') or (value[0] == "'" and value[-1] == "'")):
+        value = value[1:-1]
+    env[key] = value
+
+for key in ("DB_HOST", "DB_PORT", "DB_DATABASE", "DB_USERNAME", "DB_PASSWORD"):
+    print(f"{key}={env.get(key, '')}")
+PY
+    )
+
+    db_host="${db_host:-127.0.0.1}"
+    db_port="${db_port:-3306}"
 
     if ! command -v mysql >/dev/null 2>&1; then
-        warn "mysql client unavailable; UNO files installed but database was not initialized"
+        warn "mysql client unavailable; UNO files installed but Pterodactyl database schema was not initialized"
         return 0
     fi
-    if [[ ! -f "${sql_file}" ]]; then
-        warn "UNO SQL dump missing at ${sql_file}; database was not initialized"
-        return 0
-    fi
-    if [[ "${db_host}" != "127.0.0.1" && "${db_host}" != "localhost" ]]; then
-        warn "UNO database host is ${db_host}; skipping local MySQL user/database bootstrap"
+    if [[ -z "${db_name}" || -z "${db_user}" ]]; then
+        warn "Pterodactyl DB credentials incomplete in ${PANEL_ENV_FILE}; UNO schema was not initialized"
         return 0
     fi
 
-    sql_pass="${db_pass//\\/\\\\}"
-    sql_pass="${sql_pass//\'/\'\'}"
-    if printf "CREATE DATABASE IF NOT EXISTS \`%s\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s'; CREATE USER IF NOT EXISTS '%s'@'127.0.0.1' IDENTIFIED BY '%s'; GRANT ALL PRIVILEGES ON \`%s\`.* TO '%s'@'localhost'; GRANT ALL PRIVILEGES ON \`%s\`.* TO '%s'@'127.0.0.1'; FLUSH PRIVILEGES;\n" "${db_name}" "${db_user}" "${sql_pass}" "${db_user}" "${sql_pass}" "${db_name}" "${db_user}" "${db_name}" "${db_user}" | mysql; then
-        if mysql "${db_name}" < "${sql_file}"; then
-            echo "[setup] UNO database initialized (${db_name})."
-        else
-            warn "UNO database schema import failed; applying idempotent upgrade queries for existing installs"
-        fi
-        if mysql "${db_name}" <<'SQL'; then
+    mysql_args=(--host="${db_host}" --port="${db_port}" --user="${db_user}" "${db_name}")
+    if env "MYSQL_PWD=$db_pass" mysql "${mysql_args[@]}" <<'SQL'; then
+CREATE TABLE IF NOT EXISTS room (roomCode varchar(5) NOT NULL, numberOfPlayersRemaining int NOT NULL DEFAULT 3, isStarted tinyint(1) NOT NULL DEFAULT 0, cardOnTable varchar(32) NOT NULL DEFAULT '-', isEnded tinyint(1) NOT NULL DEFAULT 0, playerTurn varchar(5) NULL, direction int NOT NULL DEFAULT 1, color varchar(16) NULL, created_at timestamp NULL DEFAULT CURRENT_TIMESTAMP, updated_at timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, PRIMARY KEY (roomCode), KEY room_started_ended (isStarted, isEnded)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS player (id varchar(5) NOT NULL, name varchar(191) NOT NULL, numCards int NOT NULL DEFAULT 7, roomCode varchar(5) NOT NULL, nextPlayer varchar(5) NULL, previousPlayer varchar(5) NULL, unoPressed tinyint(1) NOT NULL DEFAULT 0, user_id bigint unsigned NULL, avatar_url varchar(2048) NULL, is_host tinyint(1) NOT NULL DEFAULT 0, created_at timestamp NULL DEFAULT CURRENT_TIMESTAMP, updated_at timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, PRIMARY KEY (id), KEY player_room (roomCode), KEY player_user (user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS stack (stack_id varchar(5) NOT NULL, numberOfCardsRemaining int NOT NULL DEFAULT 0, roomCode varchar(5) NOT NULL, nextCardNumber int NOT NULL DEFAULT 0, PRIMARY KEY (stack_id), KEY stack_room (roomCode)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS card (stack_id varchar(5) NOT NULL, number int NOT NULL, order_in_stack int NOT NULL, content varchar(32) NOT NULL, id varchar(5) NULL, KEY card_stack_order (stack_id, order_in_stack), KEY card_player (id), KEY card_number_stack_player (number, stack_id, id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ALTER TABLE player MODIFY name varchar(191) NOT NULL;
 SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'player' AND COLUMN_NAME = 'user_id') = 0, 'ALTER TABLE player ADD COLUMN user_id bigint unsigned NULL AFTER roomCode', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
 SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'player' AND COLUMN_NAME = 'avatar_url') = 0, 'ALTER TABLE player ADD COLUMN avatar_url varchar(2048) NULL AFTER user_id', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
 SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'player' AND COLUMN_NAME = 'is_host') = 0, 'ALTER TABLE player ADD COLUMN is_host tinyint(1) NOT NULL DEFAULT 0 AFTER avatar_url', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
+SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'player' AND COLUMN_NAME = 'unoPressed') = 0, 'ALTER TABLE player ADD COLUMN unoPressed tinyint(1) NOT NULL DEFAULT 0 AFTER previousPlayer', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
+SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room' AND COLUMN_NAME = 'playerTurn') = 0, 'ALTER TABLE room ADD COLUMN playerTurn varchar(5) NULL AFTER isEnded', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
+SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room' AND COLUMN_NAME = 'direction') = 0, 'ALTER TABLE room ADD COLUMN direction int NOT NULL DEFAULT 1 AFTER playerTurn', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
+SET @stmt := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'room' AND COLUMN_NAME = 'color') = 0, 'ALTER TABLE room ADD COLUMN color varchar(16) NULL AFTER direction', 'SELECT 1'); PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
 CREATE TABLE IF NOT EXISTS uno_spectators (id bigint unsigned NOT NULL AUTO_INCREMENT, roomCode varchar(5) NOT NULL, user_id bigint unsigned NOT NULL, username varchar(191) NOT NULL, avatar_url varchar(2048) NULL, created_at timestamp NULL DEFAULT CURRENT_TIMESTAMP, updated_at timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, PRIMARY KEY (id), UNIQUE KEY uno_spectators_room_user (roomCode, user_id), KEY uno_spectators_room (roomCode)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS uno_launch_tokens (token_hash char(64) NOT NULL, roomCode varchar(5) NOT NULL, player_id varchar(5) NULL, user_id bigint unsigned NOT NULL, username varchar(191) NOT NULL, avatar_url varchar(2048) NULL, role varchar(16) NOT NULL, expires_at int unsigned NOT NULL, used_at int unsigned NULL, PRIMARY KEY (token_hash), KEY uno_launch_tokens_room (roomCode), KEY uno_launch_tokens_expiry (expires_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 SQL
-            echo "[setup] UNO authenticated lobby schema ready (${db_name})."
-        else
-            warn "UNO authenticated lobby schema upgrade failed; create missing columns/tables manually"
-        fi
+        echo "[setup] UNO schema ready in Pterodactyl database (${db_name})."
     else
-        warn "UNO database bootstrap failed; create database/user manually if needed"
+        warn "UNO schema initialization failed in Pterodactyl database (${db_name})"
     fi
 }
 
@@ -1521,14 +1536,6 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         $j->{network} = {} if ref($j->{network}) ne "HASH";
         $j->{monitor} = {} if ref($j->{monitor}) ne "HASH";
         $j->{ptlc} = {} if ref($j->{ptlc}) ne "HASH";
-        $j->{minigames} = {} if ref($j->{minigames}) ne "HASH";
-        $j->{minigames}{uno} = {} if ref($j->{minigames}{uno}) ne "HASH";
-        $j->{minigames}{uno}{database} = {} if ref($j->{minigames}{uno}{database}) ne "HASH";
-        $j->{minigames}{uno}{database}{host} = "127.0.0.1" if !defined($j->{minigames}{uno}{database}{host}) || $j->{minigames}{uno}{database}{host} eq "";
-        $j->{minigames}{uno}{database}{name} = "uno_online" if !defined($j->{minigames}{uno}{database}{name}) || $j->{minigames}{uno}{database}{name} eq "" || $j->{minigames}{uno}{database}{name} eq "replace_me";
-        $j->{minigames}{uno}{database}{user} = "game" if !defined($j->{minigames}{uno}{database}{user}) || $j->{minigames}{uno}{database}{user} eq "" || $j->{minigames}{uno}{database}{user} eq "replace_me";
-        $j->{minigames}{uno}{database}{password} = "hexzo" if !defined($j->{minigames}{uno}{database}{password}) || $j->{minigames}{uno}{database}{password} eq "" || $j->{minigames}{uno}{database}{password} eq "replace_me";
-
         if (defined $env_file && -f $env_file) {
             my %env = ();
             if (open my $efh, "<", $env_file) {

@@ -6,11 +6,11 @@ import font from '@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-w
 export default createGlobalStyle`
     :root {
         --primary-purple: #8B5CF6;
-        --secondary-blue: #3B82F6;
+        --secondary-blue: #8B5CF6;
         --white: #FFFFFF;
         --black: #07070B;
         --gray: #6B7280;
-        --accent-teal: #06B6D4;
+        --accent-teal: #8B5CF6;
         --accent-pink: #8B5CF6;
         --accent-lime: #10B981;
         --el7-accent-light: #A78BFA;
@@ -24,7 +24,7 @@ export default createGlobalStyle`
         --el7-border: rgba(139, 92, 246, 0.34);
         --el7-border-soft: rgba(139, 92, 246, 0.18);
         --el7-accent: var(--primary-purple);
-        --el7-accent-2: var(--secondary-blue);
+        --el7-accent-2: var(--primary-purple);
         --el7-text: var(--white);
         --el7-text-muted: #A3A3B2;
         --el7-text-dim: #74748A;
@@ -33,12 +33,12 @@ export default createGlobalStyle`
         --el7-warning: #F59E0B;
         --el7-shadow: 0 18px 48px rgba(0, 0, 0, 0.52);
         --el7-shadow-deck: 0 22px 54px rgba(0, 0, 0, 0.58), 0 1px 0 rgba(255, 255, 255, 0.045) inset;
-        --el7-glow: 0 0 28px rgba(139, 92, 246, 0.24);
-        --el7-telemetry-cyan: #22D3EE;
+        --el7-glow: 0 10px 26px rgba(76, 29, 149, 0.24);
+        --el7-telemetry-cyan: #A78BFA;
         --el7-telemetry-amber: #FBBF24;
         --el7-perspective: 1200px;
         --el7-route-z: 22px;
-        --el7-route-tilt: 1.2deg;
+        --el7-route-tilt: 0deg;
         --el7-duration-fast: 140ms;
         --el7-duration: 220ms;
         --el7-duration-slow: 360ms;
@@ -67,12 +67,6 @@ export default createGlobalStyle`
         50% { transform: translate3d(0, 18px, 0); opacity: 1; }
     }
 
-    @keyframes danex-scanline {
-        0% { transform: translateY(-18%); opacity: 0; }
-        20%, 58% { opacity: 0.5; }
-        100% { transform: translateY(118%); opacity: 0; }
-    }
-
     @keyframes danex-spinner-rotate {
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
@@ -96,12 +90,10 @@ export default createGlobalStyle`
         ${tw`font-sans text-neutral-200`};
         letter-spacing: 0;
         background:
-            radial-gradient(circle at 15% -10%, rgba(139, 92, 246, 0.12), transparent 34rem),
-            radial-gradient(circle at 88% 0%, rgba(6, 182, 212, 0.06), transparent 28rem),
             linear-gradient(rgba(139, 92, 246, 0.03) 1px, transparent 1px),
             linear-gradient(90deg, rgba(139, 92, 246, 0.024) 1px, transparent 1px),
             var(--el7-bg-1);
-        background-size: auto, auto, 46px 46px, 46px 46px, auto;
+        background-size: 46px 46px, 46px 46px, auto;
         background-attachment: fixed;
         min-height: 100vh;
         color: var(--el7-text);
@@ -116,31 +108,14 @@ export default createGlobalStyle`
         pointer-events: none;
         z-index: 0;
         background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 22rem),
-            linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.04), transparent),
-            radial-gradient(circle at 32% 70%, rgba(16, 185, 129, 0.035), transparent 28rem),
-            radial-gradient(circle at 72% 64%, rgba(245, 158, 11, 0.026), transparent 26rem);
-        opacity: 0.9;
-        animation: danex-background-drift 16s ease-in-out infinite;
-    }
-
-    body::after {
-        content: '';
-        position: fixed;
-        left: 0;
-        right: 0;
-        top: 0;
-        height: 34vh;
-        pointer-events: none;
-        z-index: 0;
-        background: linear-gradient(180deg, transparent, rgba(139, 92, 246, 0.055), transparent);
-        mix-blend-mode: screen;
-        animation: danex-scanline 9s linear infinite;
+            linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent 20rem),
+            linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.032), transparent);
+        opacity: 0.56;
     }
 
     @media (max-width: 640px) {
         body {
-            background-size: auto, auto, 34px 34px, 34px 34px, auto;
+            background-size: 34px 34px, 34px 34px, auto;
         }
     }
 
@@ -194,8 +169,8 @@ export default createGlobalStyle`
 
     .el7-route-shell {
         position: relative;
-        perspective: var(--el7-perspective);
-        transform-style: preserve-3d;
+        perspective: none;
+        transform-style: flat;
         padding: clamp(0.7rem, 1.8vw, 1.35rem);
     }
 
@@ -206,10 +181,9 @@ export default createGlobalStyle`
         height: 9rem;
         pointer-events: none;
         border-radius: 1.4rem;
-        background: linear-gradient(105deg, rgba(34, 211, 238, 0.09), rgba(139, 92, 246, 0.08) 42%, rgba(251, 191, 36, 0.035));
-        filter: blur(18px);
-        opacity: 0.72;
-        transform: translateZ(-34px);
+        background: rgba(139, 92, 246, 0.055);
+        filter: blur(16px);
+        opacity: 0.42;
     }
 
     .el7-route-panel,
@@ -217,10 +191,10 @@ export default createGlobalStyle`
     .el7-hero-panel {
         position: relative;
         overflow: hidden;
-        background: linear-gradient(145deg, rgba(18, 18, 26, 0.96), rgba(7, 7, 11, 0.98));
+        background: var(--el7-surface);
         border: 1px solid rgba(139, 92, 246, 0.24);
         border-radius: 1.05rem;
-        box-shadow: var(--el7-shadow-deck);
+        box-shadow: var(--el7-shadow);
         transform: translateZ(0);
     }
 
@@ -232,10 +206,8 @@ export default createGlobalStyle`
         inset: 0;
         pointer-events: none;
         border-top: 1px solid rgba(255, 255, 255, 0.075);
-        background:
-            linear-gradient(120deg, transparent 8%, rgba(34, 211, 238, 0.045), transparent 36%),
-            repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 54px);
-        opacity: 0.78;
+        background: repeating-linear-gradient(90deg, rgba(255,255,255,0.014) 0 1px, transparent 1px 54px);
+        opacity: 0.48;
     }
 
     .el7-ops-card,
@@ -245,9 +217,9 @@ export default createGlobalStyle`
 
     .el7-ops-card:hover,
     .el7-lift-3d:hover {
-        transform: translate3d(0, -3px, 18px) rotateX(0.45deg);
-        border-color: rgba(34, 211, 238, 0.38);
-        box-shadow: var(--el7-shadow-deck), 0 0 34px rgba(34, 211, 238, 0.12);
+        transform: translateY(-2px);
+        border-color: rgba(139, 92, 246, 0.42);
+        box-shadow: var(--el7-shadow), 0 10px 24px rgba(76, 29, 149, 0.16);
     }
 
     .el7-telemetry-kicker {
@@ -277,7 +249,7 @@ export default createGlobalStyle`
 
     .danex-monitor-surface:hover {
         border-color: var(--el7-border);
-        box-shadow: var(--el7-shadow), var(--el7-glow);
+        box-shadow: var(--el7-shadow);
     }
 
     .el7-panel,
@@ -286,7 +258,7 @@ export default createGlobalStyle`
     .el7-response {
         position: relative;
         overflow: hidden;
-        background: linear-gradient(135deg, rgba(17, 17, 24, 0.96), rgba(8, 8, 13, 0.98));
+        background: var(--el7-surface);
         border: 1px solid var(--el7-border-soft);
         border-radius: 0.875rem;
         box-shadow: var(--el7-shadow);
@@ -301,8 +273,8 @@ export default createGlobalStyle`
         inset: 0;
         pointer-events: none;
         border-top: 1px solid rgba(255, 255, 255, 0.06);
-        background: linear-gradient(110deg, transparent 15%, rgba(139, 92, 246, 0.055), transparent 52%);
-        opacity: 0.78;
+        background: none;
+        opacity: 0.5;
     }
 
     .el7-panel > *,
@@ -334,19 +306,19 @@ export default createGlobalStyle`
 
     .el7-response-success {
         border-color: rgba(16, 185, 129, 0.38);
-        background: linear-gradient(135deg, rgba(16, 185, 129, 0.14), rgba(8, 8, 13, 0.98));
+        background: rgba(16, 185, 129, 0.12);
         color: #bbf7d0;
     }
 
     .el7-response-error {
         border-color: rgba(239, 68, 68, 0.44);
-        background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(8, 8, 13, 0.98));
+        background: rgba(239, 68, 68, 0.12);
         color: #fecaca;
     }
 
     .el7-response-warning {
         border-color: rgba(245, 158, 11, 0.44);
-        background: linear-gradient(135deg, rgba(245, 158, 11, 0.14), rgba(8, 8, 13, 0.98));
+        background: rgba(245, 158, 11, 0.12);
         color: #fde68a;
     }
 
@@ -358,13 +330,13 @@ export default createGlobalStyle`
         border: 1px solid rgba(139, 92, 246, 0.24) !important;
         border-radius: 0.625rem !important;
         color: var(--el7-text) !important;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        box-shadow: none;
         transition: border-color var(--el7-duration-fast) var(--el7-ease), box-shadow var(--el7-duration-fast) var(--el7-ease), background-color var(--el7-duration-fast) var(--el7-ease);
     }
 
     select {
         appearance: auto;
-        background-image: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(6, 182, 212, 0.035));
+        background-image: none;
         cursor: pointer;
     }
 
@@ -403,13 +375,13 @@ export default createGlobalStyle`
     .CodeMirror-focused .CodeMirror-selected,
     .cm-s-ayu-mirage .CodeMirror-selected,
     .cm-s-ayu-mirage div.CodeMirror-selected {
-        background: #2563eb !important;
+        background: #8b5cf6 !important;
         opacity: 1 !important;
     }
 
     .CodeMirror-selectedtext,
     .pp-cm-selected-text {
-        background: #2563eb !important;
+        background: #8b5cf6 !important;
         color: #ffffff !important;
         text-shadow: 0 1px 1px rgba(0, 0, 0, 0.65);
     }
@@ -417,7 +389,7 @@ export default createGlobalStyle`
     .CodeMirror-line::selection,
     .CodeMirror-line > span::selection,
     .CodeMirror-line > span > span::selection {
-        background: #2563eb !important;
+        background: #8b5cf6 !important;
         color: #ffffff !important;
     }
 
@@ -608,7 +580,7 @@ export default createGlobalStyle`
     select:focus-visible {
         background-color: #171720 !important;
         border-color: var(--el7-accent-light) !important;
-        box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.28), 0 0 22px rgba(139, 92, 246, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.07) !important;
+        box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.24) !important;
     }
 
     [data-el7-spinner='true'] {
@@ -644,7 +616,6 @@ export default createGlobalStyle`
         *:not([data-el7-keep-motion]):not([data-el7-spinner])::before,
         *:not([data-el7-keep-motion]):not([data-el7-spinner])::after,
         body::before,
-        body::after,
         .danex-monitor-surface {
             animation-duration: 0.001ms !important;
             animation-iteration-count: 1 !important;

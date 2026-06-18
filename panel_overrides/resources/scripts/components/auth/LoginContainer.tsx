@@ -77,7 +77,7 @@ const BootOverlay = ({ progress }: { progress: number }) => (
             style={{
                 background: '#0b0b10',
                 borderColor: 'rgba(139, 92, 246, 0.36)',
-                boxShadow: '0 26px 80px rgba(0, 0, 0, 0.65), 0 0 34px rgba(139, 92, 246, 0.16)',
+                boxShadow: '0 26px 80px rgba(0, 0, 0, 0.65)',
             }}
         >
             <p css={tw`text-[11px] uppercase tracking-widest text-neutral-500`}>DANEX X EL7</p>
@@ -89,7 +89,7 @@ const BootOverlay = ({ progress }: { progress: number }) => (
                     style={{
                         width: `${Math.max(8, progress)}%`,
                         background: '#8b5cf6',
-                        boxShadow: '0 0 18px rgba(139, 92, 246, 0.56)',
+                        boxShadow: 'none',
                     }}
                 />
             </div>

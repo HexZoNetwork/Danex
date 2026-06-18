@@ -23,17 +23,14 @@ const Panel = styled.div`
 
 const GameCard = styled.a`
     ${tw`relative block overflow-hidden rounded-xl border p-4 text-neutral-200 no-underline shadow-lg transition-all duration-200 focus:outline-none`};
-    background:
-        radial-gradient(circle at 18% 12%, rgba(239, 68, 68, 0.18), transparent 12rem),
-        radial-gradient(circle at 88% 10%, rgba(37, 99, 235, 0.18), transparent 13rem),
-        linear-gradient(145deg, rgba(17, 17, 23, 0.98), rgba(11, 11, 16, 0.98));
+    background: #111117;
     border-color: rgba(139, 92, 246, 0.26);
 
     &:hover,
     &:focus-visible {
         transform: translateY(-2px);
-        border-color: rgba(234, 179, 8, 0.5);
-        box-shadow: 0 22px 54px rgba(0, 0, 0, 0.55), 0 0 26px rgba(234, 179, 8, 0.12);
+        border-color: rgba(139, 92, 246, 0.5);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
         color: #fff;
     }
 `;
@@ -44,14 +41,12 @@ const ColorStrip = styled.div`
     span:nth-child(1) { background: #ef4444; }
     span:nth-child(2) { background: #facc15; }
     span:nth-child(3) { background: #22c55e; }
-    span:nth-child(4) { background: #2563eb; }
+    span:nth-child(4) { background: #8b5cf6; }
 `;
 
 const GameIcon = styled.div`
     ${tw`flex h-20 w-20 items-center justify-center rounded-2xl border text-4xl shadow-inner`};
-    background:
-        linear-gradient(135deg, rgba(239, 68, 68, 0.26), rgba(250, 204, 21, 0.18) 34%, rgba(34, 197, 94, 0.18) 66%, rgba(37, 99, 235, 0.26)),
-        #111117;
+    background: #111117;
     border-color: rgba(234, 179, 8, 0.32);
 `;
 
@@ -61,19 +56,19 @@ const CardPill = styled.span<{ $color: 'red' | 'yellow' | 'green' | 'blue' }>`
         red: 'rgba(239, 68, 68, 0.14)',
         yellow: 'rgba(250, 204, 21, 0.14)',
         green: 'rgba(34, 197, 94, 0.14)',
-        blue: 'rgba(37, 99, 235, 0.14)',
+        blue: 'rgba(139, 92, 246, 0.14)',
     }[$color])};
     border-color: ${({ $color }) => ({
         red: 'rgba(239, 68, 68, 0.38)',
         yellow: 'rgba(250, 204, 21, 0.38)',
         green: 'rgba(34, 197, 94, 0.38)',
-        blue: 'rgba(37, 99, 235, 0.38)',
+        blue: 'rgba(139, 92, 246, 0.38)',
     }[$color])};
     color: ${({ $color }) => ({
         red: '#fca5a5',
         yellow: '#fde68a',
         green: '#86efac',
-        blue: '#93c5fd',
+        blue: '#c4b5fd',
     }[$color])};
 `;
 

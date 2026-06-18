@@ -34,7 +34,7 @@ const Surface = styled.div<{ $delay?: number }>`
     ${tw`rounded-lg border p-4 relative overflow-hidden`};
     background: #0b0b10;
     border-color: rgba(139, 92, 246, 0.24);
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
     animation: danex-fade-up 420ms var(--el7-ease) both;
     animation-delay: ${({ $delay }) => `${$delay || 0}ms`};
     transition: transform 260ms var(--el7-ease), border-color 260ms var(--el7-ease), box-shadow 260ms var(--el7-ease);
@@ -48,20 +48,17 @@ const Surface = styled.div<{ $delay?: number }>`
     }
 
     &:hover {
-        transform: translateY(-4px);
-        border-color: rgba(139, 92, 246, 0.72);
-        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.58), 0 0 30px rgba(139, 92, 246, 0.2);
+        transform: translateY(-2px);
+        border-color: rgba(139, 92, 246, 0.46);
+        box-shadow: 0 22px 54px rgba(0, 0, 0, 0.54);
     }
 `;
 
 const Hero = styled.div`
     ${tw`relative overflow-hidden rounded-2xl border p-5 sm:p-6`};
-    background:
-        radial-gradient(circle at 12% 0%, rgba(139, 92, 246, 0.3), transparent 24rem),
-        radial-gradient(circle at 88% 12%, rgba(6, 182, 212, 0.14), transparent 22rem),
-        linear-gradient(135deg, #09090d 0%, #111117 58%, #07070b 100%);
+    background: #0b0b10;
     border-color: rgba(139, 92, 246, 0.34);
-    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.62), 0 0 54px rgba(139, 92, 246, 0.16);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.58);
 
     &::before {
         content: '';
@@ -69,10 +66,9 @@ const Hero = styled.div`
         inset: 0;
         pointer-events: none;
         background:
-            repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 64px),
-            repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.016) 0 1px, transparent 1px 64px),
-            linear-gradient(110deg, transparent 0 44%, rgba(139, 92, 246, 0.12) 45%, transparent 47% 100%);
-        opacity: 0.78;
+            repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 64px),
+            repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 64px);
+        opacity: 0.48;
     }
 `;
 
@@ -81,7 +77,7 @@ const Pill = styled.button<{ $active?: boolean }>`
     color: ${({ $active }) => ($active ? '#ffffff' : '#a3a3b2')};
     background: ${({ $active }) => ($active ? 'rgba(139, 92, 246, 0.34)' : 'rgba(7, 7, 11, 0.72)')};
     border-color: ${({ $active }) => ($active ? 'rgba(167, 139, 250, 0.72)' : 'rgba(139, 92, 246, 0.22)')};
-    box-shadow: ${({ $active }) => ($active ? '0 0 22px rgba(139, 92, 246, 0.28)' : 'none')};
+    box-shadow: ${({ $active }) => ($active ? '0 8px 20px rgba(76, 29, 149, 0.18)' : 'none')};
 
     &:hover {
         color: #ffffff;

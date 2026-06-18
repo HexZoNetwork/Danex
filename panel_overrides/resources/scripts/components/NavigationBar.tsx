@@ -33,7 +33,7 @@ const RightNavigation = styled.div`
         &:active,
         &:hover,
         &.active {
-            box-shadow: inset 0 -2px #8b5cf6, 0 0 22px rgba(139, 92, 246, 0.22);
+            box-shadow: inset 0 -2px #8b5cf6;
         }
     }
 
@@ -66,7 +66,7 @@ const Shell = styled.div`
     z-index: 40;
     background: rgba(11, 11, 16, 0.94);
     border-bottom: 1px solid rgba(139, 92, 246, 0.32);
-    box-shadow: 0 14px 38px rgba(0, 0, 0, 0.5), 0 0 24px rgba(139, 92, 246, 0.12);
+    box-shadow: 0 14px 38px rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(16px);
     animation: danex-fade-up 300ms var(--el7-ease) both;
 
@@ -74,15 +74,8 @@ const Shell = styled.div`
         content: '';
         display: block;
         height: 1px;
-        background: linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.7), transparent);
-        opacity: 0.72;
-        transform-origin: center;
-        animation: nav-scan-line 3.6s ease-in-out infinite;
-    }
-
-    @keyframes nav-scan-line {
-        0%, 100% { transform: scaleX(0.18); opacity: 0.28; }
-        50% { transform: scaleX(0.92); opacity: 0.86; }
+        background: rgba(139, 92, 246, 0.42);
+        opacity: 0.56;
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -99,7 +92,7 @@ const Brand = styled(Link)`
     ${tw`block truncate text-base sm:text-xl font-header font-semibold px-3 sm:px-4 no-underline transition-colors duration-150`};
     color: #f7f3ff;
     letter-spacing: 0;
-    text-shadow: 0 0 20px rgba(139, 92, 246, 0.38);
+    text-shadow: none;
 
     &:hover {
         color: #ffffff;

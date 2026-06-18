@@ -15,10 +15,11 @@
         z-index: -1;
         pointer-events: none;
         background:
-            radial-gradient(circle at 14% 10%, rgba(139, 92, 246, 0.12), transparent 28rem),
-            radial-gradient(circle at 86% 12%, rgba(6, 182, 212, 0.08), transparent 24rem),
+            radial-gradient(circle at 14% 10%, rgba(139, 92, 246, 0.09), transparent 28rem),
+            radial-gradient(circle at 86% 12%, rgba(76, 29, 149, 0.08), transparent 24rem),
             repeating-linear-gradient(90deg, rgba(255,255,255,0.022) 0 1px, transparent 1px 72px),
             repeating-linear-gradient(0deg, rgba(255,255,255,0.016) 0 1px, transparent 1px 72px);
+        opacity: 0.82;
     }
     .pp-theme .pp-tabs {
         display: flex;
@@ -29,9 +30,9 @@
         margin-bottom: 14px;
         padding: 8px;
         background: #0b0b10;
-        border: 1px solid rgba(139, 92, 246, 0.22);
-        border-radius: 12px;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 12px 34px rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(139, 92, 246, 0.18);
+        border-radius: 10px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
         scrollbar-width: thin;
     }
     .pp-theme .pp-tabs > li {
@@ -52,7 +53,7 @@
     }
     .pp-theme .pp-tabs > li > a:hover,
     .pp-theme .pp-tabs > li > a:focus {
-        background: rgba(139, 92, 246, 0.12);
+        background: rgba(139, 92, 246, 0.1);
         color: #ffffff;
         border-color: rgba(139, 92, 246, 0.46);
         transform: translateY(-1px);
@@ -73,7 +74,7 @@
         background: #8b5cf6;
         color: #ffffff;
         border-color: rgba(255, 255, 255, 0.18);
-        box-shadow: 0 0 24px rgba(139, 92, 246, 0.28);
+        box-shadow: 0 10px 24px rgba(76, 29, 149, 0.26);
     }
     .pp-theme .box,
     .pp-theme .box.box-primary,
@@ -82,10 +83,11 @@
     .pp-theme .well {
         background: #0b0b10 !important;
         border: 1px solid rgba(139, 92, 246, 0.22) !important;
-        border-radius: 12px !important;
-        box-shadow: 0 14px 38px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.035) !important;
+        border-radius: 10px !important;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28) !important;
         color: #d9d9e7;
         overflow: hidden;
+        animation: pp-card-in 220ms ease both;
     }
     .pp-theme .box-header,
     .pp-theme .box.box-solid > .box-header,
@@ -100,6 +102,10 @@
     .pp-theme h4 {
         color: #f7f7fb !important;
         letter-spacing: 0.03em;
+    }
+    @keyframes pp-card-in {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
     }
     .pp-theme .box-footer,
     .pp-theme .panel-footer,
@@ -119,8 +125,8 @@
         background: #09090d !important;
         border: 1px solid rgba(139, 92, 246, 0.28) !important;
         color: #f4f4fb !important;
-        border-radius: 9px !important;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035) !important;
+        border-radius: 8px !important;
+        box-shadow: none !important;
         transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
     }
     .pp-theme .form-control:focus,
@@ -128,7 +134,7 @@
     .pp-theme select:focus,
     .pp-theme textarea:focus {
         border-color: #8b5cf6 !important;
-        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2) !important;
         background: #0f0f16 !important;
         outline: none !important;
     }
@@ -154,6 +160,8 @@
     .pp-theme .pp-table {
         background: #0b0b10;
         color: #d4d4df;
+        border-collapse: separate;
+        border-spacing: 0;
     }
     .pp-theme .table:not(.pp-table) {
         background: #0b0b10 !important;
@@ -181,7 +189,7 @@
     }
     .pp-theme .table-hover:not(.pp-table) > tbody > tr:hover > td,
     .pp-theme .table:not(.pp-table) > tbody > tr:hover > td {
-        background: rgba(139, 92, 246, 0.11) !important;
+        background: rgba(139, 92, 246, 0.09) !important;
         box-shadow: inset 3px 0 0 #8b5cf6;
     }
     .pp-theme .pp-table > thead > tr > th {
@@ -208,7 +216,7 @@
     }
     .pp-theme .pp-table > tbody > tr:hover > td,
     .pp-theme .pp-table > tbody > tr:hover > th {
-        background: rgba(139, 92, 246, 0.1) !important;
+        background: rgba(139, 92, 246, 0.08) !important;
     }
     .pp-theme .pp-table code {
         background: #15151d;
@@ -233,27 +241,27 @@
         border-radius: 8px !important;
     }
     .pp-theme .btn {
-        border-radius: 9px !important;
-        border: 1px solid rgba(139, 92, 246, 0.28) !important;
+        border-radius: 8px !important;
+        border: 1px solid rgba(139, 92, 246, 0.24) !important;
         background: #111117 !important;
         color: #f7f7fb !important;
         font-weight: 700;
         letter-spacing: 0.02em;
         transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        box-shadow: none;
     }
     .pp-theme .btn:hover,
     .pp-theme .btn:focus {
         transform: translateY(-1px);
         border-color: #8b5cf6 !important;
-        box-shadow: 0 0 22px rgba(139, 92, 246, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        box-shadow: 0 8px 20px rgba(76, 29, 149, 0.18);
         outline: none !important;
     }
     .pp-theme .btn-primary,
     .pp-theme .btn-info {
         background: #8b5cf6 !important;
         border-color: rgba(255, 255, 255, 0.18) !important;
-        box-shadow: 0 0 24px rgba(139, 92, 246, 0.24);
+        box-shadow: 0 8px 20px rgba(76, 29, 149, 0.28);
     }
     .pp-theme .btn-success {
         background: #0f3d30 !important;
@@ -319,6 +327,69 @@
     .pp-theme .alert-success,
     .pp-theme .callout-success {
         border-left-color: #10b981 !important;
+    }
+    .pp-theme .pp-action-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-top: 8px;
+    }
+    .pp-theme .pp-challenge-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+    }
+    .pp-theme .pp-challenge-card {
+        display: flex;
+        min-height: 74px;
+        align-items: center;
+        gap: 12px;
+        padding: 13px 14px;
+        border: 1px solid rgba(139, 92, 246, 0.18);
+        border-radius: 10px;
+        background: #0f0f16;
+        color: #f7f7fb !important;
+        text-decoration: none !important;
+        transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+    }
+    .pp-theme .pp-challenge-card:hover,
+    .pp-theme .pp-challenge-card:focus {
+        transform: translateY(-2px);
+        border-color: rgba(139, 92, 246, 0.48);
+        background: #15151d;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+        outline: none;
+    }
+    .pp-theme .pp-challenge-card strong {
+        display: block;
+        color: #f7f7fb;
+        font-size: 14px;
+        line-height: 1.25;
+    }
+    .pp-theme .pp-challenge-card small,
+    .pp-theme .pp-card-index {
+        color: #a6a6b8;
+        font-size: 12px;
+        letter-spacing: 0.02em;
+    }
+    .pp-theme .pp-card-index {
+        display: inline-flex;
+        width: 40px;
+        height: 40px;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        border-radius: 8px;
+        border: 1px solid rgba(139, 92, 246, 0.24);
+        background: #0b0b10;
+        color: #c4b5fd;
+        font-weight: 800;
+    }
+    .pp-theme .pp-field-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
     }
     .pp-theme .progress {
         background: #09090d !important;
@@ -575,18 +646,18 @@
         width: 100%;
         min-height: 72px;
         padding: 12px;
-        background: linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(6, 182, 212, 0.06) 48%, rgba(9, 9, 13, 0.94));
+        background: #0f0f16;
         border: 1px solid rgba(139, 92, 246, 0.28);
         border-radius: 14px;
         cursor: pointer;
         user-select: none;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 12px 30px rgba(0, 0, 0, 0.22);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
         transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, background 160ms ease;
     }
     .pp-theme .pp-text-toggle:hover,
     .pp-theme .pp-text-toggle:focus-within {
         border-color: rgba(139, 92, 246, 0.62);
-        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.18), 0 18px 40px rgba(0, 0, 0, 0.3), 0 0 22px rgba(139, 92, 246, 0.16);
+        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.18), 0 18px 40px rgba(0, 0, 0, 0.3);
         transform: translateY(-1px);
     }
     .pp-theme .pp-text-toggle-input {
@@ -642,8 +713,8 @@
         box-shadow: inset 0 1px 10px rgba(0, 0, 0, 0.5), 0 0 20px rgba(16, 185, 129, 0.18);
     }
     .pp-theme .pp-text-toggle-input:checked + .pp-text-toggle-frame .pp-text-toggle-core {
-        background: linear-gradient(135deg, #10b981, #06b6d4);
-        box-shadow: 0 0 22px rgba(16, 185, 129, 0.38), 0 0 18px rgba(6, 182, 212, 0.2);
+        background: #10b981;
+        box-shadow: 0 0 20px rgba(16, 185, 129, 0.32);
         transform: translateX(0);
     }
     .pp-theme .pp-toggle-copy {
@@ -717,6 +788,16 @@
         }
         .pp-theme .pp-table {
             min-width: 620px;
+        }
+        .pp-theme .pp-field-grid {
+            grid-template-columns: 1fr;
+        }
+        .pp-theme .pp-action-row .btn {
+            width: 100%;
+            margin-left: 0 !important;
+        }
+        .pp-theme .pp-challenge-grid {
+            grid-template-columns: 1fr;
         }
         .pp-theme .pp-ads-inventory {
             display: grid;

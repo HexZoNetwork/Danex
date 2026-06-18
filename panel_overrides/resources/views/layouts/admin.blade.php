@@ -43,11 +43,6 @@
                 0%, 100% { box-shadow: 0 0 0 rgba(139, 92, 246, 0); }
                 50% { box-shadow: 0 0 24px rgba(139, 92, 246, 0.22); }
             }
-            @keyframes el7-scanline {
-                0% { transform: translateY(-20vh); opacity: 0; }
-                22%, 62% { opacity: 0.42; }
-                100% { transform: translateY(115vh); opacity: 0; }
-            }
             @keyframes el7-admin-card-in {
                 0% { opacity: 0; transform: translateY(16px) scale(0.99); filter: blur(4px); }
                 100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
@@ -83,8 +78,8 @@
             }
             body.hold-transition.skin-blue.fixed.sidebar-mini {
                 background:
-                    radial-gradient(circle at 18% -10%, rgba(139, 92, 246, 0.12), transparent 34rem),
-                    radial-gradient(circle at 88% 0%, rgba(6, 182, 212, 0.06), transparent 28rem),
+                    radial-gradient(circle at 18% -10%, rgba(139, 92, 246, 0.1), transparent 32rem),
+                    radial-gradient(circle at 82% 4%, rgba(76, 29, 149, 0.08), transparent 26rem),
                     var(--el7-bg-a);
                 color: var(--el7-text);
                 letter-spacing: 0;
@@ -99,19 +94,7 @@
                     repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 72px),
                     repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0 1px, transparent 1px 72px),
                     linear-gradient(180deg, rgba(255,255,255,0.025), transparent 18rem);
-            }
-            .wrapper::after {
-                content: "";
-                position: fixed;
-                left: 0;
-                right: 0;
-                top: 0;
-                height: 32vh;
-                z-index: 0;
-                pointer-events: none;
-                background: linear-gradient(180deg, transparent, rgba(139, 92, 246, 0.055), transparent);
-                mix-blend-mode: screen;
-                animation: el7-scanline 10s linear infinite;
+                opacity: 0.72;
             }
             .main-header {
                 position: relative;
@@ -826,7 +809,6 @@
                 animation: el7-admin-content-in 240ms ease both;
             }
             @media (prefers-reduced-motion: reduce) {
-                .wrapper::after,
                 .box::before,
                 .info-box::before,
                 .small-box::before {
