@@ -10,6 +10,7 @@ use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Request;
 use Illuminate\Support\ServiceProvider;
 use Pterodactyl\Extensions\Themes\Theme;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -29,12 +30,18 @@ class AppServiceProvider extends ServiceProvider
 
         Paginator::useBootstrap();
 
-        // If the APP_URL value is set with https:// make sure we force it here. Theoretically
-        // this should just work with the proxy logic, but there are a lot of cases where it
-        // doesn't, and it triggers a lot of support requests, so lets just head it off here.
+        // Force HTTPS scheme when the request arrived over TLS (e.g. via a
+        // reverse-proxy or direct TLS termination) or when APP_URL explicitly
+        // declares https.  Without this, any APP_URL set to http:// causes
+        // the Vue SPA to emit Mixed-Content XHR/fetch requests that modern
+        // browsers block outright.
         //
         // @see https://github.com/pterodactyl/panel/issues/3623
-        if (Str::startsWith(config('app.url') ?? '', 'https://')) {
+        if (
+            Str::startsWith(config('app.url') ?? '', 'https://')
+            || Request::secure()
+            || (strtolower((string) Request::header('X-Forwarded-Proto', '')) === 'https')
+        ) {
             URL::forceScheme('https');
         }
 
