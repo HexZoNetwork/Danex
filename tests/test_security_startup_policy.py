@@ -26,6 +26,9 @@ def write_config(path: pathlib.Path, values: dict) -> None:
 
 def main() -> int:
     policy = load_policy()
+    service = (ROOT / "systemd" / "pteroprotect.service").read_text(encoding="utf-8")
+    if "Environment=PTEROPROTECT_ENFORCE_STARTUP_SECRET_POLICY=1" not in service:
+        raise AssertionError("installed guard service must enforce the startup secret policy")
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         good = root / "good.json"
@@ -36,8 +39,10 @@ def main() -> int:
                 "waf_challenge_secret": "a" * 24,
                 "unblock_portal_token": "b" * 24,
                 "rce_control_key": "c" * 24,
+                "emergency_control_token": "e" * 24,
                 "node_auth_key": "d" * 32,
             },
+            "resilience": {"replay": {"hmac_secret": "h" * 24}},
         })
         if policy.validate(good):
             raise AssertionError("good config should pass startup policy")
@@ -50,11 +55,13 @@ def main() -> int:
                 "waf_challenge_secret": "replace_me",
                 "unblock_portal_token": "short",
                 "rce_control_key": "ekjo",
+                "emergency_control_token": "short",
                 "node_auth_key": "dummy",
             },
+            "resilience": {"replay": {"hmac_secret": "short"}},
         })
         findings = policy.validate(bad)
-        if len(findings) < 6:
+        if len(findings) < 8:
             raise AssertionError(f"bad config should produce policy findings, got {findings!r}")
 
     print("security startup policy tests ok")

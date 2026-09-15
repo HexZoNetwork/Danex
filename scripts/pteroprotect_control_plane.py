@@ -1,7 +1,8 @@
-import socket
 #!/usr/bin/env python3
+import hmac
 import json
 import os
+import socket
 
 def is_valid_ip(ip):
     try:
@@ -176,8 +177,12 @@ class H(BaseHTTPRequestHandler):
 
         data = self._read()
         key = self.headers.get('X-PteroProtect-Node-Key', '')
-        expect = str(net('node_auth_key', '') or '')
-        if expect and key != expect:
+        expect = str(net('node_auth_key', '') or '').strip()
+        # A missing key must never turn this endpoint into an unauthenticated
+        # registration API. This service is normally loopback-only, but an
+        # explicit check prevents an unsafe config or future bind change from
+        # silently exposing it.
+        if not expect or not hmac.compare_digest(key, expect):
             return self._resp(401, {'ok': False, 'error': 'unauthorized'})
 
         node_id = str(data.get('node_id') or '')

@@ -352,8 +352,24 @@ def pause_container_temporarily(container_id: str, ttl_sec: int) -> None:
         log(f"container pause failed {container_id}: {err.strip()}")
         return
     log(f"container paused {container_id} for {ttl_sec}s")
-    cmd = f"sleep {max(1, ttl_sec)}; docker unpause {container_id} >/dev/null 2>&1 || true"
-    subprocess.Popen(["/bin/bash", "-lc", cmd])
+
+    def _unpause_after_delay(cid: str, delay: int) -> None:
+        time.sleep(max(1, delay))
+        try:
+            subprocess.run(
+                ["docker", "unpause", cid],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=_unpause_after_delay,
+        args=(container_id, max(1, ttl_sec)),
+        daemon=True,
+    ).start()
 
 
 def pause_container(container_id: str) -> bool:

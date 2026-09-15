@@ -14,7 +14,9 @@ REQUIRED_SECRET_PATHS = {
     "network.waf_challenge_secret": 24,
     "network.unblock_portal_token": 24,
     "network.rce_control_key": 24,
+    "network.emergency_control_token": 24,
     "network.node_auth_key": 32,
+    "resilience.replay.hmac_secret": 24,
 }
 WEAK_PASSWORDS = {"admin", "admin001", "password", "password123", "pterodactyl", "root", "toor"}
 UNIQUE_SECRET_PATHS = [

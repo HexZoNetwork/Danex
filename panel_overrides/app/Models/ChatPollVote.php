@@ -10,7 +10,7 @@ class ChatPollVote extends Model
 
     protected $table = 'chat_poll_votes';
 
-    protected $guarded = [];
+    protected $fillable = ['message_id', 'user_id'];
 
     /** @return BelongsTo<PublicChatMessage, $this> */
     public function message(): BelongsTo

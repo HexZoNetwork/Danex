@@ -15,7 +15,7 @@ class PublicChatMessageRead extends Model
 
     protected $table = 'public_chat_message_reads';
 
-    protected $guarded = [];
+    protected $fillable = ['message_id', 'user_id', 'read_at'];
 
     protected $casts = [
         'read_at' => 'datetime',

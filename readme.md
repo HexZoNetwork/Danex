@@ -1,11 +1,22 @@
 # Cara Install
 ---
+Quick path: run `sudo bash setup.sh`. The default `config.example.json` only
+contains normal deployment choices; advanced values use built-in safe defaults
+and are documented in `config.advanced.example.json`. On a new install setup
+generates unique control secrets. The resulting `config.json` is private
+runtime state—never commit or share it. To use a securely stored config outside
+this checkout, run `sudo bash setup.sh --config /secure/path/config.json`.
+See [the configuration guide](docs/CONFIGURATION.md) for the small set of
+settings most installations need.
+
 Cara install danex tuh simple
 Bahan Yang Lu Butuhkan:
 - Vps [ udah install pterodactyl ]
 - SFTP SSH Connection [ Recomended: Termius ]
 Cara Masangnya:
-- Edit terlebih dulu config.json
+- Copy `config.example.json` to a private `config.json` only when you need to
+  set Telegram, PTLC, or deployment-specific values. Most installations can
+  run setup directly and only edit the generated runtime config if needed.
 Most Important:
 ```Json
 "telegram" : {

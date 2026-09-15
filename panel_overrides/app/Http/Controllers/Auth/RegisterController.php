@@ -24,13 +24,16 @@ class RegisterController extends AbstractLoginController
     {
         [$token, $botUsername] = $this->resolveTelegramBotIdentity();
         $requiredChannels = $this->getRequiredJoinChannels();
+        $channelVerificationEnabled = $this->isChannelVerificationEnabled();
 
         return (new JsonResponse([
             'data' => [
+                'telegram_enabled' => $token !== null,
                 'telegram_ready' => $token !== null,
+                'channel_verification' => $channelVerificationEnabled,
                 'bot_username' => $botUsername,
                 'bot_start_url' => $botUsername !== null ? ('https://t.me/' . ltrim($botUsername, '@')) : null,
-                'required_channels' => $requiredChannels,
+                'required_channels' => $channelVerificationEnabled ? $requiredChannels : [],
             ],
         ]))
             ->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
@@ -59,53 +62,59 @@ class RegisterController extends AbstractLoginController
 
         $telegramId = trim((string) $validated['telegram_id']);
         $nameLast = 'madeinweb';
-        $requiredChannels = $this->getRequiredJoinChannels();
-        $joinCheck = $this->validateRequiredChannelMembership($token, $telegramId, $requiredChannels);
-        if (!(bool) ($joinCheck['ok'] ?? false)) {
-            $missing = is_array($joinCheck['missing'] ?? null) ? $joinCheck['missing'] : [];
 
-            return new JsonResponse([
-                'error' => $this->buildJoinRetryErrorMessage($requiredChannels, $missing),
-            ], 422);
+        // Channel membership verification only when channels are configured
+        if ($this->isChannelVerificationEnabled()) {
+            $requiredChannels = $this->getRequiredJoinChannels();
+            if (!empty($requiredChannels)) {
+                $joinCheck = $this->validateRequiredChannelMembership($token, $telegramId, $requiredChannels);
+                if (!(bool) ($joinCheck['ok'] ?? false)) {
+                    $missing = is_array($joinCheck['missing'] ?? null) ? $joinCheck['missing'] : [];
+
+                    return new JsonResponse([
+                        'error' => $this->buildJoinRetryErrorMessage($requiredChannels, $missing),
+                    ], 422);
+                }
+            }
         }
 
-        $otp = (string) random_int(100000, 999999);
-        $requestToken = Str::lower(Str::random(48));
-        $now = now();
+            $otp = (string) random_int(100000, 999999);
+            $requestToken = Str::lower(Str::random(48));
+            $now = now();
 
-        DB::table('registration_otp_requests')
-            ->where('email', trim((string) $validated['email']))
-            ->orWhere('username', trim((string) $validated['username']))
-            ->orWhere('telegram_id', $telegramId)
-            ->delete();
+            DB::table('registration_otp_requests')
+                ->where('email', trim((string) $validated['email']))
+                ->orWhere('username', trim((string) $validated['username']))
+                ->orWhere('telegram_id', $telegramId)
+                ->delete();
 
-        DB::table('registration_otp_requests')->insert([
-            'request_token' => $requestToken,
-            'email' => trim((string) $validated['email']),
-            'username' => trim((string) $validated['username']),
-            'name_first' => trim((string) $validated['name_first']),
-            'name_last' => $nameLast,
-            'telegram_id' => $telegramId,
-            'password_encrypted' => Crypt::encryptString((string) $validated['password']),
-            'otp_hash' => Hash::make($otp),
-            'attempts' => 0,
-            'otp_expires_at' => $now->copy()->addMinutes(10),
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
+            DB::table('registration_otp_requests')->insert([
+                'request_token' => $requestToken,
+                'email' => trim((string) $validated['email']),
+                'username' => trim((string) $validated['username']),
+                'name_first' => trim((string) $validated['name_first']),
+                'name_last' => $nameLast,
+                'telegram_id' => $telegramId,
+                'password_encrypted' => Crypt::encryptString((string) $validated['password']),
+                'otp_hash' => Hash::make($otp),
+                'attempts' => 0,
+                'otp_expires_at' => $now->copy()->addMinutes(10),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
 
-        $sendResult = $this->sendOtp($token, $telegramId, $otp);
-        if (!$sendResult['ok']) {
-            DB::table('registration_otp_requests')->where('request_token', $requestToken)->delete();
+            $sendResult = $this->sendOtp($token, $telegramId, $otp);
+            if (!$sendResult['ok']) {
+                DB::table('registration_otp_requests')->where('request_token', $requestToken)->delete();
 
-            $description = trim((string) ($sendResult['description'] ?? ''));
-            $hint = $description !== '' ? (' (' . $description . ')') : '';
-            $botHint = $botUsername !== null ? (' Bot: @' . ltrim($botUsername, '@') . '.') : '';
-            $networkIssue = str_contains(strtolower($description), 'timed out')
-                || str_contains(strtolower($description), 'network error')
-                || str_contains(strtolower($description), 'failed to connect');
-            $baseMessage = $networkIssue
-                ? 'Gagal kirim OTP karena koneksi server ke Telegram bermasalah. Coba ulang dalam 10-30 detik.'
+                $description = trim((string) ($sendResult['description'] ?? ''));
+                $hint = $description !== '' ? (' (' . $description . ')') : '';
+                $botHint = $botUsername !== null ? (' Bot: @' . ltrim($botUsername, '@') . '.') : '';
+                $networkIssue = str_contains(strtolower($description), 'timed out')
+                    || str_contains(strtolower($description), 'network error')
+                    || str_contains(strtolower($description), 'failed to connect');
+                $baseMessage = $networkIssue
+                    ? 'Gagal kirim OTP karena koneksi server ke Telegram bermasalah. Coba ulang dalam 10-30 detik.'
                 : 'Gagal kirim OTP. Pastikan ID Telegram benar dan kamu sudah /start bot.';
 
             return new JsonResponse([
@@ -187,6 +196,42 @@ class RegisterController extends AbstractLoginController
     private function getTelegramToken(): ?string
     {
         return $this->resolveTelegramBotIdentity()[0];
+    }
+
+    /**
+     * Check if channel membership verification is enabled.
+     * Returns false when --notele was used (channels cleared) or when
+     * no channels are configured. Bot token is always used for OTP.
+     */
+    private function isChannelVerificationEnabled(): bool
+    {
+        // If required channels env vars are empty, skip verification
+        $envChannels = trim((string) env('TELEGRAM_REQUIRED_CHANNELS', ''));
+        if ($envChannels === '') {
+            $envChannels = trim((string) env('TELEGRAM_CHANNEL', ''));
+        }
+        if ($envChannels !== '') {
+            return true;
+        }
+
+        // Check config.json for channel/report_channel
+        foreach ($this->getConfigJsonCandidates() as $path) {
+            $decoded = $this->readJsonFile($path);
+            if (!is_array($decoded)) {
+                continue;
+            }
+            $tg = $decoded['telegram'] ?? null;
+            if (!is_array($tg)) {
+                continue;
+            }
+            $channel = trim((string) ($tg['channel'] ?? ''));
+            $reportChannel = trim((string) ($tg['report_channel'] ?? ''));
+            if ($channel !== '' || $reportChannel !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -4,10 +4,10 @@ banaction_allports = iptables-allports
 backend = auto
 ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
 findtime = 600
-#bantime = 3600
-#bantime.increment = true
-#bantime.rndtime = 120
-#bantime.maxtime = 604800
+bantime = 3600
+bantime.increment = true
+bantime.rndtime = 120
+bantime.maxtime = 604800
 maxretry = 12
 
 [sshd]
@@ -18,9 +18,9 @@ backend = auto
 journalmatch = _SYSTEMD_UNIT=sshd.service + _COMM=sshd
 findtime = 300
 maxretry = 4
-#bantime = 172800
-#bantime.increment = true
-#bantime.maxtime = 1209600
+bantime = 172800
+bantime.increment = true
+bantime.maxtime = 1209600
 
 [pteroprotect-waf-deny]
 enabled = true
@@ -29,6 +29,7 @@ logpath = /var/log/pteroprotect/waf.log
 findtime = 300
 maxretry = 8
 bantime = 7200
+bantime.increment = true
 
 [pteroprotect-nginx-sqli]
 enabled = true
@@ -36,15 +37,17 @@ filter = pteroprotect-nginx-sqli
 logpath = /var/log/nginx/pteroprotect.sqli.log
 findtime = 600
 maxretry = 4
-#bantime = 172800
+bantime = 172800
+bantime.increment = true
 
 [pteroprotect-auth-abuse]
 enabled = true
 filter = pteroprotect-auth-abuse
 logpath = /var/log/nginx/pteroprotect.access.log
 findtime = 600
-maxretry = 40
-#bantime = 7200
+maxretry = 10
+bantime = 7200
+bantime.increment = true
 
 [pteroprotect-wings-api-abuse]
 enabled = true
@@ -52,10 +55,11 @@ filter = pteroprotect-wings-api-abuse
 logpath = /var/log/nginx/pteroprotect.access.log
 findtime = 300
 maxretry = 30
-#bantime = 14400
+bantime = 14400
+bantime.increment = true
 
 [recidive]
-enabled = false
+enabled = true
 logpath  = /var/log/fail2ban.log
 banaction = %(banaction_allports)s
 bantime  = 604800

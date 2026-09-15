@@ -14,27 +14,16 @@
 #include "db_guard.h"
 #include "telegram.h"
 #include "disk_protect.h"
-#include "tracker_db.h"
 #include "resource_monitor.h"
 
 Config config;
 bool running = true;
 static volatile sig_atomic_t shutdown_requested = 0;
-time_t last_report_time = 0;
-time_t last_offender_report = 0;
 int guard_lock_fd = -1;
 
 void signal_handler(int sig) {
     (void)sig;
     shutdown_requested = 1;
-}
-
-void send_periodic_reports() {
-    // Disabled for now
-}
-
-void check_blacklisted_users() {
-    // Disabled for now
 }
 
 std::string get_guard_home() {
@@ -109,10 +98,6 @@ int main() {
             );
             return 1;
         }
-        
-        // Initialize tracker database (optional)
-        tracker_db.init(config.database.host, config.database.user,
-                        config.database.password, config.database.name);
         
         // Initialize disk protector
         disk.init(config.paths.volumes, config.limits.max_disk_gb,

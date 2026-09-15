@@ -16,7 +16,9 @@ export interface RegisterStartResponse {
 }
 
 export interface RegisterMetaResponse {
+    telegramEnabled: boolean;
     telegramReady: boolean;
+    channelVerification: boolean;
     botUsername: string;
     botStartUrl: string;
     requiredChannels: string[];
@@ -38,7 +40,9 @@ export const getRegisterMeta = async (): Promise<RegisterMetaResponse> => {
     const { data } = await http.get('/auth/register/meta');
 
     return {
+        telegramEnabled: data?.data?.telegram_enabled !== false,
         telegramReady: !!data?.data?.telegram_ready,
+        channelVerification: data?.data?.channel_verification !== false,
         botUsername: String(data?.data?.bot_username || ''),
         botStartUrl: String(data?.data?.bot_start_url || ''),
         requiredChannels: Array.isArray(data?.data?.required_channels)

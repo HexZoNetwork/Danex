@@ -16,6 +16,7 @@ DEFAULT_INSTALL_DIR="${INSTALL_DIR:-/pteroprotect}"
 DEFAULT_PANEL_DIR="${PANEL_DIR:-/var/www/pterodactyl}"
 DEFAULT_SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 DEFAULT_NGINX_DIR="${NGINX_DIR:-/etc/nginx}"
+CONFIG_SOURCE=""
 
 usage() {
     cat <<'EOF'
@@ -26,6 +27,10 @@ Options:
   --panel-dir PATH     Pterodactyl panel path (default: /var/www/pterodactyl)
   --systemd-dir PATH   systemd unit path (default: /etc/systemd/system)
   --nginx-dir PATH     nginx config root (default: /etc/nginx)
+  --config PATH        Optional JSON config source (default: ./config.json)
+  --notele             Disable Telegram integration entirely (no bot token,
+                       channel, or chat_id needed). Registration works without
+                       Telegram verification.
   -h, --help           Show this help
 EOF
 }
@@ -34,6 +39,7 @@ INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
 PANEL_DIR="${DEFAULT_PANEL_DIR}"
 SYSTEMD_DIR="${DEFAULT_SYSTEMD_DIR}"
 NGINX_DIR="${DEFAULT_NGINX_DIR}"
+NOTELE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -57,6 +63,15 @@ while [[ $# -gt 0 ]]; do
             NGINX_DIR="$2"
             shift 2
             ;;
+        --config)
+            [[ $# -ge 2 ]] || { echo "[setup] --config requires a value" >&2; exit 1; }
+            CONFIG_SOURCE="$2"
+            shift 2
+            ;;
+        --notele)
+            NOTELE=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -73,6 +88,9 @@ INSTALL_DIR="$(readlink -f "${INSTALL_DIR}")"
 PANEL_DIR="$(readlink -f "${PANEL_DIR}")"
 SYSTEMD_DIR="$(readlink -f "${SYSTEMD_DIR}")"
 NGINX_DIR="$(readlink -f "${NGINX_DIR}")"
+if [[ -n "${CONFIG_SOURCE}" ]]; then
+    CONFIG_SOURCE="$(readlink -f "${CONFIG_SOURCE}")"
+fi
 PANEL_ENV_FILE="${PANEL_DIR}/.env"
 BACKUP_DIR="${PROJECT_DIR}/backups"
 cd "${PROJECT_DIR}"
@@ -88,6 +106,55 @@ warn() {
 fail() {
     echo "[setup] error: $*" >&2
     exit 1
+}
+
+# Generate only absent, placeholder, or too-short control secrets. Existing
+# strong values are preserved, so rerunning setup never rotates live access.
+bootstrap_generated_control_secrets() {
+    local config_file="$1"
+    python3 - "${config_file}" <<'PY'
+import json
+import pathlib
+import secrets
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+network = data.setdefault("network", {})
+if not isinstance(network, dict):
+    raise SystemExit("network must be a JSON object")
+
+def weak(value: object, minimum: int = 24) -> bool:
+    value = str(value or "").strip()
+    return len(value) < minimum or value.lower() in {
+        "replace_me", "change_me", "changeme", "default", "dummy", "fake", "test", "password", "secret", "token",
+    }
+
+for name in (
+    "waf_challenge_secret",
+    "unblock_portal_token",
+    "rce_control_key",
+    "emergency_control_token",
+    "node_auth_key",
+):
+    # Independent URL-safe values prevent a leak of one control token from
+    # unlocking a different break-glass capability.
+    if weak(network.get(name)):
+        network[name] = secrets.token_urlsafe(32)
+
+resilience = data.setdefault("resilience", {})
+if not isinstance(resilience, dict):
+    raise SystemExit("resilience must be a JSON object")
+replay = resilience.setdefault("replay", {})
+if not isinstance(replay, dict):
+    raise SystemExit("resilience.replay must be a JSON object")
+if weak(replay.get("hmac_secret")):
+    replay["hmac_secret"] = secrets.token_urlsafe(32)
+
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
 }
 
 if ! command -v apt-get >/dev/null 2>&1; then
@@ -822,6 +889,7 @@ stage_runtime_bundle() {
 
     mkdir -p "${INSTALL_DIR}/scripts" "${INSTALL_DIR}/systemd" "${INSTALL_DIR}/host_overrides"
     install_runtime_file "${PROJECT_DIR}/config.example.json" "${INSTALL_DIR}/config.example.json"
+    install_runtime_file "${PROJECT_DIR}/config.advanced.example.json" "${INSTALL_DIR}/config.advanced.example.json"
     install_runtime_file "${PROJECT_DIR}/check.sh" "${INSTALL_DIR}/check.sh"
 
     for script in \
@@ -845,10 +913,12 @@ stage_runtime_bundle() {
         resilience_test_harness.py \
         runtime_abuse_guard.py \
         security_log_watch.py \
+        security_startup_policy.py \
         self_heal_monitor.py \
         smoke_l7_defense.sh \
         smoke_nodefs_abuse.sh \
         survive_60s.sh \
+        sync_panel_overrides.sh \
         unblock_portal.py \
         validator_preflight.sh \
         watch_panel_overrides.sh; do
@@ -861,6 +931,10 @@ stage_runtime_bundle() {
     fi
     if [[ -d "${PROJECT_DIR}/host_overrides" ]]; then
         copy_tree "${PROJECT_DIR}/host_overrides" "${INSTALL_DIR}/host_overrides"
+    fi
+    if [[ -d "${PROJECT_DIR}/panel_overrides" ]]; then
+        rm -f "${INSTALL_DIR}/panel_overrides"
+        copy_tree "${PROJECT_DIR}/panel_overrides" "${INSTALL_DIR}/panel_overrides"
     fi
 }
 
@@ -1290,7 +1364,12 @@ export UCF_FORCE_CONFFOLD=1
 
 echo "[setup] non-interactive mode enabled (DEBIAN_FRONTEND=${DEBIAN_FRONTEND})..."
 
-if [[ -f "${PROJECT_DIR}/config.json" ]]; then
+if [[ -n "${CONFIG_SOURCE}" ]]; then
+    [[ -f "${CONFIG_SOURCE}" ]] || fail "--config file tidak ditemukan: ${CONFIG_SOURCE}"
+    if ! validate_json_config_file "${CONFIG_SOURCE}"; then
+        fail "--config file tidak valid JSON: ${CONFIG_SOURCE}"
+    fi
+elif [[ -f "${PROJECT_DIR}/config.json" ]]; then
     if ! validate_json_config_file "${PROJECT_DIR}/config.json"; then
         fail "config.json tidak valid JSON. Perbaiki dulu sebelum setup."
     fi
@@ -1317,15 +1396,58 @@ apt-get install "${APT_INSTALL_OPTS[@]}" "${APT_DEPS[@]}"
 echo "[setup] staging runtime bundle in ${INSTALL_DIR} (no full source copy)..."
 mkdir -p "${INSTALL_DIR}"
 stage_runtime_bundle
-if [[ -f "${PROJECT_DIR}/config.json" ]]; then
+if [[ -n "${CONFIG_SOURCE}" ]]; then
+    install -m 0640 "${CONFIG_SOURCE}" "${INSTALL_DIR}/config.json"
+    echo "[setup] config source: ${CONFIG_SOURCE} -> ${INSTALL_DIR}/config.json"
+elif [[ -f "${PROJECT_DIR}/config.json" ]]; then
     install -m 0640 "${PROJECT_DIR}/config.json" "${INSTALL_DIR}/config.json"
     echo "[setup] config source: ${PROJECT_DIR}/config.json -> ${INSTALL_DIR}/config.json"
 elif [[ ! -f "${INSTALL_DIR}/config.json" && -f "${INSTALL_DIR}/config.example.json" ]]; then
     cp "${INSTALL_DIR}/config.example.json" "${INSTALL_DIR}/config.json"
-    echo "[setup] config source: ${INSTALL_DIR}/config.example.json (generated default)"
+bootstrap_generated_control_secrets "${INSTALL_DIR}/config.json"
+
+# When --notele is set, disable Telegram channel verification in config.json
+# Bot token is preserved for OTP delivery, but no channel/chat_id is required.
+if [[ "${NOTELE}" -eq 1 ]]; then
+    echo "[setup] --notele: disabling Telegram channel verification (bot token preserved for OTP)"
+    python3 - "${INSTALL_DIR}/config.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    data = json.loads(open(path, encoding="utf-8").read())
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(data, dict):
+    raise SystemExit(0)
+
+tg = data.get("telegram")
+if not isinstance(tg, dict):
+    tg = {}
+    data["telegram"] = tg
+
+# Keep token for OTP delivery, but disable channel requirements
+tg["enabled"] = True
+tg["channel"] = ""
+tg["report_channel"] = ""
+tg["creator"] = ""
+# chat_id can stay if set — it's used for direct messages, not channel checks
+
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, sort_keys=True)
+    f.write("\n")
+import os
+os.replace(tmp, path)
+PY
+fi
+    echo "[setup] config source: ${INSTALL_DIR}/config.example.json (generated with unique control secrets)"
 elif [[ -f "${INSTALL_DIR}/config.json" ]]; then
     echo "[setup] config source: existing ${INSTALL_DIR}/config.json"
 fi
+bootstrap_generated_control_secrets "${INSTALL_DIR}/config.json"
 
 # Keep workspace runtime config pointed at active install config so edits are
 # always reflected in the running service config path.
@@ -1657,7 +1779,7 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
 
         open my $out, ">", $f or die;
         print $out JSON::PP->new->ascii->pretty->canonical->encode($j);
-    ' "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" "${PROJECT_DIR}/config.example.json"
+    ' "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" "${PROJECT_DIR}/config.advanced.example.json"
 
     # Final safeguard: ensure database section reflects panel .env (or at least
     # replaces obvious template placeholders) before service startup.
@@ -1668,8 +1790,9 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
     # 2) config.json -> panel .env (PTEROPROTECT_* exports)
     # Network security settings remain config.json-only.
     if [[ -f "${PANEL_ENV_FILE}" ]]; then
-        python3 - "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" <<'PY'
+        NOTELE="${NOTELE}" python3 - "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}" <<'PY'
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -1678,6 +1801,8 @@ cfg_path = Path(sys.argv[1])
 env_path = Path(sys.argv[2])
 if not cfg_path.exists() or not env_path.exists():
     raise SystemExit(0)
+
+notele = os.environ.get("NOTELE", "0") == "1"
 
 try:
     cfg = json.loads(cfg_path.read_text())
@@ -1737,39 +1862,49 @@ if "waf_challenge_secret" in net:
     updates["WAF_CHALLENGE_SECRET"] = value_to_string(net.get("waf_challenge_secret", ""))
 if "unblock_portal_token" in net:
     updates["UNBLOCK_PORTAL_TOKEN"] = value_to_string(net.get("unblock_portal_token", ""))
+
+# Always sync bot token for OTP delivery
 if "token" in tg and str(tg.get("token", "")).strip():
     token = value_to_string(str(tg.get("token", "")).strip())
     updates["TELEGRAM_BOT_TOKEN"] = token
     updates["PTEROPROTECT_TELEGRAM_TOKEN"] = token
 
-required_channels = []
-for key in ("channel", "report_channel"):
-    if key not in tg:
-        continue
-    raw = str(tg.get(key, "")).strip()
-    if not raw:
-        continue
-    if not raw.startswith("@"):
-        raw = "@" + raw.lstrip("@")
-    if raw not in required_channels:
-        required_channels.append(raw)
+if not notele:
+    # Full mode: sync channels for membership verification
+    required_channels = []
+    for key in ("channel", "report_channel"):
+        if key not in tg:
+            continue
+        raw = str(tg.get(key, "")).strip()
+        if not raw:
+            continue
+        if not raw.startswith("@"):
+            raw = "@" + raw.lstrip("@")
+        if raw not in required_channels:
+            required_channels.append(raw)
 
-if "channel" in tg and str(tg.get("channel", "")).strip():
-    ch = str(tg.get("channel", "")).strip()
-    if not ch.startswith("@"):
-        ch = "@" + ch.lstrip("@")
-    updates["TELEGRAM_CHANNEL"] = value_to_string(ch)
+    if "channel" in tg and str(tg.get("channel", "")).strip():
+        ch = str(tg.get("channel", "")).strip()
+        if not ch.startswith("@"):
+            ch = "@" + ch.lstrip("@")
+        updates["TELEGRAM_CHANNEL"] = value_to_string(ch)
 
-if "report_channel" in tg and str(tg.get("report_channel", "")).strip():
-    rch = str(tg.get("report_channel", "")).strip()
-    if not rch.startswith("@"):
-        rch = "@" + rch.lstrip("@")
-    updates["TELEGRAM_REPORT_CHANNEL"] = value_to_string(rch)
+    if "report_channel" in tg and str(tg.get("report_channel", "")).strip():
+        rch = str(tg.get("report_channel", "")).strip()
+        if not rch.startswith("@"):
+            rch = "@" + rch.lstrip("@")
+        updates["TELEGRAM_REPORT_CHANNEL"] = value_to_string(rch)
 
-if required_channels:
-    joined = ",".join(required_channels)
-    updates["TELEGRAM_REQUIRED_CHANNELS"] = value_to_string(joined)
-    updates["PTEROPROTECT_TELEGRAM_REQUIRED_CHANNELS"] = value_to_string(joined)
+    if required_channels:
+        joined = ",".join(required_channels)
+        updates["TELEGRAM_REQUIRED_CHANNELS"] = value_to_string(joined)
+        updates["PTEROPROTECT_TELEGRAM_REQUIRED_CHANNELS"] = value_to_string(joined)
+else:
+    # Notele mode: clear channels — no membership verification needed
+    updates["TELEGRAM_CHANNEL"] = ""
+    updates["TELEGRAM_REPORT_CHANNEL"] = ""
+    updates["TELEGRAM_REQUIRED_CHANNELS"] = ""
+    updates["PTEROPROTECT_TELEGRAM_REQUIRED_CHANNELS"] = ""
 
 seen = set()
 out = []
@@ -1933,6 +2068,9 @@ if [[ -f "${PROJECT_DIR}/config.json" ]]; then
 fi
 if [[ -f "${INSTALL_DIR}/config.example.json" ]]; then
     chmod 644 "${INSTALL_DIR}/config.example.json"
+fi
+if [[ -f "${INSTALL_DIR}/config.advanced.example.json" ]]; then
+    chmod 644 "${INSTALL_DIR}/config.advanced.example.json"
 fi
 if [[ -f "/var/log/nginx/pteroprotect.access.log" ]]; then
     chgrp adm "/var/log/nginx/pteroprotect.access.log" >/dev/null 2>&1 || true
@@ -4293,6 +4431,7 @@ echo "[setup] workspace: ${INSTALL_DIR}"
 echo "[setup] binary: ${INSTALL_DIR}/dann_guard"
 echo "[setup] config: ${INSTALL_DIR}/config.json"
 echo "[setup] config template: ${INSTALL_DIR}/config.example.json"
+echo "[setup] advanced config reference: ${INSTALL_DIR}/config.advanced.example.json"
 echo "[setup] log: ${INSTALL_DIR}/dann_guard.log"
 echo "[setup] service: ${SYSTEMD_DIR}/pteroprotect.service"
 echo "[setup] panel sync service: ${SYSTEMD_DIR}/pteroprotect-panel-sync.service"

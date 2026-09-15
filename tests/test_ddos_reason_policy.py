@@ -7,7 +7,7 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/ddos_host_logger.sh"
-CONFIG = ROOT / "config.example.json"
+CONFIG = ROOT / "config.advanced.example.json"
 CHALLENGE_GUARD = ROOT / "src/challenge_guard.cpp"
 NGINX_SNIPPET = ROOT / "host_overrides/nginx/snippets/pteroprotect_server.conf"
 

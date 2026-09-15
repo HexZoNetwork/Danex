@@ -54,6 +54,7 @@ export default () => {
     const [botUsername, setBotUsername] = useState('');
     const [botStartUrl, setBotStartUrl] = useState('');
     const [telegramReady, setTelegramReady] = useState(true);
+    const [channelVerification, setChannelVerification] = useState(true);
     const [requiredChannels, setRequiredChannels] = useState<string[]>([]);
 
     useEffect(() => {
@@ -63,6 +64,7 @@ export default () => {
                 setBotUsername(meta.botUsername || '');
                 setBotStartUrl(meta.botStartUrl || '');
                 setTelegramReady(meta.telegramReady);
+                setChannelVerification(meta.channelVerification);
                 if (meta.requiredChannels.length > 0) {
                     setRequiredChannels(meta.requiredChannels);
                 }
@@ -237,8 +239,8 @@ export default () => {
                             disabled={isSubmitting}
                             description={
                                 botUsername !== ''
-                                    ? `Sebelum kirim OTP, wajib /start ke @${botUsername}.`
-                                    : 'Sebelum kirim OTP, wajib /start ke bot Telegram panel.'
+                                    ? `OTP akan dikirim via bot. Wajib /start ke @${botUsername}.`
+                                    : 'OTP akan dikirim via bot Telegram panel.'
                             }
                         />
                     </div>
@@ -263,7 +265,7 @@ export default () => {
                             LastName otomatis dikunci menjadi <strong css={tw`text-neutral-100`}>madeinweb</strong>.
                         </div>
                     </div>
-                    {requiredChannels.length > 0 && (
+                    {channelVerification && requiredChannels.length > 0 && (
                         <div css={tw`mt-3 rounded-lg border p-3 text-xs text-neutral-400`} style={helperPanelStyle}>
                             <span css={tw`uppercase tracking-widest text-neutral-500`}>Required Channel</span>{' '}
                             {requiredChannels.map((channel, index) => (

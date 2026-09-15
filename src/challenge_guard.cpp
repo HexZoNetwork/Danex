@@ -119,7 +119,6 @@ static std::mutex g_cfg_mu;
 static Settings g_cached_cfg;
 static std::time_t g_cached_cfg_at = 0;
 static std::string g_cfg_path = "/pteroprotect/config.json";
-static std::string g_ephemeral_secret;
 static std::mutex g_api_token_cache_mu;
 static std::map<std::string, std::time_t> g_valid_api_token_cache;
 static std::mutex g_completed_mu;
@@ -177,6 +176,10 @@ static inline std::string trim(const std::string& in) {
     std::size_t e = in.size();
     while (e > b && std::isspace(static_cast<unsigned char>(in[e - 1]))) e--;
     return in.substr(b, e - b);
+}
+
+static bool configured_secret_ok(const std::string& value) {
+    return trim(value).size() >= 24;
 }
 
 static std::map<std::string, std::string> parse_env_file(const std::string& path) {
@@ -1193,9 +1196,6 @@ static Settings load_settings() {
             s.node_id = trim(json_get_string(net, "node_id", "local-node"));
             if (s.node_id.empty()) s.node_id = "local-node";
             s.secret = trim(json_get_string(net, "waf_challenge_secret", ""));
-            if (s.secret.empty()) {
-                s.secret = trim(json_get_string(net, "unblock_portal_token", ""));
-            }
             if (net.contains("trusted_hosts")) {
                 if (net["trusted_hosts"].is_array()) {
                     for (const auto& item : net["trusted_hosts"]) {
@@ -1275,17 +1275,11 @@ static Settings load_settings() {
         auto it = panel_env.find("APP_KEY");
         if (it != panel_env.end()) s.panel_app_key = trim(it->second);
     }
-    if (s.secret.empty()) {
-        const char* env_secret = std::getenv("PTEROPROTECT_WAF_CHALLENGE_SECRET");
-        if (env_secret && *env_secret) s.secret = trim(env_secret);
-    }
-    if (s.secret.empty()) {
-        const char* env_token = std::getenv("PTEROPROTECT_UNBLOCK_PORTAL_TOKEN");
-        if (env_token && *env_token) s.secret = trim(env_token);
-    }
-    if (s.secret.empty()) {
-        if (g_ephemeral_secret.empty()) g_ephemeral_secret = random_nonce();
-        s.secret = g_ephemeral_secret;
+    // Never substitute another control token or create a restart-dependent
+    // ephemeral signing key. Retain the last valid key during a bad live edit;
+    // first startup is rejected by main below until setup creates one.
+    if (!configured_secret_ok(s.secret) && configured_secret_ok(g_cached_cfg.secret)) {
+        s.secret = g_cached_cfg.secret;
     }
     g_cached_cfg = s;
     g_cached_cfg_at = now;
@@ -3490,6 +3484,10 @@ int main() {
     const char* cfg_env = std::getenv("PTEROPROTECT_CONFIG_PATH");
     if (cfg_env && *cfg_env) g_cfg_path = cfg_env;
     Settings s = load_settings();
+    if (!configured_secret_ok(s.secret)) {
+        std::cerr << "challenge_guard: network.waf_challenge_secret must be at least 24 characters\n";
+        return 1;
+    }
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);

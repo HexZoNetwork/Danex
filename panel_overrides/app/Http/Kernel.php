@@ -39,12 +39,15 @@ use Pterodactyl\Http\Middleware\Security\PteroProtectRestrictedApplicationApi;
 use Pterodactyl\Http\Middleware\Security\PteroProtectNodeFileShield;
 use Pterodactyl\Http\Middleware\Security\PteroProtectAvatarUploadRateLimit;
 use Pterodactyl\Http\Middleware\Security\PteroProtectSessionBinding;
+use Pterodactyl\Http\Middleware\Security\PteroProtectDockerImageValidation;
+use Pterodactyl\Http\Middleware\TrustHosts;
 
 class Kernel extends HttpKernel
 {
     protected $middleware = [
         TrustProxies::class,
         HandleCors::class,
+        TrustHosts::class,
         PreventRequestsDuringMaintenance::class,
         ValidatePostSize::class,
         TrimStrings::class,
@@ -105,5 +108,6 @@ class Kernel extends HttpKernel
         'node.maintenance' => MaintenanceMiddleware::class,
         'pteroprotect.nodefs' => PteroProtectNodeFileShield::class,
         'pteroprotect.avatar-upload' => PteroProtectAvatarUploadRateLimit::class,
+        'pteroprotect.docker-image' => PteroProtectDockerImageValidation::class,
     ];
 }

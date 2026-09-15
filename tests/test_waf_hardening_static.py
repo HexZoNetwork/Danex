@@ -27,7 +27,7 @@ def main() -> int:
     self_heal = (ROOT / "scripts/self_heal_monitor.py").read_text(encoding="utf-8")
     protect_controller = (ROOT / "panel_overrides/app/Http/Controllers/Admin/ProtectController.php").read_text(encoding="utf-8")
     protect_index = (ROOT / "panel_overrides/resources/views/admin/protect/index.blade.php").read_text(encoding="utf-8")
-    example_config = (ROOT / "config.example.json").read_text(encoding="utf-8")
+    example_config = (ROOT / "config.advanced.example.json").read_text(encoding="utf-8")
     realtime_hook = (ROOT / "panel_overrides/resources/scripts/plugins/useWafRealtime.ts").read_text(encoding="utf-8")
     public_chat = (ROOT / "panel_overrides/app/Http/Controllers/Api/Client/PublicChatController.php").read_text(encoding="utf-8")
     public_chat_api = (ROOT / "panel_overrides/resources/scripts/api/chat/publicChat.ts").read_text(encoding="utf-8")

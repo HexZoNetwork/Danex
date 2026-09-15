@@ -64,10 +64,10 @@
       "state_dir": "/pteroprotect/runtime"
    },
    "telegram": {
-      "channel": "@wynexishere",
-      "chat_id": "-1003876968973",
-      "creator": "@Pterodactyl_io",
-      "report_channel": "@Hexzae",
-      "token": "8183034118:AAEEHnyfuXxCoWZ83vEh-M67_tC2KToVW1M"
+      "channel": "@your_channel",
+      "chat_id": "-1000000000000",
+      "creator": "@your_admin_handle",
+      "report_channel": "@your_report_channel",
+      "token": ""
    }
 }

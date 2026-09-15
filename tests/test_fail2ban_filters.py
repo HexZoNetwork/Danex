@@ -71,10 +71,10 @@ def run_case(name: str, lines: list[str]) -> int:
 
 def main() -> int:
     jail = (ROOT / "host_overrides/fail2ban/jail.d/pteroprotect.local").read_text(encoding="utf-8")
-    if not re.search(r"\[recidive\]\s+enabled = false", jail, re.MULTILINE):
-        raise AssertionError("recidive all-port bans must be disabled by default")
-    if not re.search(r"\[pteroprotect-auth-abuse\].*?findtime = 600.*?maxretry = 40", jail, re.DOTALL):
-        raise AssertionError("auth jail must be NAT/mobile tolerant")
+    if not re.search(r"\[recidive\]\s+enabled = true", jail, re.MULTILINE):
+        raise AssertionError("recidive must be enabled for persistent attacker banning")
+    if not re.search(r"\[pteroprotect-auth-abuse\].*?findtime = 600.*?maxretry = 10", jail, re.DOTALL):
+        raise AssertionError("auth jail maxretry must be 10 for brute-force protection")
     if not re.search(r"\[pteroprotect-waf-deny\].*?logpath = /var/log/pteroprotect/waf\.log.*?maxretry = 8.*?bantime = 7200", jail, re.DOTALL):
         raise AssertionError("WAF deny jail must watch persistent log and ban high-confidence repeats")
 

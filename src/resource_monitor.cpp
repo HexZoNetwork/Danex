@@ -1457,10 +1457,26 @@ bool block_iptables_ip(const std::string& ip) {
     if (ip.empty() || is_private_or_local_ip(ip)) return false;
     if (is_host_ip(ip) || is_wings_known_ip(ip)) return false;
     if (!is_safe_ip_literal_token(ip)) return false;
-    std::string check_cmd = "iptables -C PTEROPROTECT -s " + ip + " -j DROP >/dev/null 2>&1";
-    if (system(check_cmd.c_str()) == 0) return true;
-    std::string add_cmd = "iptables -I PTEROPROTECT -s " + ip + " -j DROP >/dev/null 2>&1";
-    return system(add_cmd.c_str()) == 0;
+
+    auto run_iptables = [](const char* action, const std::string& addr) -> bool {
+        const char* args[] = {"iptables", action, "PTEROPROTECT", "-s", addr.c_str(),
+                              "-j", "DROP", nullptr};
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(STDOUT_FILENO);
+            close(STDERR_FILENO);
+            execvp("iptables", const_cast<char* const*>(args));
+            _exit(127);
+        } else if (pid > 0) {
+            int status;
+            waitpid(pid, &status, 0);
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        }
+        return false;
+    };
+
+    if (run_iptables("-C", ip)) return true;
+    return run_iptables("-I", ip);
 }
 
 InboundStats collect_inbound_stats(const std::string& identifier, const std::string& uuid = "") {

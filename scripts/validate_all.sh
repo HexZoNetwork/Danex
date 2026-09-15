@@ -100,13 +100,32 @@ run_systemd_verify() {
         return 0
     fi
     log "checking systemd unit syntax"
-    local failed=0 file
+    # Units intentionally use their production paths. Verify rewritten copies
+    # against harmless temporary executables so this check works before setup
+    # and in CI without creating /pteroprotect on the host.
+    local failed=0 file unit_dir runtime_dir command_path relative unit_copy
+    unit_dir="$(mktemp -d)"
+    # Do not include the production path in the replacement value: sed would
+    # otherwise match it again in some unit values on older implementations.
+    runtime_dir="${unit_dir}/runtime"
+    mkdir -p "${runtime_dir}"
+    while IFS= read -r command_path; do
+        relative="${command_path#/pteroprotect/}"
+        [[ "${relative}" != "${command_path}" ]] || continue
+        mkdir -p "$(dirname "${runtime_dir}/${relative}")"
+        printf '#!/usr/bin/env bash\nexit 0\n' > "${runtime_dir}/${relative}"
+        chmod 755 "${runtime_dir}/${relative}"
+    done < <(rg --no-filename -o '/pteroprotect/[A-Za-z0-9_./-]+' systemd || true)
     while IFS= read -r file; do
         [[ "${file}" == systemd/*.service ]] || continue
-        if ! systemd-analyze verify "${file}" >/dev/null; then
+        unit_copy="${unit_dir}/$(basename "${file}")"
+        sed "s|/pteroprotect/|${runtime_dir}/|g; s|=/pteroprotect\$|=${runtime_dir}|" "${file}" > "${unit_copy}"
+        if ! systemd-analyze verify "${unit_copy}" >/dev/null 2>&1; then
+            systemd-analyze verify "${unit_copy}" >&2 || true
             failed=1
         fi
     done < <(tracked_files)
+    rm -rf "${unit_dir}"
     (( failed == 0 )) || fail "systemd unit verification failed"
 }
 

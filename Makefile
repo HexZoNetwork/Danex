@@ -20,9 +20,7 @@ GUARD_SOURCES = \
 	$(SRCDIR)/main.cpp \
 	$(SRCDIR)/rate_protect.cpp \
 	$(SRCDIR)/resource_monitor.cpp \
-	$(SRCDIR)/telegram.cpp \
-	$(SRCDIR)/tracker_db.cpp \
-	$(SRCDIR)/tracking.cpp
+	$(SRCDIR)/telegram.cpp
 GUARD_OBJECTS = $(GUARD_SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
 TARGET = $(BINDIR)/dann_guard
 CHALLENGE_TARGET = $(BINDIR)/challenge_guard

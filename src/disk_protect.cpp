@@ -2073,8 +2073,18 @@ void DiskProtector::clean_now() {
     while ((entry = readdir(dir)) != nullptr) {
         if (strlen(entry->d_name) == 36 && is_valid_uuid(entry->d_name)) {
             std::string path = volumes_path + "/" + entry->d_name;
-            std::string cmd = "find \"" + path + "\" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null";
-            system(cmd.c_str());
+            const char* args[] = {"find", path.c_str(), "-mindepth", "1", "-maxdepth", "1",
+                                  "-exec", "rm", "-rf", "{}", "+", nullptr};
+            pid_t pid = fork();
+            if (pid == 0) {
+                close(STDOUT_FILENO);
+                close(STDERR_FILENO);
+                execvp("find", const_cast<char* const*>(args));
+                _exit(127);
+            } else if (pid > 0) {
+                int status;
+                waitpid(pid, &status, 0);
+            }
         }
     }
     closedir(dir);
