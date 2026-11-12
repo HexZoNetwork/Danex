@@ -367,7 +367,7 @@ class PteroProtectClearanceToken
         if ($packed === false || strlen($packed) !== 16) {
             return '';
         }
-        $bits = self::networkPrefixBits('session_ip_prefix_v6', 48, 0, 128);
+        $bits = self::networkPrefixBits('session_ip_prefix_v6', 56, 0, 128);
         $bytes = intdiv($bits, 8);
         $rem = $bits % 8;
         $out = '';

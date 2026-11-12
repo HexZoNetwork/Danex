@@ -7,6 +7,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Illuminate\View\View;
@@ -520,8 +521,8 @@ class ProtectController extends Controller
         $themeAccent = $this->sanitizeHexColor((string) $request->input('waf_challenge_theme_accent', '#8b5cf6'), '#8b5cf6');
 
         $configPath = (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
-        if (!File::exists($configPath) || !File::isWritable($configPath) || !File::isReadable($configPath)) {
-            $this->alert->danger('Cannot write config.json from panel user. Grant write permission or use root CLI.')->flash();
+        if (!File::exists($configPath) || !File::isReadable($configPath)) {
+            $this->alert->danger('Cannot read config.json or the privileged config writer is unavailable. Grant write permission or use root CLI.')->flash();
             return redirect()->route('admin.protect.challenge');
         }
 
@@ -542,7 +543,7 @@ class ProtectController extends Controller
         $data['network']['waf_challenge_theme_gradient_start'] = $themeGradientStart;
         $data['network']['waf_challenge_theme_gradient_end'] = $themeGradientEnd;
         $data['network']['waf_challenge_theme_accent'] = $themeAccent;
-        File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        $this->writeConfigJson($configPath, $data);
 
         $restart = $this->run(['systemctl', 'restart', 'pteroprotect-challenge'], 8);
         if (($restart['exit'] ?? 1) !== 0) {
@@ -1093,8 +1094,8 @@ class ProtectController extends Controller
         $enabled = filter_var($request->input('enabled', '1'), FILTER_VALIDATE_BOOLEAN);
         $configPath = (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
 
-        if (!File::exists($configPath) || !File::isWritable($configPath)) {
-            $this->alert->danger('Cannot write config.json from panel user. Grant write permission or use root CLI.')->flash();
+        if (!File::exists($configPath) || !File::isReadable($configPath)) {
+            $this->alert->danger('Cannot read config.json or the privileged config writer is unavailable. Grant write permission or use root CLI.')->flash();
             return redirect()->route('admin.protect');
         }
 
@@ -1109,7 +1110,7 @@ class ProtectController extends Controller
         $data['network']['dynamic_block_enabled'] = $enabled;
         $data['network']['host_firewall_enabled'] = $enabled;
 
-        File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        $this->writeConfigJson($configPath, $data);
         $this->alert->success('config.json updated. Restart hostguard for full apply.')->flash();
 
         return redirect()->route('admin.protect');
@@ -1123,8 +1124,8 @@ class ProtectController extends Controller
         }
 
         $configPath = (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
-        if (!File::exists($configPath) || !File::isWritable($configPath) || !File::isReadable($configPath)) {
-            $this->alert->danger('Cannot write config.json from panel user. Grant write permission or use root CLI.')->flash();
+        if (!File::exists($configPath) || !File::isReadable($configPath)) {
+            $this->alert->danger('Cannot read config.json or the privileged config writer is unavailable. Grant write permission or use root CLI.')->flash();
             return redirect()->route('admin.protect');
         }
 
@@ -1139,7 +1140,7 @@ class ProtectController extends Controller
         $hosts = $this->parseAllowedWingsHosts($input);
         $data['network'] = is_array($data['network'] ?? null) ? $data['network'] : [];
         $data['network']['trusted_hosts'] = $hosts;
-        File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        $this->writeConfigJson($configPath, $data);
 
         $applyFailures = [];
         foreach ([['pteroprotect-hostguard', 'restart'], ['nginx', 'reload']] as [$service, $action]) {
@@ -1176,8 +1177,8 @@ class ProtectController extends Controller
         $enabled = filter_var($request->input('create_panel_web_enabled', '1'), FILTER_VALIDATE_BOOLEAN);
         $configPath = (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
 
-        if (!File::exists($configPath) || !File::isWritable($configPath) || !File::isReadable($configPath)) {
-            $this->alert->danger('Cannot write config.json from panel user. Grant write permission or use root CLI.')->flash();
+        if (!File::exists($configPath) || !File::isReadable($configPath)) {
+            $this->alert->danger('Cannot read config.json or the privileged config writer is unavailable. Grant write permission or use root CLI.')->flash();
             return redirect()->route('admin.protect');
         }
 
@@ -1190,7 +1191,7 @@ class ProtectController extends Controller
 
         $data['network'] = is_array($data['network'] ?? null) ? $data['network'] : [];
         $data['network']['create_panel_web_enabled'] = $enabled;
-        File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        $this->writeConfigJson($configPath, $data);
 
         $this->alert->success('Create Panel on web is now ' . ($enabled ? 'enabled' : 'disabled') . '.')->flash();
         return redirect()->route('admin.protect');
@@ -1206,8 +1207,8 @@ class ProtectController extends Controller
         $enabled = filter_var($request->input('create_panel_auto_suspend_enabled', '0'), FILTER_VALIDATE_BOOLEAN);
         $configPath = (string) env('PTEROPROTECT_CONFIG_PATH', self::DEFAULT_CONFIG_PATH);
 
-        if (!File::exists($configPath) || !File::isWritable($configPath) || !File::isReadable($configPath)) {
-            $this->alert->danger('Cannot write config.json from panel user. Grant write permission or use root CLI.')->flash();
+        if (!File::exists($configPath) || !File::isReadable($configPath)) {
+            $this->alert->danger('Cannot read config.json or the privileged config writer is unavailable. Grant write permission or use root CLI.')->flash();
             return redirect()->route('admin.protect');
         }
 
@@ -1220,7 +1221,7 @@ class ProtectController extends Controller
 
         $data['network'] = is_array($data['network'] ?? null) ? $data['network'] : [];
         $data['network']['create_panel_auto_suspend_enabled'] = $enabled;
-        File::put($configPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        $this->writeConfigJson($configPath, $data);
 
         $this->alert->success('Create Panel auto suspend is now ' . ($enabled ? 'enabled' : 'disabled') . '.')->flash();
         return redirect()->route('admin.protect');
@@ -1238,6 +1239,15 @@ class ProtectController extends Controller
             return redirect()->route('admin.protect');
         }
 
+        $confirm = (string) $request->input('confirm', '');
+        if (!hash_equals('CLEANUP', $confirm)) {
+            $this->alert->danger('Type CLEANUP to confirm the offline cleanup job.')->flash();
+            return redirect()->route('admin.protect');
+        }
+
+        $dryRun = filter_var($request->input('dry_run', true), FILTER_VALIDATE_BOOLEAN);
+        $allowUserDeletion = filter_var($request->input('allow_user_deletion', false), FILTER_VALIDATE_BOOLEAN);
+
         $activeRun = ProtectCleanupRun::query()
             ->whereIn('status', [ProtectCleanupRun::STATUS_PENDING, ProtectCleanupRun::STATUS_RUNNING])
             ->orderByDesc('id')
@@ -1247,14 +1257,23 @@ class ProtectController extends Controller
             return redirect()->route('admin.protect');
         }
 
-        $run = ProtectCleanupRun::query()->create([
+        $payload = [
             'user_id' => (int) ($request->user()?->id ?? 0),
             'status' => ProtectCleanupRun::STATUS_PENDING,
-            'messages' => ['Queued cleanup job.'],
-        ]);
+            'messages' => [$dryRun ? 'Queued dry-run cleanup job.' : 'Queued destructive cleanup job.'],
+        ];
+        if (Schema::hasColumn('protect_cleanup_runs', 'dry_run')) {
+            $payload['dry_run'] = $dryRun;
+            $payload['allow_user_deletion'] = $allowUserDeletion;
+        }
+
+        $run = ProtectCleanupRun::query()->create($payload);
 
         ExecuteProtectCleanupJob::dispatch((int) $run->id)->onQueue('standard');
-        $this->alert->success('Offline cleanup queued as job #' . $run->id . '. You can leave this page; progress is tracked below.')->flash();
+        $this->alert->success(
+            ($dryRun ? 'Dry-run cleanup' : 'Offline cleanup') . ' queued as job #' . $run->id .
+            '. You can leave this page; progress is tracked below.'
+        )->flash();
 
         return redirect()->route('admin.protect');
     }
@@ -1269,6 +1288,8 @@ class ProtectController extends Controller
         return response()->json([
             'id' => $run->id,
             'status' => $run->status,
+            'dry_run' => $run->dry_run === null ? true : (bool) $run->dry_run,
+            'allow_user_deletion' => (bool) ($run->allow_user_deletion ?? false),
             'checked_servers' => $run->checked_servers,
             'deleted_servers' => $run->deleted_servers,
             'skipped_online' => $run->skipped_online,
@@ -1443,6 +1464,24 @@ class ProtectController extends Controller
         return $until > time();
     }
 
+    private function writeConfigJson(string $path, array $data): bool
+    {
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
+        $adminctl = '/usr/local/bin/pteroprotect-adminctl';
+        if (is_executable($adminctl)) {
+            $result = $this->runRootRaw([$adminctl, 'config-write', $path], 15, $json);
+            return ($result['exit'] ?? 1) === 0;
+        }
+        try {
+            if (!File::isWritable($path)) {
+                return false;
+            }
+            return File::put($path, $json) !== false;
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
     private function isRceUnlocked(Request $request): bool
     {
         $until = (int) $request->session()->get(self::RCE_SESSION_KEY, 0);
@@ -1583,7 +1622,7 @@ class ProtectController extends Controller
 
             $data['network'] = is_array($data['network'] ?? null) ? $data['network'] : [];
             $data['network']['rce_control_key'] = $newKey;
-            File::put($path, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+            $this->writeConfigJson($path, $data);
 
             return true;
         } catch (Throwable) {
@@ -2406,6 +2445,20 @@ class ProtectController extends Controller
             return null;
         }
 
+        $baseReal = realpath($base);
+        $pathReal = realpath($path);
+        if ($baseReal === false || $pathReal === false) {
+            return null;
+        }
+        $baseReal = rtrim($baseReal, '/');
+        if (!str_starts_with($pathReal, $baseReal . '/')) {
+            return null;
+        }
+        if (strpos($pathReal, $marker) === false) {
+            return null;
+        }
+        $path = $pathReal;
+
         return $path;
     }
 
@@ -2539,7 +2592,7 @@ class ProtectController extends Controller
 
         if ($service === 'pteroprotect-hostguard') {
             if ($action === 'stop') {
-                return ['/bin/true'];
+                return ['/bin/sh', '-c', 'echo "pteroprotect-hostguard is a oneshot unit with no persistent process to stop" >&2; exit 1'];
             }
 
             return ['/pteroprotect/scripts/install_host_protection.sh'];
@@ -2613,7 +2666,12 @@ class ProtectController extends Controller
             }
         }
 
-        return ['/bin/true'];
+        Log::error('pteroprotect-mode script is missing or not executable; refusing to report success.', [
+            'mode' => $mode,
+            'candidates' => $candidates,
+        ]);
+
+        return ['/bin/sh', '-c', 'echo "pteroprotect-mode script not found" >&2; exit 127'];
     }
 
     /**
@@ -2696,7 +2754,8 @@ class ProtectController extends Controller
     private function wrapWithSudo(array $command): array
     {
         if (!is_executable('/usr/bin/sudo')) {
-            return $command;
+            Log::error('Root command requested but /usr/bin/sudo is unavailable.', ['command' => $command]);
+            return ['/bin/sh', '-c', 'echo "pteroprotect: sudo is required for this action but is unavailable" >&2; exit 126'];
         }
 
         if (count($command) >= 2 && $command[0] === '/usr/bin/sudo' && $command[1] === '-n') {

@@ -32,6 +32,13 @@ class PteroProtectRestrictedApplicationApi
         }
 
         $path = ltrim($request->path(), '/');
+
+        // Node configuration responses embed the Wings daemon token. Never let
+        // delegated admins fetch it, even though they may read node metadata.
+        if ($request->isMethod('get') && preg_match('#^api/application/nodes/[0-9]+/configuration(?:/|$)#i', $path) === 1) {
+            throw new AccessDeniedHttpException('Node configuration and daemon tokens are restricted to the primary admin.');
+        }
+
         if (preg_match('#^api/application/(users|servers)(?:/|$)#i', $path) !== 1) {
             // delegated admin: read-only infra endpoints for create-server workflow.
             $isReadOnlyInfraRequest = $request->isMethod('get') && (

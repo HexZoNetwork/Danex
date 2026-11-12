@@ -19,6 +19,7 @@ Type=simple
 User=root
 Group=root
 Environment=PTEROPROTECT_CONFIG_PATH=/pteroprotect/config.json
+ExecStartPre=/usr/bin/env python3 /pteroprotect/scripts/security_startup_policy.py /pteroprotect/config.json --enforce
 ExecStart=/usr/bin/python3 /pteroprotect/scripts/pteroprotect_control_plane.py
 Restart=always
 RestartSec=1

@@ -1492,10 +1492,11 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
         my @ordered = sort { $a <=> $b } keys %seen;
         $j->{network}{public_tcp_ports} = join(",", @ordered);
 
-        $j->{network}{unblock_portal_bind} = "0.0.0.0" if !defined($j->{network}{unblock_portal_bind}) || $j->{network}{unblock_portal_bind} eq "";
+        $j->{network}{unblock_portal_bind} = "127.0.0.1" if !defined($j->{network}{unblock_portal_bind}) || $j->{network}{unblock_portal_bind} eq "";
         $j->{network}{unblock_portal_port} = 18443 if !defined($j->{network}{unblock_portal_port}) || $j->{network}{unblock_portal_port} !~ /^\d+$/;
         $j->{network}{emergency_control_enabled} = JSON::PP::true if !defined($j->{network}{emergency_control_enabled});
-        $j->{network}{emergency_control_bind} = "0.0.0.0" if !defined($j->{network}{emergency_control_bind}) || $j->{network}{emergency_control_bind} eq "";
+        $j->{network}{emergency_control_bind} = "127.0.0.1" if !defined($j->{network}{emergency_control_bind}) || $j->{network}{emergency_control_bind} eq "";
+        $j->{network}{emergency_control_query_bootstrap_enabled} = JSON::PP::false if !defined($j->{network}{emergency_control_query_bootstrap_enabled});
         $j->{network}{emergency_control_port} = 18447 if !defined($j->{network}{emergency_control_port}) || $j->{network}{emergency_control_port} !~ /^\d+$/;
         $j->{network}{emergency_control_session_ttl_sec} = 900 if !defined($j->{network}{emergency_control_session_ttl_sec}) || $j->{network}{emergency_control_session_ttl_sec} !~ /^\d+$/;
         $j->{network}{waf_pow_bits} = 18 if !defined($j->{network}{waf_pow_bits}) || $j->{network}{waf_pow_bits} !~ /^\d+$/;
@@ -1663,6 +1664,13 @@ if [[ -f "${INSTALL_DIR}/config.json" ]]; then
     # replaces obvious template placeholders) before service startup.
     sync_config_database_from_panel_env "${INSTALL_DIR}/config.json" "${PANEL_ENV_FILE}"
 
+    # Generate strong control secrets for fresh/placeholder installs so the
+    # enforced startup policy can fail closed without bricking first boot.
+    if [[ -f "${INSTALL_DIR}/scripts/security_startup_policy.py" && -f "${INSTALL_DIR}/config.json" ]]; then
+        python3 "${INSTALL_DIR}/scripts/security_startup_policy.py" "${INSTALL_DIR}/config.json" --generate-missing || \
+            warn "security_startup_policy secret generation failed; review config.json before starting services."
+    fi
+
     # Source of truth flow:
     # 1) panel .env -> config.json (database keys only)
     # 2) config.json -> panel .env (PTEROPROTECT_* exports)
@@ -1802,7 +1810,7 @@ if [[ -n "${INFRA_HOSTS_CSV}" ]]; then
 fi
 
 BUILD_JOBS="$(nproc 2>/dev/null || echo 1)"
-BUILD_CXXFLAGS="${PTEROPROTECT_CXXFLAGS:--std=c++11 -Wall -Wno-unused-function -Wno-unused-but-set-variable -Wno-unused-variable -Iinclude}"
+BUILD_CXXFLAGS="${PTEROPROTECT_CXXFLAGS:--std=c++11 -O2 -Wall -Wno-unused-function -Wno-unused-but-set-variable -Wno-unused-variable -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fstack-clash-protection -D_GLIBCXX_ASSERTIONS -Wformat -Wformat-security -Iinclude}"
 
 echo "[setup] rebuilding dann_guard in ${PROJECT_DIR} with ${BUILD_JOBS} job(s)..."
 make -C "${PROJECT_DIR}" clean
@@ -1908,23 +1916,23 @@ if [[ -f "${INSTALL_DIR}/challenge_guard" ]]; then
     chmod 755 "${INSTALL_DIR}/challenge_guard"
 fi
 if [[ -f "${INSTALL_DIR}/config.json" ]]; then
-    # Panel ProtectController writes this file from the PHP-FPM user.
-    # Operational mode: panel/admin tooling must be able to save this file after setup.
+    # Panel reads config.json; writes go through the root-owned adminctl helper.
+    # Keep secrets unreadable to unrelated users and non-writable by PHP-FPM.
     chown root:www-data "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
-    chmod 660 "${INSTALL_DIR}/config.json"
+    chmod 640 "${INSTALL_DIR}/config.json"
     chown root:www-data "${INSTALL_DIR}" >/dev/null 2>&1 || true
     chmod 2750 "${INSTALL_DIR}" >/dev/null 2>&1 || true
     if command -v setfacl >/dev/null 2>&1; then
         while IFS= read -r _pp_user; do
             id "${_pp_user}" >/dev/null 2>&1 || continue
-            setfacl -m "u:${_pp_user}:rwx" "${INSTALL_DIR}" >/dev/null 2>&1 || true
-            setfacl -d -m "u:${_pp_user}:rwx" "${INSTALL_DIR}" >/dev/null 2>&1 || true
-            setfacl -m "u:${_pp_user}:rw" "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
+            # Read/traverse only: directory write access would let the panel
+            # rename or replace root-executed binaries and scripts.
+            setfacl -m "u:${_pp_user}:r-x" "${INSTALL_DIR}" >/dev/null 2>&1 || true
         done < <(panel_runtime_users)
-        setfacl -m m::rw,o::--- "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
+        setfacl -m m::r,o::--- "${INSTALL_DIR}/config.json" >/dev/null 2>&1 || true
         setfacl -m m::rwx,o::--- "${INSTALL_DIR}" >/dev/null 2>&1 || true
     fi
-    chmod 660 "${INSTALL_DIR}/config.json"
+    chmod 640 "${INSTALL_DIR}/config.json"
     chmod 2750 "${INSTALL_DIR}" >/dev/null 2>&1 || true
 fi
 if [[ -f "${PROJECT_DIR}/config.json" ]]; then
@@ -2317,6 +2325,40 @@ PY
         fi
         (cd "${PANEL_DIR}" && php artisan optimize:clear >/dev/null 2>&1 || true)
         ensure_panel_runtime_dirs "${PANEL_DIR}"
+
+        if command -v systemctl >/dev/null 2>&1; then
+            RETENTION_PHP_BIN="$(command -v php)"
+            cat > "${SYSTEMD_DIR}/pteroprotect-retention.service" <<EOF
+[Unit]
+Description=PteroProtect retention pruning
+After=network-online.target mariadb.service
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=${PANEL_DIR}
+ExecStart=${RETENTION_PHP_BIN} ${PANEL_DIR}/artisan pteroprotect:prune-retention
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=1800
+EOF
+            cat > "${SYSTEMD_DIR}/pteroprotect-retention.timer" <<'EOF'
+[Unit]
+Description=Daily PteroProtect retention pruning
+
+[Timer]
+OnCalendar=*-*-* 04:17:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=pteroprotect-retention.service
+
+[Install]
+WantedBy=timers.target
+EOF
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            systemctl enable --now pteroprotect-retention.timer >/dev/null 2>&1 || true
+        fi
     fi
 
     if [[ -f "${PANEL_DIR}/package.json" ]]; then
@@ -2969,6 +3011,8 @@ for marker in [
     "location ~* ^/api/client/servers/[^/]+/websocket$ {\n    if (-f /dev/shm/pteroprotect/brownout.flag) { return 503; }\n",
     "location ~* ^/api/client/servers/[^/]+/(resources|activity)$ {\n    if (-f /dev/shm/pteroprotect/brownout.flag) { return 503; }\n",
     "location ~* ^/api/client/(?:waf|danexc)/(?:stats|timeline|threats|config|overview|feed)$ {\n",
+    "location ~* ^/api/application/servers/[^/]+/configuration$ {\n",
+    "location = /api/application {\n",
     "location /api/application/ {\n",
     "location /api/ {\n",
 ]:
@@ -4207,6 +4251,24 @@ case "${action}" in
             service-is-active) exec systemctl is-active "${arg}" ;;
         esac
         ;;
+    config-write)
+        target=${arg:-${PTEROPROTECT_CONFIG_PATH:-/pteroprotect/config.json}}
+        case ${target} in
+            /pteroprotect/config.json|/root/porn/config.json) ;;
+            *) echo config target not allowed: ${target} >&2; exit 64 ;;
+        esac
+        tmp=$(mktemp ${target}.tmp.XXXXXX)
+        trap 'rm -f ${tmp}' EXIT
+        cat >${tmp}
+        python3 -c 'import json,sys; json.load(open(sys.argv[1]))' ${tmp} || {
+            echo config payload is not valid JSON >&2
+            exit 65
+        }
+        chown root:www-data ${tmp} 2>/dev/null || true
+        chmod 0640 ${tmp}
+        mv -f ${tmp} ${target}
+        trap - EXIT
+        ;;
     nginx-test)
         exec nginx -t
         ;;
@@ -4251,7 +4313,7 @@ case "${action}" in
         exec systemctl reboot
         ;;
     *)
-        echo "usage: pteroprotect-adminctl {service-*|mode|firewall|docker|nginx-test|nginx-reload|journal-tail|reboot} [args]" >&2
+        echo "usage: pteroprotect-adminctl {service-*|mode|firewall|docker|config-write|nginx-test|nginx-reload|journal-tail|reboot} [args]" >&2
         exit 64
         ;;
 esac

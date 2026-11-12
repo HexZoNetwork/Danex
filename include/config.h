@@ -11,6 +11,8 @@ struct DatabaseConfig {
     std::string user;
     std::string password;
     std::string name;
+    std::string tls_mode = "verify_ca";
+    std::string tls_ca;
 };
 
 struct TelegramConfig {
@@ -41,7 +43,7 @@ struct PtlcConfig {
 };
 
 struct RuntimeConfig {
-    bool offline_mode = true;
+    bool offline_mode = false;
     std::string state_dir = "/pteroprotect/runtime";
     std::string quarantine_dir_name = ".dann_quarantine";
 };
@@ -93,7 +95,8 @@ struct Config {
     NetworkConfig network;
     MonitorConfig monitor;
     AbuseConfig abuse;
-    
+    bool valid = false;
+
     static Config load(const std::string& filename);
 };
 

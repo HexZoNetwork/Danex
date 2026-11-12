@@ -75,7 +75,11 @@ struct Settings {
     std::string db_user;
     std::string db_password;
     std::string db_name;
+    std::string db_ssl_mode = "verify_ca";
+    std::string db_ssl_ca;
     std::string panel_app_key;
+    bool allow_weak_secret = false;
+    bool secret_weak = false;
 };
 
 struct NonceRec {
@@ -122,6 +126,7 @@ static std::string g_cfg_path = "/pteroprotect/config.json";
 static std::string g_ephemeral_secret;
 static std::mutex g_api_token_cache_mu;
 static std::map<std::string, std::time_t> g_valid_api_token_cache;
+static std::map<std::string, std::time_t> g_invalid_api_token_cache;
 static std::mutex g_completed_mu;
 static std::map<std::string, std::time_t> g_completed_challenges;
 static std::mutex g_web_decision_mu;
@@ -467,10 +472,21 @@ static std::string hmac_sha256_hex(const std::string& key, const std::string& da
 }
 
 static bool is_panel_api_token_format(const std::string& token) {
-    if (!(begins_with(token, "ptla_") || begins_with(token, "ptlc_"))) return false;
     if (token.size() <= 16 || token.size() > 255) return false;
+    if (begins_with(token, "ptla_") || begins_with(token, "ptlc_")) {
+        for (char c : token) {
+            const bool ok = std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+            if (!ok) return false;
+        }
+        return true;
+    }
+    // Wings node daemon tokens are opaque high-entropy strings rather than
+    // panel API keys. Accept the base64/hex character set so the provider gate
+    // can validate them against the nodes table instead of blocking Wings.
     for (char c : token) {
-        const bool ok = std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+        const bool ok = std::isalnum(static_cast<unsigned char>(c)) ||
+                        c == '_' || c == '-' || c == '.' || c == '~' ||
+                        c == '+' || c == '/' || c == '=';
         if (!ok) return false;
     }
     return true;
@@ -575,12 +591,66 @@ static void token_cache_store_valid_api_token(const std::string& token, int ttl_
     g_valid_api_token_cache[token] = std::time(nullptr) + ttl_sec;
 }
 
+static bool token_cache_contains_invalid_api_token(const std::string& token) {
+    std::lock_guard<std::mutex> lock(g_api_token_cache_mu);
+    auto it = g_invalid_api_token_cache.find(token);
+    if (it == g_invalid_api_token_cache.end()) return false;
+    if (it->second < std::time(nullptr)) {
+        g_invalid_api_token_cache.erase(it);
+        return false;
+    }
+    return true;
+}
+
+static void token_cache_store_invalid_api_token(const std::string& token, int ttl_sec = 15) {
+    std::lock_guard<std::mutex> lock(g_api_token_cache_mu);
+    if (g_invalid_api_token_cache.size() > 5000) {
+        const std::time_t now = std::time(nullptr);
+        for (auto it = g_invalid_api_token_cache.begin(); it != g_invalid_api_token_cache.end();) {
+            if (it->second < now) it = g_invalid_api_token_cache.erase(it);
+            else ++it;
+        }
+        while (g_invalid_api_token_cache.size() > 5000) {
+            g_invalid_api_token_cache.erase(g_invalid_api_token_cache.begin());
+        }
+    }
+    g_invalid_api_token_cache[token] = std::time(nullptr) + ttl_sec;
+}
+
+static bool timing_safe_equal(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        diff |= static_cast<unsigned char>(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
+static unsigned int challenge_mysql_ssl_mode(const std::string& raw) {
+    const std::string v = to_lower(trim(raw));
+    if (v == "disabled" || v == "off" || v == "none" || v == "false" || v == "0") return SSL_MODE_DISABLED;
+    if (v == "preferred" || v == "prefer") return SSL_MODE_PREFERRED;
+    if (v == "required" || v == "require" || v == "on" || v == "true" || v == "1") return SSL_MODE_REQUIRED;
+    if (v == "verify_identity" || v == "verify-full" || v == "verify_full") return SSL_MODE_VERIFY_IDENTITY;
+    return SSL_MODE_VERIFY_CA;
+}
+
 static bool is_valid_panel_api_bearer(const Settings& s, const std::string& token) {
     if (!is_panel_api_token_format(token)) return false;
     if (token_cache_contains_valid_api_token(token)) return true;
+    if (token_cache_contains_invalid_api_token(token)) return false;
     MYSQL* conn = mysql_init(nullptr);
     if (!conn) return false;
     bool ok = false;
+    unsigned int ssl_mode = challenge_mysql_ssl_mode(s.db_ssl_mode);
+    if (mysql_options(conn, MYSQL_OPT_SSL_MODE, &ssl_mode) != 0) {
+        mysql_close(conn);
+        return false;
+    }
+    if (!s.db_ssl_ca.empty() && mysql_options(conn, MYSQL_OPT_SSL_CA, s.db_ssl_ca.c_str()) != 0) {
+        mysql_close(conn);
+        return false;
+    }
     if (mysql_real_connect(conn,
             s.db_host.empty() ? "127.0.0.1" : s.db_host.c_str(),
             s.db_user.c_str(),
@@ -590,6 +660,10 @@ static bool is_valid_panel_api_bearer(const Settings& s, const std::string& toke
         std::string esc;
         esc.resize(token.size() * 2 + 1);
         unsigned long esc_len = mysql_real_escape_string(conn, &esc[0], token.c_str(), static_cast<unsigned long>(token.size()));
+        if (esc_len == 0) {
+            mysql_close(conn);
+            return false;
+        }
         esc.resize(esc_len);
         std::string q1 = "SELECT 1 FROM api_keys WHERE token='" + esc + "' LIMIT 1";
         if (mysql_query(conn, q1.c_str()) == 0) {
@@ -609,9 +683,25 @@ static bool is_valid_panel_api_bearer(const Settings& s, const std::string& toke
                 }
             }
         }
+        if (!ok && !s.panel_app_key.empty()) {
+            if (mysql_query(conn, "SELECT daemon_token FROM nodes") == 0) {
+                MYSQL_RES* res3 = mysql_store_result(conn);
+                if (res3) {
+                    MYSQL_ROW row;
+                    while (!ok && (row = mysql_fetch_row(res3)) != nullptr) {
+                        if (!row[0]) continue;
+                        std::string plain;
+                        if (!laravel_decrypt_string(s.panel_app_key, row[0], plain)) continue;
+                        ok = timing_safe_equal(plain, token);
+                    }
+                    mysql_free_result(res3);
+                }
+            }
+        }
     }
     mysql_close(conn);
     if (ok) token_cache_store_valid_api_token(token);
+    else token_cache_store_invalid_api_token(token);
     return ok;
 }
 
@@ -1142,6 +1232,34 @@ static bool host_or_cidr_matches_ip(const std::string& host_or_ip, const std::st
     return matched;
 }
 
+static bool secret_is_weak(const std::string& secret) {
+    const std::string v = trim(secret);
+    if (v.size() < 24) return true;
+    const std::string lower = to_lower(v);
+    static const std::vector<std::string> placeholders = {
+        "replace_me", "replace-me", "change_me", "change-me", "changeme",
+        "waf_challenge_secret", "unblock_portal_token", "your_secret",
+        "your-secret", "secret", "password", "default", "example", "todo"
+    };
+    for (const auto& p : placeholders) {
+        if (lower == p) return true;
+    }
+    if (lower.find("replace_me") != std::string::npos ||
+        lower.find("change_me") != std::string::npos ||
+        lower.find("changeme") != std::string::npos) {
+        return true;
+    }
+    bool has_upper = false, has_lower = false, has_digit = false, has_other = false;
+    for (unsigned char c : v) {
+        if (std::isupper(c)) has_upper = true;
+        else if (std::islower(c)) has_lower = true;
+        else if (std::isdigit(c)) has_digit = true;
+        else has_other = true;
+    }
+    const int classes = (has_upper ? 1 : 0) + (has_lower ? 1 : 0) + (has_digit ? 1 : 0) + (has_other ? 1 : 0);
+    return classes < 3;
+}
+
 static Settings load_settings() {
     std::lock_guard<std::mutex> lock(g_cfg_mu);
     std::time_t now = std::time(nullptr);
@@ -1193,7 +1311,7 @@ static Settings load_settings() {
             s.node_id = trim(json_get_string(net, "node_id", "local-node"));
             if (s.node_id.empty()) s.node_id = "local-node";
             s.secret = trim(json_get_string(net, "waf_challenge_secret", ""));
-            if (s.secret.empty()) {
+            if (s.secret.empty() && parse_bool(net.value("waf_challenge_legacy_secret_fallback", json(false)), false)) {
                 s.secret = trim(json_get_string(net, "unblock_portal_token", ""));
             }
             if (net.contains("trusted_hosts")) {
@@ -1252,6 +1370,10 @@ static Settings load_settings() {
             s.db_user = trim(db.value("user", std::string("")));
             s.db_password = db.value("password", std::string(""));
             s.db_name = trim(db.value("name", std::string("")));
+            s.db_ssl_mode = to_lower(trim(db.value("tls_mode", std::string("verify_ca"))));
+            if (s.db_ssl_mode.empty()) s.db_ssl_mode = "verify_ca";
+            s.db_ssl_ca = trim(db.value("tls_ca", std::string("")));
+            s.allow_weak_secret = parse_bool(net.value("waf_challenge_allow_weak_secret", json(false)), false);
             s.panel_app_key = trim(ptlc.value("app_key", std::string("")));
         } catch (...) {
             // keep defaults
@@ -1280,12 +1402,10 @@ static Settings load_settings() {
         if (env_secret && *env_secret) s.secret = trim(env_secret);
     }
     if (s.secret.empty()) {
-        const char* env_token = std::getenv("PTEROPROTECT_UNBLOCK_PORTAL_TOKEN");
-        if (env_token && *env_token) s.secret = trim(env_token);
-    }
-    if (s.secret.empty()) {
         if (g_ephemeral_secret.empty()) g_ephemeral_secret = random_nonce();
         s.secret = g_ephemeral_secret;
+    } else if (secret_is_weak(s.secret)) {
+        s.secret_weak = true;
     }
     g_cached_cfg = s;
     g_cached_cfg_at = now;
@@ -1392,6 +1512,48 @@ static std::map<std::string, std::string> parse_query(const std::string& q) {
         std::string v = (eq == std::string::npos) ? "" : part.substr(eq + 1);
         out[k] = v;
         i = amp + 1;
+    }
+    return out;
+}
+
+static bool safe_redirect_path(const std::string& raw, std::string& out) {
+    out.clear();
+    if (raw.empty() || raw[0] != '/') return false;
+    if (raw.size() >= 2 && (raw[1] == '/' || raw[1] == '\\' || raw[1] == '\t')) return false;
+    for (unsigned char c : raw) {
+        if (c < 0x20 || c == 0x7f) return false;
+        if (c == '\\' || c == '\'' || c == '"' || c == '<' || c == '>' || c == '`') return false;
+    }
+    std::size_t pos = 0;
+    while (pos < raw.size()) {
+        std::size_t next = raw.find('/', pos);
+        if (next == std::string::npos) next = raw.size();
+        std::string segment = raw.substr(pos, next - pos);
+        if (segment == "..") return false;
+        pos = next + 1;
+    }
+    out = raw;
+    return true;
+}
+
+static std::string js_single_quote_literal(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size() + 8);
+    for (unsigned char c : raw) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '\'': out += "\\'"; break;
+            case '"':  out += "\\\""; break;
+            case '<':  out += "\\x3c"; break;
+            case '>':  out += "\\x3e"; break;
+            case '&':  out += "\\x26"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20 || c == 0x7f) out += "\\x3f";
+                else out += static_cast<char>(c);
+        }
     }
     return out;
 }
@@ -2332,8 +2494,13 @@ static bool has_valid_auth_token_header(const Settings& s, const HttpRequest& re
         const std::string pre = "bearer ";
         if (low.size() > pre.size() && low.compare(0, pre.size(), pre) == 0) {
             std::string tok = trim(v.substr(pre.size()));
-            return is_valid_panel_api_bearer(s, tok);
+            if (is_valid_panel_api_bearer(s, tok)) return true;
         }
+    }
+    auto api_key_it = req.headers.find("x-api-key");
+    if (api_key_it != req.headers.end()) {
+        std::string tok = trim(api_key_it->second);
+        if (!tok.empty() && is_valid_panel_api_bearer(s, tok)) return true;
     }
     return false;
 }
@@ -2745,17 +2912,12 @@ static void handle_client(int fd, std::string remote_ip) {
         const bool suspicious_low_power_hint = (!ua_mobile) &&
             ((hinted_hc > 0 && hinted_hc <= 2) || (hinted_dm > 0.0 && hinted_dm <= 2.0));
 
+        // Client-supplied hints are attacker-controlled. They may only raise the
+        // server-side difficulty floor; they must never lower it.
+        const int min_pow_bits = s.strict_mode ? s.pow_bits : std::max(8, s.pow_bits - 2);
         int adaptive_pow_bits = s.pow_bits;
-        if (hinted_hc > 0) {
-            if (hinted_hc <= 2) adaptive_pow_bits -= 3;
-            else if (hinted_hc <= 4) adaptive_pow_bits -= 2;
-            else if (hinted_hc <= 6) adaptive_pow_bits -= 1;
-            else if (hinted_hc >= 12) adaptive_pow_bits += 1;
-        }
-        if (hinted_dm > 0.0 && hinted_dm <= 2.0) adaptive_pow_bits -= 1;
-        if (hinted_mobile) adaptive_pow_bits -= 2;
-        if (suspicious_low_power_hint) adaptive_pow_bits = std::max(adaptive_pow_bits, s.pow_bits - 1);
-        const int min_pow_bits = s.strict_mode ? (hinted_mobile ? 10 : std::max(11, s.pow_bits - 2)) : 8;
+        if (hinted_hc >= 12) adaptive_pow_bits += 1;
+        if (suspicious_low_power_hint) adaptive_pow_bits += 1;
         adaptive_pow_bits = std::max(min_pow_bits, std::min(24, adaptive_pow_bits));
 
         int wait_min_ms = s.challenge_wait_min_ms;
@@ -3063,8 +3225,10 @@ static void handle_client(int fd, std::string remote_ip) {
 
     if (req.path == "/page" && (req.method == "GET" || req.method == "HEAD")) {
         std::map<std::string, std::string> q = parse_query(req.query);
-        std::string rd = q.count("rd") ? q["rd"] : "/";
-        if (rd.empty() || rd[0] != '/') rd = "/";
+        std::string rd_raw = q.count("rd") ? q["rd"] : "/";
+        std::string rd;
+        if (!safe_redirect_path(rd_raw, rd)) rd = "/";
+        std::string rd_js = js_single_quote_literal(rd);
         if (!s.enabled) {
             send_response(fd, 204, "No Content", "", {{"Cache-Control", "no-store"}}, head_only);
             close(fd);
@@ -3209,8 +3373,8 @@ static void handle_client(int fd, std::string remote_ip) {
             "elRB.onclick=async()=>{if(restartsLeft<=0){elRB.disabled=true;return;}restartsLeft-=1;elRB.textContent='Restart ('+String(restartsLeft)+')';if(restartsLeft<=0)elRB.disabled=true;elE.textContent='';if(phase===1){phase1ConceptPassed=false;elS.textContent='Step-1 di-reset.';setPhaseMath();if(elA&&elInputWrap&&elInputWrap.style.display!=='none'){elA.value='';elA.focus();}elB.disabled=false;return;}if(phase===2){elS.textContent='Pattern di-reset.';clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;drawPattern();elB.disabled=false;return;}elS.textContent='Challenge di-reset.';elB.disabled=false;};"
             "elB.onclick=async()=>{try{if(Date.now()<unlockAt&&!enteredChallenge){updateWait();return;}if(!clickVerified){throw new Error('click_required');}elE.textContent='';elB.disabled=true;"
             "if(phase===1){if(!phase1ConceptPassed){throw new Error('phase1_widget_required');}const m={nonce:nonce};m[ak]=phase1Value(elA.value||'');const mr=await fetch('/__pteroprotect/challenge/verify-math',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)});const mj=await mr.json();if(!mj.ok){if(mj.error==='answer_wrong'&&Number.isFinite(Number(mj.attempts_left))){elS.textContent='Salah. Sisa percobaan step-1: '+String(Math.max(0,Number(mj.attempts_left)));}throw new Error(mj.error||'phase1_failed');}setPhasePattern();pseq=Array.isArray(mj.pattern_points)?mj.pattern_points:[];clicked=[];pTrace=[];pStart=0;pDir=0;pActive=false;ppx=null;ppy=null;pvdx=0;pvdy=0;elPQ.textContent='Tahap 2: klik angka sesuai urutan.';phase2Hint=sanitizeHint(String(mj.pattern_hint||''));elPHint.textContent=phase2Hint;drawPattern();elB.disabled=false;return;}"
-            "if(!powReady){pendingFinalSubmit=true;elS.textContent='Browser proof belum selesai. Auto lanjut saat proof ready.';elB.disabled=true;return;}const p={nonce:nonce,rd:'" + rd + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=phase1Value(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
-            "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');challengeSolved=true;powLoopStop=true;location.href=j.redirect||'" + rd + "';}"
+            "if(!powReady){pendingFinalSubmit=true;elS.textContent='Browser proof belum selesai. Auto lanjut saat proof ready.';elB.disabled=true;return;}const p={nonce:nonce,rd:'" + rd_js + "',pow_counter:powCounter,pow_hash:powHash};p[ak]=phase1Value(elA.value||'');p[bk]=behavior();p[ck]=connectionInfo();p[pk]=patternPayload();"
+            "const r=await fetch('/__pteroprotect/challenge/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();if(!j.ok)throw new Error(j.error||'failed');challengeSolved=true;powLoopStop=true;location.href=j.redirect||'" + rd_js + "';}"
             "catch(err){const msg=String(err.message||err);showErr(msg);if(msg==='phase1_widget_required'){elS.textContent='Selesaikan captcha interaktif phase-1 dulu.';}else if((msg==='answer_wrong'||msg==='pattern_invalid'||msg==='math_not_verified'||msg==='nonce_invalid'||msg==='nonce_expired'||msg==='pow_invalid')&&restartsLeft>0){elS.textContent='Salah. Kamu bisa tekan Restart ('+String(restartsLeft)+')';}elB.disabled=false;}};"
             "async function cleanupOldChallengeCaches(){try{if(window.caches&&caches.keys){const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('pp-challenge-')).map(k=>caches.delete(k)));}if('serviceWorker' in navigator&&navigator.serviceWorker.getRegistrations){const regs=await navigator.serviceWorker.getRegistrations();await Promise.all(regs.filter(r=>{const s=String(r.scope||'');return s===location.origin+'/'||s.includes('/__pteroprotect/challenge/');}).map(r=>r.unregister()));}}catch(_e){}}"
             "async function registerChallengeSW(){if(!('serviceWorker' in navigator))return;try{await navigator.serviceWorker.register('/__pteroprotect/challenge/sw.js',{scope:'/__pteroprotect/challenge/'});}catch(_e){}}"
@@ -3265,7 +3429,7 @@ static void handle_client(int fd, std::string remote_ip) {
             close(fd);
             return;
         }
-        std::string nonce, answer, rd = "/";
+        std::string nonce, answer, rd_raw = "/", rd = "/";
         std::string completion_id;
         long long pow_counter = -1;
         std::string pow_hash;
@@ -3276,14 +3440,14 @@ static void handle_client(int fd, std::string remote_ip) {
         try {
             in = json::parse(req.body);
             nonce = trim(in.value("nonce", std::string()));
-            rd = trim(in.value("rd", std::string("/")));
+            rd_raw = trim(in.value("rd", std::string("/")));
             completion_id = trim(in.value("completion_id", std::string()));
         } catch (...) {
             send_response(fd, 400, "Bad Request", "{\"ok\":false,\"error\":\"invalid_json\"}", {{"Content-Type", "application/json; charset=utf-8"}}, head_only);
             close(fd);
             return;
         }
-        if (rd.empty() || rd[0] != '/') rd = "/";
+        if (!safe_redirect_path(rd_raw, rd)) rd = "/";
 
         NonceRec rec;
         bool found = false;
@@ -3490,6 +3654,16 @@ int main() {
     const char* cfg_env = std::getenv("PTEROPROTECT_CONFIG_PATH");
     if (cfg_env && *cfg_env) g_cfg_path = cfg_env;
     Settings s = load_settings();
+    if (s.secret_weak && !s.allow_weak_secret) {
+        std::cerr << "challenge_guard: refusing to start with a weak waf_challenge_secret; "
+                     "configure a 32+ character high-entropy secret or set "
+                     "network.waf_challenge_allow_weak_secret=true to override\n";
+        return 1;
+    }
+    if (s.secret_weak) {
+        std::cerr << "challenge_guard: WARNING weak waf_challenge_secret accepted due to "
+                     "waf_challenge_allow_weak_secret=true\n";
+    }
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);

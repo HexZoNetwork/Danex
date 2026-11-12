@@ -106,11 +106,25 @@ def main() -> int:
             mf.write(f"pteroprotect_security_log_watch{{metric=\"active_bans\"}} {len(active_bans)}\n")
             mf.write(f"pteroprotect_security_log_watch{{metric=\"tracked_ips\"}} {len(counters)}\n")
 
-    with open(ACCESS_LOG, "r", encoding="utf-8", errors="ignore") as f:
-        f.seek(0, os.SEEK_END)
+    def open_log():
+        handle = open(ACCESS_LOG, "r", encoding="utf-8", errors="ignore")
+        handle.seek(0, os.SEEK_END)
+        return handle
+
+    f = open_log()
+    last_inode = os.fstat(f.fileno()).st_ino
+    try:
         while True:
             line = f.readline()
             if not line:
+                try:
+                    st = os.stat(ACCESS_LOG)
+                    if st.st_ino != last_inode:
+                        f.close()
+                        f = open_log()
+                        last_inode = os.fstat(f.fileno()).st_ino
+                except OSError:
+                    pass
                 time.sleep(0.2)
                 continue
 
@@ -119,10 +133,18 @@ def main() -> int:
                 continue
             now = int(time.time())
 
-            # expire old tracked bans
+            # expire old tracked bans and bound per-IP counters
             for k in list(active_bans.keys()):
                 if active_bans[k] <= now:
                     active_bans.pop(k, None)
+            if len(counters) > 20000:
+                cutoff = now - window_sec
+                for k in list(counters.keys()):
+                    dq = counters[k]
+                    while dq and dq[0] < cutoff:
+                        dq.popleft()
+                    if not dq and k not in active_bans:
+                        counters.pop(k, None)
 
             if ip in allowlist or not should_count(line):
                 continue
@@ -138,6 +160,8 @@ def main() -> int:
                     q.clear()
 
             write_metrics(now)
+    finally:
+        f.close()
 
 
 if __name__ == "__main__":

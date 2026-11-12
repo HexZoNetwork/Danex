@@ -35,7 +35,26 @@ def post(url, headers, body):
 
 
 def detect_ip():
-    return os.environ.get('PTEROPROTECT_NODE_IP', '127.0.0.1')
+    override = os.environ.get('PTEROPROTECT_NODE_IP', '').strip()
+    if override:
+        return override
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(('192.0.2.1', 9))
+        address = probe.getsockname()[0]
+        if address and not address.startswith('127.'):
+            return address
+    except Exception:
+        pass
+    finally:
+        probe.close()
+    try:
+        address = socket.gethostbyname(socket.gethostname())
+        if address:
+            return address
+    except Exception:
+        pass
+    return '127.0.0.1'
 
 
 def read_resilience_snapshot():

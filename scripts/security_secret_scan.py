@@ -106,7 +106,8 @@ def rel(path: Path) -> str:
 
 def should_skip(path: Path, include_live_config: bool) -> bool:
     relative = rel(path)
-    if any(part in SKIP_DIRS for part in path.parts):
+    relative_parts = Path(relative).parts
+    if any(part in SKIP_DIRS for part in relative_parts):
         return True
     if any(relative.startswith(prefix + os.sep) or relative == prefix for prefix in SKIP_PATH_PARTS):
         return True

@@ -3,6 +3,7 @@
 namespace Pterodactyl\Http\Requests\Api\Client\Account;
 
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Hash;
 use Pterodactyl\Models\User;
 use Pterodactyl\Http\Requests\Api\Client\ClientApiRequest;
 
@@ -46,6 +47,27 @@ class UpdateProfileRequest extends ClientApiRequest
             'name_last' => ['sometimes', ...Arr::wrap($rules['name_last'])],
             'avatar_url' => 'sometimes|nullable|url|max:2048',
             'birthday' => 'sometimes|nullable|date_format:Y-m-d|before_or_equal:today',
+            'current_password' => ['sometimes', 'nullable', 'string', 'max:255'],
         ];
+    }
+
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator) {
+            if (!$this->has('email')) {
+                return;
+            }
+
+            $newEmail = strtolower(trim((string) $this->input('email')));
+            $currentEmail = strtolower(trim((string) $this->user()->email));
+            if ($newEmail === $currentEmail) {
+                return;
+            }
+
+            $password = (string) $this->input('current_password', '');
+            if ($password === '' || !Hash::check($password, (string) $this->user()->password)) {
+                $validator->errors()->add('current_password', 'The current password is required to change the email address.');
+            }
+        });
     }
 }

@@ -23,6 +23,7 @@ Environment=DANN_CONFIG_PATH=/pteroprotect/config.json
 Environment=PTEROPROTECT_RUNTIME_DIR=/dev/shm/pteroprotect
 Environment=PTEROPROTECT_PANEL_RUNTIME_DIR=/pteroprotect/runtime
 ExecStartPre=/usr/bin/env bash /pteroprotect/scripts/validator_preflight.sh
+ExecStartPre=/usr/bin/env python3 /pteroprotect/scripts/security_startup_policy.py /pteroprotect/config.json --enforce
 ExecStart=/usr/bin/env python3 /pteroprotect/scripts/self_heal_monitor.py
 Restart=always
 RestartSec=3

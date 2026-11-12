@@ -415,7 +415,7 @@ class PteroProtectSessionBinding
     private function clearanceStatus(Request $request): array
     {
         $cookieName = PteroProtectClearanceToken::cookieName();
-        $token = trim((string) $request->cookie($cookieName, ''));
+        $token = trim(PteroProtectClearanceToken::rawCookieValue($request, $cookieName));
         $result = PteroProtectClearanceToken::validate($request, $token, $cookieName);
 
         return [

@@ -61,3 +61,11 @@ banaction = %(banaction_allports)s
 bantime  = 604800
 findtime = 86400
 maxretry = 3
+
+[pteroprotect-ratelimit-abuse]
+enabled = true
+filter = pteroprotect-ratelimit
+logpath = /var/log/nginx/pteroprotect.access.log
+findtime = 300
+maxretry = 60
+bantime = 1800

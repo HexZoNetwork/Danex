@@ -40,6 +40,13 @@ def test_dangerous_dd_reason():
     assert mod.dangerous_dd_reason("u dd if=/tmp/a of=/tmp/b", 3) == ""
 
 
+def test_local_endpoint_parsing_for_gateway_ports():
+    out = 'ESTAB 0 0 10.0.0.2:443 203.0.113.5:54321 users:(("node",pid=123,fd=9))\n'
+    assert mod.local_endpoints_for_pid_from_ss(out, 123) == [("10.0.0.2", 443)]
+    out6 = 'ESTAB 0 0 [2001:db8::2]:8443 [2001:db8::9]:39000 users:(("node",pid=124,fd=9))\n'
+    assert mod.local_endpoints_for_pid_from_ss(out6, 124) == [("2001:db8::2", 8443)]
+
+
 def test_peer_endpoint_parsing_and_matching():
     out = 'ESTAB 0 0 10.0.0.2:39000 127.0.0.1:443 users:(("node",pid=123,fd=9))\n'
     assert mod.peer_endpoints_for_pid_from_ss(out, 123) == [("127.0.0.1", 443)]

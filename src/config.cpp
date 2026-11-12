@@ -99,6 +99,8 @@ Config Config::load(const std::string& filename) {
         cfg.database.user = env_or_default("DANN_DB_USER", j.value("database", json::object()).value("user", ""));
         cfg.database.password = env_or_default("DANN_DB_PASSWORD", j.value("database", json::object()).value("password", ""));
         cfg.database.name = env_or_default("DANN_DB_NAME", j.value("database", json::object()).value("name", ""));
+        cfg.database.tls_mode = env_or_default("DANN_DB_TLS_MODE", j.value("database", json::object()).value("tls_mode", "verify_ca"));
+        cfg.database.tls_ca = env_or_default("DANN_DB_TLS_CA", j.value("database", json::object()).value("tls_ca", ""));
         
         // Telegram
         cfg.telegram.token = env_or_default("DANN_TG_TOKEN", j.value("telegram", json::object()).value("token", ""));
@@ -119,7 +121,7 @@ Config Config::load(const std::string& filename) {
         cfg.limits.cpu_threshold_pct = j.value("limits", json::object()).value("cpu_threshold_pct", 80);
         cfg.limits.ram_threshold_pct = j.value("limits", json::object()).value("ram_threshold_pct", 80);
 
-        cfg.runtime.offline_mode = j.value("runtime", json::object()).value("offline_mode", true);
+        cfg.runtime.offline_mode = j.value("runtime", json::object()).value("offline_mode", false);
         cfg.runtime.state_dir = j.value("runtime", json::object()).value("state_dir", "/pteroprotect/runtime");
         cfg.runtime.quarantine_dir_name = j.value("runtime", json::object()).value("quarantine_dir_name", ".dann_quarantine");
 
@@ -165,6 +167,7 @@ Config Config::load(const std::string& filename) {
         }
 
         validate_config(cfg);
+        cfg.valid = true;
 
         logger.info("✅ Config loaded from " + filename);
         

@@ -3,6 +3,8 @@
 #include <mysql/mysql.h>
 #include <sstream>
 #include <cstring>
+#include <cctype>
+#include <algorithm>
 #include <iomanip>
 #include <cstdlib>
 #include <sys/wait.h>
@@ -42,6 +44,18 @@ std::string normalize_reason_for_cli(const std::string& reason) {
     return out;
 }
 
+unsigned int mysql_ssl_mode_from_string(const std::string& raw) {
+    std::string mode = raw;
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (mode == "disabled" || mode == "disable" || mode == "off") return SSL_MODE_DISABLED;
+    if (mode == "preferred" || mode == "prefer") return SSL_MODE_PREFERRED;
+    if (mode == "required" || mode == "require") return SSL_MODE_REQUIRED;
+    if (mode == "verify_identity" || mode == "verify-identity") return SSL_MODE_VERIFY_IDENTITY;
+    return SSL_MODE_VERIFY_CA;
+}
+
 bool try_panel_suspend(int server_id, const std::string& reason) {
     if (server_id <= 0) return false;
 
@@ -59,7 +73,7 @@ bool try_panel_suspend(int server_id, const std::string& reason) {
 }
 }
 
-DatabaseGuard::DatabaseGuard() : conn(nullptr), has_suspended_column(true) {}
+DatabaseGuard::DatabaseGuard() : conn(nullptr), ssl_mode("verify_ca"), has_suspended_column(true) {}
 
 DatabaseGuard::~DatabaseGuard() {
     if (conn) {
@@ -69,12 +83,15 @@ DatabaseGuard::~DatabaseGuard() {
 }
 
 bool DatabaseGuard::init(const std::string& h, const std::string& u,
-                         const std::string& p, const std::string& db_name) {
+                         const std::string& p, const std::string& db_name,
+                         const std::string& tls_mode, const std::string& tls_ca) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     host = h;
     user = u;
     password = p;
     dbname = db_name;
+    ssl_mode = tls_mode.empty() ? "verify_ca" : tls_mode;
+    ssl_ca = tls_ca;
     return connect();
 }
 
@@ -89,6 +106,23 @@ bool DatabaseGuard::connect() {
     if (!conn) {
         logger.error("MySQL init failed");
         return false;
+    }
+
+    unsigned int ssl_mode_opt = mysql_ssl_mode_from_string(ssl_mode);
+    if (mysql_options(conn, MYSQL_OPT_SSL_MODE, &ssl_mode_opt) != 0) {
+        logger.error("MySQL TLS mode configuration failed");
+        mysql_close(conn);
+        conn = nullptr;
+        return false;
+    }
+    if (!ssl_ca.empty() && mysql_options(conn, MYSQL_OPT_SSL_CA, ssl_ca.c_str()) != 0) {
+        logger.error("MySQL TLS CA configuration failed: " + ssl_ca);
+        mysql_close(conn);
+        conn = nullptr;
+        return false;
+    }
+    if (ssl_mode_opt == SSL_MODE_DISABLED) {
+        logger.warn("MySQL TLS is disabled by configuration; do not use this for remote databases");
     }
 
     if (!mysql_real_connect(conn, host.c_str(), user.c_str(), password.c_str(),
@@ -119,25 +153,31 @@ bool DatabaseGuard::ensure_connection() {
     return true;
 }
 
-std::string DatabaseGuard::escape(const std::string& s) {
+bool DatabaseGuard::escape(const std::string& s, std::string& out) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (!ensure_connection()) return "";
-    std::string out;
+    out.clear();
+    if (!ensure_connection()) return false;
     out.resize(s.size() * 2 + 1);
     unsigned long len = mysql_real_escape_string(conn, &out[0], s.c_str(), (unsigned long)s.size());
     out.resize(len);
-    return out;
+    return true;
 }
 
 bool DatabaseGuard::column_exists(const std::string& table, const std::string& column) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!conn) return false;
 
+    std::string db_q, table_q, column_q;
+    if (!escape(dbname, db_q) || !escape(table, table_q) || !escape(column, column_q)) {
+        logger.error("column_exists escaping failed");
+        return false;
+    }
+
     std::ostringstream q;
     q << "SELECT COUNT(*) FROM information_schema.COLUMNS "
-      << "WHERE TABLE_SCHEMA = '" << escape(dbname) << "' "
-      << "AND TABLE_NAME = '" << escape(table) << "' "
-      << "AND COLUMN_NAME = '" << escape(column) << "' LIMIT 1";
+      << "WHERE TABLE_SCHEMA = '" << db_q << "' "
+      << "AND TABLE_NAME = '" << table_q << "' "
+      << "AND COLUMN_NAME = '" << column_q << "' LIMIT 1";
 
     if (mysql_query(conn, q.str().c_str()) != 0) {
         logger.warn("column_exists query failed: " + std::string(mysql_error(conn)));
@@ -168,7 +208,12 @@ ServerInfo DatabaseGuard::get_server_info(const std::string& uuid) {
     } else {
         query << "0 ";
     }
-    query << "FROM servers WHERE uuid = '" << escape(uuid) << "' LIMIT 1";
+    std::string uuid_q;
+    if (!escape(uuid, uuid_q)) {
+        logger.error("get_server_info escaping failed");
+        return info;
+    }
+    query << "FROM servers WHERE uuid = '" << uuid_q << "' LIMIT 1";
 
     if (mysql_query(conn, query.str().c_str())) {
         logger.error("get_server_info query failed: " + std::string(mysql_error(conn)));
@@ -381,21 +426,31 @@ bool DatabaseGuard::log_user_violation(
     if (severity < 1) severity = 1;
     if (severity > 10) severity = 10;
 
+    std::string username_q, server_uuid_q, server_name_q, violation_type_q;
+    std::string details_q, file_name_q, action_taken_q;
+    if (!escape(username, username_q) || !escape(server_uuid, server_uuid_q) ||
+        !escape(server_name, server_name_q) || !escape(violation_type, violation_type_q) ||
+        !escape(details, details_q) || !escape(file_name, file_name_q) ||
+        !escape(action_taken, action_taken_q)) {
+        logger.error("log_user_violation escaping failed");
+        return false;
+    }
+
     std::ostringstream q;
     q << "INSERT INTO user_violations "
       << "(user_id, username, server_id, server_uuid, server_name, violation_type, details, file_name, file_size, disk_usage_gb, file_count, action_taken, severity) VALUES ("
       << user_id << ","
-      << "'" << escape(username) << "',"
+      << "'" << username_q << "',"
       << server_id << ","
-      << "'" << escape(server_uuid) << "',"
-      << "'" << escape(server_name) << "',"
-      << "'" << escape(violation_type) << "',"
-      << "'" << escape(details) << "',"
-      << "'" << escape(file_name) << "',"
+      << "'" << server_uuid_q << "',"
+      << "'" << server_name_q << "',"
+      << "'" << violation_type_q << "',"
+      << "'" << details_q << "',"
+      << "'" << file_name_q << "',"
       << file_size << ","
       << std::fixed << std::setprecision(2) << disk_usage_gb << ","
       << file_count << ","
-      << "'" << escape(action_taken) << "',"
+      << "'" << action_taken_q << "',"
       << severity
       << ")";
 
@@ -418,15 +473,23 @@ bool DatabaseGuard::log_illegal_file(
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!ensure_connection()) return false;
 
+    std::string hash_q, name_q, path_q, uuid_q, reason_q;
+    if (!escape(file_hash, hash_q) || !escape(file_name, name_q) ||
+        !escape(file_path, path_q) || !escape(server_uuid, uuid_q) ||
+        !escape(detection_reason, reason_q)) {
+        logger.error("log_illegal_file escaping failed");
+        return false;
+    }
+
     std::ostringstream q;
     q << "INSERT INTO illegal_files "
       << "(file_hash, file_name, file_path, server_uuid, user_id, detection_reason, file_size, first_seen, last_seen, seen_count) VALUES ("
-      << "'" << escape(file_hash) << "',"
-      << "'" << escape(file_name) << "',"
-      << "'" << escape(file_path) << "',"
-      << "'" << escape(server_uuid) << "',"
+      << "'" << hash_q << "',"
+      << "'" << name_q << "',"
+      << "'" << path_q << "',"
+      << "'" << uuid_q << "',"
       << user_id << ","
-      << "'" << escape(detection_reason) << "',"
+      << "'" << reason_q << "',"
       << file_size << ",NOW(),NOW(),1)"
       << " ON DUPLICATE KEY UPDATE "
       << "last_seen = NOW(), "

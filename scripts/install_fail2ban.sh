@@ -65,9 +65,9 @@ if [[ -f /etc/fail2ban/jail.d/pteroprotect.local ]]; then
 fi
 
 if ! fail2ban-client -d >/dev/null 2>&1; then
-    echo "[fail2ban] config validation failed; skipping service restart." >&2
+    echo "[fail2ban] config validation failed; not restarting service." >&2
     fail2ban-client -d || true
-    exit 0
+    exit 1
 fi
 
 if command -v systemctl >/dev/null 2>&1; then

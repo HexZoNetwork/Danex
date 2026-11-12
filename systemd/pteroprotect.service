@@ -20,7 +20,7 @@ User=root
 Group=root
 WorkingDirectory=/pteroprotect
 Environment=DANN_GUARD_HOME=/pteroprotect
-ExecStartPre=/usr/bin/env python3 /pteroprotect/scripts/security_startup_policy.py /pteroprotect/config.json
+ExecStartPre=/usr/bin/env python3 /pteroprotect/scripts/security_startup_policy.py /pteroprotect/config.json --enforce
 ExecStart=/pteroprotect/dann_guard
 Restart=always
 RestartSec=5

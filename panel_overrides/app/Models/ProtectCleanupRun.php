@@ -20,6 +20,8 @@ class ProtectCleanupRun extends Model
     protected $fillable = [
         'user_id',
         'status',
+        'dry_run',
+        'allow_user_deletion',
         'checked_servers',
         'deleted_servers',
         'skipped_online',
@@ -36,6 +38,8 @@ class ProtectCleanupRun extends Model
     ];
 
     protected $casts = [
+        'dry_run' => 'bool',
+        'allow_user_deletion' => 'bool',
         'messages' => 'array',
         'started_at' => 'datetime',
         'finished_at' => 'datetime',

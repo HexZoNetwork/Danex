@@ -1,5 +1,6 @@
-import socket
 #!/usr/bin/env python3
+import hmac
+import socket
 import json
 import os
 
@@ -177,7 +178,9 @@ class H(BaseHTTPRequestHandler):
         data = self._read()
         key = self.headers.get('X-PteroProtect-Node-Key', '')
         expect = str(net('node_auth_key', '') or '')
-        if expect and key != expect:
+        if not expect:
+            return self._resp(503, {'ok': False, 'error': 'node_auth_key_not_configured'})
+        if not key or not hmac.compare_digest(str(key), expect):
             return self._resp(401, {'ok': False, 'error': 'unauthorized'})
 
         node_id = str(data.get('node_id') or '')

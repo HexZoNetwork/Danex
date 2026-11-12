@@ -6,6 +6,7 @@ import hmac
 import ipaddress
 import json
 import os
+import sys
 
 def is_valid_ip(ip):
     try:
@@ -34,6 +35,14 @@ _nonces = {}
 _ephemeral_secret = secrets.token_urlsafe(32)
 _rate_lock = threading.Lock()
 _rate_windows = {}
+MAX_NONCES = 20000
+MAX_RATE_WINDOWS = 50000
+
+WEAK_SECRET_PLACEHOLDERS = {
+    "", "replace_me", "replace-me", "change_me", "change-me", "changeme",
+    "waf_challenge_secret", "unblock_portal_token", "your_secret",
+    "your-secret", "secret", "password", "default", "example", "todo",
+}
 
 
 def _b64u(data: bytes) -> str:
@@ -86,6 +95,45 @@ def challenge_secret():
         if env_fallback:
             return env_fallback
     return _ephemeral_secret
+
+
+def challenge_secret_is_weak(secret):
+    value = str(secret or "").strip()
+    if len(value) < 24:
+        return True
+    lowered = value.lower()
+    if lowered in WEAK_SECRET_PLACEHOLDERS:
+        return True
+    if "replace_me" in lowered or "change_me" in lowered or "changeme" in lowered:
+        return True
+    classes = 0
+    classes += 1 if any(ch.isupper() for ch in value) else 0
+    classes += 1 if any(ch.islower() for ch in value) else 0
+    classes += 1 if any(ch.isdigit() for ch in value) else 0
+    classes += 1 if any(not ch.isalnum() for ch in value) else 0
+    return classes < 3
+
+
+def challenge_pow_bits():
+    try:
+        raw = int(net_setting("waf_pow_bits", 16))
+    except Exception:
+        raw = 16
+    raw = max(16, min(20, raw))
+    return raw + ((4 - (raw % 4)) % 4)
+
+
+def verify_pow(nonce, salt, bits, counter, client_hash):
+    if not isinstance(counter, int) or counter < 0 or counter > 0xFFFFFFFF:
+        return False
+    try:
+        expected = hashlib.sha256(f"{nonce}:{salt}:{counter}".encode("utf-8")).hexdigest()
+    except Exception:
+        return False
+    prefix = "0" * max(1, int(bits) // 4)
+    if not expected.startswith(prefix):
+        return False
+    return hmac.compare_digest(expected, str(client_hash or "").strip().lower())
 
 
 def challenge_ttl():
@@ -193,6 +241,10 @@ def cleanup_nonces():
         expired = [k for k, v in _nonces.items() if float(v.get("exp", 0)) <= now]
         for k in expired:
             _nonces.pop(k, None)
+        if len(_nonces) > MAX_NONCES:
+            oldest = sorted(_nonces.items(), key=lambda kv: float(kv[1].get("exp", 0)))
+            for key, _ in oldest[: len(_nonces) - MAX_NONCES]:
+                _nonces.pop(key, None)
 
 
 def normalize_redirect_path(raw: str) -> str:
@@ -228,6 +280,12 @@ def rate_allow(ip: str, bucket: str, limit: int, window_sec: int) -> bool:
     now = int(time.time())
     key = f"{bucket}:{ip}"
     with _rate_lock:
+        if len(_rate_windows) > MAX_RATE_WINDOWS:
+            stale = [k for k, v in _rate_windows.items() if now - int(v.get("start", 0)) >= max(window_sec, 3600)]
+            for k in stale:
+                _rate_windows.pop(k, None)
+            while len(_rate_windows) > MAX_RATE_WINDOWS:
+                _rate_windows.pop(next(iter(_rate_windows)), None)
         rec = _rate_windows.get(key)
         if not rec or now - int(rec.get("start", 0)) >= window_sec:
             rec = {"start": now, "count": 0}
@@ -337,40 +395,53 @@ class Handler(BaseHTTPRequestHandler):
             if not rate_allow(ip, "challenge_new", 40, 60):
                 return self._json(429, {"ok": False, "error": "rate_limited"})
             cleanup_nonces()
-            a = random.randint(11, 89)
-            b = random.randint(11, 89)
-            op = random.choice(["+", "-"])
-            ans = a + b if op == "+" else a - b
+            bits = challenge_pow_bits()
             nonce = secrets.token_urlsafe(18)
+            salt = secrets.token_hex(16)
             with _nonce_lock:
+                if len(_nonces) >= MAX_NONCES:
+                    return self._json(503, {"ok": False, "error": "busy"})
                 _nonces[nonce] = {
-                    "ans": str(ans),
+                    "salt": salt,
+                    "bits": bits,
                     "ip": ip,
                     "ua": ua,
-                    "exp": time.time() + 120,
+                    "exp": time.time() + 180,
                 }
-            return self._json(200, {"ok": True, "nonce": nonce, "question": f"{a} {op} {b} = ?"})
+            return self._json(200, {
+                "ok": True,
+                "nonce": nonce,
+                "question": "Solve the proof-of-work challenge",
+                "pow_salt": salt,
+                "pow_bits": bits,
+            })
 
         if path == "/page":
+            if not rate_allow(ip, "challenge_page", 60, 60):
+                return self._json(429, {"ok": False, "error": "rate_limited"})
             rd = normalize_redirect_path(q.get("rd", ["/"])[0])
             rd_js = json.dumps(rd)
-            html = f"""<!doctype html>
+            html = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PteroProtect Challenge</title>
 <style>
-body{{background:#0f1b2b;color:#d6e9ff;font-family:system-ui;margin:0;display:grid;place-items:center;height:100vh}}
-.c{{width:min(420px,92vw);background:#11273f;border:1px solid #27507a;border-radius:12px;padding:18px}}
-h2{{margin:0 0 8px;color:#9fd2ff}} p{{color:#b8d6f2}} input,button{{width:100%;padding:10px;border-radius:8px;border:1px solid #2d5a86;background:#0e2136;color:#d6e9ff}}
-button{{margin-top:10px;background:#1f6feb;border-color:#2d7cf0;cursor:pointer}} .e{{color:#ff8f8f;min-height:18px}}
+body{background:#0f1b2b;color:#d6e9ff;font-family:system-ui;margin:0;display:grid;place-items:center;height:100vh}
+.c{width:min(420px,92vw);background:#11273f;border:1px solid #27507a;border-radius:12px;padding:18px}
+h2{margin:0 0 8px;color:#9fd2ff} p{color:#b8d6f2} button{width:100%;padding:10px;border-radius:8px;border:1px solid #2d7a86;background:#1f6feb;color:#d6e9ff;cursor:pointer;margin-top:10px}
+.e{color:#ff8f8f;min-height:18px}
 </style></head><body><div class="c">
 <h2>Security Check</h2><p>Buktikan kamu bukan flood bot. Clearance berlaku 30 menit.</p>
-<p id="q">Loading challenge...</p><input id="a" placeholder="Jawaban"/><button id="b">Verify</button><div class="e" id="e"></div>
+<p id="q">Loading challenge...</p><button id="b">Retry</button><div class="e" id="e"></div>
 </div><script>
-let nonce=""; const elQ=document.getElementById("q"), elA=document.getElementById("a"), elB=document.getElementById("b"), elE=document.getElementById("e");
-async function loadC(){{elE.textContent=""; const r=await fetch("/__pteroprotect/challenge/new",{{cache:"no-store"}}); const j=await r.json(); if(!j.ok) throw new Error("challenge unavailable"); nonce=j.nonce; elQ.textContent=j.question;}}
-elB.onclick=async()=>{{try{{ const r=await fetch("/__pteroprotect/challenge/solve",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{nonce:nonce,answer:elA.value||"",rd:{rd_js}}})}}); const j=await r.json(); if(!j.ok) throw new Error(j.error||"failed"); location.href=j.redirect||{rd_js}; }}catch(err){{elE.textContent=String(err.message||err);}}}};
-loadC().catch(e=>elE.textContent=String(e.message||e));
-</script></body></html>"""
+const RD=__RD__;
+const elQ=document.getElementById("q"),elB=document.getElementById("b"),elE=document.getElementById("e");
+let nonce="",salt="",bits=16;
+async function sha256hex(s){const d=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));return Array.from(new Uint8Array(d)).map(b=>b.toString(16).padStart(2,"0")).join("");}
+async function solve(){const prefix="0".repeat(Math.max(1,bits>>2));let c=0;for(;;){const h=await sha256hex(nonce+":"+salt+":"+c);if(h.startsWith(prefix))return {counter:c,hash:h};c++;if((c&2047)===0)await new Promise(r=>setTimeout(r,0));}}
+async function start(){elE.textContent="";const r=await fetch("/__pteroprotect/challenge/new",{cache:"no-store"});const j=await r.json();if(!j.ok)throw new Error("challenge unavailable");nonce=j.nonce;salt=j.pow_salt;bits=Number(j.pow_bits)||16;elQ.textContent="Computing proof of work ("+bits+" bits)...";const c=await solve();elQ.textContent="Verifying...";const v=await fetch("/__pteroprotect/challenge/solve",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nonce:nonce,pow_counter:c.counter,pow_hash:c.hash,rd:RD})});const out=await v.json();if(!out.ok)throw new Error(out.error||"failed");location.href=out.redirect||RD;}
+elB.onclick=()=>start().catch(e=>elE.textContent=String(e.message||e));
+start().catch(e=>elE.textContent=String(e.message||e));
+</script></body></html>""".replace("__RD__", rd_js)
             return self._html(200, html)
 
         return self._json(404, {"ok": False, "error": "not_found"})
@@ -428,8 +499,12 @@ loadC().catch(e=>elE.textContent=String(e.message||e));
 
         body = self._read_json()
         nonce = str(body.get("nonce", "")).strip()
-        answer = str(body.get("answer", "")).strip()
         rd = normalize_redirect_path(str(body.get("rd", "/")).strip())
+        try:
+            counter = int(body.get("pow_counter", -1))
+        except Exception:
+            counter = -1
+        client_hash = str(body.get("pow_hash", "")).strip().lower()
 
         with _nonce_lock:
             rec = _nonces.pop(nonce, None)
@@ -439,8 +514,8 @@ loadC().catch(e=>elE.textContent=String(e.message||e));
             return self._json(401, {"ok": False, "error": "nonce_expired"})
         if rec.get("ip", "") != ip or rec.get("ua", "") != ua:
             return self._json(401, {"ok": False, "error": "fingerprint_mismatch"})
-        if rec.get("ans", "") != answer:
-            return self._json(401, {"ok": False, "error": "answer_wrong"})
+        if not verify_pow(nonce, str(rec.get("salt", "")), int(rec.get("bits", 0)), counter, client_hash):
+            return self._json(401, {"ok": False, "error": "pow_invalid"})
 
         tok = issue_token(ip, ua)
         max_age = challenge_ttl()
@@ -451,6 +526,15 @@ loadC().catch(e=>elE.textContent=String(e.message||e));
 
 
 def main():
+    secret = challenge_secret()
+    allow_weak = str(net_setting("waf_challenge_allow_weak_secret", False)).strip().lower() in {"1", "true", "yes", "on"}
+    if challenge_secret_is_weak(secret):
+        if not allow_weak:
+            print("pteroprotect_challenge_api: refusing to start with a weak waf_challenge_secret; "
+                  "configure a 32+ character high-entropy secret or set "
+                  "network.waf_challenge_allow_weak_secret=true", file=sys.stderr)
+            return 1
+        print("pteroprotect_challenge_api: WARNING weak waf_challenge_secret accepted by configuration", file=sys.stderr)
     bind = str(net_setting("waf_challenge_bind", "127.0.0.1"))
     try:
         port = int(net_setting("waf_challenge_port", 18444))
@@ -461,4 +545,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

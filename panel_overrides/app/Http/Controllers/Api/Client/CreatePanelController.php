@@ -39,7 +39,7 @@ class CreatePanelController extends ClientApiController
             return new JsonResponse(['error' => 'Fitur ini khusus akun madeinweb.'], 403);
         }
         $hasOwnedServer = Server::query()->where('owner_id', (int) $user->id)->exists();
-        $isLocked = (bool) ($user?->madeinweb_panel_created_at !== null && $hasOwnedServer);
+        $isLocked = (bool) ($user?->madeinweb_panel_created_at !== null);
 
         $allowedEggIds = $this->allowedCreatePanelEggIds();
         $ramOptions = $this->createPanelRamOptions();
@@ -124,8 +124,16 @@ class CreatePanelController extends ClientApiController
             }
 
             $hasOwnedServer = Server::query()->where('owner_id', (int) $user->id)->exists();
-            if ($user->madeinweb_panel_created_at !== null && $hasOwnedServer) {
+            $reservation = $user->madeinweb_panel_created_at;
+            if ($reservation !== null && $hasOwnedServer) {
                 return ['error' => 'Create Panel hanya bisa digunakan satu kali.', 'status' => 422];
+            }
+            if ($reservation !== null) {
+                $reservedAt = strtotime((string) $reservation);
+                $pendingWindow = 900;
+                if ($reservedAt !== false && (time() - $reservedAt) < $pendingWindow) {
+                    return ['error' => 'Create Panel sedang diproses. Tunggu beberapa menit lalu coba lagi.', 'status' => 409];
+                }
             }
 
             $allocation = Allocation::query()

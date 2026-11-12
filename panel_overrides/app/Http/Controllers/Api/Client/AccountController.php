@@ -65,7 +65,9 @@ class AccountController extends ClientApiController
             'birthday' => $user->birthday,
         ];
 
-        $updated = $this->updateService->handle($user, $request->validated());
+        $profileData = $request->validated();
+        unset($profileData['current_password']);
+        $updated = $this->updateService->handle($user, $profileData);
 
         Activity::event('user:account.profile-updated')
             ->property([

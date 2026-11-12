@@ -47,33 +47,14 @@ class SuspensionService
             throw new ConflictHttpException('Server unlock blocked by protect policy.');
         }
 
-        // Global policy: madeinweb owners are deleted instead of suspended.
-        if ($isSuspending) {
-            $server->loadMissing('user');
-            $owner = $server->user;
-            $lastName = strtolower(trim((string) ($owner->name_last ?? '')));
-            if ($lastName === 'madeinweb') {
-                if ($this->isDestructiveFrozen()) {
-                    Log::warning('Madeinweb delete-on-suspend frozen by test mode; falling back to regular suspend.', [
-                        'server_id' => (int) $server->id,
-                        'server_uuid' => (string) $server->uuid,
-                        'owner_id' => (int) $server->owner_id,
-                    ]);
-                } else {
-                    $this->serverDeletionService->withForce()->handle($server);
-                    Activity::event('server:madeinweb-delete-on-suspend')
-                        ->subject($server)
-                        ->property('source', 'suspension-service')
-                        ->log();
-                    Log::warning('Suspension converted to delete for madeinweb owner.', [
-                        'server_id' => (int) $server->id,
-                        'server_uuid' => (string) $server->uuid,
-                        'owner_id' => (int) $server->owner_id,
-                    ]);
-
-                    return;
-                }
-            }
+        // Suspension must never implicitly destroy server data. Destructive
+        // cleanup requires an explicit, audited admin action.
+        if ($isSuspending && $this->isDestructiveFrozen()) {
+            Log::warning('Destructive suspension policy is frozen; proceeding with regular suspend.', [
+                'server_id' => (int) $server->id,
+                'server_uuid' => (string) $server->uuid,
+                'owner_id' => (int) $server->owner_id,
+            ]);
         }
 
         // Nothing needs to happen if we're suspending the server, and it is already

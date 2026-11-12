@@ -18,7 +18,7 @@ ReadWritePaths=/pteroprotect /var/lib/pterodactyl /var/www/pterodactyl /dev/shm/
 
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-ReadWritePaths=/pteroprotect /var/lib/pterodactyl /run /proc/sys/net /var/log /dev/shm /tmp
+ReadWritePaths=/pteroprotect /var/lib/pterodactyl /run /proc/sys/net /var/log /dev/shm /tmp /etc/nginx
 Type=simple
 User=root
 Group=root

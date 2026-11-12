@@ -26,6 +26,7 @@ SupplementaryGroups=adm
 WorkingDirectory=/pteroprotect
 Environment=DANN_CONFIG_PATH=/pteroprotect/config.json
 Environment=PTEROPROTECT_PANEL_RUNTIME_DIR=/pteroprotect/runtime
+ExecStartPre=/usr/bin/env python3 /pteroprotect/scripts/security_startup_policy.py /pteroprotect/config.json --enforce
 ExecStart=/usr/bin/env python3 /pteroprotect/scripts/resilience_orchestrator.py
 Restart=always
 RestartSec=2

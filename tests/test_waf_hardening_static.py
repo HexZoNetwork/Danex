@@ -70,8 +70,13 @@ def main() -> int:
     )
     assert_contains(
         nginx,
+        "add_header X-PteroProtect-Challenge-Fallback \"fail-closed\" always;",
+        "challenge fallback must fail closed instead of granting access when the guard is down",
+    )
+    assert_contains(
+        nginx,
         "error_page 500 502 503 504 = @pteroprotect_challenge_fail_open;",
-        "challenge auth subrequests must fail open on local challenge outages instead of returning invalid auth_request 503",
+        "challenge auth subrequests must map local challenge outages to the explicit fallback",
     )
     assert_not_contains(
         nginx,

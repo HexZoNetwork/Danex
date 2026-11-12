@@ -36,11 +36,13 @@ private:
     std::string user;
     std::string password;
     std::string dbname;
+    std::string ssl_mode;
+    std::string ssl_ca;
     bool has_suspended_column;
     mutable std::recursive_mutex mutex_;
 
     bool connect();
-    std::string escape(const std::string& s);
+    bool escape(const std::string& s, std::string& out);
     bool ensure_connection();
     bool column_exists(const std::string& table, const std::string& column);
 
@@ -49,7 +51,9 @@ public:
     ~DatabaseGuard();
 
     bool init(const std::string& h, const std::string& u,
-              const std::string& p, const std::string& db_name);
+              const std::string& p, const std::string& db_name,
+              const std::string& tls_mode = "verify_ca",
+              const std::string& tls_ca = "");
 
     ServerInfo get_server_info(const std::string& uuid);
     std::vector<std::string> get_all_server_uuids();

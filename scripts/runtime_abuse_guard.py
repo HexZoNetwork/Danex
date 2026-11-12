@@ -145,8 +145,8 @@ def socket_count_for_pid(pid: int, gateway_ports: List[int]) -> int:
     if rc != 0:
         return count
     filtered = 0
-    for peer in peer_endpoints_for_pid_from_ss(out, pid):
-        if peer[1] in gateway_ports:
+    for endpoint in local_endpoints_for_pid_from_ss(out, pid):
+        if endpoint[1] in gateway_ports:
             filtered += 1
     return filtered
 
@@ -177,6 +177,21 @@ def peer_endpoints_for_pid_from_ss(ss_output: str, pid: int) -> List[Tuple[str, 
         if len(parts) < 5:
             continue
         host, port = parse_peer_endpoint(parts[4])
+        if host and port > 0:
+            out.append((host, port))
+    return out
+
+
+def local_endpoints_for_pid_from_ss(ss_output: str, pid: int) -> List[Tuple[str, int]]:
+    out: List[Tuple[str, int]] = []
+    pid_tag = f"pid={pid},"
+    for line in ss_output.splitlines():
+        if pid_tag not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        host, port = parse_peer_endpoint(parts[3])
         if host and port > 0:
             out.append((host, port))
     return out

@@ -143,8 +143,7 @@ class DanexCoinController extends ClientApiController
             ], 429);
         }
 
-        try {
-            $result = DB::transaction(function () use ($userId, $requestedBet, $settings) {
+        $result = DB::transaction(function () use ($userId, $requestedBet, $settings) {
                 $locked = DB::table('users')
                     ->where('id', $userId)
                     ->lockForUpdate()
@@ -212,10 +211,7 @@ class DanexCoinController extends ClientApiController
                     'is_jackpot' => $isJackpot,
                     'win_rate' => $winRate,
                 ];
-            });
-        } finally {
-            Cache::forget($spinLockKey);
-        }
+        });
 
         if ($result === null) {
             return new JsonResponse([

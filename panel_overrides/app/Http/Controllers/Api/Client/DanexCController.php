@@ -12,14 +12,24 @@ class DanexCController extends ClientApiController
     {
     }
 
+    private function requireAdmin(Request $request): void
+    {
+        $user = $request->user();
+        if (!$user || !(bool) $user->root_admin) {
+            abort(403, 'Administrator access required.');
+        }
+    }
+
     public function overview(Request $request): JsonResponse
     {
+        $this->requireAdmin($request);
         $window = max(5, min(360, (int) $request->query('window', 60)));
         return new JsonResponse($this->telemetry->buildOverview($window));
     }
 
     public function timeline(Request $request): JsonResponse
     {
+        $this->requireAdmin($request);
         $window = max(5, min(360, (int) $request->query('window', 60)));
         return new JsonResponse([
             'timeline' => $this->telemetry->buildTimeline($window),
@@ -32,6 +42,7 @@ class DanexCController extends ClientApiController
 
     public function feed(Request $request): JsonResponse
     {
+        $this->requireAdmin($request);
         $limit = max(10, min(100, (int) $request->query('limit', 40)));
         return new JsonResponse([
             'live_feed' => $this->telemetry->buildLiveFeed($limit),
@@ -44,6 +55,7 @@ class DanexCController extends ClientApiController
 
     public function threats(Request $request): JsonResponse
     {
+        $this->requireAdmin($request);
         $window = max(5, min(360, (int) $request->query('window', 60)));
         $overview = $this->telemetry->buildOverview($window);
 
@@ -60,6 +72,7 @@ class DanexCController extends ClientApiController
 
     public function config(Request $request): JsonResponse
     {
+        $this->requireAdmin($request);
         $window = max(5, min(360, (int) $request->query('window', 60)));
         $overview = $this->telemetry->buildOverview($window);
 

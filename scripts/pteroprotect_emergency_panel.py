@@ -25,6 +25,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+def safe_compare(left, right):
+    try:
+        return hmac.compare_digest(str(left), str(right))
+    except (TypeError, ValueError):
+        return False
+
+
 GUARD_HOME = os.environ.get("DANN_GUARD_HOME", "/pteroprotect")
 CONFIG_PATH = Path(GUARD_HOME) / "config.json"
 AUDIT_LOG = Path("/var/log/pteroprotect/emergency_audit.jsonl")
@@ -108,15 +115,30 @@ def save_blacklist_locked(data):
     write_json_atomic(BLACKLIST_FILE, data)
 
 
+def config_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off", ""}:
+            return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    return default
+
+
 def read_config():
     cfg = load_json(CONFIG_PATH)
     net = cfg.get("network", {}) if isinstance(cfg, dict) else {}
     return {
-        "bind": str(net.get("emergency_control_bind", "0.0.0.0")),
+        "enabled": config_bool(net.get("emergency_control_enabled", False), False),
+        "bind": str(net.get("emergency_control_bind", "127.0.0.1")),
         "port": int(net.get("emergency_control_port", 18447)),
         "token": str(net.get("emergency_control_token", "")),
         "session_ttl": int(net.get("emergency_control_session_ttl_sec", SESSION_TTL_DEFAULT) or SESSION_TTL_DEFAULT),
-        "query_bootstrap": bool(net.get("emergency_control_query_bootstrap_enabled", True)),
+        "query_bootstrap": config_bool(net.get("emergency_control_query_bootstrap_enabled", False), False),
     }
 
 
@@ -540,14 +562,14 @@ class Handler(BaseHTTPRequestHandler):
         ip = client_ip(self)
         session = self._cookie_session()
         csrf = self.headers.get("X-CSRF-Token", "")
-        if session and (self.command == "GET" or hmac.compare_digest(csrf, session["csrf"])):
+        if session and (self.command == "GET" or safe_compare(csrf, session["csrf"])):
             if not action_allowed(ip):
                 self._json({"error": "rate_limited"}, 429)
                 return None
             return {"session": session}
 
         token = self.headers.get("X-Admin-Token", "")
-        if not self.server.admin_token or token == "" or not hmac.compare_digest(token, self.server.admin_token):
+        if not self.server.admin_token or token == "" or not safe_compare(token, self.server.admin_token):
             if is_banned(ip):
                 self._silent_drop()
                 return None
@@ -572,7 +594,7 @@ class Handler(BaseHTTPRequestHandler):
         if request_path == "/":
             query_token = self._query_token()
             if query_token:
-                if not self.server.query_bootstrap or not hmac.compare_digest(query_token, self.server.admin_token):
+                if not self.server.query_bootstrap or not safe_compare(query_token, self.server.admin_token):
                     ip = client_ip(self)
                     if is_banned(ip):
                         self._silent_drop()
@@ -696,8 +718,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     cfg = read_config()
-    if not cfg["token"]:
-        print("[emergency] missing network.emergency_control_token")
+    if not cfg["enabled"]:
+        print("[emergency] disabled by network.emergency_control_enabled")
+        return 0
+    token = str(cfg["token"] or "").strip()
+    lower = token.lower()
+    if (len(token) < 24 or not token.isascii() or lower in {"none", "null", "replace_me", "changeme", "change_me"}
+            or lower.startswith("replace_") or lower.startswith("change_me")):
+        print("[emergency] network.emergency_control_token is missing, weak, or a placeholder")
         raise SystemExit(1)
     srv = ThreadingHTTPServer((cfg["bind"], cfg["port"]), Handler)
     srv.admin_token = cfg["token"].strip()

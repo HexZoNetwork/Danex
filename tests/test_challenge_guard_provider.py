@@ -89,7 +89,7 @@ def main() -> int:
                 "waf_challenge_enabled": True,
                 "waf_challenge_bind": "127.0.0.1",
                 "waf_challenge_port": port,
-                "waf_challenge_secret": "test-secret",
+                "waf_challenge_secret": "PteroProtect-Test-Only-Secret-9f3K2mQ7",
                 "provider_token_gate_enabled": True,
                 "provider_token_ipv4_cidrs": "127.0.0.1/32",
                 "provider_token_ipv6_cidrs": "",

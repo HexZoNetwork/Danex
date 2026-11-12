@@ -54,7 +54,7 @@ def start_guard(root: pathlib.Path, enabled: bool = True):
             "waf_challenge_enabled": enabled,
             "waf_challenge_bind": "127.0.0.1",
             "waf_challenge_port": port,
-            "waf_challenge_secret": "test-secret",
+            "waf_challenge_secret": "PteroProtect-Test-Only-Secret-9f3K2mQ7",
             "waf_challenge_type": 1,
             "provider_token_gate_enabled": False,
             "runtime_attack_rules_enabled": True,

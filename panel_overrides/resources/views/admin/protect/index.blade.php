@@ -176,9 +176,9 @@
         <div class="box box-danger">
             <div class="box-header with-border"><h3 class="box-title">Offline Server Cleanup</h3></div>
             <div class="box-body">
-                <p class="text-danger">Deletes all servers whose Wings power state is offline, not only Create Panel or madeinweb servers.</p>
-                <p class="text-muted">After offline servers are gone, every non-admin user with no remaining servers is deleted. Admin users are never deleted.</p>
-                <p class="text-muted">Cleanup now runs as a server-side queue job, so the browser does not need to wait for every Wings/API call.</p>
+                <p class="text-danger">Deletes offline, suspended servers only when the server carries the Create Panel marker AND its owner is a panel-created non-admin. Servers created in the last 15 minutes are skipped.</p>
+                <p class="text-muted">User deletion is disabled by default. Enable it only if you also want empty panel-created non-admin owners removed. Admin users and user #1 are never deleted.</p>
+                <p class="text-muted">Dry-run is on by default and only reports what would be deleted. Uncheck it to perform a destructive run.</p>
                 @if(isset($latestCleanupRun) && $latestCleanupRun)
                     <div id="cleanup-run-status" class="alert alert-info" data-status-url="{{ route('admin.protect.create_panel_cleanup.status', $latestCleanupRun->id) }}">
                         <strong>Latest cleanup job #{{ $latestCleanupRun->id }}:</strong>
@@ -192,9 +192,15 @@
                         <div class="small text-muted" data-cleanup-field="message">{{ implode(' | ', (array) ($latestCleanupRun->messages ?? [])) }}</div>
                     </div>
                 @endif
-                <form method="POST" action="{{ route('admin.protect.create_panel_cleanup') }}" data-confirm-action="Queue offline cleanup job. This can delete offline servers and empty non-admin owners. Type CLEANUP to continue." data-confirm-token="CLEANUP">
+                <form method="POST" action="{{ route('admin.protect.create_panel_cleanup') }}" data-confirm-action="Queue offline cleanup job. This can delete eligible offline servers. Type CLEANUP to continue." data-confirm-token="CLEANUP">
                     @csrf
                     <input type="hidden" name="protect_token" value="{{ $postProtectToken ?? '' }}" />
+                    <label class="checkbox-inline" style="display:block;margin:8px 0;">
+                        <input type="checkbox" name="dry_run" value="1" checked /> Dry run (preview only)
+                    </label>
+                    <label class="checkbox-inline" style="display:block;margin:8px 0;">
+                        <input type="checkbox" name="allow_user_deletion" value="1" /> Also delete empty panel-created users
+                    </label>
                     <button type="submit" class="btn btn-danger">Queue Offline Cleanup Job</button>
                 </form>
             </div>
@@ -335,7 +341,13 @@ document.addEventListener('submit', function (event) {
     var answer = window.prompt(message);
     if (answer !== token) {
         event.preventDefault();
+        return;
     }
+    var hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.name = 'confirm';
+    hidden.value = token;
+    form.appendChild(hidden);
 });
 
 (function pollCleanupRun() {

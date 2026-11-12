@@ -244,6 +244,7 @@ class ServersController extends Controller
      */
     public function deleteDatabase(Server $server, Database $database): Response
     {
+        $database = $server->databases()->whereKey($database->getKey())->firstOrFail();
         $this->databaseManagementService->delete($database);
 
         return response('', 204);

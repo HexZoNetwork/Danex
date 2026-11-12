@@ -232,8 +232,15 @@ load_adaptive_state() {
         return 0
     fi
 
-    # shellcheck disable=SC1090
-    source "${ADAPTIVE_STATE_FILE}" 2>/dev/null || true
+    while IFS='=' read -r key value; do
+        case "${key}" in
+            ADAPTIVE_ESTABLISHED_BASE) ADAPTIVE_ESTABLISHED_BASE="${value}" ;;
+            ADAPTIVE_SYN_RECV_BASE) ADAPTIVE_SYN_RECV_BASE="${value}" ;;
+            ADAPTIVE_HTTP_BASE) ADAPTIVE_HTTP_BASE="${value}" ;;
+            ADAPTIVE_SERVICE_BASE) ADAPTIVE_SERVICE_BASE="${value}" ;;
+            ADAPTIVE_SAMPLES) ADAPTIVE_SAMPLES="${value}" ;;
+        esac
+    done < "${ADAPTIVE_STATE_FILE}"
     [[ "${ADAPTIVE_ESTABLISHED_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_ESTABLISHED_BASE=0
     [[ "${ADAPTIVE_SYN_RECV_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_SYN_RECV_BASE=0
     [[ "${ADAPTIVE_HTTP_BASE:-}" =~ ^[0-9]+$ ]] || ADAPTIVE_HTTP_BASE=0

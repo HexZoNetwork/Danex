@@ -91,7 +91,7 @@ def normalize_ip(ip: str) -> str:
 
 
 def client_ip_from_headers(headers: dict[str, str]) -> str:
-    for name in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+    for name in ("x-real-ip", "cf-connecting-ip", "x-forwarded-for"):
         value = headers.get(name, "").split(",", 1)[0].strip()
         if value:
             return normalize_ip(value)

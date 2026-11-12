@@ -9,7 +9,7 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=true
 
-ProtectKernelModules=true
+ProtectKernelModules=false
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 ReadWritePaths=/pteroprotect /var/lib/pterodactyl /var/www/pterodactyl /dev/shm/pteroprotect /var/log /run /tmp /dev/shm

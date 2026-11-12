@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-echo "[dummy-artisan] $*"
-exit 0

@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++11 -O2 -Wall -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -Wformat -Wformat-security -Iinclude
+CXXFLAGS = -std=c++11 -O2 -Wall -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fstack-clash-protection -D_GLIBCXX_ASSERTIONS -fPIE -Wformat -Wformat-security -Iinclude
 LDFLAGS = -pie -Wl,-z,relro,-z,now -lmysqlclient -lcurl -lpthread -lcrypto
 CHALLENGE_LDFLAGS = -pie -Wl,-z,relro,-z,now -lmysqlclient -lpthread -lcrypto -lssl
 PREFIX ?= /pteroprotect
@@ -45,13 +45,13 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(wildcard $(INCDIR)/*.h)
 clean:
 	rm -rf $(OBJDIR) $(TARGET) $(CHALLENGE_TARGET)
 
-install:
+install: all
 	INSTALL_DIR="$(PREFIX)" PANEL_DIR="$(PANEL_DIR)" SYSTEMD_DIR="$(SYSTEMD_DIR)" NGINX_DIR="$(NGINX_DIR)" bash ./setup.sh
 
 uninstall:
 	rm -f /usr/local/bin/dann_guard
 	rm -f $(PREFIX)/dann_guard
-	rm -f $(PREFIX)/config.json
+	if [ -f $(PREFIX)/config.json ]; then cp -a $(PREFIX)/config.json $(PREFIX)/config.json.uninstall-backup; fi
 	rm -f $(SYSTEMD_DIR)/pteroprotect.service
 
 .PHONY: all clean install uninstall

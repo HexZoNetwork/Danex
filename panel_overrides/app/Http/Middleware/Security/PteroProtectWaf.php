@@ -19,9 +19,9 @@ class PteroProtectWaf
         }
 
         $ip = trim((string) $request->ip());
-        $path = ltrim($request->path(), '/');
+        $path = ltrim(rawurldecode((string) $request->path()), '/');
 
-        if ($this->isRemoteApiPath($path) || $this->isApplicationApiPath($path)) {
+        if ($this->isRemoteApiPath($path)) {
             return $next($request);
         }
 
@@ -383,7 +383,8 @@ class PteroProtectWaf
 
         $subject = (string) ($request->user()?->id ?? '');
         if (trim($subject) === '') {
-            $subject = trim((string) $request->cookie((string) ($config['challenge_cookie_name'] ?? 'pp_clearance'), ''));
+            $cookieName = (string) ($config['challenge_cookie_name'] ?? 'pp_clearance');
+            $subject = trim(PteroProtectClearanceToken::rawCookieValue($request, $cookieName));
         }
         if (trim($subject) === '') {
             $subject = hash('sha256', strtolower(trim((string) $request->userAgent())));
@@ -873,10 +874,6 @@ class PteroProtectWaf
             return true;
         }
 
-        if ($this->isApplicationApiPath($path)) {
-            return true;
-        }
-
         return false;
     }
 
@@ -917,6 +914,10 @@ class PteroProtectWaf
     {
         if ($path === 'assets/manifest.json' || $path === 'favicons/manifest.json') {
             return true;
+        }
+
+        if (preg_match('#^(?:assets|favicons|themes|vendor)/#i', $path) !== 1) {
+            return false;
         }
 
         return preg_match('#\.(?:css|js|mjs|map|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|txt|xml)$#i', $path) === 1;
@@ -1047,7 +1048,7 @@ class PteroProtectWaf
         }
 
         $cookieName = trim((string) ($config['challenge_cookie_name'] ?? 'pp_clearance')) ?: 'pp_clearance';
-        $clearance = trim((string) $request->cookie($cookieName, ''));
+        $clearance = trim(PteroProtectClearanceToken::rawCookieValue($request, $cookieName));
         if ($clearance !== '' && PteroProtectClearanceToken::isValid($request, $clearance, $cookieName)) {
             return 'c:' . hash('sha256', $clearance);
         }
@@ -1097,7 +1098,7 @@ class PteroProtectWaf
             $cookieName = 'pp_clearance';
         }
 
-        $clearance = trim((string) $request->cookie($cookieName, ''));
+        $clearance = trim(PteroProtectClearanceToken::rawCookieValue($request, $cookieName));
         if ($clearance === '') {
             return false;
         }

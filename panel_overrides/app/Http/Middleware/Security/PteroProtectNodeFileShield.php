@@ -126,7 +126,7 @@ class PteroProtectNodeFileShield
 
     private function resolveAction(Request $request): ?string
     {
-        $path = trim((string) $request->path(), '/');
+        $path = trim(rawurldecode((string) $request->path()), '/');
         if (!str_starts_with($path, 'api/client/servers/')) {
             return null;
         }

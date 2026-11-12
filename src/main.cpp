@@ -70,21 +70,26 @@ int main() {
             return 1;
         }
 
+        // Initialize the audit log before config parsing so failure reasons persist.
+        logger.init(guard_home + "/dann_guard.log");
+
         // Load config (fail closed when the file is missing or unreadable)
         const std::string config_path = guard_home + "/config.json";
         if (access(config_path.c_str(), R_OK) != 0) {
-            std::cerr << "FATAL: config file is missing or unreadable: " << config_path << std::endl;
+            logger.error("FATAL: config file is missing or unreadable: " + config_path);
             return 1;
         }
         config = Config::load(config_path);
+        if (!config.valid) {
+            logger.error("FATAL: config parse/validation failed; refusing to start with defaults");
+            return 1;
+        }
 
         const char* offline_env = std::getenv("DANN_GUARD_OFFLINE");
         if ((offline_env == nullptr || *offline_env == '\0') && config.runtime.offline_mode) {
             setenv("DANN_GUARD_OFFLINE", "1", 0);
         }
-        
-        // Initialize logger
-        logger.init(guard_home + "/dann_guard.log");
+
         logger.info("🚀 DANN GUARD STARTING...");
         
         // Initialize telegram
@@ -97,7 +102,8 @@ int main() {
 
         // Initialize database
         if (!db.init(config.database.host, config.database.user,
-                     config.database.password, config.database.name)) {
+                     config.database.password, config.database.name,
+                     config.database.tls_mode, config.database.tls_ca)) {
             logger.error("❌ Failed to initialize database");
             bot.send_report_message(
                 "<b>🚨 DANN GUARD STARTUP FAILED</b>\n"

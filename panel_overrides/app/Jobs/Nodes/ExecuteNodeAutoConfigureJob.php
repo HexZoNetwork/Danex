@@ -22,6 +22,10 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
+    public int $tries = 1;
+
+    public int $timeout = 300;
+
     public function __construct(private int $runId)
     {
     }
@@ -40,11 +44,15 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
         $logger->log($run, 'info', 'preflight', 'Starting auto-configure run.', ['target' => $run->target_host], 'run_started');
 
         $publicKey = (string) ($run->requested_payload['ephemeral_public_key'] ?? '');
-        $password = Crypt::decryptString((string) $run->encrypted_password);
-        $privateKey = Crypt::decryptString((string) $run->encrypted_private_key);
+        $password = '';
+        $privateKey = '';
+        $expectedFingerprint = (string) ($run->requested_payload['expected_host_fingerprint'] ?? '');
+        $node = Node::query()->find((int) $run->node_id);
+        $nodeYamlB64 = $node ? base64_encode($node->getYamlConfiguration()) : '';
 
         try {
-            $expectedFingerprint = (string) ($run->requested_payload['expected_host_fingerprint'] ?? '');
+            $password = Crypt::decryptString((string) $run->encrypted_password);
+            $privateKey = Crypt::decryptString((string) $run->encrypted_private_key);
             $bootstrap = $provisioner->bootstrapWithPassword(
                 (string) $run->target_host,
                 (int) $run->target_port,
@@ -68,7 +76,7 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
                 (int) $run->wings_port,
                 (string) $run->fallback_port_range,
                 (string) ($run->requested_payload['firewall_mode'] ?? 'auto'),
-                (string) ($run->requested_payload['node_yaml_b64'] ?? ''),
+                $nodeYamlB64,
                 (bool) ($run->requested_payload['protected_mode'] ?? true)
             );
 
@@ -87,7 +95,7 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
                 'output' => mb_substr((string) ($exec['output'] ?? ''), 0, 6000),
             ], 'remote_exec_done');
 
-            if (($exec['exit_code'] ?? 1) !== 0 && ($exec['exit_code'] ?? 1) !== null) {
+            if ((int) ($exec['exit_code'] ?? -1) !== 0) {
                 throw new \RuntimeException('remote_installer_failed');
             }
 
@@ -109,16 +117,6 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
                 }
             }
 
-            $provisioner->revokeEphemeralKey(
-                (string) $run->target_host,
-                (int) $run->target_port,
-                (string) $run->target_username,
-                $privateKey,
-                $publicKey,
-                (int) $run->max_ssh_timeout_sec,
-                $expectedFingerprint
-            );
-
             $run->status = NodeAutoConfigRun::STATUS_SUCCESS;
             $run->finished_at = now();
             $run->save();
@@ -131,6 +129,24 @@ class ExecuteNodeAutoConfigureJob implements ShouldQueue
             $run->save();
             $logger->log($run, 'error', 'failed', 'Auto-configure failed.', ['error' => $e->getMessage()], 'run_failed');
             throw $e;
+        } finally {
+            try {
+                $provisioner->revokeEphemeralKey(
+                    (string) $run->target_host,
+                    (int) $run->target_port,
+                    (string) $run->target_username,
+                    $privateKey,
+                    $publicKey,
+                    (int) $run->max_ssh_timeout_sec,
+                    $expectedFingerprint
+                );
+            } catch (Throwable $revokeError) {
+                $logger->log($run, 'error', 'cleanup', 'Ephemeral key revocation failed.', ['error' => $revokeError->getMessage()], 'revoke_failed');
+            }
+
+            $run->encrypted_password = null;
+            $run->encrypted_private_key = null;
+            $run->save();
         }
     }
 }

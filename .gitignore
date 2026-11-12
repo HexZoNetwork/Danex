@@ -36,3 +36,6 @@ HACKS.sh
 
 # local session dumps (never commit)
 session-ses_*.md
+
+# committed development/mock credentials must never be tracked again
+.codespaces/

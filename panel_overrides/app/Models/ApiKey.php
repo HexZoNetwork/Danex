@@ -163,9 +163,43 @@ class ApiKey extends Model implements HasAbilities
 
     public function can($ability)
     {
-        // todo: this was never initially implemented and only became obvious once
-        //  internal tooling was updated and started catching this mistake.
-        return false;
+        if (! is_string($ability) || trim($ability) === '') {
+            return false;
+        }
+
+        if ($this->key_type === self::TYPE_ACCOUNT) {
+            return true;
+        }
+
+        $ability = strtolower(trim($ability));
+        if ($ability === '*') {
+            return in_array($this->key_type, [
+                self::TYPE_APPLICATION,
+                self::TYPE_DAEMON_USER,
+                self::TYPE_DAEMON_APPLICATION,
+            ], true);
+        }
+
+        $resource = $ability;
+        $permission = AdminAcl::READ;
+        if (str_contains($ability, ':')) {
+            [$resource, $action] = explode(':', $ability, 2);
+            $permission = match ($action) {
+                'read', 'view', 'list', 'get' => AdminAcl::READ,
+                'write', 'create', 'update', 'edit', 'store', 'delete', 'destroy' => AdminAcl::WRITE,
+                default => AdminAcl::NONE,
+            };
+        }
+
+        if (str_starts_with($resource, 'r_')) {
+            $resource = substr($resource, 2);
+        }
+
+        if ($resource === '' || $permission === AdminAcl::NONE) {
+            return false;
+        }
+
+        return AdminAcl::check($this, $resource, $permission);
     }
 
     public function cant($ability)

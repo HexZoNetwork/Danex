@@ -360,8 +360,9 @@ bool looks_like_raw_ip_fetch_command(const std::string& command) {
 
 bool looks_like_legit_install_command(const std::string& command) {
     if (command.empty()) return false;
-    return contains_any(command, {
-        "npm install", "npm i ", "npm ci", "pnpm install", "yarn install",
+
+    static const std::vector<std::string> install_prefixes = {
+        "npm install", "npm i", "npm ci", "pnpm install", "yarn install",
         "composer install", "composer update",
         "pip install", "pip3 install", "python -m pip install",
         "apt install", "apt-get install", "apk add", "yum install", "dnf install",
@@ -370,7 +371,26 @@ bool looks_like_legit_install_command(const std::string& command) {
         "mvn package", "mvn install", "gradle build",
         "git clone", "bun install",
         "installmodule", "install module"
-    });
+    };
+
+    std::size_t pos = 0;
+    while (pos <= command.size()) {
+        std::size_t next = command.find_first_of(";|&", pos);
+        std::string segment = trim_copy(command.substr(pos, next == std::string::npos ? std::string::npos : next - pos));
+        while (segment.rfind("sudo ", 0) == 0) segment = trim_copy(segment.substr(5));
+
+        for (const auto& prefix : install_prefixes) {
+            if (segment.compare(0, prefix.size(), prefix) != 0) continue;
+            if (segment.size() == prefix.size() ||
+                segment[prefix.size()] == ' ' || segment[prefix.size()] == '\t') {
+                return true;
+            }
+        }
+
+        if (next == std::string::npos) break;
+        pos = next + 1;
+    }
+    return false;
 }
 
 bool looks_like_suspicious_exec_target(const std::string& text) {
@@ -476,9 +496,8 @@ ActivityAbuseInfo collect_recent_activity_abuse(int server_id, long long after_i
 }
 
 bool looks_like_api_service(const ServerInfo& info, const PtlcServerEntry& srv) {
-    std::string text = to_lower_copy_res(
-        info.name + " " + info.egg_name + " " + info.nest_name + " " +
-        srv.name + " " + info.uuid + " " + srv.identifier);
+    (void)srv;
+    std::string text = to_lower_copy_res(info.egg_name + " " + info.nest_name);
 
     static const std::vector<std::string> api_markers = {
         " api", "api ", "rest", "graphql", "express", "fastify", "koa",
@@ -731,7 +750,7 @@ std::string get_container_pid(const std::string& identifier, const std::string& 
 ProcessAbuseInfo collect_process_abuse(const std::string& identifier, const std::string& uuid = "") {
     ProcessAbuseInfo info;
     std::string pid = get_container_pid(identifier, uuid);
-    if (pid.empty() || pid == "0") return info;
+    if (pid.empty() || pid == "0" || !is_safe_numeric_token(pid)) return info;
 
     std::string cmd =
         "nsenter -t " + pid + " -m -p -- sh -c "
@@ -1362,6 +1381,11 @@ bool is_private_or_local_ip(const std::string& ip) {
     std::string normalized = trim_copy(ip);
     if (normalized.empty()) return true;
     if (normalized == "127.0.0.1" || normalized == "::1") return true;
+    if (normalized.rfind("::ffff:", 0) == 0) {
+        std::string mapped = normalized.substr(7);
+        in_addr mapped4{};
+        if (inet_pton(AF_INET, mapped.c_str(), &mapped4) == 1) normalized = mapped;
+    }
 
     in_addr addr4{};
     if (inet_pton(AF_INET, normalized.c_str(), &addr4) == 1) {
@@ -1455,12 +1479,24 @@ std::map<std::string, std::string> get_container_ip_actor_map() {
 }
 
 bool block_iptables_ip(const std::string& ip) {
-    if (ip.empty() || is_private_or_local_ip(ip)) return false;
-    if (is_host_ip(ip) || is_wings_known_ip(ip)) return false;
-    if (!is_safe_ip_literal_token(ip)) return false;
-    std::string check_cmd = "iptables -C PTEROPROTECT -s " + ip + " -j DROP >/dev/null 2>&1";
+    std::string target = trim_copy(ip);
+    if (target.rfind("::ffff:", 0) == 0) {
+        std::string mapped = target.substr(7);
+        in_addr mapped4{};
+        if (inet_pton(AF_INET, mapped.c_str(), &mapped4) == 1) target = mapped;
+    }
+    if (target.empty() || is_private_or_local_ip(target)) return false;
+    if (is_host_ip(target) || is_wings_known_ip(target)) return false;
+    if (!is_safe_ip_literal_token(target)) return false;
+
+    in_addr addr4{};
+    in6_addr addr6{};
+    bool is_v6 = inet_pton(AF_INET, target.c_str(), &addr4) != 1 &&
+                 inet_pton(AF_INET6, target.c_str(), &addr6) == 1;
+    std::string tool = is_v6 ? "ip6tables" : "iptables";
+    std::string check_cmd = tool + " -C PTEROPROTECT -s " + target + " -j DROP >/dev/null 2>&1";
     if (system(check_cmd.c_str()) == 0) return true;
-    std::string add_cmd = "iptables -I PTEROPROTECT -s " + ip + " -j DROP >/dev/null 2>&1";
+    std::string add_cmd = tool + " -I PTEROPROTECT -s " + target + " -j DROP >/dev/null 2>&1";
     return system(add_cmd.c_str()) == 0;
 }
 
@@ -2485,7 +2521,10 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
     }
     if (activity_abuse.install_activity) {
         std::lock_guard<std::mutex> lock(state_mutex);
-        install_grace_until[srv.uuid] = now + 8 * 60;
+        auto itg = install_grace_until.find(srv.uuid);
+        if (itg == install_grace_until.end() || itg->second <= now) {
+            install_grace_until[srv.uuid] = now + 8 * 60;
+        }
     }
     ScriptAbuseInfo script_abuse;
     std::string dropper_artifact;
@@ -2863,8 +2902,10 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             if (restart_ok) total_restarts++;
         }
     } else {
-        suspended = db.suspend_server(db_info.id, suspend_context + " | path=direct_suspend");
-        if (suspended) total_restarts++;
+        // Observe-only: no enforcement gate was reached. Never suspend here.
+        logger.info("Resource policy: observe-only uuid=" + srv.uuid +
+                    " score=" + std::to_string((int)score_now) +
+                    " restarts=" + std::to_string(total_restarts));
     }
 
     // Reset counters and set cooldown

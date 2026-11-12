@@ -27,6 +27,8 @@
 
 #include <sys/wait.h>
 #include <arpa/inet.h>
+#include <climits>
+#include <cerrno>
 
 namespace {
 int safe_exec(const std::vector<std::string>& args) {
@@ -230,6 +232,24 @@ std::string trim(const std::string& s) {
     return s.substr(a, b - a + 1);
 }
 
+std::string html_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 16);
+    for (char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&#39;"; break;
+            case '\n': out += " "; break;
+            case '\r': break;
+            default: out += c;
+        }
+    }
+    return out;
+}
+
 std::string to_lower_copy(std::string v) {
     std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c){ return (char)std::tolower(c); });
     return v;
@@ -276,11 +296,17 @@ bool is_known_dropper_filename(const std::string& name) {
 }
 
 bool is_probably_elf_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f.is_open()) return false;
+    int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return false;
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return false;
+    }
     unsigned char magic[4] = {0, 0, 0, 0};
-    f.read(reinterpret_cast<char*>(magic), 4);
-    if (f.gcount() < 4) return false;
+    ssize_t count = read(fd, magic, 4);
+    close(fd);
+    if (count < 4) return false;
     return magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
 }
 
@@ -722,9 +748,9 @@ std::string rakit_laporan_server(const std::string& tipe, double ukuran, double 
         << "━━━━━━━━━━━━━━━━━━━\n\n"
         << "<b>👤 OWNER INFORMATION</b>\n"
         << "<blockquote>"
-        << "├─ Nama    : " << owner << "\n"
-        << "├─ Username: @" << info.username << "\n"
-        << "├─ Email   : " << info.email << "\n"
+        << "├─ Nama    : " << html_escape(owner) << "\n"
+        << "├─ Username: @" << html_escape(info.username) << "\n"
+        << "├─ Email   : " << html_escape(info.email) << "\n"
         << "├─ Server ID: <code>" << info.id << "</code>\n"
         << "└─ UUID    : <code>" << info.uuid << "</code>\n"
         << "</blockquote>\n\n"
@@ -752,7 +778,7 @@ std::string rakit_laporan_server(const std::string& tipe, double ukuran, double 
         msg << "<b>📋 " << (quarantined_only ? "FILES QUARANTINED" : "FILES DELETED") << "</b>\n<blockquote>";
         int count = 0;
         for (const auto& f : daftar_file) {
-            msg << "├─ <code>" << f.name << "</code> <i>(" << f.suspicion_reason << ")</i>\n";
+            msg << "├─ <code>" << html_escape(f.name) << "</code> <i>(" << html_escape(f.suspicion_reason) << ")</i>\n";
             if (++count >= 10) {
                 int rem = (int)daftar_file.size() - 10;
                 if (rem > 0) msg << "└─ <i>... and " << rem << " more</i>\n";
@@ -782,66 +808,100 @@ std::string rakit_laporan_server(const std::string& tipe, double ukuran, double 
     return msg.str();
 }
 
-bool parse_size_path_line(const std::string& line, long long& size, std::string& path_out);
+bool read_nul_record(FILE* p, std::string& out) {
+    out.clear();
+    if (!p) return false;
+    char* buf = nullptr;
+    size_t cap = 0;
+    ssize_t n = getdelim(&buf, &cap, '\0', p);
+    if (n <= 0) {
+        free(buf);
+        return false;
+    }
+    out.assign(buf, static_cast<size_t>(n));
+    free(buf);
+    while (!out.empty() && out.back() == '\0') out.pop_back();
+    return !out.empty();
+}
+
+bool is_safe_fs_path_token(const std::string& p) {
+    if (p.empty() || p[0] != '/') return false;
+    for (unsigned char c : p) {
+        if (c < 0x20 || c == 0x7f) return false;
+    }
+    if (p.find("/../") != std::string::npos) return false;
+    if (p.size() >= 3 && p.compare(p.size() - 3, 3, "/..") == 0) return false;
+    return true;
+}
+
+bool path_within_root(const std::string& root, const std::string& candidate) {
+    if (!is_safe_fs_path_token(root) || !is_safe_fs_path_token(candidate)) return false;
+    char root_real[PATH_MAX];
+    char cand_real[PATH_MAX];
+    if (!realpath(root.c_str(), root_real)) return false;
+    if (!realpath(candidate.c_str(), cand_real)) return false;
+    std::string r(root_real);
+    std::string c(cand_real);
+    while (r.size() > 1 && r.back() == '/') r.pop_back();
+    return c == r || (c.size() > r.size() && c.compare(0, r.size(), r) == 0 && c[r.size()] == '/');
+}
+
+bool parse_size_path_record(const std::string& record, long long& size, std::string& path_out) {
+    size = 0;
+    path_out.clear();
+    if (record.empty()) return false;
+
+    std::size_t split_pos = record.find('\t');
+    if (split_pos == std::string::npos) split_pos = record.find(' ');
+    if (split_pos == std::string::npos) return false;
+
+    std::string lhs = trim(record.substr(0, split_pos));
+    std::size_t rhs_begin = record.find_first_not_of(" \t", split_pos);
+    if (lhs.empty() || rhs_begin == std::string::npos) return false;
+
+    std::string rhs = record.substr(rhs_begin);
+    while (!rhs.empty() && (rhs.back() == '\n' || rhs.back() == '\r')) rhs.pop_back();
+    if (rhs.empty()) return false;
+
+    char* endptr = nullptr;
+    errno = 0;
+    long long parsed = std::strtoll(lhs.c_str(), &endptr, 10);
+    if (errno != 0 || !endptr || *endptr != '\0' || parsed < 0) return false;
+    if (parsed > (1LL << 50)) return false;
+
+    size = parsed;
+    path_out = rhs;
+    return true;
+}
 
 std::string get_top_disk_sources(const std::string& path, int limit = 5) {
-    std::string cmd = "du -x -k -d 2 " + shell_escape_single(path) + " 2>/dev/null | sort -nr | head -n " + std::to_string(limit + 1);
+    std::string cmd = "du -x -k -d 2 --null " + shell_escape_single(path) + " 2>/dev/null | sort -z -nr | head -z -n " + std::to_string(limit + 1);
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return "";
 
-    char buf[512];
     std::ostringstream formatted;
     int count = 0;
+    std::string record;
 
-    while (fgets(buf, sizeof(buf), p)) {
+    while (read_nul_record(p, record)) {
         long long kb = 0;
         std::string entry_path;
-        if (!parse_size_path_line(buf, kb, entry_path)) continue;
+        if (!parse_size_path_record(record, kb, entry_path)) continue;
         if (entry_path == path) continue;
+        if (!path_within_root(path, entry_path)) continue;
 
         std::string label = entry_path;
         if (label.find(path + "/") == 0) label = label.substr(path.size() + 1);
         if (label.empty()) continue;
 
         double gb = kb / (1024.0 * 1024.0);
-        formatted << "• " << label << " = <code>"
+        formatted << "• " << html_escape(label) << " = <code>"
                   << std::fixed << std::setprecision(2) << gb << "GB</code>\n";
         if (++count >= limit) break;
     }
 
     pclose(p);
     return formatted.str();
-}
-
-bool parse_size_path_line(const std::string& line, long long& size, std::string& path_out) {
-    size = 0;
-    path_out.clear();
-    std::string s = trim(line);
-    if (s.empty()) return false;
-
-    std::size_t split_pos = std::string::npos;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        unsigned char c = static_cast<unsigned char>(s[i]);
-        if (std::isspace(c)) {
-            split_pos = i;
-            break;
-        }
-    }
-    if (split_pos == std::string::npos) return false;
-
-    std::string lhs = trim(s.substr(0, split_pos));
-    std::size_t rhs_begin = split_pos;
-    while (rhs_begin < s.size() && std::isspace(static_cast<unsigned char>(s[rhs_begin]))) rhs_begin++;
-    if (rhs_begin >= s.size()) return false;
-
-    std::string rhs = trim(s.substr(rhs_begin));
-    if (lhs.empty() || rhs.empty()) return false;
-    char* endptr = nullptr;
-    long long parsed = std::strtoll(lhs.c_str(), &endptr, 10);
-    if (!endptr || *endptr != '\0' || parsed < 0) return false;
-    size = parsed;
-    path_out = rhs;
-    return true;
 }
 
 unsigned long long get_host_free_bytes(const std::string& path) {
@@ -891,17 +951,18 @@ bool volume_has_only_quarantine_artifacts(const std::string& path) {
 }
 
 double emergency_delete_largest_files(const std::string& path, unsigned long long min_target_free_bytes) {
-    std::string cmd = "find " + shell_escape_single(path) + " -xdev -type f -printf '%s\\t%p\\n' 2>/dev/null | sort -nr | head -n 80";
+    std::string cmd = "find " + shell_escape_single(path) + " -xdev -type f -printf '%s\\t%p\\0' 2>/dev/null | sort -z -nr | head -z -n 80";
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return 0.0;
 
-    char buf[8192];
     double freed_mb = 0.0;
-    while (fgets(buf, sizeof(buf), p)) {
+    std::string record;
+    while (read_nul_record(p, record)) {
         long long size = 0;
         std::string file_path;
-        if (!parse_size_path_line(buf, size, file_path)) continue;
+        if (!parse_size_path_record(record, size, file_path)) continue;
         if (file_path.empty()) continue;
+        if (!path_within_root(path, file_path)) continue;
         if (unlink(file_path.c_str()) == 0) {
             freed_mb += size / (1024.0 * 1024.0);
         }
@@ -925,16 +986,17 @@ std::vector<FileInfo> reclaim_largest_entries(const std::string& root_path,
     std::vector<FileInfo> reclaimed;
     reclaimed_mb = 0.0;
 
-    std::string cmd = "du -x -k -d 1 " + shell_escape_single(root_path) + " 2>/dev/null | sort -nr";
+    std::string cmd = "du -x -k -d 1 --null " + shell_escape_single(root_path) + " 2>/dev/null | sort -z -nr";
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return reclaimed;
 
-    char buf[8192];
-    while (fgets(buf, sizeof(buf), p)) {
+    std::string record;
+    while (read_nul_record(p, record)) {
         long long kb = 0;
         std::string entry_path;
-        if (!parse_size_path_line(buf, kb, entry_path)) continue;
+        if (!parse_size_path_record(record, kb, entry_path)) continue;
         if (entry_path.empty() || entry_path == root_path) continue;
+        if (!path_within_root(root_path, entry_path)) continue;
 
         std::string label = entry_path;
         if (label.find(root_path + "/") == 0) label = label.substr(root_path.size() + 1);
@@ -945,17 +1007,18 @@ std::vector<FileInfo> reclaim_largest_entries(const std::string& root_path,
 
             std::string fcmd =
                 "find " + shell_escape_single(entry_path) +
-                " -xdev -type f -printf '%s %p\\n' 2>/dev/null | sort -nr | head -n 30";
+                " -xdev -type f -printf '%s\\t%p\\0' 2>/dev/null | sort -z -nr | head -z -n 30";
             FILE* fp = popen(fcmd.c_str(), "r");
             if (!fp) continue;
 
-            char fbuf[4096];
             int reclaimed_files = 0;
-            while (fgets(fbuf, sizeof(fbuf), fp)) {
+            std::string frecord;
+            while (read_nul_record(fp, frecord)) {
                 long long fbytes = 0;
                 std::string fpath;
-                if (!parse_size_path_line(fbuf, fbytes, fpath)) continue;
+                if (!parse_size_path_record(frecord, fbytes, fpath)) continue;
                 if (fbytes <= 0 || fpath.empty()) continue;
+                if (!path_within_root(root_path, fpath)) continue;
                 if (unlink(fpath.c_str()) != 0) continue;
 
                 FileInfo fi;
@@ -1039,24 +1102,35 @@ bool DiskProtector::is_path_allowed(const std::string& path) {
 }
 
 std::string DiskProtector::get_file_hash(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) return "";
+    const long long max_hash_bytes = 50LL * 1024LL * 1024LL;
+    int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return "";
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > max_hash_bytes) {
+        close(fd);
+        return "";
+    }
 
     EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
-    if (!mdctx) return "";
+    if (!mdctx) {
+        close(fd);
+        return "";
+    }
     const EVP_MD* md = EVP_sha256();
 
     if (EVP_DigestInit_ex(mdctx, md, NULL) != 1) {
         EVP_MD_CTX_free(mdctx);
+        close(fd);
         return "";
     }
 
     char buffer[8192];
-    while (file.good()) {
-        file.read(buffer, sizeof(buffer));
-        std::streamsize n = file.gcount();
+    ssize_t n = 0;
+    do {
+        n = read(fd, buffer, sizeof(buffer));
         if (n > 0) EVP_DigestUpdate(mdctx, buffer, (size_t)n);
-    }
+    } while (n > 0 || (n < 0 && errno == EINTR));
+    close(fd);
 
     unsigned char hash[EVP_MAX_MD_SIZE];
     unsigned int hash_len = 0;
@@ -1071,13 +1145,19 @@ std::string DiskProtector::get_file_hash(const std::string& path) {
 }
 
 bool DiskProtector::is_binary_file(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) return false;
+    int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return false;
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return false;
+    }
 
     char buffer[1024];
-    file.read(buffer, sizeof(buffer));
-    int count = (int)file.gcount();
-    for (int i = 0; i < count; i++) if (buffer[i] == '\0') return true;
+    ssize_t count = read(fd, buffer, sizeof(buffer));
+    close(fd);
+    if (count <= 0) return false;
+    for (ssize_t i = 0; i < count; i++) if (buffer[i] == '\0') return true;
     return false;
 }
 
@@ -1160,7 +1240,7 @@ bool DiskProtector::is_suspicious_file(const FileInfo& file, std::string& reason
     }
 
     struct stat st;
-    if (stat(file.path.c_str(), &st) == 0 && st.st_size >= SPARSE_FILE_MIN_SIZE_BYTES) {
+    if (lstat(file.path.c_str(), &st) == 0 && st.st_size >= SPARSE_FILE_MIN_SIZE_BYTES) {
         long long allocated_bytes = (long long)st.st_blocks * 512LL;
         double allocated_ratio = st.st_size > 0
             ? static_cast<double>(allocated_bytes) / static_cast<double>(st.st_size)

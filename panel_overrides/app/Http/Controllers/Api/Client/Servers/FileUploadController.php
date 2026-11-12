@@ -65,15 +65,29 @@ class FileUploadController extends ClientApiController
             ];
         }
 
-        $directory = (string) ($request->query('directory') ?? $request->input('directory') ?? '/');
+        $directory = rawurldecode((string) ($request->query('directory') ?? $request->input('directory') ?? '/'));
+        $directory = str_replace('\\', '/', $directory);
+        if (preg_match('/[\x00-\x1F\x7F]/', $directory) === 1
+            || str_contains('/' . ltrim($directory, '/') . '/', '/../')
+            || preg_match('#(^|/)\.dann_quarantine($|/)#i', '/' . ltrim($directory, '/')) === 1
+        ) {
+            return new JsonResponse([
+                'errors' => [[
+                    'code' => 'InvalidDirectory',
+                    'status' => '422',
+                    'detail' => 'The upload directory is not allowed.',
+                ]],
+            ], 422);
+        }
+
         $uploadUrl = $this->getUploadUrl($server, $request->user());
         $uploadUrl .= (str_contains($uploadUrl, '?') ? '&' : '?') . http_build_query(['directory' => $directory]);
 
         $response = (new Client([
             'http_errors' => false,
-            'timeout' => 0,
+            'timeout' => 300,
             'connect_timeout' => 10,
-            'verify' => false,
+            'verify' => (bool) config('pteroprotect.files.verify_node_tls', true),
         ]))->post($uploadUrl, ['multipart' => $multipart]);
 
         $status = $response->getStatusCode();

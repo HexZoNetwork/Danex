@@ -41,7 +41,11 @@ class FileController extends ClientApiController
 
     private function normalizePath(?string $path): string
     {
-        $normalized = trim(str_replace('\\', '/', $path ?? ''));
+        $normalized = rawurldecode((string) ($path ?? ''));
+        if (preg_match('/[\x00-\x1F\x7F]/', $normalized) === 1) {
+            throw new HttpForbiddenException('Invalid path characters.');
+        }
+        $normalized = trim(str_replace('\\', '/', $normalized));
         if ($normalized === '') {
             return '/';
         }

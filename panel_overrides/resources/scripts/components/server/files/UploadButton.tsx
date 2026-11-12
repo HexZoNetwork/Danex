@@ -1,6 +1,5 @@
 import axios, { AxiosProgressEvent } from 'axios';
 import getFileUploadUrl from '@/api/server/files/getFileUploadUrl';
-import http from '@/api/http';
 import tw from 'twin.macro';
 import { Button } from '@/components/elements/button/index';
 import React, { useEffect, useRef } from 'react';
@@ -128,12 +127,9 @@ export default ({ className }: WithClassname) => {
             const form = new FormData();
             form.append('files', file, file.name);
 
-            const uploadViaPanel = () => http.post(`/api/client/servers/${uuid}/files/upload`, form, uploadOptions);
-
             return () =>
                 getFileUploadUrl(uuid)
-                    .then((url) => axios.post(url, form, uploadOptions).catch(uploadViaPanel))
-                    .catch(uploadViaPanel)
+                    .then((url) => axios.post(url, form, uploadOptions))
                     .then(() => timeouts.value.push(setTimeout(() => removeFileUpload(file.name), 500)));
         });
 

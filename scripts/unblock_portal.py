@@ -58,7 +58,7 @@ def read_config():
         cfg = {}
     network = cfg.get("network", {}) if isinstance(cfg, dict) else {}
     return {
-        "bind": str(network.get("unblock_portal_bind", "0.0.0.0")),
+        "bind": str(network.get("unblock_portal_bind", "127.0.0.1")),
         "port": int(network.get("unblock_portal_port", 18443)),
         "token": str(network.get("unblock_portal_token", "")),
     }
@@ -219,9 +219,20 @@ def load_json(path: Path):
 def write_json(path: Path, obj):
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(obj, indent=2, sort_keys=True) + "\n"
+    previous = None
+    try:
+        previous = path.stat()
+    except OSError:
+        previous = None
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
+            if previous is not None:
+                try:
+                    os.fchmod(f.fileno(), previous.st_mode & 0o7777)
+                    os.fchown(f.fileno(), previous.st_uid, previous.st_gid)
+                except OSError:
+                    pass
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
@@ -427,6 +438,20 @@ def normalize_ip_or_cidr(s):
         return ""
 
 
+def is_safe_allowlist_spec(value):
+    text = normalize_ip_or_cidr(value)
+    if not text:
+        return False
+    try:
+        if "/" in text:
+            net = ipaddress.ip_network(text, strict=False)
+            if net.prefixlen < (24 if net.version == 4 else 64):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def is_ipv6_spec(value):
     try:
         if "/" in value:
@@ -512,7 +537,7 @@ def add_essential_allowlist(ips):
         changed = 0
         for ip in ips:
             spec = normalize_ip_or_cidr(ip)
-            if is_ip_or_cidr(spec) and spec not in seen:
+            if is_safe_allowlist_spec(spec) and spec not in seen:
                 cur.append(spec)
                 seen[spec] = 1
                 changed += 1
@@ -520,14 +545,14 @@ def add_essential_allowlist(ips):
         write_json(CONFIG_PATH, cfg)
     for ip in ips:
         spec = normalize_ip_or_cidr(ip)
-        if is_ip_or_cidr(spec):
+        if is_safe_allowlist_spec(spec):
             apply_runtime_allow_rule(spec)
     return changed
 
 
 def apply_runtime_allow_rule(ip):
     spec = normalize_ip_or_cidr(ip)
-    if not spec:
+    if not spec or not is_safe_allowlist_spec(spec):
         return
     if is_ipv6_spec(spec):
         chains = ["PTEROPROTECT-DYNBLOCK-V6", "PTEROPROTECT-HOST-V6", "PTEROPROTECT-HOST-V6-BW"]
@@ -835,7 +860,7 @@ def remove_essential_allowlist(ips):
     write_json(CONFIG_PATH, cfg)
     for ip in ips:
         spec = normalize_ip_or_cidr(ip)
-        if is_ip_or_cidr(spec):
+        if is_safe_allowlist_spec(spec):
             remove_runtime_allow_rule(spec)
     return removed
 

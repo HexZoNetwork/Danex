@@ -1136,6 +1136,46 @@ if iptables -S DOCKER-USER >/dev/null 2>&1; then
 fi
 
 if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
+    if ip6tables -S DOCKER-USER >/dev/null 2>&1; then
+        ip6tables -N "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
+        ip6tables -F "${DOCKER_CHAIN}" >/dev/null 2>&1 || true
+        while ip6tables -C DOCKER-USER -j "${DOCKER_CHAIN}" >/dev/null 2>&1; do
+            ip6tables -D DOCKER-USER -j "${DOCKER_CHAIN}" >/dev/null 2>&1 || break
+        done
+        ip6tables -I DOCKER-USER 1 -j "${DOCKER_CHAIN}"
+        ip6tables -A "${DOCKER_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+        while read -r docker_subnet_v6; do
+            [[ -z "${docker_subnet_v6}" ]] && continue
+            ip6tables -A "${DOCKER_CHAIN}" -d "${docker_subnet_v6}" -j RETURN
+        done < <(docker network ls -q 2>/dev/null | xargs -r docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | tr ' ' '\n' | grep -E ':' | sort -u)
+        ip6tables -A "${DOCKER_CHAIN}" -d fe80::/10 -j DROP
+        ip6tables -A "${DOCKER_CHAIN}" -d fc00::/7 -j DROP
+        ip6tables -A "${DOCKER_CHAIN}" -d ::1/128 -j DROP
+        while read -r host_ip_v6; do
+            [[ -n "${host_ip_v6}" ]] || continue
+            ip6tables -A "${DOCKER_CHAIN}" -d "${host_ip_v6}/128" -p tcp -m multiport --dports 22,80,443,8080,2022,3306,5432,6379,8443 -j DROP
+            ip6tables -A "${DOCKER_CHAIN}" -d "${host_ip_v6}/128" -p udp -m multiport --dports 53,123,443,8080,2022,3306,5432,6379 -j DROP
+        done < <(ip -o -6 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | sort -u)
+        if [[ "${EGRESS_GUARD_ENABLED}" == "1" ]]; then
+            ip6tables -A "${DOCKER_CHAIN}" -p tcp --syn -m connlimit --connlimit-above 40 --connlimit-mask 128 -j DROP
+            ip6tables -A "${DOCKER_CHAIN}" -p tcp -m conntrack --ctstate NEW -m hashlimit \
+                --hashlimit-name pteroprotect_docker_egress_new_v6 --hashlimit-above 12/second \
+                --hashlimit-burst 24 --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+            ip6tables -A "${DOCKER_CHAIN}" -p udp -m hashlimit \
+                --hashlimit-name pteroprotect_docker_egress_udp_v6 --hashlimit-above 20/second \
+                --hashlimit-burst 40 --hashlimit-mode srcip --hashlimit-srcmask 128 -j DROP
+            if [[ -n "${EGRESS_TCP_BLOCK_PORTS}" ]]; then
+                ip6tables -A "${DOCKER_CHAIN}" -p tcp -m multiport --dports "${EGRESS_TCP_BLOCK_PORTS}" -j DROP
+            fi
+            if [[ -n "${EGRESS_UDP_BLOCK_PORTS}" ]]; then
+                ip6tables -A "${DOCKER_CHAIN}" -p udp -m multiport --dports "${EGRESS_UDP_BLOCK_PORTS}" -j DROP
+            fi
+        fi
+        ip6tables -A "${DOCKER_CHAIN}" -j RETURN
+    fi
+fi
+
+if [[ "${IPV6_ENABLED}" == "1" ]] && have_cmd ip6tables; then
     ensure_loopback_web_access_rules_v6
     ensure_local_wings_access_rules_v6 "${WINGS_API_PORT}"
     ip6tables -N "${CHAIN6}" >/dev/null 2>&1 || true

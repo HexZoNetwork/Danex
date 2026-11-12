@@ -1,6 +1,10 @@
 <?php
 
 return [
+    'files' => [
+        // Node uploads must verify the Wings TLS certificate by default.
+        'verify_node_tls' => env('PTEROPROTECT_FILES_VERIFY_NODE_TLS', true),
+    ],
     'waf' => [
         'enabled' => env('PTEROPROTECT_WAF_ENABLED', true),
         'lockdown_flag' => env('PTEROPROTECT_LOCKDOWN_FLAG', '/pteroprotect/runtime/lockdown.json'),

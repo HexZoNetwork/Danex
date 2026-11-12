@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -397,46 +398,155 @@ def is_state_changing_method(method: str) -> bool:
     return method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
 
 
-def is_safe_replay_path(path: str, allowed_post_paths: List[str]) -> bool:
-    if path.startswith("/api/client/servers/"):
-        # Avoid replaying mutable server-control ops.
-        if any(tok in path for tok in ["/power", "/command", "/reinstall", "/startup", "/settings", "/network", "/users", "/backups", "/files/"]):
-            return False
-    if path in allowed_post_paths:
-        return True
-    if path.startswith("/auth"):
+def is_safe_replay_path(path: str, allowed_post_paths: List[str], method: str = "GET") -> bool:
+    path = "/" + path.lstrip("/")
+    method = method.upper()
+    if path.startswith("/api/application") or path.startswith("/auth") or path.startswith("/admin"):
         return False
+    if any(tok in path for tok in ["/power", "/command", "/reinstall", "/startup", "/settings", "/network", "/users", "/backups", "/files/"]):
+        return False
+    if method == "POST":
+        for allowed in allowed_post_paths:
+            candidate = "/" + str(allowed).lstrip("/")
+            if candidate != "/" and path.startswith(candidate):
+                return True
+        return False
+    if method == "GET":
+        return path == "/" or path.startswith("/api/client") or path.startswith("/account")
     return False
 
 
-def prune_replay_queue(path: str, ttl_sec: int, cap: int) -> int:
-    now = utc_ts()
-    rows: List[str] = []
+def replay_signature(obj: Dict[str, Any], secret: str) -> bool:
+    if not secret or secret.startswith("replace_me"):
+        return False
+    sig = str(obj.get("signature", "")).strip().lower()
+    if not sig:
+        return False
+    try:
+        queued_at = int(obj.get("queued_at", 0))
+    except Exception:
+        return False
+    message = "|".join([
+        str(obj.get("ticket_id", "")),
+        str(obj.get("subject", "")),
+        str(obj.get("method", "")).upper(),
+        str(obj.get("path", "")),
+        str(queued_at),
+    ])
+    expected = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+def trim_audit_file(path: str, cap: int) -> None:
     try:
         with open(path, "r", encoding="utf-8") as f:
             rows = [line.rstrip("\n") for line in f if line.strip()]
     except Exception:
-        return 0
+        return
+    if len(rows) <= cap:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            for line in rows[-cap:]:
+                f.write(line + "\n")
+    except Exception:
+        pass
 
-    kept: List[Dict[str, Any]] = []
+
+def consume_replay_queue(
+    path: str,
+    ttl_sec: int,
+    cap: int,
+    secret: str,
+    allowed_post_paths: List[str],
+    audit_file: str,
+) -> Tuple[int, int]:
+    now = utc_ts()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rows = [line.rstrip("\n") for line in f if line.strip()]
+    except Exception:
+        return 0, 0
+
+    consumed = 0
+    dropped = 0
+    audit_rows: List[str] = []
+    verified_secret = bool(secret) and not secret.startswith("replace_me")
+
     for line in rows[-max(cap * 3, 1):]:
         try:
             obj = json.loads(line)
         except Exception:
+            dropped += 1
             continue
-        exp = as_int(obj.get("expires_at", 0), 0)
-        if exp <= now:
+        if not isinstance(obj, dict):
+            dropped += 1
             continue
-        kept.append(obj)
 
-    if len(kept) > cap:
-        kept = kept[-cap:]
+        ticket_id = str(obj.get("ticket_id", "")).strip()
+        subject = str(obj.get("subject", "")).strip()
+        method = str(obj.get("method", "")).upper()
+        req_path = str(obj.get("path", "")).strip()
+        try:
+            expires_at = int(obj.get("expires_at", 0))
+        except Exception:
+            expires_at = 0
 
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        for obj in kept:
-            f.write(json.dumps(obj, ensure_ascii=True, separators=(",", ":")) + "\n")
-    return len(kept)
+        reason = ""
+        if not ticket_id or not subject or not req_path or method not in {"GET", "POST"}:
+            reason = "malformed"
+        elif expires_at <= now:
+            reason = "expired"
+        elif not is_safe_replay_path(req_path, allowed_post_paths, method):
+            reason = "unsafe_path"
+        elif verified_secret and not replay_signature(obj, secret):
+            reason = "invalid_signature"
+
+        if reason:
+            dropped += 1
+            audit = {
+                "ts": now,
+                "action": "dropped",
+                "reason": reason,
+                "ticket_id": ticket_id[:64],
+                "subject": subject[:128],
+                "method": method[:8],
+                "path": req_path[:512],
+            }
+        else:
+            consumed += 1
+            audit = {
+                "ts": now,
+                "action": "consumed",
+                "reason": "verified" if verified_secret else "verified_no_secret",
+                "ticket_id": ticket_id[:64],
+                "subject": subject[:128],
+                "method": method,
+                "path": req_path[:512],
+                "queued_at": as_int(obj.get("queued_at", 0), 0),
+                "payload_hash": str(obj.get("payload_hash", ""))[:64],
+            }
+        audit_rows.append(json.dumps(audit, ensure_ascii=True, separators=(",", ":")))
+
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            pass
+    except Exception:
+        return consumed, 0
+
+    if audit_rows:
+        try:
+            os.makedirs(os.path.dirname(audit_file), exist_ok=True)
+            with open(audit_file, "a", encoding="utf-8") as f:
+                for row in audit_rows:
+                    f.write(row + "\n")
+            trim_audit_file(audit_file, 5000)
+        except Exception:
+            pass
+
+    log(f"replay queue consumed={consumed} dropped={dropped} secret_verified={verified_secret}")
+    return consumed, 0
 
 
 def write_mode_files(stage: str, runtime_dir: str, monitor: Optional[Dict[str, Any]] = None) -> None:
@@ -1021,8 +1131,18 @@ def main() -> int:
 
         # Replay queue maintenance.
         replay_queue_len = 0
+        replay_consumed = 0
         if replay_enabled:
-            replay_queue_len = prune_replay_queue(replay_file, replay_ttl, replay_max)
+            replay_secret = str(replay_cfg.get("hmac_secret", "") or "")
+            replay_audit = os.path.join(os.path.dirname(replay_file), "replay_audit.jsonl")
+            replay_consumed, replay_queue_len = consume_replay_queue(
+                replay_file,
+                replay_ttl,
+                replay_max,
+                replay_secret,
+                [str(x) for x in replay_allowed_posts],
+                replay_audit,
+            )
 
         readiness = stage == "normal" and health_score >= 0.80 and attack_score <= 0.35 and consensus_conf >= 0.50
 
