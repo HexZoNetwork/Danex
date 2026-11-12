@@ -49,7 +49,11 @@ bool TelegramBot::send_report_message(const std::string& message) {
 
 bool TelegramBot::send_html_message_to(const std::string& target_chat_id, const std::string& message) {
     if (offline_mode_enabled()) {
-        logger.warn("⚠️ Offline mode active, but telegram send still attempted");
+        logger.info("Offline mode active, Telegram send suppressed");
+        return false;
+    }
+    if (token.empty() || target_chat_id.empty()) {
+        return false;
     }
 
     CURL* curl = curl_easy_init();
@@ -71,14 +75,25 @@ bool TelegramBot::send_html_message_to(const std::string& target_chat_id, const 
     }
     std::string encoded_str(encoded_message);
     curl_free(encoded_message);
-    
-    std::string post_fields = "chat_id=" + target_chat_id + "&text=" + encoded_str + "&parse_mode=HTML";
+
+    char* encoded_chat = curl_easy_escape(curl, target_chat_id.c_str(), static_cast<int>(target_chat_id.size()));
+    if (!encoded_chat) {
+        logger.error("❌ Telegram chat encode failed");
+        curl_easy_cleanup(curl);
+        return false;
+    }
+    std::string encoded_chat_str(encoded_chat);
+    curl_free(encoded_chat);
+
+    std::string post_fields = "chat_id=" + encoded_chat_str + "&text=" + encoded_str + "&parse_mode=HTML";
     
     logger.info("📤 Sending to Telegram: " + target_chat_id);
     
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_fields.c_str());
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     
     std::string response_string;

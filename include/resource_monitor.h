@@ -33,6 +33,7 @@ private:
     std::string ptlc_url;
     std::string api_key;
     std::string state_file;
+    std::string volumes_path = "/var/lib/pterodactyl/volumes";
     bool offline_mode;
     int cpu_threshold_pct;     // flag when utilisation >= this
     int ram_threshold_pct;
@@ -90,7 +91,8 @@ public:
 
     // Call before start(); skips monitor if url/key are empty.
     void init(const std::string& url, const std::string& key,
-              int cpu_pct, int ram_pct, int interval);
+              int cpu_pct, int ram_pct, int interval,
+              const std::string& volumes = "/var/lib/pterodactyl/volumes");
 
     void start();
     void stop();

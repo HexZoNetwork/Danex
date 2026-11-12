@@ -103,13 +103,12 @@ def user_agent_hash(headers: dict[str, str]) -> str:
 
 
 def ticket_binding_matches(info: dict[str, object], headers: dict[str, str]) -> bool:
-    skip_binding = str(info.get("source", "")) == "emergencywarn"
-    if BIND_IP and not skip_binding:
+    if BIND_IP:
         expected_ip = normalize_ip(str(info.get("ip", "")))
         actual_ip = client_ip_from_headers(headers)
         if not expected_ip or not actual_ip or expected_ip != actual_ip:
             return False
-    if BIND_UA and not skip_binding:
+    if BIND_UA:
         expected_ua = str(info.get("user_agent_hash", ""))
         if not expected_ua or not hmac_compare(expected_ua, user_agent_hash(headers)):
             return False

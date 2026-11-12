@@ -14,7 +14,6 @@
 #include "db_guard.h"
 #include "telegram.h"
 #include "disk_protect.h"
-#include "tracker_db.h"
 #include "resource_monitor.h"
 
 Config config;
@@ -27,14 +26,6 @@ int guard_lock_fd = -1;
 void signal_handler(int sig) {
     (void)sig;
     shutdown_requested = 1;
-}
-
-void send_periodic_reports() {
-    // Disabled for now
-}
-
-void check_blacklisted_users() {
-    // Disabled for now
 }
 
 std::string get_guard_home() {
@@ -79,8 +70,13 @@ int main() {
             return 1;
         }
 
-        // Load config
-        config = Config::load(guard_home + "/config.json");
+        // Load config (fail closed when the file is missing or unreadable)
+        const std::string config_path = guard_home + "/config.json";
+        if (access(config_path.c_str(), R_OK) != 0) {
+            std::cerr << "FATAL: config file is missing or unreadable: " << config_path << std::endl;
+            return 1;
+        }
+        config = Config::load(config_path);
 
         const char* offline_env = std::getenv("DANN_GUARD_OFFLINE");
         if ((offline_env == nullptr || *offline_env == '\0') && config.runtime.offline_mode) {
@@ -110,10 +106,6 @@ int main() {
             return 1;
         }
         
-        // Initialize tracker database (optional)
-        tracker_db.init(config.database.host, config.database.user,
-                        config.database.password, config.database.name);
-        
         // Initialize disk protector
         disk.init(config.paths.volumes, config.limits.max_disk_gb,
                   config.limits.max_file_size_mb, config.limits.max_file_flood,
@@ -123,7 +115,8 @@ int main() {
         res_monitor.init(config.ptlc.url, config.ptlc.api_key,
                          config.limits.cpu_threshold_pct,
                          config.limits.ram_threshold_pct,
-                         config.limits.check_interval);
+                         config.limits.check_interval,
+                         config.paths.volumes);
 
         logger.info("✅ Guard started - Interval: " + std::to_string(config.limits.check_interval) + "s");
 

@@ -33,3 +33,6 @@ panel_overrides/.cache/
 panel_overrides/.yarn/cache/
 panel_overrides/.pnp.*
 HACKS.sh
+
+# local session dumps (never commit)
+session-ses_*.md

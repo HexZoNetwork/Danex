@@ -1,6 +1,8 @@
 #include "config.h"
 #include "logger.h"
 #include <cstdlib>
+#include <cmath>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 
@@ -10,6 +12,71 @@ namespace {
 std::string env_or_default(const char* key, const std::string& fallback) {
     const char* value = std::getenv(key);
     return (value != nullptr && *value != '\0') ? std::string(value) : fallback;
+}
+
+bool has_control_chars(const std::string& value) {
+    for (unsigned char c : value) {
+        if (c < 0x20 || c == 0x7f) return true;
+    }
+    return false;
+}
+
+void clamp_int(int& value, int lo, int hi) {
+    if (value < lo) value = lo;
+    if (value > hi) value = hi;
+}
+
+void validate_config(Config& cfg) {
+    if (cfg.paths.volumes.empty() || cfg.paths.volumes[0] != '/'
+        || has_control_chars(cfg.paths.volumes)) {
+        logger.warn("Invalid paths.volumes, using /var/lib/pterodactyl/volumes");
+        cfg.paths.volumes = "/var/lib/pterodactyl/volumes";
+    }
+
+    if (cfg.runtime.state_dir.empty() || cfg.runtime.state_dir[0] != '/'
+        || has_control_chars(cfg.runtime.state_dir)) {
+        logger.warn("Invalid runtime.state_dir, using /pteroprotect/runtime");
+        cfg.runtime.state_dir = "/pteroprotect/runtime";
+    }
+
+    const std::string& qdir = cfg.runtime.quarantine_dir_name;
+    if (qdir.empty() || qdir == "." || qdir == ".."
+        || qdir.find('/') != std::string::npos || has_control_chars(qdir)) {
+        logger.warn("Invalid runtime.quarantine_dir_name, using .dann_quarantine");
+        cfg.runtime.quarantine_dir_name = ".dann_quarantine";
+    }
+
+    if (!std::isfinite(cfg.limits.max_disk_gb) || cfg.limits.max_disk_gb <= 0.0) {
+        logger.warn("Invalid limits.max_disk_gb, using 10.0");
+        cfg.limits.max_disk_gb = 10.0;
+    }
+    clamp_int(cfg.limits.check_interval, 1, 3600);
+    clamp_int(cfg.limits.max_file_size_mb, 1, 1048576);
+    clamp_int(cfg.limits.max_file_flood, 1, 1000000);
+    clamp_int(cfg.limits.flood_window, 1, 86400);
+    clamp_int(cfg.limits.cpu_threshold_pct, 1, 100);
+    clamp_int(cfg.limits.ram_threshold_pct, 1, 100);
+
+    clamp_int(cfg.monitor.check_interval_normal_sec, 1, 3600);
+    clamp_int(cfg.monitor.check_interval_anomaly_sec, 1, 3600);
+    clamp_int(cfg.monitor.checkhost_max_nodes, 1, 1024);
+    clamp_int(cfg.monitor.checkhost_zero_node_threshold, 1, 1000);
+    clamp_int(cfg.monitor.external_fail_streak_threshold, 1, 1000);
+    if (!std::isfinite(cfg.monitor.latency_p95_ms_threshold) || cfg.monitor.latency_p95_ms_threshold <= 0.0) {
+        cfg.monitor.latency_p95_ms_threshold = 10000.0;
+    }
+    if (!std::isfinite(cfg.monitor.error_rate_threshold)
+        || cfg.monitor.error_rate_threshold < 0.0 || cfg.monitor.error_rate_threshold > 1.0) {
+        cfg.monitor.error_rate_threshold = 0.5;
+    }
+    clamp_int(cfg.monitor.lockdown_ttl_sec, 1, 86400);
+
+    clamp_int(cfg.abuse.self_ddos_req_threshold, 1, 1000000);
+    clamp_int(cfg.abuse.window_ms, 1, 60000);
+    clamp_int(cfg.abuse.strike_window_sec, 1, 86400);
+    clamp_int(cfg.abuse.max_strikes, 1, 1000);
+    clamp_int(cfg.abuse.sigterm_grace_ms, 0, 60000);
+    clamp_int(cfg.abuse.escalation_ttl_sec, 1, 86400);
 }
 }
 
@@ -96,11 +163,15 @@ Config Config::load(const std::string& filename) {
         if (cfg.monitor.external_url.empty()) {
             cfg.monitor.external_url = cfg.ptlc.url;
         }
-        
+
+        validate_config(cfg);
+
         logger.info("✅ Config loaded from " + filename);
         
     } catch (const std::exception& e) {
         logger.error("❌ Failed to parse config file: " + std::string(e.what()));
+        logger.error("   Falling back to safe defaults");
+        cfg = Config();
     }
     
     return cfg;

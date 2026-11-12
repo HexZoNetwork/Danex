@@ -60,6 +60,8 @@ bool is_valid_ip(const std::string& ip) {
 }
 } // namespace
 
+std::string shell_escape_single(const std::string& s);
+
 const double MAKSIMAL_UKURAN_GB = 10.0;
 const double BATAS_LONJAKAN_GB = 3.0;
 const int JEDA_CEK_DETIK = 10;
@@ -458,7 +460,7 @@ std::string dir_name(const std::string& path) {
 
 bool file_exists_regular(const std::string& path) {
     struct stat st;
-    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    return lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
 
 bool is_manifest_name(const std::string& name) {
@@ -783,7 +785,7 @@ std::string rakit_laporan_server(const std::string& tipe, double ukuran, double 
 bool parse_size_path_line(const std::string& line, long long& size, std::string& path_out);
 
 std::string get_top_disk_sources(const std::string& path, int limit = 5) {
-    std::string cmd = "du -x -k -d 2 \"" + path + "\" 2>/dev/null | sort -nr | head -n " + std::to_string(limit + 1);
+    std::string cmd = "du -x -k -d 2 " + shell_escape_single(path) + " 2>/dev/null | sort -nr | head -n " + std::to_string(limit + 1);
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return "";
 
@@ -889,7 +891,7 @@ bool volume_has_only_quarantine_artifacts(const std::string& path) {
 }
 
 double emergency_delete_largest_files(const std::string& path, unsigned long long min_target_free_bytes) {
-    std::string cmd = "find \"" + path + "\" -xdev -type f -printf '%s\\t%p\\n' 2>/dev/null | sort -nr | head -n 80";
+    std::string cmd = "find " + shell_escape_single(path) + " -xdev -type f -printf '%s\\t%p\\n' 2>/dev/null | sort -nr | head -n 80";
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return 0.0;
 
@@ -923,7 +925,7 @@ std::vector<FileInfo> reclaim_largest_entries(const std::string& root_path,
     std::vector<FileInfo> reclaimed;
     reclaimed_mb = 0.0;
 
-    std::string cmd = "du -x -k -d 1 \"" + root_path + "\" 2>/dev/null | sort -nr";
+    std::string cmd = "du -x -k -d 1 " + shell_escape_single(root_path) + " 2>/dev/null | sort -nr";
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return reclaimed;
 
@@ -1080,13 +1082,13 @@ bool DiskProtector::is_binary_file(const std::string& path) {
 }
 
 double DiskProtector::get_folder_size_gb(const std::string& path) {
-    std::string cmd = "du -x -sk \"" + path + "\" 2>/dev/null | cut -f1";
+    std::string cmd = "du -x -sk " + shell_escape_single(path) + " 2>/dev/null | cut -f1";
     std::string r = exec_read_first_line(cmd);
     return r.empty() ? 0.0 : atof(r.c_str()) / (1024.0 * 1024.0);
 }
 
 double DiskProtector::get_folder_apparent_size_gb(const std::string& path) {
-    std::string cmd = "du -x --apparent-size -sk \"" + path + "\" 2>/dev/null | cut -f1";
+    std::string cmd = "du -x --apparent-size -sk " + shell_escape_single(path) + " 2>/dev/null | cut -f1";
     std::string r = exec_read_first_line(cmd);
     return r.empty() ? 0.0 : atof(r.c_str()) / (1024.0 * 1024.0);
 }
@@ -1423,12 +1425,32 @@ double DiskProtector::wipe_server_volume(const std::string& volume_path) {
 
 bool DiskProtector::quarantine_file(const std::string& server_uuid, const FileInfo& file,
                                     std::string& quarantined_path) {
+    struct stat source_st{};
+    if (lstat(file.path.c_str(), &source_st) != 0 || !S_ISREG(source_st.st_mode)) {
+        logger.warn("Refusing to quarantine non-regular path: " + file.path);
+        return false;
+    }
+
     std::string base = volumes_path + "/" + server_uuid + "/.dann_quarantine";
-    if (!ensure_dir(base)) return false;
+    struct stat base_st{};
+    if (lstat(base.c_str(), &base_st) == 0) {
+        if (!S_ISDIR(base_st.st_mode) || S_ISLNK(base_st.st_mode)) {
+            logger.error("Refusing unsafe quarantine directory: " + base);
+            return false;
+        }
+    } else if (!ensure_dir(base)) {
+        return false;
+    }
 
     std::string stamp = std::to_string((long long)time(nullptr));
     quarantined_path = base + "/" + stamp + "_" + file.name + ".karantina";
     if (rename(file.path.c_str(), quarantined_path.c_str()) != 0) return false;
+
+    struct stat moved_st{};
+    if (lstat(quarantined_path.c_str(), &moved_st) != 0 || !S_ISREG(moved_st.st_mode)) {
+        logger.error("Quarantine target is not a regular file: " + quarantined_path);
+        return false;
+    }
 
     chmod(quarantined_path.c_str(), 0);
     system(("chattr +i " + shell_escape_single(quarantined_path) + " >/dev/null 2>&1").c_str());
@@ -1470,6 +1492,17 @@ void DiskProtector::release_expired_quarantine() {
             original_path = quarantine_original_path.count(path) ? quarantine_original_path[path] : "";
             server_uuid = quarantine_server_uuid.count(path) ? quarantine_server_uuid[path] : "";
             trust_score = local_trust_score.count(server_uuid) ? local_trust_score[server_uuid] : 100.0;
+        }
+
+        struct stat quarantined_st{};
+        if (lstat(path.c_str(), &quarantined_st) != 0 || !S_ISREG(quarantined_st.st_mode)) {
+            logger.warn("Skipping non-regular quarantine entry: " + path);
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            quarantine_until.erase(path);
+            quarantine_reason.erase(path);
+            quarantine_original_path.erase(path);
+            quarantine_server_uuid.erase(path);
+            continue;
         }
 
         system(("chattr -i " + shell_escape_single(path) + " >/dev/null 2>&1").c_str());
@@ -2073,7 +2106,7 @@ void DiskProtector::clean_now() {
     while ((entry = readdir(dir)) != nullptr) {
         if (strlen(entry->d_name) == 36 && is_valid_uuid(entry->d_name)) {
             std::string path = volumes_path + "/" + entry->d_name;
-            std::string cmd = "find \"" + path + "\" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null";
+            std::string cmd = "find " + shell_escape_single(path) + " -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null";
             system(cmd.c_str());
         }
     }

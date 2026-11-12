@@ -1,7 +1,7 @@
 CXX = g++
-CXXFLAGS = -std=c++11 -Wall -Wno-unused-function -Wno-unused-but-set-variable -Wno-unused-variable -Iinclude
-LDFLAGS = -lmysqlclient -lcurl -lpthread -lcrypto
-CHALLENGE_LDFLAGS = -lmysqlclient -lpthread -lcrypto -lssl
+CXXFLAGS = -std=c++11 -O2 -Wall -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -Wformat -Wformat-security -Iinclude
+LDFLAGS = -pie -Wl,-z,relro,-z,now -lmysqlclient -lcurl -lpthread -lcrypto
+CHALLENGE_LDFLAGS = -pie -Wl,-z,relro,-z,now -lmysqlclient -lpthread -lcrypto -lssl
 PREFIX ?= /pteroprotect
 PANEL_DIR ?= /var/www/pterodactyl
 SYSTEMD_DIR ?= /etc/systemd/system
@@ -21,7 +21,6 @@ GUARD_SOURCES = \
 	$(SRCDIR)/rate_protect.cpp \
 	$(SRCDIR)/resource_monitor.cpp \
 	$(SRCDIR)/telegram.cpp \
-	$(SRCDIR)/tracker_db.cpp \
 	$(SRCDIR)/tracking.cpp
 GUARD_OBJECTS = $(GUARD_SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
 TARGET = $(BINDIR)/dann_guard

@@ -69,7 +69,7 @@ LAST_MADEINWEB_DELETE_SWEEP_TS=0
 mkdir -p "${RUNTIME_DIR}"
 mkdir -p "${PANEL_RUNTIME_DIR}"
 chown root:www-data "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
-chmod 2775 "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
+chmod 3775 "${RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
 touch "${LOG_FILE}"
 touch "${BLOCK_HISTORY_FILE}"
 touch "${PENDING_BLOCK_FILE}"

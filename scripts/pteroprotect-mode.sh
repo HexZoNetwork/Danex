@@ -7,7 +7,7 @@ MODE="${1:-status}"
 TTL="${2:-600}"
 
 mkdir -p "${SHM_RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}"
-chmod 2775 "${SHM_RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
+chmod 3775 "${SHM_RUNTIME_DIR}" "${PANEL_RUNTIME_DIR}" >/dev/null 2>&1 || true
 
 MODE_FILES=(
     "${SHM_RUNTIME_DIR}/mode.flag"

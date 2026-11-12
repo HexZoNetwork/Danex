@@ -21,6 +21,7 @@
 #include <regex>
 #include <thread>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 #include <unordered_set>
 
@@ -1092,14 +1093,14 @@ bool restart_container(const std::string& identifier, const std::string& uuid = 
     return rc == 0;
 }
 
-std::string detect_dropper_artifact(const std::string& server_uuid) {
-    if (server_uuid.empty()) return "";
+std::string detect_dropper_artifact(const std::string& volumes_root, const std::string& server_uuid) {
+    if (server_uuid.empty() || volumes_root.empty()) return "";
     static const std::vector<std::string> suspects = {
         "x86_64", "a.out", "ramabypass.jar"
     };
 
     for (const auto& name : suspects) {
-        std::string path = "/var/lib/pterodactyl/volumes/" + server_uuid + "/" + name;
+        std::string path = volumes_root + "/" + server_uuid + "/" + name;
         struct stat st{};
         if (stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 4096) {
             return name + " (" + std::to_string((long long)st.st_size / 1024LL) + "KB)";
@@ -1872,9 +1873,13 @@ ResourceMonitor::ResourceMonitor()
 ResourceMonitor::~ResourceMonitor() { stop(); }
 
 void ResourceMonitor::init(const std::string& url, const std::string& key,
-                           int cpu_pct, int ram_pct, int interval) {
+                           int cpu_pct, int ram_pct, int interval,
+                           const std::string& volumes) {
     ptlc_url          = url;
     api_key           = key;
+    if (!volumes.empty()) {
+        volumes_path = volumes;
+    }
     cpu_threshold_pct = (cpu_pct > 0 && cpu_pct <= 100) ? cpu_pct : 90;
     ram_threshold_pct = (ram_pct > 0 && ram_pct <= 100) ? ram_pct : 90;
     check_interval    = (interval > 0) ? interval : 10;
@@ -2203,12 +2208,20 @@ void ResourceMonitor::ensure_iptables_chain() {
 }
 
 void ResourceMonitor::load_state() {
-    std::ifstream file(state_file);
-    if (!file.is_open()) return;
+    int fd = open(state_file.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return;
+
+    std::string raw;
+    char buf[8192];
+    ssize_t n = 0;
+    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+        raw.append(buf, (size_t)n);
+    }
+    close(fd);
+    if (raw.empty()) return;
 
     try {
-        json j;
-        file >> j;
+        json j = json::parse(raw);
 
         std::lock_guard<std::mutex> lock(state_mutex);
         restart_count.clear();
@@ -2263,9 +2276,29 @@ void ResourceMonitor::save_state() {
         j["install_grace_until"] = install_grace_until;
     }
 
-    std::ofstream file(state_file);
-    if (!file.is_open()) return;
-    file << j.dump(2);
+    const std::string payload = j.dump(2);
+    const std::string tmp_file = state_file + ".tmp." + std::to_string((long long)getpid());
+    int fd = open(tmp_file.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return;
+
+    size_t written = 0;
+    while (written < payload.size()) {
+        ssize_t n = write(fd, payload.data() + written, payload.size() - written);
+        if (n <= 0) break;
+        written += (size_t)n;
+    }
+
+    if (written != payload.size()) {
+        close(fd);
+        unlink(tmp_file.c_str());
+        return;
+    }
+
+    fsync(fd);
+    close(fd);
+    if (rename(tmp_file.c_str(), state_file.c_str()) != 0) {
+        unlink(tmp_file.c_str());
+    }
 }
 
 // ─── Evaluate one server and act if thresholds are breached ──────────────────
@@ -2291,7 +2324,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
             return;
         }
 
-        std::string offline_dropper = detect_dropper_artifact(srv.uuid);
+        std::string offline_dropper = detect_dropper_artifact(volumes_path, srv.uuid);
         ScriptAbuseInfo offline_script = collect_script_abuse(srv.uuid);
         if (offline_dropper.empty() && !offline_script.suspicious) return;
 
@@ -2558,7 +2591,7 @@ void ResourceMonitor::handle_server(const PtlcServerEntry& srv) {
         egress.suspicious_single_target_flood;
     if (runtime_probe_needed) {
         script_abuse = collect_script_abuse(srv.uuid);
-        dropper_artifact = detect_dropper_artifact(srv.uuid);
+        dropper_artifact = detect_dropper_artifact(volumes_path, srv.uuid);
     }
     const bool runtime_js_present = runtime_summary_has_js_runtime(proc_abuse.runtime_summary);
     if (script_abuse.suspicious) {

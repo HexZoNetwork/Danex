@@ -1843,7 +1843,7 @@ if command -v chattr >/dev/null 2>&1; then
 fi
 
 chown root:www-data "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
-chmod 2775 "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
+chmod 3775 "${INSTALL_DIR}/runtime" /dev/shm/pteroprotect >/dev/null 2>&1 || true
 if command -v setfacl >/dev/null 2>&1; then
     while IFS= read -r _pp_user; do
         id "${_pp_user}" >/dev/null 2>&1 || continue
